@@ -9,8 +9,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from app.database import get_db
-from app.models.user import User
-from app.security import require_login
+from app.user_manager import User
+from app.api.settings import require_login
 from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger
 from app.services.ai_service import AIService, create_user_ai_service
 from app.utils.sse_response import SSEResponse, create_sse_response, wrap_stream_with_heartbeat, HEARTBEAT
