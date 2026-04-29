@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
-import { Card, Input, Button, Tag, List, Typography, Space, Spin, message, Empty, Collapse } from 'antd';
+import { Card, Input, Button, Tag, List, Typography, Space, Spin, message, Collapse } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import axios from 'axios';
 // 使用简单的文本渲染替代 react-markdown
@@ -25,7 +24,6 @@ interface ChatMessage {
 }
 
 const SkillChat: React.FC = () => {
-  const { projectId } = useParams<{ projectId: string }>();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
