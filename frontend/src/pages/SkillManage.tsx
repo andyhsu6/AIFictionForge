@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button, Table, Modal, Form, Input, Tag, Space, message, Popconfirm, Card, theme, Empty, Badge } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, FileTextOutlined, BookOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, FileTextOutlined } from '@ant-design/icons';
 
 const { TextArea } = Input;
 
@@ -25,7 +24,6 @@ interface SkillDetail {
 
 export default function SkillManage() {
   const { token } = theme.useToken();
-  const navigate = useNavigate();
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -305,12 +303,6 @@ export default function SkillManage() {
           </div>
         </div>
         <Space wrap>
-          <Button
-            icon={<BookOutlined />}
-            onClick={() => navigate('./skill-chat')}
-          >
-            Skill 工具箱
-          </Button>
           <Button
             icon={<ReloadOutlined />}
             onClick={loadSkills}
