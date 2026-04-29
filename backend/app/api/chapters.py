@@ -1174,6 +1174,7 @@ async def generate_chapter_content_stream(
     target_word_count = generate_request.target_word_count or 3000
     custom_model = generate_request.model if hasattr(generate_request, 'model') else None
     temp_narrative_perspective = generate_request.narrative_perspective if hasattr(generate_request, 'narrative_perspective') else None
+    skill_key = generate_request.skill_key if hasattr(generate_request, 'skill_key') else None
     # 预先验证章节存在性（使用临时会话）
     async for temp_db in get_db(request):
         try:
@@ -1446,7 +1447,34 @@ async def generate_chapter_content_stream(
                 
                 # 🎨 方案一：将写作风格注入到系统提示词（最高优先级）
                 system_prompt_with_style = None
-                if style_content:
+                
+                # ⚡ Skill 支持：当指定 skill_key 时，将 Skill 工作流注入系统提示词
+                if skill_key:
+                    try:
+                        from app.services.skill_loader import get_all_skills_cached
+                        skills = get_all_skills_cached()
+                        skill = next((s for s in skills if s["template_key"] == skill_key), None)
+                        if skill:
+                            skill_content = skill["content"]
+                            skill_name = skill["template_name"]
+                            system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
+
+{skill_content}
+
+⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
+                            if style_content:
+                                system_prompt_with_style += f"""
+
+【🎨 写作风格要求 - 补充】
+
+{style_content}"""
+                            logger.info(f"⚡ 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
+                        else:
+                            logger.warning(f"⚠️ 未找到 Skill: {skill_key}")
+                    except Exception as skill_err:
+                        logger.warning(f"⚠️ 加载 Skill 失败: {skill_err}")
+                
+                if not system_prompt_with_style and style_content:
                     system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
 
 {style_content}
