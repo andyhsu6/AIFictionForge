@@ -23,29 +23,10 @@ from app.schemas.relationship import (
     RelationshipGraphLink
 )
 from app.logger import get_logger
+from app.api.common import verify_project_access
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
 logger = get_logger(__name__)
-
-
-async def verify_project_access(project_id: str, user_id: str, db: AsyncSession) -> Project:
-    """验证用户是否有权访问指定项目"""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
-    
-    result = await db.execute(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == user_id
-        )
-    )
-    project = result.scalar_one_or_none()
-    
-    if not project:
-        logger.warning(f"项目访问被拒绝: project_id={project_id}, user_id={user_id}")
-        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
-    
-    return project
 
 
 @router.get("/types", response_model=List[RelationshipTypeResponse], summary="获取关系类型列表")
@@ -127,14 +108,14 @@ async def get_relationship_graph(
         for c in characters
     ]
     
-    # 获取所有关系（边）
+    # 获取所有角色关系（边）
     rels_result = await db.execute(
         select(CharacterRelationship).where(
             CharacterRelationship.project_id == project_id
         )
     )
     relationships = rels_result.scalars().all()
-    
+
     links = [
         RelationshipGraphLink(
             source=r.character_from_id,
@@ -145,8 +126,34 @@ async def get_relationship_graph(
         )
         for r in relationships
     ]
-    
-    logger.info(f"获取项目 {project_id} 的关系图谱：{len(nodes)} 个节点，{len(links)} 条关系")
+
+    # 获取组织成员关系（组织 -> 成员）并追加到图谱边
+    # source 使用组织对应的角色ID（Organization.character_id），确保与节点ID一致
+    members_result = await db.execute(
+        select(OrganizationMember, Organization).join(
+            Organization,
+            OrganizationMember.organization_id == Organization.id
+        ).where(Organization.project_id == project_id)
+    )
+    org_members = members_result.all()
+
+    member_links = [
+        RelationshipGraphLink(
+            source=org.character_id,
+            target=member.character_id,
+            relationship=f"组织成员·{member.position}",
+            intimacy=member.loyalty,
+            status=member.status
+        )
+        for member, org in org_members
+    ]
+
+    links.extend(member_links)
+
+    logger.info(
+        f"获取项目 {project_id} 的关系图谱：{len(nodes)} 个节点，"
+        f"{len(relationships)} 条角色关系，{len(member_links)} 条组织成员关系"
+    )
     return RelationshipGraphData(nodes=nodes, links=links)
 
 

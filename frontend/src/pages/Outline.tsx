@@ -1,67 +1,120 @@
-﻿import { useState, useEffect } from 'react';
-import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs } from 'antd';
-import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined } from '@ant-design/icons';
+﻿import { useState, useEffect, useMemo, useRef } from 'react';
+import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme, Progress, Badge, Tooltip } from 'antd';
+import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined, ClockCircleOutlined, ReloadOutlined, CloseCircleOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useOutlineSync } from '../store/hooks';
-import { cardStyles } from '../components/CardStyles';
 import { SSEPostClient } from '../utils/sseClient';
 import { SSEProgressModal } from '../components/SSEProgressModal';
-import { outlineApi, chapterApi, projectApi } from '../services/api';
-import type { OutlineExpansionResponse, BatchOutlineExpansionResponse } from '../types';
+import { generateOutlineBackground, getProjectTasks, cancelTask, deleteTask, type TaskStatus } from '../services/backgroundTaskService';
+import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
+import type { OutlineExpansionResponse, BatchOutlineExpansionResponse, ChapterPlanItem, ApiError, Character } from '../types';
 
-// 角色预测数据类型
-interface PredictedCharacter {
-  name?: string;
-  role_description: string;
-  suggested_role_type: string;
-  importance: string;
-  appearance_chapter: number;
-  key_abilities: string[];
-  plot_function: string;
-  relationship_suggestions: Array<{
-    target_character_name: string;
-    relationship_type: string;
-    description?: string;
-  }>;
+// 大纲生成请求数据类型
+interface OutlineGenerateRequestData {
+  project_id: string;
+  genre: string;
+  theme: string;
+  chapter_count: number;
+  narrative_perspective: string;
+  target_words: number;
+  requirements?: string;
+  mode: 'auto' | 'new' | 'continue';
+  story_direction?: string;
+  plot_stage: 'development' | 'climax' | 'ending';
+  model?: string;
+  provider?: string;
 }
 
-interface CharacterConfirmationData {
-  code: string;
-  message: string;
-  predicted_characters: PredictedCharacter[];
+// 跳过的大纲信息类型
+interface SkippedOutlineInfo {
+  outline_id: string;
+  outline_title: string;
   reason: string;
-  chapter_range: string;
 }
 
-// 组织预测数据类型
-interface PredictedOrganization {
-  name?: string;
-  organization_description: string;
-  organization_type: string;
-  importance: string;
-  appearance_chapter: number;
-  power_level: number;
-  plot_function: string;
-  location?: string;
-  motto?: string;
-  initial_members: Array<{
-    character_name: string;
-    position: string;
-    reason?: string;
-  }>;
-  relationship_suggestions: Array<{
-    target_organization: string;
-    relationship_type: string;
-    reason?: string;
-  }>;
+// 场景类型
+interface SceneInfo {
+  location: string;
+  characters: string[];
+  purpose: string;
 }
 
-interface OrganizationConfirmationData {
-  code: string;
-  message: string;
-  predicted_organizations: PredictedOrganization[];
-  reason: string;
-  chapter_range: string;
+// 角色/组织条目类型（新格式）
+interface CharacterEntry {
+  name: string;
+  type: 'character' | 'organization';
+}
+
+/**
+ * 解析 characters 字段，兼容新旧格式
+ * 旧格式: string[] -> 全部当作 character
+ * 新格式: {name: string, type: "character"|"organization"}[]
+ */
+function parseCharacterEntries(characters: unknown): CharacterEntry[] {
+  if (!Array.isArray(characters) || characters.length === 0) return [];
+  
+  return characters.map((entry) => {
+    if (typeof entry === 'string') {
+      // 旧格式：纯字符串，默认为 character
+      return { name: entry, type: 'character' as const };
+    }
+    if (typeof entry === 'object' && entry !== null && 'name' in entry) {
+      // 新格式：带类型标识的对象
+      return {
+        name: (entry as { name: string }).name,
+        type: ((entry as { type?: string }).type === 'organization' ? 'organization' : 'character') as 'character' | 'organization'
+      };
+    }
+    return null;
+  }).filter((e): e is CharacterEntry => e !== null);
+}
+
+/** 从 entries 中提取角色名称列表 */
+function getCharacterNames(entries: CharacterEntry[]): string[] {
+  return entries.filter(e => e.type === 'character').map(e => e.name);
+}
+
+/** 从 entries 中提取组织名称列表 */
+function getOrganizationNames(entries: CharacterEntry[]): string[] {
+  return entries.filter(e => e.type === 'organization').map(e => e.name);
+}
+
+interface OutlineStructureData {
+  key_events?: string[];
+  key_points?: string[];
+  characters_involved?: string[];
+  characters?: unknown[];
+  scenes?: string[] | Array<{
+    location: string;
+    characters: string[];
+    purpose: string;
+  }>;
+  emotion?: string;
+  goal?: string;
+  title?: string;
+  summary?: string;
+  content?: string;
+}
+
+function parseOutlineStructure(structure?: string): OutlineStructureData {
+  if (!structure) return {};
+  try {
+    return JSON.parse(structure) as OutlineStructureData;
+  } catch (e) {
+    console.error('解析structure失败:', e);
+    return {};
+  }
+}
+
+function getOutlinePreview(content: string, maxLength = 120): { text: string; truncated: boolean } {
+  const normalized = (content || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return { text: normalized, truncated: false };
+  }
+  return {
+    text: `${normalized.slice(0, maxLength).trimEnd()}...`,
+    truncated: true
+  };
 }
 
 const { TextArea } = Input;
@@ -77,20 +130,16 @@ export default function Outline() {
   const [manualCreateForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [isExpanding, setIsExpanding] = useState(false);
+  const [projectCharacters, setProjectCharacters] = useState<Array<{ label: string; value: string }>>([]);
+  const { token } = theme.useToken();
+  const alphaColor = (color: string, alpha: number) =>
+    `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
 
-  // ✅ 新增：记录每个大纲的展开状态
-  const [outlineExpandStatus, setOutlineExpandStatus] = useState<Record<string, boolean>>({});
+  // ✅ 新增：记录大纲卡片内容的展开/折叠状态（默认折叠）
+  const [outlineContentExpandStatus, setOutlineContentExpandStatus] = useState<Record<string, boolean>>({});
 
-  // 角色确认相关状态
-  const [characterConfirmData, setCharacterConfirmData] = useState<CharacterConfirmationData | null>(null);
-  const [characterConfirmVisible, setCharacterConfirmVisible] = useState(false);
-  const [pendingGenerateData, setPendingGenerateData] = useState<any>(null);
-  const [selectedCharacterIndices, setSelectedCharacterIndices] = useState<number[]>([]);
-
-  // 组织确认相关状态
-  const [organizationConfirmData, setOrganizationConfirmData] = useState<OrganizationConfirmationData | null>(null);
-  const [organizationConfirmVisible, setOrganizationConfirmVisible] = useState(false);
-  const [selectedOrganizationIndices, setSelectedOrganizationIndices] = useState<number[]>([]);
+  // ✅ 新增：记录场景区域的展开/折叠状态
+  const [scenesExpandStatus, setScenesExpandStatus] = useState<Record<string, boolean>>({});
 
   // 缓存批量展开的规划数据，避免重复AI调用
   const [cachedBatchExpansionResponse, setCachedBatchExpansionResponse] = useState<BatchOutlineExpansionResponse | null>(null);
@@ -106,6 +155,14 @@ export default function Outline() {
   const [sseMessage, setSSEMessage] = useState('');
   const [sseModalVisible, setSSEModalVisible] = useState(false);
 
+  // 后台任务取消函数引用
+  const cancelGenerateRef = useRef<(() => void) | null>(null);
+
+  // 后台任务列表状态
+  const [taskListVisible, setTaskListVisible] = useState(false);
+  const [taskList, setTaskList] = useState<TaskStatus[]>([]);
+  const [taskListLoading, setTaskListLoading] = useState(false);
+
   useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth <= 768);
@@ -115,6 +172,11 @@ export default function Outline() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 大纲查询与分页状态
+  const [outlineSearchKeyword, setOutlineSearchKeyword] = useState('');
+  const [outlinePage, setOutlinePage] = useState(1);
+  const [outlinePageSize, setOutlinePageSize] = useState(20);
+
   // 使用同步 hooks
   const {
     refreshOutlines,
@@ -122,79 +184,153 @@ export default function Outline() {
     deleteOutline
   } = useOutlineSync();
 
-  // 初始加载大纲列表
+  // 初始加载大纲列表和角色列表
   useEffect(() => {
     if (currentProject?.id) {
       refreshOutlines();
+      // 加载项目角色列表
+      loadProjectCharacters();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]); // 只依赖 ID，不依赖函数
 
-  // ✅ 新增：加载所有大纲的展开状态
-  useEffect(() => {
-    const loadExpandStatus = async () => {
-      if (outlines.length === 0) return;
+  // 加载项目角色列表
+  const loadProjectCharacters = async () => {
+    if (!currentProject?.id) return;
+    try {
+      const characters = await characterApi.getCharacters(currentProject.id);
+      setProjectCharacters(
+        characters.map((char: Character) => ({
+          label: char.name,
+          value: char.name
+        }))
+      );
+    } catch (error) {
+      console.error('加载角色列表失败:', error);
+    }
+  };
 
-      const statusMap: Record<string, boolean> = {};
-      for (const outline of outlines) {
-        try {
-          const chapters = await outlineApi.getOutlineChapters(outline.id);
-          statusMap[outline.id] = chapters.has_chapters;
-        } catch (error) {
-          console.error(`加载大纲 ${outline.id} 状态失败:`, error);
-          statusMap[outline.id] = false;
-        }
-      }
-      setOutlineExpandStatus(statusMap);
-    };
+  // 从后端返回字段直接构建展开状态，避免前端 N+1 请求
+  const outlineExpandStatus = useMemo(() => {
+    const statusMap: Record<string, boolean> = {};
+    outlines.forEach((outline) => {
+      statusMap[outline.id] = Boolean(outline.has_chapters);
+    });
+    return statusMap;
+  }, [outlines]);
 
-    loadExpandStatus();
+  // 统一预解析 structure，避免 render 阶段重复 JSON.parse
+  const outlineStructureMap = useMemo(() => {
+    const parsedMap: Record<string, OutlineStructureData> = {};
+    outlines.forEach((outline) => {
+      parsedMap[outline.id] = parseOutlineStructure(outline.structure);
+    });
+    return parsedMap;
   }, [outlines]);
 
   // 当角色确认数据变化时，初始化选中状态（默认全选）
-  useEffect(() => {
-    if (characterConfirmData) {
-      setSelectedCharacterIndices(
-        characterConfirmData.predicted_characters.map((_, idx) => idx)
-      );
-    }
-  }, [characterConfirmData]);
-
   // 当组织确认数据变化时，初始化选中状态（默认全选）
-  useEffect(() => {
-    if (organizationConfirmData) {
-      setSelectedOrganizationIndices(
-        organizationConfirmData.predicted_organizations.map((_, idx) => idx)
-      );
-    }
-  }, [organizationConfirmData]);
-
   // 移除事件监听，避免无限循环
   // Hook 内部已经更新了 store，不需要再次刷新
-
-  if (!currentProject) return null;
 
   // 确保大纲按 order_index 排序
   const sortedOutlines = [...outlines].sort((a, b) => a.order_index - b.order_index);
 
+  // 前端查询过滤
+  const filteredOutlines = useMemo(() => {
+    const keyword = outlineSearchKeyword.trim().toLowerCase();
+    if (!keyword) return sortedOutlines;
+
+    return sortedOutlines.filter((outline) => {
+      return (
+        String(outline.order_index).includes(keyword) ||
+        outline.title.toLowerCase().includes(keyword) ||
+        outline.content.toLowerCase().includes(keyword)
+      );
+    });
+  }, [sortedOutlines, outlineSearchKeyword]);
+
+  // 当前分页数据
+  const pagedOutlines = useMemo(() => {
+    const start = (outlinePage - 1) * outlinePageSize;
+    return filteredOutlines.slice(start, start + outlinePageSize);
+  }, [filteredOutlines, outlinePage, outlinePageSize]);
+
+  // 搜索词或页大小变化时，回到第一页
+  useEffect(() => {
+    setOutlinePage(1);
+  }, [outlineSearchKeyword, outlinePageSize]);
+
+  // 数据变化导致页码越界时自动纠正
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(filteredOutlines.length / outlinePageSize));
+    if (outlinePage > maxPage) {
+      setOutlinePage(maxPage);
+    }
+  }, [filteredOutlines.length, outlinePage, outlinePageSize]);
+
+  if (!currentProject) return null;
+
   const handleOpenEditModal = (id: string) => {
     const outline = outlines.find(o => o.id === id);
     if (outline) {
-      editForm.setFieldsValue(outline);
+      const structureData = outlineStructureMap[outline.id] || {};
+      
+      // 解析角色/组织条目（兼容新旧格式）
+      const editEntries = parseCharacterEntries(structureData.characters);
+      const editCharNames = getCharacterNames(editEntries);
+      const editOrgNames = getOrganizationNames(editEntries);
+      
+      // 处理场景数据 - 可能是字符串数组或对象数组
+      let scenesText = '';
+      if (structureData.scenes) {
+        if (typeof structureData.scenes[0] === 'string') {
+          // 字符串数组格式
+          scenesText = (structureData.scenes as string[]).join('\n');
+        } else {
+          // 对象数组格式
+          scenesText = (structureData.scenes as Array<{location: string; characters: string[]; purpose: string}>)
+            .map(s => `${s.location}|${(s.characters || []).join('、')}|${s.purpose}`)
+            .join('\n');
+        }
+      }
+      
+      // 处理情节要点数据
+      const keyPointsText = structureData.key_points ? structureData.key_points.join('\n') : '';
+      
+      // 设置表单初始值
+      editForm.setFieldsValue({
+        title: outline.title,
+        content: outline.content,
+        characters: editCharNames,
+        organizations: editOrgNames,
+        scenes: scenesText,
+        key_points: keyPointsText,
+        emotion: structureData.emotion || '',
+        goal: structureData.goal || ''
+      });
+      
       modalApi.confirm({
         title: '编辑大纲',
-        width: 600,
+        width: 800,
         centered: true,
+        styles: {
+          body: {
+            maxHeight: 'calc(100vh - 200px)',
+            overflowY: 'auto'
+          }
+        },
         content: (
           <Form
             form={editForm}
             layout="vertical"
-            style={{ marginTop: 16 }}
+            style={{ marginTop: 12 }}
           >
             <Form.Item
               label="标题"
               name="title"
               rules={[{ required: true, message: '请输入标题' }]}
+              style={{ marginBottom: 12 }}
             >
               <Input placeholder="输入大纲标题" />
             </Form.Item>
@@ -203,8 +339,82 @@ export default function Outline() {
               label="内容"
               name="content"
               rules={[{ required: true, message: '请输入内容' }]}
+              style={{ marginBottom: 12 }}
             >
-              <TextArea rows={6} placeholder="输入大纲内容..." />
+              <TextArea rows={4} placeholder="输入大纲内容..." />
+            </Form.Item>
+            
+            <Form.Item
+              label="涉及角色"
+              name="characters"
+              tooltip="从项目角色中选择，也可以手动输入新角色名"
+              style={{ marginBottom: 12 }}
+            >
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                placeholder="选择或输入角色名"
+                options={projectCharacters}
+                tokenSeparators={[',', '，']}
+                maxTagCount="responsive"
+              />
+            </Form.Item>
+            
+            <Form.Item
+              label="涉及组织"
+              name="organizations"
+              tooltip="从项目组织中选择，也可以手动输入新组织名"
+              style={{ marginBottom: 12 }}
+            >
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                placeholder="选择或输入组织/势力名"
+                tokenSeparators={[',', '，']}
+                maxTagCount="responsive"
+              />
+            </Form.Item>
+            
+            <Form.Item
+              label="场景信息"
+              name="scenes"
+              tooltip="支持两种格式：简单描述（每行一个场景）或详细格式（地点|角色|目的）"
+              style={{ marginBottom: 12 }}
+            >
+              <TextArea
+                rows={3}
+                placeholder="每行一个场景&#10;详细格式：地点|角色1、角色2|目的"
+              />
+            </Form.Item>
+            
+            <Form.Item
+              label="情节要点"
+              name="key_points"
+              tooltip="每行一个情节要点"
+              style={{ marginBottom: 12 }}
+            >
+              <TextArea
+                rows={2}
+                placeholder="每行一个情节要点"
+              />
+            </Form.Item>
+            
+            <Form.Item
+              label="情感基调"
+              name="emotion"
+              tooltip="描述本章的情感氛围"
+              style={{ marginBottom: 12 }}
+            >
+              <Input placeholder="例如：冷冽与躁动并存" />
+            </Form.Item>
+            
+            <Form.Item
+              label="叙事目标"
+              name="goal"
+              tooltip="本章要达成的叙事目的"
+              style={{ marginBottom: 0 }}
+            >
+              <Input placeholder="例如：建立世界观对比并完成主角初遇" />
             </Form.Item>
           </Form>
         ),
@@ -213,9 +423,81 @@ export default function Outline() {
         onOk: async () => {
           const values = await editForm.validateFields();
           try {
-            await updateOutline(id, values);
+            // 解析并重构structure数据（使用预解析缓存，避免重复 JSON.parse）
+            const originalStructure = outlineStructureMap[outline.id] || {};
+            
+            // 处理角色和组织数据 - 合并为带类型标识的新格式
+            const charNames = Array.isArray(values.characters)
+              ? values.characters.filter((c: string) => c && c.trim())
+              : [];
+            const orgNames = Array.isArray(values.organizations)
+              ? values.organizations.filter((c: string) => c && c.trim())
+              : [];
+            const characters: CharacterEntry[] = [
+              ...charNames.map((name: string) => ({ name: name.trim(), type: 'character' as const })),
+              ...orgNames.map((name: string) => ({ name: name.trim(), type: 'organization' as const }))
+            ];
+            
+            // 处理场景数据 - 检测原始格式
+            let scenes: string[] | Array<{location: string; characters: string[]; purpose: string}> | undefined;
+            if (values.scenes) {
+              const lines = values.scenes.split('\n')
+                .map((line: string) => line.trim())
+                .filter((line: string) => line);
+              
+              // 检查是否包含管道符，判断格式
+              const hasStructuredFormat = lines.some((line: string) => line.includes('|'));
+              
+              if (hasStructuredFormat) {
+                // 尝试解析为对象数组格式
+                scenes = lines
+                  .map((line: string) => {
+                    const parts = line.split('|');
+                    if (parts.length >= 3) {
+                      return {
+                        location: parts[0].trim(),
+                        characters: parts[1].split('、').map(c => c.trim()).filter(c => c),
+                        purpose: parts[2].trim()
+                      };
+                    }
+                    return null;
+                  })
+                  .filter((s: { location: string; characters: string[]; purpose: string } | null): s is { location: string; characters: string[]; purpose: string } => s !== null);
+              } else {
+                // 保持字符串数组格式
+                scenes = lines;
+              }
+            }
+            
+            // 处理情节要点数据
+            const keyPoints = values.key_points
+              ? values.key_points.split('\n')
+                  .map((line: string) => line.trim())
+                  .filter((line: string) => line)
+              : undefined;
+            
+            // 合并structure数据，只包含AI实际生成的字段
+            const newStructure = {
+              ...originalStructure,
+              title: values.title,
+              summary: values.content,
+              characters: characters.length > 0 ? characters : undefined,
+              scenes: scenes && scenes.length > 0 ? scenes : undefined,
+              key_points: keyPoints && keyPoints.length > 0 ? keyPoints : undefined,
+              emotion: values.emotion || undefined,
+              goal: values.goal || undefined
+            };
+            
+            // 更新大纲
+            await updateOutline(id, {
+              title: values.title,
+              content: values.content,
+              structure: JSON.stringify(newStructure, null, 2)
+            });
+            
             message.success('大纲更新成功');
-          } catch {
+          } catch (error) {
+            console.error('更新失败:', error);
             message.error('更新失败');
           }
         },
@@ -249,10 +531,6 @@ export default function Outline() {
     story_direction?: string;
     plot_stage?: 'development' | 'climax' | 'ending';
     keep_existing?: boolean;
-    enable_auto_characters?: boolean;
-    require_character_confirmation?: boolean;
-    enable_auto_organizations?: boolean;
-    require_organization_confirmation?: boolean;
   }
 
   const handleGenerate = async (values: GenerateFormValues) => {
@@ -274,7 +552,7 @@ export default function Outline() {
       setSSEModalVisible(true);
 
       // 准备请求数据
-      const requestData: any = {
+      const requestData: OutlineGenerateRequestData = {
         project_id: currentProject.id,
         genre: currentProject.genre || '通用',
         theme: values.theme || currentProject.theme || '',
@@ -284,11 +562,7 @@ export default function Outline() {
         requirements: values.requirements,
         mode: values.mode || 'auto',
         story_direction: values.story_direction,
-        plot_stage: values.plot_stage || 'development',
-        enable_auto_characters: values.enable_auto_characters !== undefined ? values.enable_auto_characters : true,
-        require_character_confirmation: values.require_character_confirmation !== undefined ? values.require_character_confirmation : true,
-        enable_auto_organizations: values.enable_auto_organizations !== undefined ? values.enable_auto_organizations : true,
-        require_organization_confirmation: values.require_organization_confirmation !== undefined ? values.require_organization_confirmation : true
+        plot_stage: values.plot_stage || 'development'
       };
 
       // 只有在用户选择了模型时才添加model参数
@@ -308,61 +582,31 @@ export default function Outline() {
       console.log('6. 最终请求数据:', JSON.stringify(requestData, null, 2));
       console.log('=========================');
 
-      // 使用SSE客户端
-      const apiUrl = `/api/outlines/generate-stream`;
-      const client = new SSEPostClient(apiUrl, requestData, {
-        onProgress: (msg: string, progress: number) => {
-          setSSEMessage(msg);
-          setSSEProgress(progress);
+      // 使用后台任务生成（不怕断连，关闭浏览器也继续运行）
+      setSSEMessage('正在创建后台任务...');
+
+      const cancelFn = await generateOutlineBackground(
+        requestData,
+        (status) => {
+          setSSEProgress(status.progress);
+          setSSEMessage(status.status_message || '处理中...');
         },
-        onResult: (data: any) => {
-          console.log('生成完成，结果:', data);
-        },
-        onCharacterConfirmation: (data: any) => {
-          // ✨ 新增：处理角色确认事件
-          console.log('收到角色确认请求:', data);
-          // 关闭SSE进度Modal
+        (result) => {
+          message.success(result.task_result?.message as string || '大纲生成完成！');
           setSSEModalVisible(false);
           setIsGenerating(false);
-
-          // 保存待处理的生成数据
-          setPendingGenerateData(requestData);
-
-          // 显示角色确认对话框
-          setCharacterConfirmData(data);
-          setCharacterConfirmVisible(true);
+          cancelGenerateRef.current = null;
+          refreshOutlines();
         },
-        onOrganizationConfirmation: (data: any) => {
-          // ✨ 新增：处理组织确认事件
-          console.log('收到组织确认请求:', data);
-          // 关闭SSE进度Modal
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-
-          // 保存待处理的生成数据
-          setPendingGenerateData(requestData);
-
-          // 显示组织确认对话框
-          setOrganizationConfirmData(data);
-          setOrganizationConfirmVisible(true);
-        },
-        onError: (error: string) => {
-          // 现在只处理真正的错误
+        (error) => {
           message.error(`生成失败: ${error}`);
           setSSEModalVisible(false);
           setIsGenerating(false);
-        },
-        onComplete: () => {
-          message.success('大纲生成完成！');
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          // 刷新大纲列表
-          refreshOutlines();
+          cancelGenerateRef.current = null;
         }
-      });
+      );
 
-      // 开始连接
-      client.connect();
+      cancelGenerateRef.current = cancelFn;
 
     } catch (error) {
       console.error('AI生成失败:', error);
@@ -396,7 +640,7 @@ export default function Outline() {
             defaultModel = settings.llm_model;
           }
         }
-      } catch (error) {
+      } catch {
         console.log('获取模型列表失败，将使用默认模型');
       }
     }
@@ -422,11 +666,7 @@ export default function Outline() {
             plot_stage: 'development',
             keep_existing: true,
             theme: currentProject.theme || '',
-            model: defaultModel, // 添加默认模型
-            enable_auto_characters: false, // 默认禁用自动角色引入
-            require_character_confirmation: true, // 默认需要用户确认
-            enable_auto_organizations: false, // 默认禁用自动组织引入
-            require_organization_confirmation: true, // 默认需要用户确认
+            model: defaultModel,
           }}
         >
           {hasOutlines && (
@@ -535,94 +775,6 @@ export default function Outline() {
                     <TextArea rows={2} placeholder="其他特殊要求（可选）" />
                   </Form.Item>
 
-              {/* 自动角色和组织引入开关 - 仅在续写模式显示 */}
-              {isContinue && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {/* 角色引入部分 */}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
-                    <Form.Item
-                      label="智能角色引入"
-                      name="enable_auto_characters"
-                      tooltip="AI会根据剧情发展自动判断是否需要引入新角色，并自动创建角色卡片和建立关系"
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Radio.Group buttonStyle="solid">
-                        <Radio.Button value={true}>启用</Radio.Button>
-                        <Radio.Button value={false}>禁用</Radio.Button>
-                      </Radio.Group>
-                    </Form.Item>
-                    
-                    {/* 角色确认选项 */}
-                    <Form.Item
-                      noStyle
-                      shouldUpdate={(prevValues, currentValues) =>
-                        prevValues.enable_auto_characters !== currentValues.enable_auto_characters
-                      }
-                    >
-                      {({ getFieldValue }) => {
-                        const enableAutoChars = getFieldValue('enable_auto_characters');
-                        if (!enableAutoChars) return null;
-                        
-                        return (
-                          <Form.Item
-                            label="新角色确认"
-                            name="require_character_confirmation"
-                            tooltip="启用后，AI预测到需要新角色时会先让您确认；禁用后，AI预测的角色将直接创建"
-                            style={{ marginBottom: 0 }}
-                          >
-                            <Radio.Group buttonStyle="solid">
-                              <Radio.Button value={true}>需要确认</Radio.Button>
-                              <Radio.Button value={false}>直接创建</Radio.Button>
-                            </Radio.Group>
-                          </Form.Item>
-                        );
-                      }}
-                    </Form.Item>
-                  </div>
-
-                  {/* 组织引入部分 */}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
-                    <Form.Item
-                      label="智能组织引入"
-                      name="enable_auto_organizations"
-                      tooltip="AI会根据剧情发展自动判断是否需要引入新组织/势力，并自动创建设定和建立关系"
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Radio.Group buttonStyle="solid">
-                        <Radio.Button value={true}>启用</Radio.Button>
-                        <Radio.Button value={false}>禁用</Radio.Button>
-                      </Radio.Group>
-                    </Form.Item>
-                    
-                    {/* 组织确认选项 */}
-                    <Form.Item
-                      noStyle
-                      shouldUpdate={(prevValues, currentValues) =>
-                        prevValues.enable_auto_organizations !== currentValues.enable_auto_organizations
-                      }
-                    >
-                      {({ getFieldValue }) => {
-                        const enableAutoOrgs = getFieldValue('enable_auto_organizations');
-                        if (!enableAutoOrgs) return null;
-                        
-                        return (
-                          <Form.Item
-                            label="新组织确认"
-                            name="require_organization_confirmation"
-                            tooltip="启用后，AI预测到需要新组织时会先让您确认；禁用后，AI预测的组织将直接创建"
-                            style={{ marginBottom: 0 }}
-                          >
-                            <Radio.Group buttonStyle="solid">
-                              <Radio.Button value={true}>需要确认</Radio.Button>
-                              <Radio.Button value={false}>直接创建</Radio.Button>
-                            </Radio.Group>
-                          </Form.Item>
-                        );
-                      }}
-                    </Form.Item>
-                  </div>
-                </div>
-              )}
                 </>
               );
             }}
@@ -648,7 +800,7 @@ export default function Outline() {
                   console.log('已同步到Form，当前Form值:', generateForm.getFieldsValue());
                 }}
               />
-              <div style={{ color: 'var(--color-text-tertiary)', fontSize: 12, marginTop: 4 }}>
+              <div style={{ color: token.colorTextTertiary, fontSize: 12, marginTop: 4 }}>
                 {defaultModel ? `当前默认模型: ${loadedModels.find(m => m.value === defaultModel)?.label || defaultModel}` : '未配置默认模型'}
               </div>
             </Form.Item>
@@ -725,19 +877,19 @@ export default function Outline() {
                 <p>序号 <strong>{values.order_index}</strong> 已被使用：</p>
                 <div style={{
                   padding: 12,
-                  background: 'var(--color-warning-bg)',
-                  borderRadius: 4,
-                  border: '1px solid var(--color-warning-border)',
+                  background: token.colorWarningBg,
+                  borderRadius: token.borderRadius,
+                  border: `1px solid ${token.colorWarningBorder}`,
                   marginTop: 8
                 }}>
-                  <div style={{ fontWeight: 500, color: 'var(--color-warning)' }}>
+                  <div style={{ fontWeight: 500, color: token.colorWarning }}>
                     {currentProject?.outline_mode === 'one-to-one'
                       ? `第${existingOutline.order_index}章`
                       : `第${existingOutline.order_index}卷`
                     }：{existingOutline.title}
                   </div>
                 </div>
-                <p style={{ marginTop: 12, color: 'var(--color-text-secondary)' }}>
+                <p style={{ marginTop: 12, color: token.colorTextSecondary }}>
                   💡 建议使用序号 <strong>{nextOrderIndex}</strong>，或选择其他未使用的序号
                 </p>
               </div>
@@ -756,12 +908,13 @@ export default function Outline() {
           message.success('大纲创建成功');
           await refreshOutlines();
           manualCreateForm.resetFields();
-        } catch (error: any) {
-          if (error.message === '序号重复') {
+        } catch (error: unknown) {
+          const err = error as Error;
+          if (err.message === '序号重复') {
             // 序号重复错误已经显示了Modal，不需要再显示message
             throw error;
           }
-          message.error('创建失败：' + (error.message || '未知错误'));
+          message.error('创建失败：' + (err.message || '未知错误'));
           throw error;
         }
       }
@@ -799,18 +952,18 @@ export default function Outline() {
                     </p>
                     <div style={{
                       padding: 12,
-                      background: 'var(--color-warning-bg)',
-                      borderRadius: 4,
-                      border: '1px solid var(--color-warning-border)'
+                      background: token.colorWarningBg,
+                      borderRadius: token.borderRadius,
+                      border: `1px solid ${token.colorWarningBorder}`
                     }}>
-                      <div style={{ fontWeight: 500, marginBottom: 8, color: 'var(--color-warning)' }}>
+                      <div style={{ fontWeight: 500, marginBottom: 8, color: token.colorWarning }}>
                         ⚠️ 需要先展开：
                       </div>
-                      <div style={{ color: 'var(--color-text-secondary)' }}>
+                      <div style={{ color: token.colorTextSecondary }}>
                         第{prevOutline.order_index}卷：《{prevOutline.title}》
                       </div>
                     </div>
-                    <p style={{ marginTop: 12, color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                    <p style={{ marginTop: 12, color: token.colorTextSecondary, fontSize: 13 }}>
                       💡 提示：您也可以使用「批量展开」功能，系统会自动按顺序处理所有大纲。
                     </p>
                   </div>
@@ -849,9 +1002,9 @@ export default function Outline() {
         centered: true,
         content: (
           <div>
-            <div style={{ marginBottom: 16, padding: 12, background: 'var(--color-bg-layout)', borderRadius: 4 }}>
+            <div style={{ marginBottom: 16, padding: 12, background: token.colorBgLayout, borderRadius: token.borderRadius }}>
               <div style={{ fontWeight: 500, marginBottom: 4 }}>大纲标题</div>
-              <div style={{ color: 'var(--color-text-secondary)' }}>{outlineTitle}</div>
+              <div style={{ color: token.colorTextSecondary }}>{outlineTitle}</div>
             </div>
             <Form
               form={expansionForm}
@@ -957,11 +1110,11 @@ export default function Outline() {
   // 删除展开的章节内容（保留大纲）
   const handleDeleteExpandedChapters = async (outlineTitle: string, chapters: Array<{ id: string }>) => {
     try {
-      // 批量删除所有章节
-      const deletePromises = chapters.map(chapter =>
-        chapterApi.deleteChapter(chapter.id)
-      );
-      await Promise.all(deletePromises);
+      // 使用顺序删除避免并发导致的字数计算竞态条件
+      // 并发删除会导致多个请求同时读取项目字数并各自减去章节字数，造成计算错误
+      for (const chapter of chapters) {
+        await chapterApi.deleteChapter(chapter.id);
+      }
 
       message.success(`已删除《${outlineTitle}》展开的所有 ${chapters.length} 个章节`);
       await refreshOutlines();
@@ -970,8 +1123,9 @@ export default function Outline() {
         const updatedProject = await projectApi.getProject(currentProject.id);
         setCurrentProject(updatedProject);
       }
-    } catch (error: any) {
-      message.error(error.response?.data?.detail || '删除章节失败');
+    } catch (error: unknown) {
+      const apiError = error as ApiError;
+      message.error(apiError.response?.data?.detail || '删除章节失败');
     }
   };
 
@@ -1002,13 +1156,12 @@ export default function Outline() {
     modalApi.info({
       title: (
         <Space style={{ flexWrap: 'wrap' }}>
-          <CheckCircleOutlined style={{ color: 'var(--color-success)' }} />
-          <span>已存在的展开章节</span>
+          <CheckCircleOutlined style={{ color: token.colorSuccess }} />
+          <span>《{outlineTitle}》展开信息</span>
         </Space>
       ),
       width: isMobile ? '95%' : 900,
       centered: true,
-      okText: '关闭',
       style: isMobile ? {
         top: 20,
         maxWidth: 'calc(100vw - 16px)',
@@ -1016,11 +1169,12 @@ export default function Outline() {
       } : undefined,
       styles: {
         body: {
-          maxHeight: isMobile ? 'calc(100vh - 150px)' : 'calc(80vh - 110px)',
-          overflowY: 'auto'
+          maxHeight: isMobile ? 'calc(100vh - 200px)' : 'calc(80vh - 60px)',
+          overflowY: 'auto',
+          overflowX: 'hidden'
         }
       },
-      footer: (_: any, { OkBtn }: any) => (
+      footer: (
         <Space wrap style={{ width: '100%', justifyContent: isMobile ? 'center' : 'flex-end' }}>
           <Button
             danger
@@ -1034,10 +1188,10 @@ export default function Outline() {
                 content: (
                   <div>
                     <p>此操作将删除大纲《{outlineTitle}》展开的所有 <strong>{data.chapter_count}</strong> 个章节。</p>
-                    <p style={{ color: 'var(--color-primary)', marginTop: 8 }}>
+                    <p style={{ color: token.colorPrimary, marginTop: 8 }}>
                       📝 注意：大纲本身会保留，您可以重新展开
                     </p>
-                    <p style={{ color: '#ff4d4f', marginTop: 8 }}>
+                    <p style={{ color: token.colorError, marginTop: 8 }}>
                       ⚠️ 警告：章节内容将永久删除且无法恢复！
                     </p>
                   </div>
@@ -1053,7 +1207,9 @@ export default function Outline() {
           >
             删除所有展开的章节 ({data.chapter_count}章)
           </Button>
-          <OkBtn />
+          <Button onClick={() => Modal.destroyAll()}>
+            关闭
+          </Button>
         </Space>
       ),
       content: (
@@ -1192,7 +1348,7 @@ export default function Outline() {
                               key={sceneIdx}
                               size="small"
                               style={{
-                                backgroundColor: '#fafafa',
+                                backgroundColor: token.colorFillQuaternary,
                                 maxWidth: '100%',
                                 overflow: 'hidden'
                               }}
@@ -1242,7 +1398,7 @@ export default function Outline() {
     modalApi.confirm({
       title: (
         <Space>
-          <CheckCircleOutlined style={{ color: 'var(--color-success)' }} />
+          <CheckCircleOutlined style={{ color: token.colorSuccess }} />
           <span>展开规划预览</span>
         </Space>
       ),
@@ -1306,7 +1462,7 @@ export default function Outline() {
                       <Card size="small" title="场景">
                         <Space direction="vertical" size="small" style={{ width: '100%' }}>
                           {plan.scenes.map((scene, sceneIdx) => (
-                            <Card key={sceneIdx} size="small" style={{ backgroundColor: '#fafafa' }}>
+                            <Card key={sceneIdx} size="small" style={{ backgroundColor: token.colorFillQuaternary }}>
                               <div><strong>地点：</strong>{scene.location}</div>
                               <div><strong>角色：</strong>{scene.characters.join('、')}</div>
                               <div><strong>目的：</strong>{scene.purpose}</div>
@@ -1335,7 +1491,7 @@ export default function Outline() {
   // 确认创建章节 - 使用缓存的规划数据，避免重复AI调用
   const handleConfirmCreateChapters = async (
     outlineId: string,
-    cachedPlans: any[]
+    cachedPlans: ChapterPlanItem[]
   ) => {
     try {
       setIsExpanding(true);
@@ -1379,8 +1535,16 @@ export default function Outline() {
       centered: true,
       content: (
         <div>
-          <div style={{ marginBottom: 16, padding: 12, background: 'var(--color-warning-bg)', borderRadius: 4 }}>
-            <div style={{ color: '#856404' }}>
+          <div
+            style={{
+              marginBottom: 16,
+              padding: 12,
+              background: token.colorWarningBg,
+              borderRadius: token.borderRadius,
+              border: `1px solid ${token.colorWarningBorder}`,
+            }}
+          >
+            <div style={{ color: token.colorWarningText }}>
               ⚠️ 将对当前项目的所有 {outlines.length} 个大纲进行展开
             </div>
           </div>
@@ -1449,7 +1613,7 @@ export default function Outline() {
               setSSEMessage(msg);
               setSSEProgress(progress);
             },
-            onResult: (data: any) => {
+            onResult: (data: BatchOutlineExpansionResponse) => {
               console.log('批量展开完成，结果:', data);
               // 缓存AI生成的规划数据
               setCachedBatchExpansionResponse(data);
@@ -1507,16 +1671,16 @@ export default function Outline() {
           <div style={{
             marginBottom: 16,
             padding: 12,
-            background: 'var(--color-warning-bg)',
-            borderRadius: 4,
-            border: '1px solid #ffe58f'
+            background: token.colorWarningBg,
+            borderRadius: token.borderRadius,
+            border: `1px solid ${token.colorWarningBorder}`
           }}>
-            <div style={{ fontWeight: 500, marginBottom: 8, color: 'var(--color-warning)' }}>
+            <div style={{ fontWeight: 500, marginBottom: 8, color: token.colorWarning }}>
               ⚠️ 以下大纲已展开过，已自动跳过：
             </div>
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
-              {batchPreviewData.skipped_outlines.map((skipped: any, idx: number) => (
-                <div key={idx} style={{ fontSize: 13, color: '#666' }}>
+              {batchPreviewData.skipped_outlines.map((skipped: SkippedOutlineInfo, idx: number) => (
+                <div key={idx} style={{ fontSize: 13, color: token.colorTextSecondary }}>
                   • {skipped.outline_title} <Tag color="default" style={{ fontSize: 11 }}>{skipped.reason}</Tag>
                 </div>
               ))}
@@ -1529,11 +1693,11 @@ export default function Outline() {
           {/* 左栏：大纲列表 */}
           <div style={{
             width: 280,
-            borderRight: '1px solid #f0f0f0',
+            borderRight: `1px solid ${token.colorBorderSecondary}`,
             paddingRight: 12,
             overflowY: 'auto'
           }}>
-            <div style={{ fontWeight: 500, marginBottom: 8, color: '#666' }}>大纲列表</div>
+            <div style={{ fontWeight: 500, marginBottom: 8, color: token.colorTextSecondary }}>大纲列表</div>
             <List
               size="small"
               dataSource={batchPreviewData.expansion_results}
@@ -1547,10 +1711,10 @@ export default function Outline() {
                   style={{
                     cursor: 'pointer',
                     padding: '8px 12px',
-                    background: selectedOutlineIdx === idx ? '#e6f7ff' : 'transparent',
-                    borderRadius: 4,
+                    background: selectedOutlineIdx === idx ? token.colorPrimaryBg : 'transparent',
+                    borderRadius: token.borderRadius,
                     marginBottom: 4,
-                    border: selectedOutlineIdx === idx ? '1px solid var(--color-primary)' : '1px solid transparent'
+                    border: selectedOutlineIdx === idx ? `1px solid ${token.colorPrimary}` : '1px solid transparent'
                   }}
                 >
                   <div style={{ width: '100%' }}>
@@ -1570,28 +1734,28 @@ export default function Outline() {
           {/* 中栏：章节列表 */}
           <div style={{
             width: 320,
-            borderRight: '1px solid #f0f0f0',
+            borderRight: `1px solid ${token.colorBorderSecondary}`,
             paddingRight: 12,
             overflowY: 'auto'
           }}>
-            <div style={{ fontWeight: 500, marginBottom: 8, color: '#666' }}>
+            <div style={{ fontWeight: 500, marginBottom: 8, color: token.colorTextSecondary }}>
               章节列表 ({batchPreviewData.expansion_results[selectedOutlineIdx]?.actual_chapter_count || 0} 章)
             </div>
             {batchPreviewData.expansion_results[selectedOutlineIdx] && (
               <List
                 size="small"
                 dataSource={batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans}
-                renderItem={(plan: any, idx: number) => (
+                renderItem={(plan: ChapterPlanItem, idx: number) => (
                   <List.Item
                     key={idx}
                     onClick={() => setSelectedChapterIdx(idx)}
                     style={{
                       cursor: 'pointer',
                       padding: '8px 12px',
-                      background: selectedChapterIdx === idx ? '#e6f7ff' : 'transparent',
-                      borderRadius: 4,
+                      background: selectedChapterIdx === idx ? token.colorPrimaryBg : 'transparent',
+                      borderRadius: token.borderRadius,
                       marginBottom: 4,
-                      border: selectedChapterIdx === idx ? '1px solid var(--color-primary)' : '1px solid transparent'
+                      border: selectedChapterIdx === idx ? `1px solid ${token.colorPrimary}` : '1px solid transparent'
                     }}
                   >
                     <div style={{ width: '100%' }}>
@@ -1612,7 +1776,7 @@ export default function Outline() {
 
           {/* 右栏：章节详情 */}
           <div style={{ flex: 1, overflowY: 'auto', paddingLeft: 12 }}>
-            <div style={{ fontWeight: 500, marginBottom: 12, color: '#666' }}>章节详情</div>
+            <div style={{ fontWeight: 500, marginBottom: 12, color: token.colorTextSecondary }}>章节详情</div>
             {batchPreviewData.expansion_results[selectedOutlineIdx]?.chapter_plans[selectedChapterIdx] ? (
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Card size="small" title="情节概要" bordered={false}>
@@ -1625,7 +1789,7 @@ export default function Outline() {
 
                 <Card size="small" title="关键事件" bordered={false}>
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                    {batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].key_events.map((event: string, eventIdx: number) => (
+                    {(batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].key_events as string[]).map((event: string, eventIdx: number) => (
                       <div key={eventIdx}>• {event}</div>
                     ))}
                   </Space>
@@ -1633,7 +1797,7 @@ export default function Outline() {
 
                 <Card size="small" title="涉及角色" bordered={false}>
                   <Space wrap>
-                    {batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].character_focus.map((char: string, charIdx: number) => (
+                    {(batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].character_focus as string[]).map((char: string, charIdx: number) => (
                       <Tag key={charIdx} color="purple">{char}</Tag>
                     ))}
                   </Space>
@@ -1642,8 +1806,8 @@ export default function Outline() {
                 {batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].scenes && batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].scenes!.length > 0 && (
                   <Card size="small" title="场景" bordered={false}>
                     <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                      {batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].scenes!.map((scene: any, sceneIdx: number) => (
-                        <Card key={sceneIdx} size="small" style={{ backgroundColor: '#fafafa' }}>
+                      {batchPreviewData.expansion_results[selectedOutlineIdx].chapter_plans[selectedChapterIdx].scenes!.map((scene: SceneInfo, sceneIdx: number) => (
+                        <Card key={sceneIdx} size="small" style={{ backgroundColor: token.colorFillQuaternary }}>
                           <div><strong>地点：</strong>{scene.location}</div>
                           <div><strong>角色：</strong>{scene.characters.join('、')}</div>
                           <div><strong>目的：</strong>{scene.purpose}</div>
@@ -1700,8 +1864,10 @@ export default function Outline() {
             result.chapter_plans
           );
           totalCreated += response.chapters_created;
-        } catch (error: any) {
-          const errorMsg = error.response?.data?.detail || error.message || '未知错误';
+        } catch (error: unknown) {
+          const apiError = error as ApiError;
+          const err = error as Error;
+          const errorMsg = apiError.response?.data?.detail || err.message || '未知错误';
           errors.push(`${result.outline_title}: ${errorMsg}`);
           console.error(`创建大纲 ${result.outline_title} 的章节失败:`, error);
         }
@@ -1735,556 +1901,174 @@ export default function Outline() {
     }
   };
 
-  // 处理角色确认 - 用户同意创建角色
-  const handleConfirmCharacters = async (selectedCharacters: PredictedCharacter[]) => {
-    if (!pendingGenerateData) {
-      message.error('生成数据丢失，请重新操作');
-      return;
-    }
 
+  // 加载并显示后台任务列表
+  const showTaskListModal = async () => {
+    if (!currentProject?.id) return;
+    setTaskListVisible(true);
+    setTaskListLoading(true);
     try {
-      setCharacterConfirmVisible(false);
-      setIsGenerating(true);
-
-      // 显示进度Modal
-      setSSEProgress(0);
-      setSSEMessage('正在创建确认的角色...');
-      setSSEModalVisible(true);
-
-      // 准备请求数据，添加确认的角色
-      const requestData = {
-        ...pendingGenerateData,
-        confirmed_characters: selectedCharacters
-      };
-
-      console.log('携带确认角色重新请求:', requestData);
-
-      // 重新发起SSE请求
-      const apiUrl = `/api/outlines/generate-stream`;
-      const client = new SSEPostClient(apiUrl, requestData, {
-        onProgress: (msg: string, progress: number) => {
-          setSSEMessage(msg);
-          setSSEProgress(progress);
-        },
-        onResult: (data: any) => {
-          console.log('生成完成，结果:', data);
-        },
-        onError: (error: string) => {
-          message.error(`生成失败: ${error}`);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-        },
-        onComplete: () => {
-          message.success('大纲生成完成！');
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          // 清理状态
-          setPendingGenerateData(null);
-          setCharacterConfirmData(null);
-          // 刷新大纲列表
-          refreshOutlines();
-        },
-        onOrganizationConfirmation: (data: any) => {
-          // 处理可能的后续组织确认
-          console.log('收到组织确认请求:', data);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          setPendingGenerateData(requestData);
-          setOrganizationConfirmData(data);
-          setOrganizationConfirmVisible(true);
-        }
-      });
-
-      client.connect();
-
+      const result = await getProjectTasks(currentProject.id);
+      setTaskList(result.items || []);
     } catch (error) {
-      console.error('确认角色失败:', error);
-      message.error('操作失败');
-      setSSEModalVisible(false);
-      setIsGenerating(false);
+      message.error('加载任务列表失败');
+    } finally {
+      setTaskListLoading(false);
     }
   };
 
-  // 处理角色确认 - 用户拒绝创建角色
-  const handleRejectCharacters = async () => {
-    if (!pendingGenerateData) {
-      message.error('生成数据丢失，请重新操作');
-      return;
-    }
-
+  // 刷新任务列表
+  const refreshTaskList = async () => {
+    if (!currentProject?.id) return;
+    setTaskListLoading(true);
     try {
-      setCharacterConfirmVisible(false);
-      setIsGenerating(true);
-
-      // 显示进度Modal
-      setSSEProgress(0);
-      setSSEMessage('跳过角色创建，继续生成...');
-      setSSEModalVisible(true);
-
-      // 准备请求数据，禁用自动角色引入
-      const requestData = {
-        ...pendingGenerateData,
-        enable_auto_characters: false  // 禁用自动角色引入
-      };
-
-      console.log('跳过角色创建，重新请求:', requestData);
-
-      // 重新发起SSE请求
-      const apiUrl = `/api/outlines/generate-stream`;
-      const client = new SSEPostClient(apiUrl, requestData, {
-        onProgress: (msg: string, progress: number) => {
-          setSSEMessage(msg);
-          setSSEProgress(progress);
-        },
-        onResult: (data: any) => {
-          console.log('生成完成，结果:', data);
-        },
-        onOrganizationConfirmation: (data: any) => {
-          // 处理可能的后续组织确认
-          console.log('收到组织确认请求:', data);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          setPendingGenerateData(requestData);
-          setOrganizationConfirmData(data);
-          setOrganizationConfirmVisible(true);
-        },
-        onError: (error: string) => {
-          message.error(`生成失败: ${error}`);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-        },
-        onComplete: () => {
-          message.success('大纲生成完成！');
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          // 清理状态
-          setPendingGenerateData(null);
-          setCharacterConfirmData(null);
-          // 刷新大纲列表
-          refreshOutlines();
-        }
-      });
-
-      client.connect();
-
+      const result = await getProjectTasks(currentProject.id);
+      setTaskList(result.items || []);
     } catch (error) {
-      console.error('跳过角色创建失败:', error);
-      message.error('操作失败');
-      setSSEModalVisible(false);
-      setIsGenerating(false);
+      console.error('刷新任务列表失败:', error);
+    } finally {
+      setTaskListLoading(false);
     }
   };
 
-  // 处理组织确认 - 用户同意创建组织
-  const handleConfirmOrganizations = async (selectedOrganizations: PredictedOrganization[]) => {
-    if (!pendingGenerateData) {
-      message.error('生成数据丢失，请重新操作');
-      return;
+  // 获取任务状态标签
+  const getTaskStatusTag = (status: TaskStatus['status']) => {
+    switch (status) {
+      case 'pending': return <Tag icon={<ClockCircleOutlined />} color="default">等待中</Tag>;
+      case 'running': return <Tag icon={<LoadingOutlined />} color="processing">运行中</Tag>;
+      case 'completed': return <Tag icon={<CheckCircleOutlined />} color="success">已完成</Tag>;
+      case 'failed': return <Tag icon={<CloseCircleOutlined />} color="error">失败</Tag>;
+      case 'cancelled': return <Tag icon={<CloseCircleOutlined />} color="default">已取消</Tag>;
+      default: return <Tag>{status}</Tag>;
     }
+  };
 
+  // 获取任务类型标签
+  const getTaskTypeLabel = (taskType: string) => {
+    switch (taskType) {
+      case 'outline_new': return '大纲生成';
+      case 'outline_continue': return '大纲续写';
+      default: return taskType;
+    }
+  };
+
+  // 处理取消后台任务
+  const handleCancelTask = async (taskId: string) => {
     try {
-      setOrganizationConfirmVisible(false);
-      setIsGenerating(true);
-
-      // 显示进度Modal
-      setSSEProgress(0);
-      setSSEMessage('正在创建确认的组织...');
-      setSSEModalVisible(true);
-
-      // 准备请求数据，添加确认的组织
-      // ⚠️ 移除 confirmed_characters，避免重复创建角色
-      const { confirmed_characters, ...baseData } = pendingGenerateData;
-      const requestData = {
-        ...baseData,
-        confirmed_organizations: selectedOrganizations
-      };
-
-      console.log('携带确认组织重新请求:', requestData);
-
-      // 重新发起SSE请求
-      const apiUrl = `/api/outlines/generate-stream`;
-      const client = new SSEPostClient(apiUrl, requestData, {
-        onProgress: (msg: string, progress: number) => {
-          setSSEMessage(msg);
-          setSSEProgress(progress);
-        },
-        onResult: (data: any) => {
-          console.log('生成完成，结果:', data);
-        },
-        onError: (error: string) => {
-          message.error(`生成失败: ${error}`);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-        },
-        onComplete: () => {
-          message.success('大纲生成完成！');
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          // 清理状态
-          setPendingGenerateData(null);
-          setOrganizationConfirmData(null);
-          // 刷新大纲列表
-          refreshOutlines();
-        }
-      });
-
-      client.connect();
-
+      await cancelTask(taskId);
+      message.success('任务已取消');
+      refreshTaskList();
     } catch (error) {
-      console.error('确认组织失败:', error);
-      message.error('操作失败');
-      setSSEModalVisible(false);
-      setIsGenerating(false);
+      message.error('取消任务失败');
     }
   };
 
-  // 处理组织确认 - 用户拒绝创建组织
-  const handleRejectOrganizations = async () => {
-    if (!pendingGenerateData) {
-      message.error('生成数据丢失，请重新操作');
-      return;
-    }
-
+  // 处理删除任务记录
+  const handleDeleteTask = async (taskId: string) => {
     try {
-      setOrganizationConfirmVisible(false);
-      setIsGenerating(true);
-
-      // 显示进度Modal
-      setSSEProgress(0);
-      setSSEMessage('跳过组织创建，继续生成...');
-      setSSEModalVisible(true);
-
-      // 准备请求数据，禁用自动组织引入
-      const { confirmed_characters, ...baseData } = pendingGenerateData;
-      const requestData = {
-        ...baseData,
-        enable_auto_organizations: false  // 禁用自动组织引入
-      };
-
-      console.log('跳过组织创建，重新请求:', requestData);
-
-      // 重新发起SSE请求
-      const apiUrl = `/api/outlines/generate-stream`;
-      const client = new SSEPostClient(apiUrl, requestData, {
-        onProgress: (msg: string, progress: number) => {
-          setSSEMessage(msg);
-          setSSEProgress(progress);
-        },
-        onResult: (data: any) => {
-          console.log('生成完成，结果:', data);
-        },
-        onError: (error: string) => {
-          message.error(`生成失败: ${error}`);
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-        },
-        onComplete: () => {
-          message.success('大纲生成完成！');
-          setSSEModalVisible(false);
-          setIsGenerating(false);
-          // 清理状态
-          setPendingGenerateData(null);
-          setOrganizationConfirmData(null);
-          // 刷新大纲列表
-          refreshOutlines();
-        }
-      });
-
-      client.connect();
-
+      await deleteTask(taskId);
+      message.success('任务记录已删除');
+      refreshTaskList();
     } catch (error) {
-      console.error('跳过组织创建失败:', error);
-      message.error('操作失败');
-      setSSEModalVisible(false);
-      setIsGenerating(false);
+      message.error('删除任务记录失败');
     }
-  };
-
-  // 渲染角色确认对话框
-  const renderCharacterConfirmModal = () => {
-    if (!characterConfirmData) return null;
-
-    return (
-      <Modal
-        title={
-          <Space>
-            <ExclamationCircleOutlined style={{ color: 'var(--color-warning)' }} />
-            <span>确认引入新角色</span>
-          </Space>
-        }
-        open={characterConfirmVisible}
-        onOk={() => {
-          const selectedCharacters = characterConfirmData.predicted_characters.filter(
-            (_, idx) => selectedCharacterIndices.includes(idx)
-          );
-          handleConfirmCharacters(selectedCharacters);
-        }}
-        onCancel={() => {
-          modalApi.confirm({
-            title: '确认操作',
-            content: '是否跳过角色创建，直接续写大纲？',
-            okText: '跳过角色，继续续写',
-            cancelText: '返回选择',
-            onOk: handleRejectCharacters
-          });
-        }}
-        width={800}
-        centered
-        okText={`确认创建选中的 ${selectedCharacterIndices.length} 个角色`}
-        cancelText="跳过角色创建"
-      >
-        <div>
-          <div style={{ marginBottom: 16, padding: 12, background: 'var(--color-warning-bg)', borderRadius: 4, border: '1px solid var(--color-warning-border)' }}>
-            <div style={{ fontWeight: 500, marginBottom: 8, color: '#d48806' }}>
-              AI 分析结果
-            </div>
-            <div style={{ color: '#666', marginBottom: 8 }}>
-              {characterConfirmData.reason}
-            </div>
-            <Tag color="blue">{characterConfirmData.chapter_range}</Tag>
-            <Tag color="green">{characterConfirmData.predicted_characters.length} 个预测角色</Tag>
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <Space>
-              <Button
-                size="small"
-                onClick={() => setSelectedCharacterIndices(
-                  characterConfirmData.predicted_characters.map((_, idx) => idx)
-                )}
-              >
-                全选
-              </Button>
-              <Button
-                size="small"
-                onClick={() => setSelectedCharacterIndices([])}
-              >
-                全不选
-              </Button>
-            </Space>
-          </div>
-
-          <List
-            dataSource={characterConfirmData.predicted_characters}
-            renderItem={(character, index) => (
-              <List.Item
-                key={index}
-                style={{
-                  background: selectedCharacterIndices.includes(index) ? '#f0f5ff' : 'transparent',
-                  padding: 12,
-                  borderRadius: 4,
-                  marginBottom: 8,
-                  border: selectedCharacterIndices.includes(index) ? '1px solid var(--color-primary)' : '1px solid var(--color-border-secondary)',
-                  cursor: 'pointer'
-                }}
-                onClick={() => {
-                  if (selectedCharacterIndices.includes(index)) {
-                    setSelectedCharacterIndices(selectedCharacterIndices.filter(i => i !== index));
-                  } else {
-                    setSelectedCharacterIndices([...selectedCharacterIndices, index]);
-                  }
-                }}
-              >
-                <div style={{ width: '100%' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <Space>
-                      <input
-                        type="checkbox"
-                        checked={selectedCharacterIndices.includes(index)}
-                        onChange={() => { }}
-                        style={{ cursor: 'pointer' }}
-                      />
-                      <span style={{ fontWeight: 500, fontSize: 16 }}>
-                        {character.name || character.role_description}
-                      </span>
-                      <Tag color="blue">{character.suggested_role_type}</Tag>
-                      <Tag color="orange">{character.importance}</Tag>
-                    </Space>
-                    <Tag>第{character.appearance_chapter}章登场</Tag>
-                  </div>
-
-                  <div style={{ marginBottom: 8, color: '#666' }}>
-                    <strong>剧情作用：</strong>{character.plot_function}
-                  </div>
-
-                  {character.key_abilities && character.key_abilities.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      <strong>关键能力：</strong>
-                      <Space wrap style={{ marginLeft: 8 }}>
-                        {character.key_abilities.map((ability, idx) => (
-                          <Tag key={idx} color="purple">{ability}</Tag>
-                        ))}
-                      </Space>
-                    </div>
-                  )}
-
-                  {character.relationship_suggestions && character.relationship_suggestions.length > 0 && (
-                    <div>
-                      <strong>建议关系：</strong>
-                      <Space wrap style={{ marginLeft: 8 }}>
-                        {character.relationship_suggestions.map((rel, idx) => (
-                          <Tag key={idx} color="cyan">
-                            {rel.target_character_name} - {rel.relationship_type}
-                          </Tag>
-                        ))}
-                      </Space>
-                    </div>
-                  )}
-                </div>
-              </List.Item>
-            )}
-          />
-        </div>
-      </Modal>
-    );
-  };
-
-  // 渲染组织确认对话框
-  const renderOrganizationConfirmModal = () => {
-    if (!organizationConfirmData) return null;
-
-    return (
-      <Modal
-        title={
-          <Space>
-            <ExclamationCircleOutlined style={{ color: 'var(--color-warning)' }} />
-            <span>确认引入新组织</span>
-          </Space>
-        }
-        open={organizationConfirmVisible}
-        onOk={() => {
-          const selectedOrganizations = organizationConfirmData.predicted_organizations.filter(
-            (_, idx) => selectedOrganizationIndices.includes(idx)
-          );
-          handleConfirmOrganizations(selectedOrganizations);
-        }}
-        onCancel={() => {
-          modalApi.confirm({
-            title: '确认操作',
-            content: '是否跳过组织创建，直接续写大纲？',
-            okText: '跳过组织，继续续写',
-            cancelText: '返回选择',
-            onOk: handleRejectOrganizations
-          });
-        }}
-        width={800}
-        centered
-        okText={`确认创建选中的 ${selectedOrganizationIndices.length} 个组织`}
-        cancelText="跳过组织创建"
-      >
-        <div>
-          <div style={{ marginBottom: 16, padding: 12, background: 'var(--color-warning-bg)', borderRadius: 4, border: '1px solid var(--color-warning-border)' }}>
-            <div style={{ fontWeight: 500, marginBottom: 8, color: '#d48806' }}>
-              AI 分析结果
-            </div>
-            <div style={{ color: '#666', marginBottom: 8 }}>
-              {organizationConfirmData.reason}
-            </div>
-            <Tag color="blue">{organizationConfirmData.chapter_range}</Tag>
-            <Tag color="green">{organizationConfirmData.predicted_organizations.length} 个预测组织</Tag>
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <Space>
-              <Button
-                size="small"
-                onClick={() => setSelectedOrganizationIndices(
-                  organizationConfirmData.predicted_organizations.map((_, idx) => idx)
-                )}
-              >
-                全选
-              </Button>
-              <Button
-                size="small"
-                onClick={() => setSelectedOrganizationIndices([])}
-              >
-                全不选
-              </Button>
-            </Space>
-          </div>
-
-          <List
-            dataSource={organizationConfirmData.predicted_organizations}
-            renderItem={(org, index) => (
-              <List.Item
-                key={index}
-                style={{
-                  background: selectedOrganizationIndices.includes(index) ? '#f0f5ff' : 'transparent',
-                  padding: 12,
-                  borderRadius: 4,
-                  marginBottom: 8,
-                  border: selectedOrganizationIndices.includes(index) ? '1px solid var(--color-primary)' : '1px solid var(--color-border-secondary)',
-                  cursor: 'pointer'
-                }}
-                onClick={() => {
-                  if (selectedOrganizationIndices.includes(index)) {
-                    setSelectedOrganizationIndices(selectedOrganizationIndices.filter(i => i !== index));
-                  } else {
-                    setSelectedOrganizationIndices([...selectedOrganizationIndices, index]);
-                  }
-                }}
-              >
-                <div style={{ width: '100%' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <Space>
-                      <input
-                        type="checkbox"
-                        checked={selectedOrganizationIndices.includes(index)}
-                        onChange={() => { }}
-                        style={{ cursor: 'pointer' }}
-                      />
-                      <span style={{ fontWeight: 500, fontSize: 16 }}>
-                        {org.name || org.organization_description}
-                      </span>
-                      <Tag color="blue">{org.organization_type}</Tag>
-                      <Tag color="orange">势力等级: {org.power_level}</Tag>
-                    </Space>
-                    <Tag>第{org.appearance_chapter}章登场</Tag>
-                  </div>
-
-                  <div style={{ marginBottom: 8, color: '#666' }}>
-                    <strong>剧情作用：</strong>{org.plot_function}
-                  </div>
-
-                  {org.location && (
-                    <div style={{ marginBottom: 8 }}>
-                      <strong>地点：</strong>{org.location}
-                    </div>
-                  )}
-
-                  {org.initial_members && org.initial_members.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      <strong>初始成员：</strong>
-                      <Space wrap style={{ marginLeft: 8 }}>
-                        {org.initial_members.map((member, idx) => (
-                          <Tag key={idx} color="purple">
-                            {member.character_name} - {member.position}
-                          </Tag>
-                        ))}
-                      </Space>
-                    </div>
-                  )}
-                </div>
-              </List.Item>
-            )}
-          />
-        </div>
-      </Modal>
-    );
   };
 
   return (
     <>
-      {/* 角色确认对话框 */}
-      {renderCharacterConfirmModal()}
-      {/* 组织确认对话框 */}
-      {renderOrganizationConfirmModal()}
+      {/* 后台任务列表 Modal */}
+      <Modal
+        title={
+          <Space>
+            <ClockCircleOutlined />
+            <span>后台任务</span>
+            {taskList.filter(t => t.status === 'running' || t.status === 'pending').length > 0 && (
+              <Badge count={taskList.filter(t => t.status === 'running' || t.status === 'pending').length} />
+            )}
+          </Space>
+        }
+        open={taskListVisible}
+        onCancel={() => setTaskListVisible(false)}
+        width={isMobile ? '95%' : 700}
+        centered
+        footer={
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={refreshTaskList} loading={taskListLoading}>
+              刷新
+            </Button>
+            <Button onClick={() => setTaskListVisible(false)}>
+              关闭
+            </Button>
+          </Space>
+        }
+      >
+        {taskListLoading && taskList.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <LoadingOutlined style={{ fontSize: 24 }} />
+            <div style={{ marginTop: 12, color: token.colorTextSecondary }}>加载中...</div>
+          </div>
+        ) : taskList.length === 0 ? (
+          <Empty description="暂无后台任务" />
+        ) : (
+          <List
+            dataSource={taskList}
+            renderItem={(task) => (
+              <List.Item
+                key={task.id}
+                actions={[
+                  ...(task.status === 'running' || task.status === 'pending'
+                    ? [<Button key="cancel" size="small" danger onClick={() => handleCancelTask(task.id)}>取消</Button>]
+                    : []
+                  ),
+                  ...(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
+                    ? [<Button key="delete" size="small" type="link" danger onClick={() => handleDeleteTask(task.id)}>删除</Button>]
+                    : []
+                  ),
+                ].filter(Boolean)}
+              >
+                <List.Item.Meta
+                  title={
+                    <Space>
+                      {getTaskStatusTag(task.status)}
+                      <span>{getTaskTypeLabel(task.task_type)}</span>
+                      {task.status === 'running' || task.status === 'pending' ? (
+                        <Progress percent={task.progress} size="small" style={{ width: 120 }} />
+                      ) : null}
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                        {task.status_message || '无状态信息'}
+                      </div>
+                      <div style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 4 }}>
+                        创建: {task.created_at ? new Date(task.created_at).toLocaleString() : '-'}
+                        {task.completed_at && ` | 完成: ${new Date(task.completed_at).toLocaleString()}`}
+                      </div>
+                      {task.error_message && (
+                        <div style={{ fontSize: 12, color: token.colorError, marginTop: 4 }}>
+                          ❌ {task.error_message}
+                        </div>
+                      )}
+                      {task.task_result && task.status === 'completed' && (
+                        <div style={{ fontSize: 12, color: token.colorSuccess, marginTop: 4 }}>
+                          ✅ {(task.task_result as Record<string, unknown>).message as string || '任务完成'}
+                        </div>
+                      )}
+                    </div>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </Modal>
 
       {/* 批量展开预览 Modal */}
       <Modal
         title={
           <Space>
-            <CheckCircleOutlined style={{ color: 'var(--color-success)' }} />
+            <CheckCircleOutlined style={{ color: token.colorSuccess }} />
             <span>批量展开规划预览</span>
           </Space>
         }
@@ -2306,7 +2090,16 @@ export default function Outline() {
         visible={sseModalVisible}
         progress={sseProgress}
         message={sseMessage}
-        title="AI生成中..."
+        title="AI生成中（后台运行，可关闭页面）..."
+        onCancel={() => {
+          if (cancelGenerateRef.current) {
+            cancelGenerateRef.current();
+            cancelGenerateRef.current = null;
+          }
+          setSSEModalVisible(false);
+          setIsGenerating(false);
+          message.info('已取消生成任务');
+        }}
       />
 
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -2315,10 +2108,10 @@ export default function Outline() {
           position: 'sticky',
           top: 0,
           zIndex: 10,
-          backgroundColor: 'var(--color-bg-container)',
+          backgroundColor: token.colorBgContainer,
           padding: isMobile ? '12px 0' : '16px 0',
           marginBottom: isMobile ? 12 : 16,
-          borderBottom: '1px solid #f0f0f0',
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
           display: 'flex',
           flexDirection: isMobile ? 'column' : 'row',
           gap: isMobile ? 12 : 0,
@@ -2337,6 +2130,13 @@ export default function Outline() {
             )}
           </div>
           <Space size="small" wrap={isMobile}>
+            <Input.Search
+              allowClear
+              placeholder="搜索大纲（序号/标题/内容）"
+              value={outlineSearchKeyword}
+              onChange={(e) => setOutlineSearchKeyword(e.target.value)}
+              style={{ width: isMobile ? '100%' : 280 }}
+            />
             <Button
               icon={<PlusOutlined />}
               onClick={showManualCreateOutlineModal}
@@ -2353,6 +2153,15 @@ export default function Outline() {
             >
               {isMobile ? 'AI生成/续写' : 'AI生成/续写大纲'}
             </Button>
+            <Tooltip title="查看后台任务进度">
+              <Button
+                icon={<ClockCircleOutlined />}
+                onClick={showTaskListModal}
+                block={isMobile}
+              >
+                {isMobile ? '任务' : '后台任务'}
+              </Button>
+            </Tooltip>
             {outlines.length > 0 && currentProject?.outline_mode === 'one-to-many' && (
               <Button
                 icon={<AppstoreAddOutlined />}
@@ -2371,117 +2180,821 @@ export default function Outline() {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {outlines.length === 0 ? (
             <Empty description="还没有大纲，开始创建吧！" />
+          ) : filteredOutlines.length === 0 ? (
+            <Empty description="未找到匹配大纲" />
           ) : (
-            <Card style={cardStyles.base}>
-              <List
-                dataSource={sortedOutlines}
-                renderItem={(item) => (
-                  <List.Item
-                    style={{
-                      padding: '16px 0',
-                      borderRadius: 8,
-                      transition: 'background 0.3s ease',
-                      flexDirection: isMobile ? 'column' : 'row',
-                      alignItems: isMobile ? 'flex-start' : 'center'
-                    }}
-                    actions={isMobile ? undefined : [
-                      ...(currentProject?.outline_mode === 'one-to-many' ? [
-                        <Button
-                          key="expand"
-                          type="text"
-                          icon={<BranchesOutlined />}
-                          onClick={() => handleExpandOutline(item.id, item.title)}
-                          loading={isExpanding}
-                          title="展开为多章"
-                        >
-                          展开
-                        </Button>
-                      ] : []), // 一对一模式：不显示任何展开/创建按钮
-                      <Button
-                        type="text"
-                        icon={<EditOutlined />}
-                        onClick={() => handleOpenEditModal(item.id)}
+            <List
+              dataSource={pagedOutlines}
+              renderItem={(item) => {
+                  const structureData = outlineStructureMap[item.id] || {};
+
+                  // 解析角色/组织条目（兼容新旧格式）
+                  const characterEntries = parseCharacterEntries(structureData.characters);
+                  const characterNames = getCharacterNames(characterEntries);
+                  const organizationNames = getOrganizationNames(characterEntries);
+                  const isOutlineExpanded = outlineContentExpandStatus[item.id] || false;
+                  const previewContent = getOutlinePreview(item.content, isMobile ? 70 : 140);
+                  
+                  return (
+                    <List.Item
+                      style={{
+                        marginBottom: 16,
+                        padding: 0,
+                        border: 'none'
+                      }}
+                    >
+                      <Card
+                        style={{
+                          width: '100%',
+                          borderRadius: isMobile ? 6 : 8,
+                          border: `1px solid ${token.colorBorderSecondary}`,
+                          boxShadow: `0 1px 2px ${alphaColor(token.colorTextBase, 0.08)}`,
+                          transition: 'all 0.3s ease'
+                        }}
+                        bodyStyle={{
+                          padding: isMobile ? '10px 12px' : 16
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isMobile) {
+                            e.currentTarget.style.boxShadow = `0 4px 12px ${alphaColor(token.colorTextBase, 0.16)}`;
+                            e.currentTarget.style.borderColor = token.colorPrimary;
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isMobile) {
+                            e.currentTarget.style.boxShadow = `0 1px 2px ${alphaColor(token.colorTextBase, 0.08)}`;
+                            e.currentTarget.style.borderColor = token.colorBorderSecondary;
+                          }
+                        }}
                       >
-                        编辑
-                      </Button>,
-                      <Popconfirm
-                        title="确定删除这条大纲吗？"
-                        onConfirm={() => handleDeleteOutline(item.id)}
-                        okText="确定"
-                        cancelText="取消"
-                      >
-                        <Button type="text" danger icon={<DeleteOutlined />}>
-                          删除
-                        </Button>
-                      </Popconfirm>,
-                    ]}
-                  >
-                    <div style={{ width: '100%' }}>
-                      <List.Item.Meta
-                        title={
-                          <Space size="small" style={{ fontSize: isMobile ? 14 : 16, flexWrap: 'wrap' }}>
-                            <span style={{ color: 'var(--color-primary)', fontWeight: 'bold' }}>
-                              {currentProject?.outline_mode === 'one-to-one'
-                                ? `第${item.order_index || '?'}章`
-                                : `第${item.order_index || '?'}卷`
-                              }
-                            </span>
-                            <span>{item.title}</span>
-                            {/* ✅ 新增：展开状态标识 - 仅在一对多模式显示 */}
-                            {currentProject?.outline_mode === 'one-to-many' && (
-                              outlineExpandStatus[item.id] ? (
-                                <Tag color="success" icon={<CheckCircleOutlined />}>已展开</Tag>
-                              ) : (
-                                <Tag color="default">未展开</Tag>
-                              )
+                        <List.Item.Meta
+                          style={{ width: '100%' }}
+                          title={
+                            <Space size="small" style={{ fontSize: isMobile ? 13 : 16, flexWrap: 'wrap', lineHeight: isMobile ? '1.4' : '1.5' }}>
+                              <span style={{ color: token.colorPrimary, fontWeight: 'bold', fontSize: isMobile ? 13 : 16 }}>
+                                {currentProject?.outline_mode === 'one-to-one'
+                                  ? `第${item.order_index || '?'}章`
+                                  : `第${item.order_index || '?'}卷`
+                                }
+                              </span>
+                              <span style={{ fontSize: isMobile ? 13 : 16 }}>{item.title}</span>
+                              {/* ✅ 新增：展开状态标识 - 仅在一对多模式显示 */}
+                              {currentProject?.outline_mode === 'one-to-many' && (
+                                outlineExpandStatus[item.id] ? (
+                                  <Tag color="success" icon={<CheckCircleOutlined />} style={{ fontSize: isMobile ? 11 : 12 }}>已展开</Tag>
+                                ) : (
+                                  <Tag color="default" style={{ fontSize: isMobile ? 11 : 12 }}>未展开</Tag>
+                                )
+                              )}
+                            </Space>
+                          }
+                          description={
+                            <div style={{ fontSize: isMobile ? 12 : 14, lineHeight: isMobile ? '1.5' : '1.6' }}>
+                              {/* 大纲内容 */}
+                              <div style={{
+                                marginBottom: isMobile ? 10 : 12,
+                                padding: isMobile ? '8px 10px' : '10px 12px',
+                                background: token.colorFillQuaternary,
+                                borderLeft: `3px solid ${token.colorBorderSecondary}`,
+                                borderRadius: token.borderRadius,
+                                fontSize: isMobile ? 12 : 13,
+                                color: token.colorText,
+                                lineHeight: '1.6'
+                              }}>
+                                <div style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  gap: 8,
+                                  marginBottom: isMobile ? 4 : 6,
+                                  flexWrap: isMobile ? 'wrap' : 'nowrap'
+                                }}>
+                                  <div style={{
+                                    fontWeight: 600,
+                                    color: token.colorTextSecondary,
+                                    fontSize: isMobile ? 12 : 13
+                                  }}>
+                                    📝 大纲内容
+                                  </div>
+                                  <Button
+                                    type="link"
+                                    size="small"
+                                    onClick={() => setOutlineContentExpandStatus(prev => ({
+                                      ...prev,
+                                      [item.id]: !isOutlineExpanded
+                                    }))}
+                                    style={{
+                                      padding: 0,
+                                      height: 'auto',
+                                      fontSize: isMobile ? 12 : 13
+                                    }}
+                                  >
+                                    {isOutlineExpanded ? '收起' : '展开'}
+                                  </Button>
+                                </div>
+                                <div style={{
+                                  padding: isMobile ? '6px 8px' : '6px 10px',
+                                  background: token.colorBgContainer,
+                                  border: `1px solid ${token.colorBorder}`,
+                                  borderRadius: token.borderRadiusSM,
+                                  fontSize: isMobile ? 12 : 13,
+                                  color: token.colorText,
+                                  lineHeight: '1.8',
+                                  whiteSpace: isOutlineExpanded ? 'pre-wrap' : 'normal',
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {isOutlineExpanded ? item.content : previewContent.text || '暂无内容'}
+                                </div>
+                              </div>
+
+                              {isOutlineExpanded && (
+                                <>
+                              {/* ✨ 涉及角色展示 - 优化版（支持角色/组织分类显示） */}
+                              {characterNames.length > 0 && (
+                                <div style={{
+                                  marginTop: isMobile ? 10 : 12,
+                                  padding: isMobile ? '8px 10px' : '10px 12px',
+                                  background: token.colorPrimaryBg,
+                                  borderLeft: `3px solid ${token.colorPrimary}`,
+                                  borderRadius: token.borderRadius
+                                }}>
+                                  <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: isMobile ? 6 : 8,
+                                    marginBottom: isMobile ? 6 : 8
+                                  }}>
+                                    <span style={{
+                                      fontSize: isMobile ? 12 : 13,
+                                      fontWeight: 600,
+                                      color: token.colorPrimary,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 4
+                                    }}>
+                                      👥 涉及角色
+                                      <Tag
+                                        color="purple"
+                                        style={{
+                                          margin: 0,
+                                          fontSize: 10,
+                                          borderRadius: 10,
+                                          padding: '0 6px'
+                                        }}
+                                      >
+                                        {characterNames.length}
+                                      </Tag>
+                                    </span>
+                                  </div>
+                                  <Space wrap size={[4, 4]}>
+                                    {characterNames.map((name, idx) => (
+                                      <Tag
+                                        key={idx}
+                                        color="purple"
+                                        style={{
+                                          margin: 0,
+                                          borderRadius: 4,
+                                          padding: isMobile ? '2px 8px' : '3px 10px',
+                                          fontSize: isMobile ? 11 : 12,
+                                          fontWeight: 500,
+                                          border: `1px solid ${token.colorPrimaryBorder}`,
+                                          background: token.colorBgContainer,
+                                          color: token.colorPrimary,
+                                          whiteSpace: 'normal',
+                                          wordBreak: 'break-word',
+                                          height: 'auto',
+                                          lineHeight: '1.5'
+                                        }}
+                                      >
+                                        {name}
+                                      </Tag>
+                                    ))}
+                                  </Space>
+                                </div>
+                              )}
+                              
+                              {/* 🏛️ 涉及组织展示 */}
+                              {organizationNames.length > 0 && (
+                                <div style={{
+                                  marginTop: isMobile ? 10 : 12,
+                                  padding: isMobile ? '8px 10px' : '10px 12px',
+                                  background: token.colorWarningBg,
+                                  borderLeft: `3px solid ${token.colorWarning}`,
+                                  borderRadius: token.borderRadius
+                                }}>
+                                  <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: isMobile ? 6 : 8,
+                                    marginBottom: isMobile ? 6 : 8
+                                  }}>
+                                    <span style={{
+                                      fontSize: isMobile ? 12 : 13,
+                                      fontWeight: 600,
+                                      color: token.colorWarning,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 4
+                                    }}>
+                                      🏛️ 涉及组织
+                                      <Tag
+                                        color="orange"
+                                        style={{
+                                          margin: 0,
+                                          fontSize: 10,
+                                          borderRadius: 10,
+                                          padding: '0 6px'
+                                        }}
+                                      >
+                                        {organizationNames.length}
+                                      </Tag>
+                                    </span>
+                                  </div>
+                                  <Space wrap size={[4, 4]}>
+                                    {organizationNames.map((name, idx) => (
+                                      <Tag
+                                        key={idx}
+                                        color="orange"
+                                        style={{
+                                          margin: 0,
+                                          borderRadius: 4,
+                                          padding: isMobile ? '2px 8px' : '3px 10px',
+                                          fontSize: isMobile ? 11 : 12,
+                                          fontWeight: 500,
+                                          border: `1px solid ${token.colorWarningBorder}`,
+                                          background: token.colorBgContainer,
+                                          color: token.colorWarning,
+                                          whiteSpace: 'normal',
+                                          wordBreak: 'break-word',
+                                          height: 'auto',
+                                          lineHeight: '1.5'
+                                        }}
+                                      >
+                                        {name}
+                                      </Tag>
+                                    ))}
+                                  </Space>
+                                </div>
+                              )}
+                              
+                              {/* ✨ 场景信息展示 - 优化版（支持折叠，最多显示3个） */}
+                              {structureData.scenes && structureData.scenes.length > 0 ? (() => {
+                                const isExpanded = scenesExpandStatus[item.id] || false;
+                                const maxVisibleScenes = 4;
+                                const hasMoreScenes = structureData.scenes!.length > maxVisibleScenes;
+                                const visibleScenes = isExpanded ? structureData.scenes : structureData.scenes!.slice(0, maxVisibleScenes);
+                                
+                                return (
+                                  <div style={{
+                                    marginTop: isMobile ? 10 : 12,
+                                    padding: isMobile ? '8px 10px' : '10px 12px',
+                                    background: token.colorInfoBg,
+                                    borderLeft: `3px solid ${token.colorInfo}`,
+                                    borderRadius: token.borderRadius
+                                  }}>
+                                    <div style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      marginBottom: isMobile ? 6 : 8,
+                                      flexWrap: isMobile ? 'wrap' : 'nowrap',
+                                      gap: isMobile ? 4 : 0
+                                    }}>
+                                      <span style={{
+                                        fontSize: isMobile ? 12 : 13,
+                                        fontWeight: 600,
+                                        color: token.colorInfo,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 4
+                                      }}>
+                                        🎬 场景设定
+                                        <Tag
+                                          color="cyan"
+                                          style={{
+                                            margin: 0,
+                                            fontSize: 10,
+                                            borderRadius: 10,
+                                            padding: '0 6px'
+                                          }}
+                                        >
+                                          {structureData.scenes!.length}
+                                        </Tag>
+                                      </span>
+                                      {hasMoreScenes && (
+                                        <Button
+                                          type="text"
+                                          size="small"
+                                          onClick={() => setScenesExpandStatus(prev => ({
+                                            ...prev,
+                                            [item.id]: !isExpanded
+                                          }))}
+                                          style={{
+                                            fontSize: isMobile ? 10 : 11,
+                                            height: isMobile ? 20 : 22,
+                                            padding: isMobile ? '0 6px' : '0 8px',
+                                            color: token.colorInfo
+                                          }}
+                                        >
+                                          {isExpanded ? '收起 ▲' : `展开 (${structureData.scenes!.length - maxVisibleScenes}+) ▼`}
+                                        </Button>
+                                      )}
+                                    </div>
+                                    {/* 使用grid布局，移动端一列，桌面端两列 */}
+                                    <div style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
+                                      gap: isMobile ? 6 : 8,
+                                      width: '100%',
+                                      minWidth: 0  // 防止grid子元素溢出
+                                    }}>
+                                      {visibleScenes!.map((scene, idx) => {
+                                      // 判断是字符串还是对象
+                                      if (typeof scene === 'string') {
+                                        // 字符串格式：简洁卡片
+                                        return (
+                                          <div
+                                            key={idx}
+                                            style={{
+                                              padding: isMobile ? '6px 8px' : '8px 10px',
+                                              background: token.colorBgContainer,
+                                              border: `1px solid ${token.colorInfoBorder}`,
+                                              borderRadius: token.borderRadius,
+                                              fontSize: isMobile ? 11 : 12,
+                                              color: token.colorText,
+                                              display: 'flex',
+                                              alignItems: 'flex-start',
+                                              gap: isMobile ? 6 : 8,
+                                              transition: 'all 0.2s ease',
+                                              cursor: 'default',
+                                              width: '100%',
+                                              minWidth: 0,
+                                              boxSizing: 'border-box'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              if (!isMobile) {
+                                                e.currentTarget.style.borderColor = token.colorInfo;
+                                                e.currentTarget.style.boxShadow = `0 2px 8px ${alphaColor(token.colorInfo, 0.25)}`;
+                                              }
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              if (!isMobile) {
+                                                e.currentTarget.style.borderColor = token.colorInfoBorder;
+                                                e.currentTarget.style.boxShadow = 'none';
+                                              }
+                                            }}
+                                          >
+                                            <Tag
+                                              color="cyan"
+                                              style={{
+                                                margin: 0,
+                                                fontSize: 10,
+                                                borderRadius: 4,
+                                                flexShrink: 0
+                                              }}
+                                            >
+                                              {idx + 1}
+                                            </Tag>
+                                            <span style={{
+                                              flex: 1,
+                                              lineHeight: '1.6',
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                              whiteSpace: 'nowrap'
+                                            }}>{scene}</span>
+                                          </div>
+                                        );
+                                      } else {
+                                        // 对象格式：详细卡片
+                                        return (
+                                          <div
+                                            key={idx}
+                                            style={{
+                                              padding: isMobile ? '8px 10px' : '10px 12px',
+                                              background: token.colorBgContainer,
+                                              border: `1px solid ${token.colorInfoBorder}`,
+                                              borderRadius: token.borderRadius,
+                                              fontSize: isMobile ? 11 : 12,
+                                              transition: 'all 0.2s ease',
+                                              cursor: 'default',
+                                              width: '100%',
+                                              minWidth: 0,
+                                              boxSizing: 'border-box'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              if (!isMobile) {
+                                                e.currentTarget.style.borderColor = token.colorInfo;
+                                                e.currentTarget.style.boxShadow = `0 2px 8px ${alphaColor(token.colorInfo, 0.25)}`;
+                                              }
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              if (!isMobile) {
+                                                e.currentTarget.style.borderColor = token.colorInfoBorder;
+                                                e.currentTarget.style.boxShadow = 'none';
+                                              }
+                                            }}
+                                          >
+                                            <div style={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: isMobile ? 6 : 8,
+                                              marginBottom: isMobile ? 4 : 6,
+                                              flexWrap: 'wrap'
+                                            }}>
+                                              <Tag
+                                                color="cyan"
+                                                style={{
+                                                  margin: 0,
+                                                  fontSize: 10,
+                                                  borderRadius: 4
+                                                }}
+                                              >
+                                                场景{idx + 1}
+                                              </Tag>
+                                              <span style={{
+                                                fontWeight: 600,
+                                                color: token.colorText,
+                                                fontSize: isMobile ? 12 : 13,
+                                                flex: 1,
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                              }}>
+                                                📍 {scene.location}
+                                              </span>
+                                            </div>
+                                            {scene.characters && scene.characters.length > 0 && (
+                                              <div style={{
+                                                fontSize: isMobile ? 10 : 11,
+                                                color: token.colorTextSecondary,
+                                                marginBottom: 4,
+                                                paddingLeft: isMobile ? 2 : 4,
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                              }}>
+                                                <span style={{ fontWeight: 500 }}>👤 角色：</span>
+                                                {scene.characters.join(' · ')}
+                                              </div>
+                                            )}
+                                            {scene.purpose && (
+                                              <div style={{
+                                                fontSize: isMobile ? 10 : 11,
+                                                color: token.colorTextSecondary,
+                                                paddingLeft: isMobile ? 2 : 4,
+                                                lineHeight: '1.5',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                              }}>
+                                                <span style={{ fontWeight: 500 }}>🎯 目的：</span>
+                                                {scene.purpose}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })() : null}
+                            
+                            {/* ✨ 关键事件展示 */}
+                            {structureData.key_events && structureData.key_events.length > 0 && (
+                              <div style={{
+                                marginTop: 12,
+                                padding: '10px 12px',
+                                background: token.colorWarningBg,
+                                borderLeft: `3px solid ${token.colorWarning}`,
+                                borderRadius: token.borderRadius
+                              }}>
+                                <div style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  marginBottom: 8
+                                }}>
+                                  <span style={{
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    color: token.colorWarning,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 4
+                                  }}>
+                                    ⚡ 关键事件
+                                    <Tag
+                                      color="orange"
+                                      style={{
+                                        margin: 0,
+                                        fontSize: 11,
+                                        borderRadius: 10,
+                                        padding: '0 6px'
+                                      }}
+                                    >
+                                      {structureData.key_events.length}
+                                    </Tag>
+                                  </span>
+                                </div>
+                                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                                  {structureData.key_events.map((event, idx) => (
+                                    <div
+                                      key={idx}
+                                      style={{
+                                        padding: '6px 10px',
+                                        background: token.colorBgContainer,
+                                        border: `1px solid ${token.colorWarningBorder}`,
+                                        borderRadius: token.borderRadiusSM,
+                                        fontSize: 12,
+                                        color: token.colorWarningText,
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: 8
+                                      }}
+                                    >
+                                      <Tag
+                                        color="orange"
+                                        style={{
+                                          margin: 0,
+                                          fontSize: 11,
+                                          borderRadius: 4,
+                                          flexShrink: 0
+                                        }}
+                                      >
+                                        {idx + 1}
+                                      </Tag>
+                                      <span style={{
+                                        flex: 1,
+                                        lineHeight: '1.6',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap'
+                                      }}>{event}</span>
+                                    </div>
+                                  ))}
+                                </Space>
+                              </div>
                             )}
-                          </Space>
-                        }
-                        description={
-                          <div style={{ fontSize: isMobile ? 12 : 14 }}>
-                            {item.content}
+                            
+                            {/* ✨ 情节要点展示 (key_points) */}
+                            {structureData.key_points && structureData.key_points.length > 0 && (
+                              <div style={{
+                                marginTop: 12,
+                                padding: '10px 12px',
+                                background: token.colorSuccessBg,
+                                borderLeft: `3px solid ${token.colorSuccess}`,
+                                borderRadius: token.borderRadius
+                              }}>
+                                <div style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  marginBottom: 8
+                                }}>
+                                  <span style={{
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    color: token.colorSuccess,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 4
+                                  }}>
+                                    💡 情节要点
+                                    <Tag
+                                      color="green"
+                                      style={{
+                                        margin: 0,
+                                        fontSize: 11,
+                                        borderRadius: 10,
+                                        padding: '0 6px'
+                                      }}
+                                    >
+                                      {structureData.key_points.length}
+                                    </Tag>
+                                  </span>
+                                </div>
+                                {/* 使用grid布局，移动端一列，桌面端两列 */}
+                                <div style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
+                                  gap: isMobile ? 6 : 8,
+                                  width: '100%',
+                                  minWidth: 0
+                                }}>
+                                  {structureData.key_points.map((point, idx) => (
+                                    <div
+                                      key={idx}
+                                      style={{
+                                        padding: isMobile ? '6px 8px' : '8px 10px',
+                                        background: token.colorBgContainer,
+                                        border: `1px solid ${token.colorSuccessBorder}`,
+                                        borderRadius: token.borderRadius,
+                                        fontSize: isMobile ? 11 : 12,
+                                        color: token.colorText,
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: isMobile ? 6 : 8,
+                                        transition: 'all 0.2s ease',
+                                        cursor: 'default',
+                                        width: '100%',
+                                        minWidth: 0,
+                                        boxSizing: 'border-box'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        if (!isMobile) {
+                                          e.currentTarget.style.borderColor = token.colorSuccess;
+                                          e.currentTarget.style.boxShadow = `0 2px 8px ${alphaColor(token.colorSuccess, 0.25)}`;
+                                        }
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        if (!isMobile) {
+                                          e.currentTarget.style.borderColor = token.colorSuccessBorder;
+                                          e.currentTarget.style.boxShadow = 'none';
+                                        }
+                                      }}
+                                    >
+                                      <Tag
+                                        color="green"
+                                        style={{
+                                          margin: 0,
+                                          fontSize: 10,
+                                          borderRadius: 4,
+                                          flexShrink: 0
+                                        }}
+                                      >
+                                        {idx + 1}
+                                      </Tag>
+                                      <span style={{
+                                        flex: 1,
+                                        lineHeight: '1.6',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap'
+                                      }}>{point}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* ✨ 情感基调展示 (emotion) */}
+                            {structureData.emotion && (
+                              <div style={{
+                                marginTop: 12,
+                                padding: '10px 12px',
+                                background: token.colorWarningBg,
+                                borderLeft: `3px solid ${token.colorWarning}`,
+                                borderRadius: token.borderRadius,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8
+                              }}>
+                                <span style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: token.colorWarning
+                                }}>
+                                  💫 情感基调：
+                                </span>
+                                <Tag
+                                  color="gold"
+                                  style={{
+                                    margin: 0,
+                                    fontSize: 12,
+                                    padding: '2px 12px',
+                                    borderRadius: 12,
+                                    background: token.colorBgContainer,
+                                    border: `1px solid ${token.colorWarningBorder}`,
+                                    color: token.colorWarningText
+                                  }}
+                                >
+                                  {structureData.emotion}
+                                </Tag>
+                              </div>
+                            )}
+                            
+                            {/* ✨ 叙事目标展示 (goal) */}
+                            {structureData.goal && (
+                              <div style={{
+                                marginTop: 12,
+                                padding: '10px 12px',
+                                background: token.colorInfoBg,
+                                borderLeft: `3px solid ${token.colorInfo}`,
+                                borderRadius: token.borderRadius
+                              }}>
+                                <div style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: token.colorInfo,
+                                  marginBottom: 6
+                                }}>
+                                  🎯 叙事目标
+                                </div>
+                                <div style={{
+                                  fontSize: 12,
+                                  color: token.colorText,
+                                  lineHeight: '1.6',
+                                  padding: '6px 10px',
+                                  background: token.colorBgContainer,
+                                  border: `1px solid ${token.colorInfoBorder}`,
+                                  borderRadius: token.borderRadiusSM,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}>
+                                  {structureData.goal}
+                                </div>
+                              </div>
+                            )}
+                              </>
+                            )}
                           </div>
                         }
                       />
-
-                      {/* 移动端：按钮显示在内容下方 */}
-                      {isMobile && (
-                        <Space style={{ marginTop: 12, width: '100%', justifyContent: 'flex-end' }} wrap>
-                          <Button
-                            type="text"
-                            icon={<EditOutlined />}
-                            onClick={() => handleOpenEditModal(item.id)}
-                            size="small"
-                          />
-                          {/* 一对多模式：显示展开按钮 */}
+                        
+                        {/* 操作按钮区域 - 在卡片内部 */}
+                        <div style={{
+                          marginTop: 16,
+                          paddingTop: 12,
+                          borderTop: `1px solid ${token.colorBorderSecondary}`,
+                          display: 'flex',
+                          justifyContent: 'flex-end',
+                          gap: 8
+                        }}>
                           {currentProject?.outline_mode === 'one-to-many' && (
                             <Button
-                              type="text"
                               icon={<BranchesOutlined />}
                               onClick={() => handleExpandOutline(item.id, item.title)}
                               loading={isExpanding}
-                              size="small"
-                              title="展开为多章"
-                            />
+                              size={isMobile ? 'middle' : 'small'}
+                            >
+                              展开
+                            </Button>
                           )}
-                          {/* 一对一模式：不显示任何展开/创建按钮 */}
+                          <Button
+                            icon={<EditOutlined />}
+                            onClick={() => handleOpenEditModal(item.id)}
+                            size={isMobile ? 'middle' : 'small'}
+                          >
+                            编辑
+                          </Button>
                           <Popconfirm
                             title="确定删除这条大纲吗？"
                             onConfirm={() => handleDeleteOutline(item.id)}
                             okText="确定"
                             cancelText="取消"
                           >
-                            <Button type="text" danger icon={<DeleteOutlined />} size="small" />
+                            <Button
+                              danger
+                              icon={<DeleteOutlined />}
+                              size={isMobile ? 'middle' : 'small'}
+                            >
+                              删除
+                            </Button>
                           </Popconfirm>
-                        </Space>
-                      )}
-                    </div>
-                  </List.Item>
-                )}
+                        </div>
+                      </Card>
+                    </List.Item>
+                  );
+                }}
               />
-            </Card>
           )}
+
         </div>
+
+        {/* 固定底部分页栏 */}
+        {outlines.length > 0 && (
+          <div
+            style={{
+              position: 'sticky',
+              bottom: 0,
+              zIndex: 10,
+              backgroundColor: token.colorBgContainer,
+              borderTop: `1px solid ${token.colorBorderSecondary}`,
+              padding: isMobile ? '8px 0' : '10px 0',
+              display: 'flex',
+              justifyContent: 'flex-end'
+            }}
+          >
+            <Pagination
+              current={outlinePage}
+              pageSize={outlinePageSize}
+              total={filteredOutlines.length}
+              showSizeChanger
+              pageSizeOptions={['10', '20', '50', '100']}
+              onChange={(page, size) => {
+                setOutlinePage(page);
+                if (size !== outlinePageSize) {
+                  setOutlinePageSize(size);
+                  setOutlinePage(1);
+                }
+              }}
+              showTotal={(total) => `共 ${total} 条`}
+              size={isMobile ? 'small' : 'default'}
+            />
+          </div>
+        )}
       </div>
     </>
   );

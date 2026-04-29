@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Input, Button, Space, Typography, message, Spin, Modal } from 'antd';
+import { Card, Input, Button, Space, Typography, message, Spin, Modal, theme } from 'antd';
 import { SendOutlined, ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { inspirationApi } from '../services/api';
 import { AIProjectGenerator, type GenerationConfig } from '../components/AIProjectGenerator';
@@ -52,6 +52,7 @@ const Inspiration: React.FC = () => {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<Step>('idea');
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const { token } = theme.useToken();
 
   useEffect(() => {
     const handleResize = () => {
@@ -102,8 +103,18 @@ const Inspiration: React.FC = () => {
 
   // ==================== 缓存管理函数 ====================
 
+  // 清除缓存
+  const clearCache = useCallback(() => {
+    try {
+      localStorage.removeItem(CACHE_KEY);
+      console.log('🗑️ 缓存已清除');
+    } catch (error) {
+      console.error('清除缓存失败:', error);
+    }
+  }, []);
+
   // 保存到缓存
-  const saveToCache = () => {
+  const saveToCache = useCallback(() => {
     try {
       // 只在对话阶段保存，生成阶段不保存
       if (currentStep === 'generating' || currentStep === 'complete') {
@@ -130,10 +141,10 @@ const Inspiration: React.FC = () => {
     } catch (error) {
       console.error('保存缓存失败:', error);
     }
-  };
+  }, [currentStep, messages, wizardData, initialIdea, selectedOptions, lastFailedRequest]);
 
   // 从缓存恢复
-  const restoreFromCache = (): boolean => {
+  const restoreFromCache = useCallback((): boolean => {
     try {
       const cached = localStorage.getItem(CACHE_KEY);
       if (!cached) {
@@ -174,17 +185,7 @@ const Inspiration: React.FC = () => {
       clearCache();
       return false;
     }
-  };
-
-  // 清除缓存
-  const clearCache = () => {
-    try {
-      localStorage.removeItem(CACHE_KEY);
-      console.log('🗑️ 缓存已清除');
-    } catch (error) {
-      console.error('清除缓存失败:', error);
-    }
-  };
+  }, [clearCache]);
 
   // ==================== 组件挂载时恢复缓存 ====================
 
@@ -193,7 +194,7 @@ const Inspiration: React.FC = () => {
       restoreFromCache();
       setCacheLoaded(true);
     }
-  }, []);
+  }, [cacheLoaded, restoreFromCache]);
 
   // ==================== 自动保存：状态变化时保存 ====================
 
@@ -206,7 +207,7 @@ const Inspiration: React.FC = () => {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [messages, currentStep, wizardData, initialIdea, selectedOptions, lastFailedRequest, cacheLoaded]);
+  }, [messages, currentStep, wizardData, initialIdea, selectedOptions, lastFailedRequest, cacheLoaded, saveToCache]);
 
   // 自动滚动到底部
   const scrollToBottom = () => {
@@ -259,7 +260,7 @@ const Inspiration: React.FC = () => {
       };
       setMessages(prev => [...prev, aiMessage]);
       setLastFailedRequest(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('重试失败:', error);
       message.error('重试失败，请稍后再试');
     } finally {
@@ -307,7 +308,7 @@ const Inspiration: React.FC = () => {
       const step = targetMessage.step as 'title' | 'description' | 'theme' | 'genre';
       
       // 构建上下文
-      const context: any = {
+      const context: Partial<WizardData> & { initial_idea?: string } = {
         initial_idea: initialIdea,
         title: wizardData.title,
         description: wizardData.description,
@@ -339,9 +340,11 @@ const Inspiration: React.FC = () => {
       setMessages(prev => [...prev, aiMessage]);
 
       message.success('已根据您的反馈重新生成选项');
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('优化选项失败:', error);
-      message.error(error.response?.data?.detail || '优化失败，请重试');
+      const errMsg = error instanceof Error ? error.message : '优化失败，请重试';
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
       setRefining(false);
     }
@@ -406,9 +409,11 @@ const Inspiration: React.FC = () => {
       } else {
         await handleCustomInput(userInput);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('发送消息失败:', error);
-      message.error(error.response?.data?.detail || '生成失败，请重试');
+      const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
       setLoading(false);
     }
@@ -575,9 +580,11 @@ const Inspiration: React.FC = () => {
       setWizardData(updatedData);
 
       await generateNextStep(updatedData);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('选择选项失败:', error);
-      message.error(error.response?.data?.detail || '生成失败，请重试');
+      const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
       setLoading(false);
     }
@@ -625,9 +632,11 @@ const Inspiration: React.FC = () => {
 
       setWizardData(updatedData);
       await generateNextStep(updatedData);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('处理自定义输入失败:', error);
-      message.error(error.response?.data?.detail || '处理失败，请重试');
+      const errMsg = error instanceof Error ? error.message : '处理失败，请重试';
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
       setLoading(false);
     }
@@ -844,7 +853,7 @@ const Inspiration: React.FC = () => {
           height: isMobile ? 'calc(100vh - 280px)' : 600,
           overflowY: 'auto',
           marginBottom: 16,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+          boxShadow: `0 8px 24px color-mix(in srgb, ${token.colorTextBase} 20%, transparent)`,
           scrollBehavior: 'smooth'
         }}
       >
@@ -865,16 +874,16 @@ const Inspiration: React.FC = () => {
                 maxWidth: '80%',
                 padding: '12px 16px',
                 borderRadius: 12,
-                background: msg.type === 'ai' ? 'var(--color-bg-container)' : 'var(--color-primary)',
-                color: msg.type === 'ai' ? 'var(--color-text-primary)' : '#fff',
+                background: msg.type === 'ai' ? token.colorBgContainer : token.colorPrimary,
+                color: msg.type === 'ai' ? token.colorText : token.colorWhite,
                 boxShadow: msg.type === 'ai'
-                  ? 'var(--shadow-card)'
-                  : 'var(--shadow-primary)',
+                  ? `0 2px 10px color-mix(in srgb, ${token.colorTextBase} 12%, transparent)`
+                  : `0 4px 14px color-mix(in srgb, ${token.colorPrimary} 30%, transparent)`,
               }}>
                 <Paragraph
                   style={{
                     margin: 0,
-                    color: msg.type === 'ai' ? 'var(--color-text-primary)' : '#fff',
+                    color: msg.type === 'ai' ? token.colorText : token.colorWhite,
                     whiteSpace: 'pre-wrap'
                   }}
                 >
@@ -896,13 +905,13 @@ const Inspiration: React.FC = () => {
                         style={{
                           cursor: msg.optionsDisabled ? 'not-allowed' : 'pointer',
                           border: msg.isMultiSelect && selectedOptions.includes(option)
-                            ? '2px solid var(--color-primary)'
-                            : '1px solid var(--color-border)',
+                            ? `2px solid ${token.colorPrimary}`
+                            : `1px solid ${token.colorBorder}`,
                           background: msg.optionsDisabled
-                            ? 'var(--color-bg-layout)'
+                            ? token.colorBgLayout
                             : msg.isMultiSelect && selectedOptions.includes(option)
-                              ? 'var(--color-bg-spotlight)'
-                              : 'var(--color-bg-container)',
+                              ? token.colorPrimaryBg
+                              : token.colorBgContainer,
                           opacity: msg.optionsDisabled ? 0.6 : 1,
                           animation: 'floatIn 0.6s ease-out',
                           animationDelay: `${optIndex * 0.1}s`,
@@ -912,7 +921,7 @@ const Inspiration: React.FC = () => {
                         onMouseEnter={(e) => {
                           if (!msg.optionsDisabled) {
                             e.currentTarget.style.transform = 'translateY(-2px) scale(1.02)';
-                            e.currentTarget.style.boxShadow = 'var(--shadow-elevated)';
+                            e.currentTarget.style.boxShadow = `0 8px 22px color-mix(in srgb, ${token.colorTextBase} 14%, transparent)`;
                           }
                         }}
                         onMouseLeave={(e) => {
@@ -939,7 +948,7 @@ const Inspiration: React.FC = () => {
 
                     {/* 反馈优化区域 - 新增 */}
                     {msg.canRefine && !msg.optionsDisabled && !msg.isMultiSelect && (
-                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--color-border)' }}>
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${token.colorBorder}` }}>
                         {showFeedbackInput === index ? (
                           <Space direction="vertical" style={{ width: '100%' }} size="small">
                             <TextArea
@@ -1010,7 +1019,7 @@ const Inspiration: React.FC = () => {
       </Card>
 
       <Card
-        style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+        style={{ boxShadow: `0 4px 12px color-mix(in srgb, ${token.colorTextBase} 14%, transparent)` }}
         styles={{ body: { padding: 12 } }}
       >
         <Space.Compact style={{ width: '100%' }}>
@@ -1050,8 +1059,8 @@ const Inspiration: React.FC = () => {
 
   return (
     <div style={{
-      minHeight: '100vh',
-      background: 'var(--color-bg-base)',
+      minHeight: '100dvh',
+      background: token.colorBgBase,
     }}>
       {contextHolder}
       <style>
@@ -1097,8 +1106,8 @@ const Inspiration: React.FC = () => {
         position: 'sticky',
         top: 0,
         zIndex: 100,
-        background: 'var(--color-primary)',
-        boxShadow: 'var(--shadow-header)',
+        background: token.colorPrimary,
+        boxShadow: `0 6px 20px color-mix(in srgb, ${token.colorPrimary} 30%, transparent)`,
       }}>
         <div style={{
           maxWidth: 1200,
@@ -1113,12 +1122,12 @@ const Inspiration: React.FC = () => {
             onClick={handleBack}
             size={isMobile ? 'middle' : 'large'}
             style={{
-              background: 'rgba(255,255,255,0.2)',
-              borderColor: 'rgba(255,255,255,0.3)',
-              color: '#fff',
+              background: `color-mix(in srgb, ${token.colorWhite} 20%, transparent)`,
+              borderColor: `color-mix(in srgb, ${token.colorWhite} 30%, transparent)`,
+              color: token.colorWhite,
             }}
           >
-            {isMobile ? '返回' : '返回项目列表'}
+            {isMobile ? '返回' : '返回首页'}
           </Button>
 
           <div style={{ textAlign: 'center' }}>
@@ -1126,19 +1135,13 @@ const Inspiration: React.FC = () => {
               level={isMobile ? 4 : 2}
               style={{
                 margin: 0,
-                color: '#fff',
-                textShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                color: token.colorWhite,
+                textShadow: '0 2px 4px color-mix(in srgb, var(--ant-color-black) 18%, transparent)',
                 lineHeight: 1.2
               }}
             >
               ✨ 灵感模式
             </Title>
-            <Text style={{
-              color: 'rgba(255,255,255,0.85)',
-              fontSize: isMobile ? 12 : 14,
-            }}>
-              通过对话快速创建你的小说项目
-            </Text>
           </div>
 
           {/* 重新开始按钮 - 只在对话进行中显示 */}
@@ -1160,9 +1163,9 @@ const Inspiration: React.FC = () => {
               }}
               size={isMobile ? 'middle' : 'large'}
               style={{
-                background: 'rgba(255,255,255,0.2)',
-                borderColor: 'rgba(255,255,255,0.3)',
-                color: '#fff',
+                background: `color-mix(in srgb, ${token.colorWhite} 20%, transparent)`,
+                borderColor: `color-mix(in srgb, ${token.colorWhite} 30%, transparent)`,
+                color: token.colorWhite,
               }}
             >
               {isMobile ? '重新' : '重新开始'}

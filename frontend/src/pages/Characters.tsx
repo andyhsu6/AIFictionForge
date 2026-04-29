@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox } from 'antd';
+import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
 import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
-import { characterGridConfig } from '../components/CardStyles';
+import { charactersPageGridConfig } from '../components/CardStyles';
 import { CharacterCard } from '../components/CharacterCard';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
-import type { Character } from '../types';
+import type { Character, ApiError } from '../types';
 import { characterApi } from '../services/api';
 import { SSEPostClient } from '../utils/sseClient';
 import api from '../services/api';
@@ -21,7 +21,80 @@ interface Career {
   max_stage: number;
 }
 
+// 副职业数据类型
+interface SubCareerData {
+  career_id: string;
+  stage: number;
+}
+
+// 角色创建表单值类型
+interface CharacterFormValues {
+  name: string;
+  age?: string;
+  gender?: string;
+  role_type?: string;
+  personality?: string;
+  appearance?: string;
+  background?: string;
+  main_career_id?: string;
+  main_career_stage?: number;
+  sub_career_data?: SubCareerData[];
+  // 组织字段
+  organization_type?: string;
+  organization_purpose?: string;
+  organization_members?: string;
+  power_level?: number;
+  location?: string;
+  motto?: string;
+  color?: string;
+}
+
+// 角色创建数据类型
+interface CharacterCreateData {
+  project_id: string;
+  name: string;
+  is_organization: boolean;
+  age?: string;
+  gender?: string;
+  role_type?: string;
+  personality?: string;
+  appearance?: string;
+  background?: string;
+  main_career_id?: string;
+  main_career_stage?: number;
+  sub_careers?: string;
+  organization_type?: string;
+  organization_purpose?: string;
+  organization_members?: string;
+  power_level?: number;
+  location?: string;
+  motto?: string;
+  color?: string;
+}
+
+// 角色更新数据类型
+interface CharacterUpdateData {
+  name?: string;
+  age?: string;
+  gender?: string;
+  role_type?: string;
+  personality?: string;
+  appearance?: string;
+  background?: string;
+  main_career_id?: string;
+  main_career_stage?: number;
+  sub_careers?: string;
+  organization_type?: string;
+  organization_purpose?: string;
+  organization_members?: string;
+  power_level?: number;
+  location?: string;
+  motto?: string;
+  color?: string;
+}
+
 export default function Characters() {
+  const { token } = theme.useToken();
   const { currentProject, characters } = useStore();
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -115,8 +188,9 @@ export default function Characters() {
       message.success('AI生成角色成功');
       Modal.destroyAll();
       await refreshCharacters();
-    } catch (error: any) {
-      message.error(error.message || 'AI生成失败');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'AI生成失败';
+      message.error(errorMessage);
     } finally {
       setTimeout(() => {
         setIsGenerating(false);
@@ -168,8 +242,9 @@ export default function Characters() {
       message.success('AI生成组织成功');
       Modal.destroyAll();
       await refreshCharacters();
-    } catch (error: any) {
-      message.error(error.message || 'AI生成失败');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'AI生成失败';
+      message.error(errorMessage);
     } finally {
       setTimeout(() => {
         setIsGenerating(false);
@@ -179,9 +254,9 @@ export default function Characters() {
     }
   };
 
-  const handleCreateCharacter = async (values: any) => {
+  const handleCreateCharacter = async (values: CharacterFormValues) => {
     try {
-      const createData: any = {
+      const createData: CharacterCreateData = {
         project_id: currentProject.id,
         name: values.name,
         is_organization: createType === 'organization',
@@ -194,7 +269,6 @@ export default function Characters() {
         createData.role_type = values.role_type || 'supporting';
         createData.personality = values.personality;
         createData.appearance = values.appearance;
-        createData.relationships = values.relationships;
         createData.background = values.background;
         
         // 职业字段
@@ -211,7 +285,6 @@ export default function Characters() {
         // 组织字段
         createData.organization_type = values.organization_type;
         createData.organization_purpose = values.organization_purpose;
-        createData.organization_members = values.organization_members;
         createData.background = values.background;
         createData.power_level = values.power_level;
         createData.location = values.location;
@@ -234,7 +307,7 @@ export default function Characters() {
     setEditingCharacter(character);
 
     // 提取副职业数据（包含职业ID和阶段）
-    const subCareerData = character.sub_careers?.map((sc: any) => ({
+    const subCareerData: SubCareerData[] = character.sub_careers?.map((sc) => ({
       career_id: sc.career_id,
       stage: sc.stage || 1
     })) || [];
@@ -246,15 +319,13 @@ export default function Characters() {
     setIsEditModalOpen(true);
   };
 
-  const handleUpdateCharacter = async (values: any) => {
+  const handleUpdateCharacter = async (values: CharacterFormValues) => {
     if (!editingCharacter) return;
 
     try {
-      const updateData: any = { ...values };
-
-      // 处理副职业数据
-      const subCareerData = updateData.sub_career_data;
-      delete updateData.sub_career_data;
+      // 提取副职业数据，剩余的作为更新数据
+      const { sub_career_data: subCareerData, ...restValues } = values;
+      const updateData: CharacterUpdateData = { ...restValues };
 
       // 转换为sub_careers格式
       if (subCareerData && Array.isArray(subCareerData) && subCareerData.length > 0) {
@@ -320,7 +391,7 @@ export default function Characters() {
           content: (
             <div>
               {validation.errors.map((error, index) => (
-                <div key={index} style={{ color: 'red' }}>• {error}</div>
+                <div key={index} style={{ color: token.colorError }}>• {error}</div>
               ))}
             </div>
           ),
@@ -345,10 +416,10 @@ export default function Characters() {
             {validation.warnings.length > 0 && (
               <>
                 <Divider style={{ margin: '12px 0' }} />
-                <p style={{ color: '#faad14' }}><strong>⚠️ 警告:</strong></p>
+                <p style={{ color: token.colorWarning }}><strong>⚠️ 警告:</strong></p>
                 <ul style={{ marginLeft: 20 }}>
                   {validation.warnings.map((warning, index) => (
-                    <li key={index} style={{ color: '#faad14' }}>{warning}</li>
+                    <li key={index} style={{ color: token.colorWarning }}>{warning}</li>
                   ))}
                 </ul>
               </>
@@ -393,10 +464,10 @@ export default function Characters() {
                     {result.statistics.skipped > 0 && (
                       <>
                         <Divider style={{ margin: '12px 0' }} />
-                        <p style={{ color: '#faad14' }}>⚠️ 跳过: {result.statistics.skipped} 个</p>
+                        <p style={{ color: token.colorWarning }}>⚠️ 跳过: {result.statistics.skipped} 个</p>
                         <ul style={{ marginLeft: 20 }}>
                           {result.details.skipped.map((name, index) => (
-                            <li key={index} style={{ color: '#faad14' }}>{name}</li>
+                            <li key={index} style={{ color: token.colorWarning }}>{name}</li>
                           ))}
                         </ul>
                       </>
@@ -404,10 +475,10 @@ export default function Characters() {
                     {result.warnings.length > 0 && (
                       <>
                         <Divider style={{ margin: '12px 0' }} />
-                        <p style={{ color: '#faad14' }}>⚠️ 警告:</p>
+                        <p style={{ color: token.colorWarning }}>⚠️ 警告:</p>
                         <ul style={{ marginLeft: 20 }}>
                           {result.warnings.map((warning, index) => (
-                            <li key={index} style={{ color: '#faad14' }}>{warning}</li>
+                            <li key={index} style={{ color: token.colorWarning }}>{warning}</li>
                           ))}
                         </ul>
                       </>
@@ -415,10 +486,10 @@ export default function Characters() {
                     {result.details.errors.length > 0 && (
                       <>
                         <Divider style={{ margin: '12px 0' }} />
-                        <p style={{ color: 'red' }}>❌ 失败: {result.statistics.errors} 个</p>
+                        <p style={{ color: token.colorError }}>❌ 失败: {result.statistics.errors} 个</p>
                         <ul style={{ marginLeft: 20 }}>
                           {result.details.errors.map((error, index) => (
-                            <li key={index} style={{ color: 'red' }}>{error}</li>
+                            <li key={index} style={{ color: token.colorError }}>{error}</li>
                           ))}
                         </ul>
                       </>
@@ -433,14 +504,16 @@ export default function Characters() {
             } else {
               message.error(result.message || '导入失败');
             }
-          } catch (error: any) {
-            message.error(error.response?.data?.detail || '导入失败');
+          } catch (error: unknown) {
+            const apiError = error as ApiError;
+            message.error(apiError.response?.data?.detail || '导入失败');
             console.error('导入错误:', error);
           }
         },
       });
-    } catch (error: any) {
-      message.error(error.response?.data?.detail || '文件验证失败');
+    } catch (error: unknown) {
+      const apiError = error as ApiError;
+      message.error(apiError.response?.data?.detail || '文件验证失败');
       console.error('验证错误:', error);
     }
   };
@@ -705,7 +778,7 @@ export default function Characters() {
           <Empty description="还没有角色或组织，开始创建吧！" />
         ) : (
           <>
-            <Row gutter={isMobile ? [8, 8] : characterGridConfig.gutter}>
+            <Row gutter={isMobile ? [8, 8] : charactersPageGridConfig.gutter}>
               {activeTab === 'all' && (
                 <>
                   {characterList.length > 0 && (
@@ -721,10 +794,10 @@ export default function Characters() {
                       {characterList.map((character) => (
                         <Col
                           xs={24}
-                          sm={characterGridConfig.sm}
-                          md={characterGridConfig.md}
-                          lg={characterGridConfig.lg}
-                          xl={characterGridConfig.xl}
+                          sm={charactersPageGridConfig.sm}
+                          md={charactersPageGridConfig.md}
+                          lg={charactersPageGridConfig.lg}
+                          xl={charactersPageGridConfig.xl}
                           key={character.id}
                           style={{ padding: isMobile ? '4px' : '8px' }}
                         >
@@ -759,10 +832,10 @@ export default function Characters() {
                       {organizationList.map((org) => (
                         <Col
                           xs={24}
-                          sm={characterGridConfig.sm}
-                          md={characterGridConfig.md}
-                          lg={characterGridConfig.lg}
-                          xl={characterGridConfig.xl}
+                          sm={charactersPageGridConfig.sm}
+                          md={charactersPageGridConfig.md}
+                          lg={charactersPageGridConfig.lg}
+                          xl={charactersPageGridConfig.xl}
                           key={org.id}
                           style={{ padding: isMobile ? '4px' : '8px' }}
                         >
@@ -789,10 +862,10 @@ export default function Characters() {
               {activeTab === 'character' && characterList.map((character) => (
                 <Col
                   xs={24}
-                  sm={characterGridConfig.sm}
-                  md={characterGridConfig.md}
-                  lg={characterGridConfig.lg}
-                  xl={characterGridConfig.xl}
+                  sm={charactersPageGridConfig.sm}
+                  md={charactersPageGridConfig.md}
+                  lg={charactersPageGridConfig.lg}
+                  xl={charactersPageGridConfig.xl}
                   key={character.id}
                   style={{ padding: isMobile ? '4px' : '8px' }}
                 >
@@ -815,10 +888,10 @@ export default function Characters() {
               {activeTab === 'organization' && organizationList.map((org) => (
                 <Col
                   xs={24}
-                  sm={characterGridConfig.sm}
-                  md={characterGridConfig.md}
-                  lg={characterGridConfig.lg}
-                  xl={characterGridConfig.xl}
+                  sm={charactersPageGridConfig.sm}
+                  md={charactersPageGridConfig.md}
+                  lg={charactersPageGridConfig.lg}
+                  xl={charactersPageGridConfig.xl}
                   key={org.id}
                   style={{ padding: isMobile ? '4px' : '8px' }}
                 >
@@ -862,298 +935,63 @@ export default function Characters() {
           editForm.resetFields();
           setEditingCharacter(null);
         }}
-        footer={null}
-        centered={!isMobile}
-        width={isMobile ? '100%' : 600}
+        footer={
+          <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+            <Button onClick={() => {
+              setIsEditModalOpen(false);
+              editForm.resetFields();
+              setEditingCharacter(null);
+            }}>
+              取消
+            </Button>
+            <Button type="primary" onClick={() => editForm.submit()}>
+              保存
+            </Button>
+          </Space>
+        }
+        centered
+        width={isMobile ? '100%' : 700}
         style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100vw' } : undefined}
-        styles={isMobile ? { body: { maxHeight: 'calc(100vh - 110px)', overflowY: 'auto' } } : undefined}
-      >
-        <Form form={editForm} layout="vertical" onFinish={handleUpdateCharacter}>
-          <Row gutter={16}>
-            <Col span={editingCharacter?.is_organization ? 24 : 12}>
-              <Form.Item
-                label={editingCharacter?.is_organization ? '组织名称' : '角色名称'}
-                name="name"
-                rules={[{ required: true, message: `请输入${editingCharacter?.is_organization ? '组织' : '角色'}名称` }]}
-              >
-                <Input placeholder={`输入${editingCharacter?.is_organization ? '组织' : '角色'}名称`} />
-              </Form.Item>
-            </Col>
-
-            {!editingCharacter?.is_organization && (
-              <Col span={12}>
-                <Form.Item label="角色定位" name="role_type">
-                  <Select>
-                    <Select.Option value="protagonist">主角</Select.Option>
-                    <Select.Option value="supporting">配角</Select.Option>
-                    <Select.Option value="antagonist">反派</Select.Option>
-                  </Select>
-                </Form.Item>
-              </Col>
-            )}
-          </Row>
-
-          {!editingCharacter?.is_organization && (
-            <>
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item label="年龄" name="age">
-                    <Input placeholder="如：25、30岁" />
-                  </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item label="性别" name="gender">
-                    <Select placeholder="选择性别">
-                      <Select.Option value="男">男</Select.Option>
-                      <Select.Option value="女">女</Select.Option>
-                      <Select.Option value="其他">其他</Select.Option>
-                    </Select>
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Form.Item label="性格特点" name="personality">
-                <TextArea rows={2} placeholder="描述角色的性格特点..." />
-              </Form.Item>
-
-              <Form.Item label="外貌描写" name="appearance">
-                <TextArea rows={2} placeholder="描述角色的外貌特征..." />
-              </Form.Item>
-
-              <Form.Item label="人际关系" name="relationships">
-                <TextArea rows={2} placeholder="描述角色与其他角色的关系..." />
-              </Form.Item>
-            </>
-          )}
-
-          {editingCharacter?.is_organization && (
-            <>
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item
-                    label="组织类型"
-                    name="organization_type"
-                    rules={[{ required: true, message: '请输入组织类型' }]}
-                  >
-                    <Input placeholder="如：帮派、公司、门派、学院" />
-                  </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item
-                    label="势力等级"
-                    name="power_level"
-                    tooltip="0-100的数值，表示组织的影响力"
-                  >
-                    <InputNumber min={0} max={100} style={{ width: '100%' }} />
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Form.Item
-                label="组织目的"
-                name="organization_purpose"
-                rules={[{ required: true, message: '请输入组织目的' }]}
-              >
-                <TextArea rows={2} placeholder="描述组织的宗旨和目标..." />
-              </Form.Item>
-
-              <Form.Item label="主要成员" name="organization_members">
-                <Input placeholder="如：张三、李四、王五" />
-              </Form.Item>
-
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item label="所在地" name="location">
-                    <Input placeholder="组织的主要活动区域或总部位置" />
-                  </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item label="代表颜色" name="color">
-                    <Input placeholder="如：深红色、金色、黑色等" />
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Form.Item label="格言/口号" name="motto">
-                <Input placeholder="组织的宗旨、格言或口号" />
-              </Form.Item>
-            </>
-          )}
-
-          <Form.Item label={editingCharacter?.is_organization ? '组织背景' : '角色背景'} name="background">
-            <TextArea rows={3} placeholder={`描述${editingCharacter?.is_organization ? '组织' : '角色'}的背景故事...`} />
-          </Form.Item>
-
-          {!editingCharacter?.is_organization && (mainCareers.length > 0 || subCareers.length > 0) && (
-            <>
-              <Divider>职业信息</Divider>
-              {mainCareers.length > 0 && (
-                <Row gutter={16}>
-                  <Col span={16}>
-                    <Form.Item label="主职业" name="main_career_id" tooltip="角色的主要修炼职业">
-                      <Select placeholder="选择主职业" allowClear>
-                        {mainCareers.map(career => (
-                          <Select.Option key={career.id} value={career.id}>
-                            {career.name}（最高{career.max_stage}阶）
-                          </Select.Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item label="当前阶段" name="main_career_stage" tooltip="主职业当前修炼到的阶段">
-                      <InputNumber
-                        min={1}
-                        max={editForm.getFieldValue('main_career_id') ?
-                          mainCareers.find(c => c.id === editForm.getFieldValue('main_career_id'))?.max_stage || 10
-                          : 10}
-                        style={{ width: '100%' }}
-                        placeholder="阶段"
-                      />
-                    </Form.Item>
-                  </Col>
-                </Row>
-              )}
-              {subCareers.length > 0 && (
-                <Form.List name="sub_career_data">
-                  {(fields, { add, remove }) => (
-                    <>
-                      <div style={{ marginBottom: 8 }}>
-                        <Typography.Text strong>副职业</Typography.Text>
-                      </div>
-                      <div style={{ maxHeight: '100px', overflowY: 'auto', overflowX: 'hidden', marginBottom: 8, paddingRight: 8 }}>
-                        {fields.map((field) => (
-                          <Row key={field.key} gutter={8} style={{ marginBottom: 8 }}>
-                            <Col span={16}>
-                              <Form.Item
-                                {...field}
-                                name={[field.name, 'career_id']}
-                                rules={[{ required: true, message: '请选择副职业' }]}
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Select placeholder="选择副职业">
-                                  {subCareers.map(career => (
-                                    <Select.Option key={career.id} value={career.id}>
-                                      {career.name}（最高{career.max_stage}阶）
-                                    </Select.Option>
-                                  ))}
-                                </Select>
-                              </Form.Item>
-                            </Col>
-                            <Col span={6}>
-                              <Form.Item
-                                {...field}
-                                name={[field.name, 'stage']}
-                                rules={[{ required: true, message: '请输入阶段' }]}
-                                style={{ marginBottom: 0 }}
-                              >
-                                <InputNumber
-                                  min={1}
-                                  max={(() => {
-                                    const careerId = editForm.getFieldValue(['sub_career_data', field.name, 'career_id']);
-                                    const career = subCareers.find(c => c.id === careerId);
-                                    return career?.max_stage || 10;
-                                  })()}
-                                  placeholder="阶段"
-                                  style={{ width: '100%' }}
-                                />
-                              </Form.Item>
-                            </Col>
-                            <Col span={2}>
-                              <Button
-                                type="text"
-                                danger
-                                onClick={() => remove(field.name)}
-                                style={{ width: '100%' }}
-                              >
-                                删除
-                              </Button>
-                            </Col>
-                          </Row>
-                        ))}
-                      </div>
-                      <Button
-                        type="dashed"
-                        onClick={() => add({ career_id: undefined, stage: 1 })}
-                        block
-                        style={{ marginTop: 8 }}
-                      >
-                        + 添加副职业
-                      </Button>
-                    </>
-                  )}
-                </Form.List>
-              )}
-            </>
-          )}
-
-          <Form.Item>
-            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-              <Button onClick={() => {
-                setIsEditModalOpen(false);
-                editForm.resetFields();
-                setEditingCharacter(null);
-              }}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit">
-                保存
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      {/* 手动创建角色/组织模态框 */}
-      <Modal
-        title={createType === 'character' ? '创建角色' : '创建组织'}
-        open={isCreateModalOpen}
-        onCancel={() => {
-          setIsCreateModalOpen(false);
-          createForm.resetFields();
+        styles={{
+          body: {
+            maxHeight: isMobile ? 'calc(100vh - 110px)' : 'calc(100vh - 200px)',
+            overflowY: 'auto',
+            overflowX: 'hidden'
+          }
         }}
-        footer={null}
-        centered={!isMobile}
-        width={isMobile ? '100%' : 600}
-        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100vw' } : undefined}
-        styles={isMobile ? { body: { maxHeight: 'calc(100vh - 110px)', overflowY: 'auto' } } : undefined}
       >
-        <Form form={createForm} layout="vertical" onFinish={handleCreateCharacter}>
-          <Row gutter={16}>
-            <Col span={createType === 'organization' ? 24 : 12}>
-              <Form.Item
-                label={createType === 'character' ? '角色名称' : '组织名称'}
-                name="name"
-                rules={[{ required: true, message: `请输入${createType === 'character' ? '角色' : '组织'}名称` }]}
-              >
-                <Input placeholder={`输入${createType === 'character' ? '角色' : '组织'}名称`} />
-              </Form.Item>
-            </Col>
-
-            {createType === 'character' && (
-              <Col span={12}>
-                <Form.Item label="角色定位" name="role_type" initialValue="supporting">
-                  <Select>
-                    <Select.Option value="protagonist">主角</Select.Option>
-                    <Select.Option value="supporting">配角</Select.Option>
-                    <Select.Option value="antagonist">反派</Select.Option>
-                  </Select>
-                </Form.Item>
-              </Col>
-            )}
-          </Row>
-
-          {createType === 'character' ? (
+        <Form form={editForm} layout="vertical" onFinish={handleUpdateCharacter} style={{ marginTop: 8 }}>
+          {!editingCharacter?.is_organization ? (
             <>
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item label="年龄" name="age">
-                    <Input placeholder="如：25、30岁" />
+              {/* 编辑角色 - 第一行：名称、定位、年龄、性别 */}
+              <Row gutter={12}>
+                <Col span={8}>
+                  <Form.Item
+                    label="角色名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入角色名称' }]}
+                    style={{ marginBottom: 12 }}
+                  >
+                    <Input placeholder="角色名称" />
                   </Form.Item>
                 </Col>
-                <Col span={12}>
-                  <Form.Item label="性别" name="gender">
-                    <Select placeholder="选择性别">
+                <Col span={6}>
+                  <Form.Item label="角色定位" name="role_type" style={{ marginBottom: 12 }}>
+                    <Select>
+                      <Select.Option value="protagonist">主角</Select.Option>
+                      <Select.Option value="supporting">配角</Select.Option>
+                      <Select.Option value="antagonist">反派</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </Col>
+                <Col span={5}>
+                  <Form.Item label="年龄" name="age" style={{ marginBottom: 12 }}>
+                    <Input placeholder="如：25岁" />
+                  </Form.Item>
+                </Col>
+                <Col span={5}>
+                  <Form.Item label="性别" name="gender" style={{ marginBottom: 12 }}>
+                    <Select placeholder="性别">
                       <Select.Option value="男">男</Select.Option>
                       <Select.Option value="女">女</Select.Option>
                       <Select.Option value="其他">其他</Select.Option>
@@ -1162,31 +1000,48 @@ export default function Characters() {
                 </Col>
               </Row>
 
-              <Form.Item label="性格特点" name="personality">
-                <TextArea rows={2} placeholder="描述角色的性格特点..." />
-              </Form.Item>
+              {/* 第二行：性格特点、外貌描写 */}
+              <Row gutter={12}>
+                <Col span={12}>
+                  <Form.Item label="性格特点" name="personality" style={{ marginBottom: 12 }}>
+                    <TextArea rows={2} placeholder="描述角色的性格特点..." />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="外貌描写" name="appearance" style={{ marginBottom: 12 }}>
+                    <TextArea rows={2} placeholder="描述角色的外貌特征..." />
+                  </Form.Item>
+                </Col>
+              </Row>
 
-              <Form.Item label="外貌描写" name="appearance">
-                <TextArea rows={2} placeholder="描述角色的外貌特征..." />
-              </Form.Item>
+              {/* 人际关系（只读，由关系管理页面维护） */}
+              {editingCharacter?.relationships && (
+                <Form.Item label="人际关系（由关系管理维护）" style={{ marginBottom: 12 }}>
+                  <Input.TextArea
+                    value={editingCharacter.relationships}
+                    readOnly
+                    autoSize={{ minRows: 1, maxRows: 3 }}
+                    style={{ backgroundColor: token.colorFillTertiary, cursor: 'default' }}
+                  />
+                </Form.Item>
+              )}
 
-              <Form.Item label="人际关系" name="relationships">
-                <TextArea rows={2} placeholder="描述角色与其他角色的关系..." />
-              </Form.Item>
-
-              <Form.Item label="角色背景" name="background">
-                <TextArea rows={3} placeholder="描述角色的背景故事..." />
+              {/* 第四行：角色背景 */}
+              <Form.Item label="角色背景" name="background" style={{ marginBottom: 12 }}>
+                <TextArea rows={2} placeholder="描述角色的背景故事..." />
               </Form.Item>
 
               {/* 职业信息 */}
               {(mainCareers.length > 0 || subCareers.length > 0) && (
                 <>
-                  <Divider>职业信息（可选）</Divider>
+                  <Divider style={{ margin: '8px 0' }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>职业信息</Typography.Text>
+                  </Divider>
                   {mainCareers.length > 0 && (
-                    <Row gutter={16}>
+                    <Row gutter={12}>
                       <Col span={16}>
-                        <Form.Item label="主职业" name="main_career_id" tooltip="角色的主要修炼职业">
-                          <Select placeholder="选择主职业" allowClear>
+                        <Form.Item label="主职业" name="main_career_id" tooltip="角色的主要修炼职业" style={{ marginBottom: 12 }}>
+                          <Select placeholder="选择主职业" allowClear size="small">
                             {mainCareers.map(career => (
                               <Select.Option key={career.id} value={career.id}>
                                 {career.name}（最高{career.max_stage}阶）
@@ -1196,14 +1051,15 @@ export default function Characters() {
                         </Form.Item>
                       </Col>
                       <Col span={8}>
-                        <Form.Item label="当前阶段" name="main_career_stage" tooltip="主职业当前修炼到的阶段">
+                        <Form.Item label="当前阶段" name="main_career_stage" tooltip="主职业当前修炼到的阶段" style={{ marginBottom: 12 }}>
                           <InputNumber
                             min={1}
-                            max={createForm.getFieldValue('main_career_id') ?
-                              mainCareers.find(c => c.id === createForm.getFieldValue('main_career_id'))?.max_stage || 10
+                            max={editForm.getFieldValue('main_career_id') ?
+                              mainCareers.find(c => c.id === editForm.getFieldValue('main_career_id'))?.max_stage || 10
                               : 10}
                             style={{ width: '100%' }}
                             placeholder="阶段"
+                            size="small"
                           />
                         </Form.Item>
                       </Col>
@@ -1213,12 +1069,12 @@ export default function Characters() {
                     <Form.List name="sub_career_data">
                       {(fields, { add, remove }) => (
                         <>
-                          <div style={{ marginBottom: 8 }}>
-                            <Typography.Text strong>副职业</Typography.Text>
+                          <div style={{ marginBottom: 4 }}>
+                            <Typography.Text strong style={{ fontSize: 12 }}>副职业</Typography.Text>
                           </div>
-                          <div style={{ maxHeight: '100px', overflowY: 'auto', overflowX: 'hidden', marginBottom: 8, paddingRight: 8 }}>
+                          <div style={{ maxHeight: '80px', overflowY: 'auto', overflowX: 'hidden', marginBottom: 8, paddingRight: 8 }}>
                             {fields.map((field) => (
-                              <Row key={field.key} gutter={8} style={{ marginBottom: 8 }}>
+                              <Row key={field.key} gutter={8} style={{ marginBottom: 4 }}>
                                 <Col span={16}>
                                   <Form.Item
                                     {...field}
@@ -1226,7 +1082,7 @@ export default function Characters() {
                                     rules={[{ required: true, message: '请选择副职业' }]}
                                     style={{ marginBottom: 0 }}
                                   >
-                                    <Select placeholder="选择副职业">
+                                    <Select placeholder="选择副职业" size="small">
                                       {subCareers.map(career => (
                                         <Select.Option key={career.id} value={career.id}>
                                           {career.name}（最高{career.max_stage}阶）
@@ -1235,31 +1091,32 @@ export default function Characters() {
                                     </Select>
                                   </Form.Item>
                                 </Col>
-                                <Col span={6}>
+                                <Col span={5}>
                                   <Form.Item
                                     {...field}
                                     name={[field.name, 'stage']}
-                                    rules={[{ required: true, message: '请输入阶段' }]}
+                                    rules={[{ required: true, message: '阶段' }]}
                                     style={{ marginBottom: 0 }}
                                   >
                                     <InputNumber
                                       min={1}
                                       max={(() => {
-                                        const careerId = createForm.getFieldValue(['sub_career_data', field.name, 'career_id']);
+                                        const careerId = editForm.getFieldValue(['sub_career_data', field.name, 'career_id']);
                                         const career = subCareers.find(c => c.id === careerId);
                                         return career?.max_stage || 10;
                                       })()}
                                       placeholder="阶段"
                                       style={{ width: '100%' }}
+                                      size="small"
                                     />
                                   </Form.Item>
                                 </Col>
-                                <Col span={2}>
+                                <Col span={3}>
                                   <Button
                                     type="text"
                                     danger
+                                    size="small"
                                     onClick={() => remove(field.name)}
-                                    style={{ width: '100%' }}
                                   >
                                     删除
                                   </Button>
@@ -1271,7 +1128,7 @@ export default function Characters() {
                             type="dashed"
                             onClick={() => add({ career_id: undefined, stage: 1 })}
                             block
-                            style={{ marginTop: 8 }}
+                            size="small"
                           >
                             + 添加副职业
                           </Button>
@@ -1284,64 +1141,357 @@ export default function Characters() {
             </>
           ) : (
             <>
-              <Row gutter={16}>
-                <Col span={12}>
+              {/* 编辑组织 - 第一行：名称、类型、势力等级 */}
+              <Row gutter={12}>
+                <Col span={10}>
+                  <Form.Item
+                    label="组织名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入组织名称' }]}
+                    style={{ marginBottom: 12 }}
+                  >
+                    <Input placeholder="组织名称" />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
                   <Form.Item
                     label="组织类型"
                     name="organization_type"
                     rules={[{ required: true, message: '请输入组织类型' }]}
+                    style={{ marginBottom: 12 }}
                   >
-                    <Input placeholder="如：帮派、公司、门派、学院" />
+                    <Input placeholder="如：门派、帮派" />
                   </Form.Item>
                 </Col>
-                <Col span={12}>
+                <Col span={6}>
                   <Form.Item
                     label="势力等级"
                     name="power_level"
-                    initialValue={50}
-                    tooltip="0-100的数值，表示组织的影响力"
+                    tooltip="0-100的数值"
+                    style={{ marginBottom: 12 }}
                   >
                     <InputNumber min={0} max={100} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
               </Row>
 
+              {/* 第二行：组织目的 */}
               <Form.Item
                 label="组织目的"
                 name="organization_purpose"
                 rules={[{ required: true, message: '请输入组织目的' }]}
+                style={{ marginBottom: 12 }}
               >
-                <TextArea rows={2} placeholder="描述组织的宗旨和目标..." />
+                <Input placeholder="描述组织的宗旨和目标..." />
               </Form.Item>
 
-              <Form.Item label="主要成员" name="organization_members">
-                <Input placeholder="如：张三、李四、王五" />
+              {/* 第三行：主要成员（只读展示） */}
+              <Form.Item
+                label="主要成员"
+                name="organization_members"
+                style={{ marginBottom: 4 }}
+                tooltip="成员信息由组织管理模块维护，此处仅展示"
+              >
+                <TextArea
+                  disabled
+                  autoSize={{ minRows: 1, maxRows: 4 }}
+                  placeholder="暂无成员，请在组织管理中添加"
+                  style={{ color: token.colorText, backgroundColor: token.colorFillAlter }}
+                />
               </Form.Item>
+              <div style={{ marginBottom: 12, fontSize: 12, color: token.colorTextTertiary }}>
+                💡 请前往「组织管理」页面添加或管理组织成员
+              </div>
 
-              <Row gutter={16}>
+              {/* 第四行：所在地、代表颜色 */}
+              <Row gutter={12}>
                 <Col span={12}>
-                  <Form.Item label="所在地" name="location">
-                    <Input placeholder="组织的主要活动区域或总部位置" />
+                  <Form.Item label="所在地" name="location" style={{ marginBottom: 12 }}>
+                    <Input placeholder="总部位置" />
                   </Form.Item>
                 </Col>
                 <Col span={12}>
-                  <Form.Item label="代表颜色" name="color">
-                    <Input placeholder="如：深红色、金色、黑色等" />
+                  <Form.Item label="代表颜色" name="color" style={{ marginBottom: 12 }}>
+                    <Input placeholder="如：金色" />
                   </Form.Item>
                 </Col>
               </Row>
 
-              <Form.Item label="格言/口号" name="motto">
+              {/* 第四行：格言/口号 */}
+              <Form.Item label="格言/口号" name="motto" style={{ marginBottom: 12 }}>
                 <Input placeholder="组织的宗旨、格言或口号" />
               </Form.Item>
 
-              <Form.Item label="组织背景" name="background">
-                <TextArea rows={3} placeholder="描述组织的背景故事..." />
+              {/* 第五行：组织背景 */}
+              <Form.Item label="组织背景" name="background" style={{ marginBottom: 12 }}>
+                <TextArea rows={2} placeholder="描述组织的背景故事..." />
+              </Form.Item>
+            </>
+          )}
+        </Form>
+      </Modal>
+
+      {/* 手动创建角色/组织模态框 */}
+      <Modal
+        title={createType === 'character' ? '创建角色' : '创建组织'}
+        open={isCreateModalOpen}
+        onCancel={() => {
+          setIsCreateModalOpen(false);
+          createForm.resetFields();
+        }}
+        footer={null}
+        centered
+        width={isMobile ? '100%' : 700}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100vw' } : undefined}
+        styles={{
+          body: {
+            maxHeight: isMobile ? 'calc(100vh - 110px)' : 'calc(100vh - 200px)',
+            overflowY: 'auto',
+            overflowX: 'hidden'
+          }
+        }}
+      >
+        <Form form={createForm} layout="vertical" onFinish={handleCreateCharacter} style={{ marginTop: 8 }}>
+          {createType === 'character' ? (
+            <>
+              {/* 角色基本信息 - 第一行：名称、定位、年龄、性别 */}
+              <Row gutter={12}>
+                <Col span={8}>
+                  <Form.Item
+                    label="角色名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入角色名称' }]}
+                    style={{ marginBottom: 12 }}
+                  >
+                    <Input placeholder="角色名称" />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item label="角色定位" name="role_type" initialValue="supporting" style={{ marginBottom: 12 }}>
+                    <Select>
+                      <Select.Option value="protagonist">主角</Select.Option>
+                      <Select.Option value="supporting">配角</Select.Option>
+                      <Select.Option value="antagonist">反派</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </Col>
+                <Col span={5}>
+                  <Form.Item label="年龄" name="age" style={{ marginBottom: 12 }}>
+                    <Input placeholder="如：25岁" />
+                  </Form.Item>
+                </Col>
+                <Col span={5}>
+                  <Form.Item label="性别" name="gender" style={{ marginBottom: 12 }}>
+                    <Select placeholder="性别">
+                      <Select.Option value="男">男</Select.Option>
+                      <Select.Option value="女">女</Select.Option>
+                      <Select.Option value="其他">其他</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              {/* 第二行：性格特点、外貌描写 */}
+              <Row gutter={12}>
+                <Col span={12}>
+                  <Form.Item label="性格特点" name="personality" style={{ marginBottom: 12 }}>
+                    <TextArea rows={2} placeholder="描述角色的性格特点..." />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="外貌描写" name="appearance" style={{ marginBottom: 12 }}>
+                    <TextArea rows={2} placeholder="描述角色的外貌特征..." />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              {/* 第三行：角色背景 */}
+              <Form.Item label="角色背景" name="background" style={{ marginBottom: 12 }}>
+                <TextArea rows={2} placeholder="描述角色的背景故事..." />
+              </Form.Item>
+
+              {/* 职业信息 - 折叠区域 */}
+              {(mainCareers.length > 0 || subCareers.length > 0) && (
+                <>
+                  <Divider style={{ margin: '8px 0' }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>职业信息（可选）</Typography.Text>
+                  </Divider>
+                  {mainCareers.length > 0 && (
+                    <Row gutter={12}>
+                      <Col span={16}>
+                        <Form.Item label="主职业" name="main_career_id" tooltip="角色的主要修炼职业" style={{ marginBottom: 12 }}>
+                          <Select placeholder="选择主职业" allowClear size="small">
+                            {mainCareers.map(career => (
+                              <Select.Option key={career.id} value={career.id}>
+                                {career.name}（最高{career.max_stage}阶）
+                              </Select.Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+                      </Col>
+                      <Col span={8}>
+                        <Form.Item label="当前阶段" name="main_career_stage" tooltip="主职业当前修炼到的阶段" style={{ marginBottom: 12 }}>
+                          <InputNumber
+                            min={1}
+                            max={createForm.getFieldValue('main_career_id') ?
+                              mainCareers.find(c => c.id === createForm.getFieldValue('main_career_id'))?.max_stage || 10
+                              : 10}
+                            style={{ width: '100%' }}
+                            placeholder="阶段"
+                            size="small"
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  )}
+                  {subCareers.length > 0 && (
+                    <Form.List name="sub_career_data">
+                      {(fields, { add, remove }) => (
+                        <>
+                          <div style={{ marginBottom: 4 }}>
+                            <Typography.Text strong style={{ fontSize: 12 }}>副职业</Typography.Text>
+                          </div>
+                          <div style={{ maxHeight: '80px', overflowY: 'auto', overflowX: 'hidden', marginBottom: 8, paddingRight: 8 }}>
+                            {fields.map((field) => (
+                              <Row key={field.key} gutter={8} style={{ marginBottom: 4 }}>
+                                <Col span={16}>
+                                  <Form.Item
+                                    {...field}
+                                    name={[field.name, 'career_id']}
+                                    rules={[{ required: true, message: '请选择副职业' }]}
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Select placeholder="选择副职业" size="small">
+                                      {subCareers.map(career => (
+                                        <Select.Option key={career.id} value={career.id}>
+                                          {career.name}（最高{career.max_stage}阶）
+                                        </Select.Option>
+                                      ))}
+                                    </Select>
+                                  </Form.Item>
+                                </Col>
+                                <Col span={5}>
+                                  <Form.Item
+                                    {...field}
+                                    name={[field.name, 'stage']}
+                                    rules={[{ required: true, message: '阶段' }]}
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <InputNumber
+                                      min={1}
+                                      max={(() => {
+                                        const careerId = createForm.getFieldValue(['sub_career_data', field.name, 'career_id']);
+                                        const career = subCareers.find(c => c.id === careerId);
+                                        return career?.max_stage || 10;
+                                      })()}
+                                      placeholder="阶段"
+                                      style={{ width: '100%' }}
+                                      size="small"
+                                    />
+                                  </Form.Item>
+                                </Col>
+                                <Col span={3}>
+                                  <Button
+                                    type="text"
+                                    danger
+                                    size="small"
+                                    onClick={() => remove(field.name)}
+                                  >
+                                    删除
+                                  </Button>
+                                </Col>
+                              </Row>
+                            ))}
+                          </div>
+                          <Button
+                            type="dashed"
+                            onClick={() => add({ career_id: undefined, stage: 1 })}
+                            block
+                            size="small"
+                          >
+                            + 添加副职业
+                          </Button>
+                        </>
+                      )}
+                    </Form.List>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {/* 组织基本信息 - 第一行：名称、类型、势力等级 */}
+              <Row gutter={12}>
+                <Col span={10}>
+                  <Form.Item
+                    label="组织名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入组织名称' }]}
+                    style={{ marginBottom: 12 }}
+                  >
+                    <Input placeholder="组织名称" />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item
+                    label="组织类型"
+                    name="organization_type"
+                    rules={[{ required: true, message: '请输入组织类型' }]}
+                    style={{ marginBottom: 12 }}
+                  >
+                    <Input placeholder="如：门派、帮派" />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item
+                    label="势力等级"
+                    name="power_level"
+                    initialValue={50}
+                    tooltip="0-100的数值"
+                    style={{ marginBottom: 12 }}
+                  >
+                    <InputNumber min={0} max={100} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              {/* 第二行：组织目的 */}
+              <Form.Item
+                label="组织目的"
+                name="organization_purpose"
+                rules={[{ required: true, message: '请输入组织目的' }]}
+                style={{ marginBottom: 12 }}
+              >
+                <Input placeholder="描述组织的宗旨和目标..." />
+              </Form.Item>
+
+              {/* 第三行：所在地、代表颜色 */}
+              <Row gutter={12}>
+                <Col span={12}>
+                  <Form.Item label="所在地" name="location" style={{ marginBottom: 12 }}>
+                    <Input placeholder="总部位置" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="代表颜色" name="color" style={{ marginBottom: 12 }}>
+                    <Input placeholder="如：金色" />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              {/* 第四行：格言/口号 */}
+              <Form.Item label="格言/口号" name="motto" style={{ marginBottom: 12 }}>
+                <Input placeholder="组织的宗旨、格言或口号" />
+              </Form.Item>
+
+              {/* 第五行：组织背景 */}
+              <Form.Item label="组织背景" name="background" style={{ marginBottom: 12 }}>
+                <TextArea rows={2} placeholder="描述组织的背景故事..." />
               </Form.Item>
             </>
           )}
 
-          <Form.Item>
+          <Form.Item style={{ marginBottom: 0, marginTop: 16 }}>
             <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
               <Button onClick={() => {
                 setIsCreateModalOpen(false);

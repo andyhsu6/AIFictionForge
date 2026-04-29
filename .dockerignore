@@ -72,6 +72,9 @@ frontend/build/
 # 后端静态文件（会从前端构建阶段复制）
 backend/static/
 
+# 提示词工坊实例标识（每个容器需要独立生成）
+backend/.instance_id
+
 # Docker相关
 Dockerfile
 .dockerignore

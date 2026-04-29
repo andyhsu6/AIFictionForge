@@ -1,4 +1,5 @@
 import React, { useMemo, useEffect, useRef } from 'react';
+import { theme } from 'antd';
 
 // 标注数据类型
 export interface MemoryAnnotation {
@@ -14,7 +15,7 @@ export interface MemoryAnnotation {
     strength?: number;
     foreshadowType?: 'planted' | 'resolved';
     relatedCharacters?: string[];
-    [key: string]: any;
+    [key: string]: unknown;
   };
 }
 
@@ -34,14 +35,6 @@ interface AnnotatedTextProps {
   scrollToAnnotation?: string;
   style?: React.CSSProperties;
 }
-
-// 类型颜色映射
-const TYPE_COLORS = {
-  hook: '#ff6b6b',
-  foreshadow: '#6b7bff',
-  plot_point: '#51cf66',
-  character_event: '#ffd93d',
-};
 
 // 类型图标映射
 const TYPE_ICONS = {
@@ -64,6 +57,14 @@ const AnnotatedText: React.FC<AnnotatedTextProps> = ({
   style,
 }) => {
   const annotationRefs = useRef<Record<string, HTMLSpanElement | null>>({});
+
+  const { token } = theme.useToken();
+  const typeColors: Record<MemoryAnnotation['type'], string> = {
+    hook: token.colorError,
+    foreshadow: token.colorInfo,
+    plot_point: token.colorSuccess,
+    character_event: token.colorWarning,
+  };
 
   // 当需要滚动到特定标注时
   useEffect(() => {
@@ -214,7 +215,7 @@ const AnnotatedText: React.FC<AnnotatedTextProps> = ({
     const { annotation, annotations } = segment;
     if (!annotation) return null;
 
-    const color = TYPE_COLORS[annotation.type];
+    const color = typeColors[annotation.type];
     const icon = TYPE_ICONS[annotation.type];
     const isActive = activeAnnotationId === annotation.id;
 
@@ -238,17 +239,17 @@ const AnnotatedText: React.FC<AnnotatedTextProps> = ({
           position: 'relative',
           borderBottom: `2px solid ${color}`,
           cursor: 'pointer',
-          backgroundColor: isActive ? `${color}22` : 'transparent',
+          backgroundColor: isActive ? `color-mix(in srgb, ${color} 13%, transparent)` : 'transparent',
           transition: 'all 0.2s',
           padding: '2px 0',
         }}
         onClick={() => onAnnotationClick?.(annotation)}
         onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = `${color}33`;
+          e.currentTarget.style.backgroundColor = `color-mix(in srgb, ${color} 20%, transparent)`;
         }}
         onMouseLeave={(e) => {
           e.currentTarget.style.backgroundColor = isActive
-            ? `${color}22`
+            ? `color-mix(in srgb, ${color} 13%, transparent)`
             : 'transparent';
         }}
       >

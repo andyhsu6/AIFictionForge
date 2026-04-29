@@ -90,7 +90,12 @@ class AnthropicProvider(BaseAIProvider):
                             final_messages, model, temperature, max_tokens, system_prompt, tools, user_id
                         ):
                             yield final_chunk
+                    if chunk.get("finish_reason"):
+                        yield {"finish_reason": chunk.get("finish_reason"), "done": True}
                     break
+
+                if chunk.get("usage"):
+                    yield {"usage": chunk.get("usage")}
                 
                 # 输出文本内容
                 if chunk.get("content"):
@@ -106,8 +111,11 @@ class AnthropicProvider(BaseAIProvider):
             max_tokens=max_tokens,
             system_prompt=system_prompt,
         ):
-            # 确保只 yield 字符串内容，避免 yield 字典导致类型错误
             if isinstance(chunk, dict):
+                if chunk.get("usage"):
+                    yield {"usage": chunk.get("usage")}
+                if chunk.get("finish_reason"):
+                    yield {"finish_reason": chunk.get("finish_reason")}
                 if chunk.get("content"):
                     yield chunk["content"]
             else:
@@ -155,7 +163,12 @@ class AnthropicProvider(BaseAIProvider):
                         messages, model, temperature, max_tokens, system_prompt, tools, user_id
                     ):
                         yield final_chunk
+                if chunk.get("finish_reason"):
+                    yield {"finish_reason": chunk.get("finish_reason"), "done": True}
                 break
+
+            if chunk.get("usage"):
+                yield {"usage": chunk.get("usage")}
             
             if chunk.get("content"):
                 yield chunk["content"]

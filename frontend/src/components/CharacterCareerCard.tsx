@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Card, Button, Modal, Form, Select, InputNumber, Input, message, Progress, Tag, Space, Divider, Typography } from 'antd';
+import { useState, useEffect, useCallback } from 'react';
+import { Card, Button, Modal, Form, Select, InputNumber, Input, message, Progress, Tag, Space, Divider, Typography, theme } from 'antd';
 import { EditOutlined, PlusOutlined, DeleteOutlined, TrophyOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -44,6 +44,7 @@ export const CharacterCareerCard: React.FC<Props> = ({
     editable = false,
     onUpdate
 }) => {
+    const { token } = theme.useToken();
     const [mainCareer, setMainCareer] = useState<CareerDetail | null>(null);
     const [subCareers, setSubCareers] = useState<CareerDetail[]>([]);
     const [allCareers, setAllCareers] = useState<Career[]>([]);
@@ -59,14 +60,7 @@ export const CharacterCareerCard: React.FC<Props> = ({
     const [progressForm] = Form.useForm();
     const [modal, contextHolder] = Modal.useModal();
 
-    useEffect(() => {
-        fetchCharacterCareers();
-        if (editable) {
-            fetchAllCareers();
-        }
-    }, [characterId]);
-
-    const fetchCharacterCareers = async () => {
+    const fetchCharacterCareers = useCallback(async () => {
         try {
             setLoading(true);
             const response = await axios.get(
@@ -75,14 +69,15 @@ export const CharacterCareerCard: React.FC<Props> = ({
             );
             setMainCareer(response.data.main_career || null);
             setSubCareers(response.data.sub_careers || []);
-        } catch (error: any) {
-            message.error(error.response?.data?.detail || '获取职业信息失败');
+        } catch (error: unknown) {
+            const axiosError = error as { response?: { data?: { detail?: string } } };
+            message.error(axiosError.response?.data?.detail || '获取职业信息失败');
         } finally {
             setLoading(false);
         }
-    };
+    }, [characterId]);
 
-    const fetchAllCareers = async () => {
+    const fetchAllCareers = useCallback(async () => {
         try {
             const response = await axios.get(`${API_BASE_URL}/api/careers`, {
                 params: { project_id: projectId },
@@ -91,12 +86,19 @@ export const CharacterCareerCard: React.FC<Props> = ({
             const main = response.data.main_careers || [];
             const sub = response.data.sub_careers || [];
             setAllCareers([...main, ...sub]);
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('获取职业列表失败:', error);
         }
-    };
+    }, [projectId]);
 
-    const handleSetMainCareer = async (values: any) => {
+    useEffect(() => {
+        fetchCharacterCareers();
+        if (editable) {
+            fetchAllCareers();
+        }
+    }, [characterId, editable, fetchCharacterCareers, fetchAllCareers]);
+
+    const handleSetMainCareer = async (values: { career_id: string; current_stage?: number; started_at?: string }) => {
         try {
             await axios.post(
                 `${API_BASE_URL}/api/careers/character/${characterId}/careers/main`,
@@ -108,12 +110,13 @@ export const CharacterCareerCard: React.FC<Props> = ({
             mainForm.resetFields();
             fetchCharacterCareers();
             onUpdate?.();
-        } catch (error: any) {
-            message.error(error.response?.data?.detail || '设置主职业失败');
+        } catch (error: unknown) {
+            const axiosError = error as { response?: { data?: { detail?: string } } };
+            message.error(axiosError.response?.data?.detail || '设置主职业失败');
         }
     };
 
-    const handleAddSubCareer = async (values: any) => {
+    const handleAddSubCareer = async (values: { career_id: string; current_stage?: number; started_at?: string }) => {
         try {
             await axios.post(
                 `${API_BASE_URL}/api/careers/character/${characterId}/careers/sub`,
@@ -125,12 +128,13 @@ export const CharacterCareerCard: React.FC<Props> = ({
             subForm.resetFields();
             fetchCharacterCareers();
             onUpdate?.();
-        } catch (error: any) {
-            message.error(error.response?.data?.detail || '添加副职业失败');
+        } catch (error: unknown) {
+            const axiosError = error as { response?: { data?: { detail?: string } } };
+            message.error(axiosError.response?.data?.detail || '添加副职业失败');
         }
     };
 
-    const handleUpdateProgress = async (values: any) => {
+    const handleUpdateProgress = async (values: { current_stage: number; stage_progress: number; reached_current_stage_at?: string; notes?: string }) => {
         if (!selectedCareer) return;
 
         try {
@@ -144,8 +148,9 @@ export const CharacterCareerCard: React.FC<Props> = ({
             progressForm.resetFields();
             fetchCharacterCareers();
             onUpdate?.();
-        } catch (error: any) {
-            message.error(error.response?.data?.detail || '更新职业阶段失败');
+        } catch (error: unknown) {
+            const axiosError = error as { response?: { data?: { detail?: string } } };
+            message.error(axiosError.response?.data?.detail || '更新职业阶段失败');
         }
     };
 
@@ -163,8 +168,9 @@ export const CharacterCareerCard: React.FC<Props> = ({
                     message.success('副职业删除成功');
                     fetchCharacterCareers();
                     onUpdate?.();
-                } catch (error: any) {
-                    message.error(error.response?.data?.detail || '删除副职业失败');
+                } catch (error: unknown) {
+                    const axiosError = error as { response?: { data?: { detail?: string } } };
+                    message.error(axiosError.response?.data?.detail || '删除副职业失败');
                 }
             }
         });
@@ -185,7 +191,7 @@ export const CharacterCareerCard: React.FC<Props> = ({
         <div key={career.id} style={{ marginBottom: 16 }}>
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                 <Space>
-                    <TrophyOutlined style={{ color: isMain ? '#1890ff' : '#8c8c8c' }} />
+                    <TrophyOutlined style={{ color: isMain ? token.colorPrimary : token.colorTextTertiary }} />
                     <Text strong={isMain}>{career.career_name}</Text>
                     {isMain && <Tag color="blue">主</Tag>}
                 </Space>

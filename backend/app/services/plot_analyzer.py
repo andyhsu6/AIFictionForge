@@ -1,7 +1,8 @@
 """剧情分析服务 - 自动分析章节的钩子、伏笔、冲突等元素"""
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.logger import get_logger
 import json
@@ -9,6 +10,10 @@ import re
 import asyncio
 
 logger = get_logger(__name__)
+
+# 重试回调类型定义
+OnRetryCallback = Callable[[int, int, int, str], Awaitable[None]]
+# 参数: (当前重试次数, 最大重试次数, 等待时间秒数, 错误原因)
 
 
 class PlotAnalyzer:
@@ -32,7 +37,10 @@ class PlotAnalyzer:
         word_count: int,
         user_id: str = None,
         db: AsyncSession = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        existing_foreshadows: Optional[List[Dict[str, Any]]] = None,
+        on_retry: Optional[OnRetryCallback] = None,
+        characters_info: str = ""
     ) -> Optional[Dict[str, Any]]:
         """
         分析单章内容（带重试机制）
@@ -45,6 +53,9 @@ class PlotAnalyzer:
             user_id: 用户ID（用于获取自定义提示词）
             db: 数据库会话（用于查询自定义提示词）
             max_retries: 最大重试次数，默认3次
+            existing_foreshadows: 已埋入的伏笔列表（用于回收匹配）
+            on_retry: 重试时的回调函数，参数为 (当前重试次数, 最大重试次数, 等待秒数, 错误原因)
+            characters_info: 项目角色信息文本（用于角色名称匹配）
         
         Returns:
             分析结果字典,失败返回None
@@ -65,17 +76,22 @@ class PlotAnalyzer:
             logger.warning(f"⚠️ 获取提示词模板失败，使用默认模板: {str(e)}")
             template = PromptService.PLOT_ANALYSIS
         
+        # 格式化已有伏笔列表
+        foreshadows_text = self._format_existing_foreshadows(existing_foreshadows)
+        
         # 格式化提示词
         prompt = PromptService.format_prompt(
             template,
             chapter_number=chapter_number,
             title=title,
             word_count=word_count,
-            content=analysis_content
+            content=analysis_content,
+            existing_foreshadows=foreshadows_text,
+            characters_info=characters_info if characters_info else "（暂无角色信息）"
         )
         
         last_error = None
-        
+        logger.debug(f"章节分析提示词{prompt}")
         for attempt in range(1, max_retries + 1):
             try:
                 # 调用AI进行分析
@@ -105,6 +121,12 @@ class PlotAnalyzer:
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 10)
                         logger.info(f"  ⏳ 等待 {wait_time} 秒后重试...")
+                        # 调用重试回调，通知调用方正在重试
+                        if on_retry:
+                            try:
+                                await on_retry(attempt, max_retries, wait_time, last_error)
+                            except Exception as callback_error:
+                                logger.warning(f"⚠️ 重试回调执行失败: {callback_error}")
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -132,6 +154,12 @@ class PlotAnalyzer:
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 10)
                         logger.info(f"  ⏳ 等待 {wait_time} 秒后重试...")
+                        # 调用重试回调，通知调用方正在重试
+                        if on_retry:
+                            try:
+                                await on_retry(attempt, max_retries, wait_time, last_error)
+                            except Exception as callback_error:
+                                logger.warning(f"⚠️ 重试回调执行失败: {callback_error}")
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -145,6 +173,12 @@ class PlotAnalyzer:
                 if attempt < max_retries:
                     wait_time = min(2 ** attempt, 10)
                     logger.info(f"  ⏳ 等待 {wait_time} 秒后重试...")
+                    # 调用重试回调，通知调用方正在重试
+                    if on_retry:
+                        try:
+                            await on_retry(attempt, max_retries, wait_time, last_error)
+                        except Exception as callback_error:
+                            logger.warning(f"⚠️ 重试回调执行失败: {callback_error}")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
@@ -154,6 +188,80 @@ class PlotAnalyzer:
         # 不应该到达这里，但作为安全措施
         logger.error(f"❌ 第{chapter_number}章分析失败: {last_error}")
         return None
+    
+    def _format_existing_foreshadows(self, foreshadows: Optional[List[Dict[str, Any]]]) -> str:
+        """
+        格式化已有伏笔列表，用于注入到分析提示词中
+        
+        核心策略（重构版）：
+        - 分层展示所有已埋入伏笔，让AI能识别"自然回收"
+        - 第1层：本章必须回收的伏笔（最详细）
+        - 第2层：超期伏笔（较详细）
+        - 第3层：其他已埋入伏笔（精简信息，供AI判断是否自然回收了）
+        
+        Args:
+            foreshadows: 伏笔列表，每个包含 id, title, content, plant_chapter_number, resolve_status 等
+        
+        Returns:
+            格式化的文本
+        """
+        if not foreshadows:
+            return "（暂无已埋入的伏笔）"
+        
+        # 分类伏笔
+        must_resolve = [fs for fs in foreshadows if fs.get('resolve_status') == 'must_resolve_now']
+        overdue = [fs for fs in foreshadows if fs.get('resolve_status') == 'overdue']
+        others = [fs for fs in foreshadows if fs.get('resolve_status') not in ('must_resolve_now', 'overdue')]
+        
+        lines = []
+        
+        # === 第1层：本章必须回收的伏笔（最详细）===
+        if must_resolve:
+            lines.append("=" * 40)
+            lines.append("【🎯 本章必须回收的伏笔】")
+            lines.append("=" * 40)
+            for i, fs in enumerate(must_resolve, 1):
+                fs_id = fs.get('id', 'unknown')
+                fs_title = fs.get('title', '未命名伏笔')
+                fs_content = fs.get('content', '')[:200]
+                plant_chapter = fs.get('plant_chapter_number', '?')
+                hint_text = fs.get('hint_text', '')
+                
+                lines.append(f"{i}. 【ID: {fs_id}】{fs_title}")
+                lines.append(f"   埋入章节：第{plant_chapter}章")
+                lines.append(f"   伏笔内容：{fs_content}{'...' if len(fs.get('content', '')) > 200 else ''}")
+                if hint_text:
+                    lines.append(f"   埋入暗示：{hint_text[:100]}")
+                lines.append(f"   ⚠️ 回收时 reference_foreshadow_id 填写: {fs_id}")
+                lines.append("")
+        
+        # === 第2层：超期伏笔 ===
+        if overdue:
+            lines.append("【⚠️ 超期未回收伏笔 - 如章节内容回收了请标记】")
+            for fs in overdue[:5]:
+                fs_id = fs.get('id', 'unknown')
+                fs_title = fs.get('title', '')
+                plant_chapter = fs.get('plant_chapter_number', '?')
+                lines.append(f"- 【ID: {fs_id}】{fs_title}（第{plant_chapter}章埋入）")
+            lines.append("")
+        
+        # === 第3层：其他已埋入伏笔（精简）===
+        if others:
+            lines.append("【📋 其他已埋入伏笔 - 如章节内容自然回收了请标记】")
+            for fs in others[:10]:
+                fs_id = fs.get('id', 'unknown')
+                fs_title = fs.get('title', '')
+                plant_chapter = fs.get('plant_chapter_number', '?')
+                lines.append(f"- 【ID: {fs_id}】{fs_title}（第{plant_chapter}章埋入）")
+            if len(others) > 10:
+                lines.append(f"  ... 还有{len(others) - 10}个伏笔未列出")
+            lines.append("")
+        
+        # 操作指引
+        lines.append("提示：如果章节内容回收了上述任一伏笔，请在 foreshadows 数组中")
+        lines.append("添加 type='resolved' 的记录，并在 reference_foreshadow_id 填写对应ID。")
+        
+        return "\n".join(lines)
     
     def _parse_analysis_response(self, response: str) -> Optional[Dict[str, Any]]:
         """
@@ -170,7 +278,7 @@ class PlotAnalyzer:
             cleaned = self.ai_service._clean_json_response(response)
             
             # 尝试解析JSON
-            result = json.loads(cleaned)
+            result = loads_json(cleaned)
             
             # 验证必要字段
             required_fields = ['hooks', 'plot_points', 'scores']

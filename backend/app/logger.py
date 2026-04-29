@@ -144,8 +144,8 @@ def _configure_third_party_loggers():
     logging.getLogger('openai').setLevel(logging.WARNING)
     logging.getLogger('anthropic').setLevel(logging.WARNING)
     
-    # 应用模块 - 可根据需要调整
-    logging.getLogger('app.services.ai_service').setLevel(logging.WARNING)
+    # 应用模块 - AI 统计日志需要保留 INFO 级别输出
+    logging.getLogger('app.services.ai_service').setLevel(logging.INFO)
     logging.getLogger('app.api.wizard').setLevel(logging.WARNING)
 
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer } from 'antd';
+import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer, theme } from 'antd';
 import { PlusOutlined, UserOutlined, EditOutlined, DeleteOutlined, UnorderedListOutlined, BankOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
@@ -58,6 +58,7 @@ export default function Organizations() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [modal, contextHolder] = Modal.useModal();
   const [orgListVisible, setOrgListVisible] = useState(false);
+  const { token } = theme.useToken();
 
   useEffect(() => {
     const handleResize = () => {
@@ -83,6 +84,7 @@ export default function Organizations() {
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   const loadCharacters = useCallback(async () => {
@@ -309,7 +311,7 @@ export default function Organizations() {
         <div style={{
           padding: '16px 0',
           marginBottom: 16,
-          borderBottom: '1px solid #f0f0f0'
+          borderBottom: `1px solid ${token.colorBorderSecondary}`
         }}>
           <h2 style={{ margin: 0, fontSize: 24 }}>
             <BankOutlined style={{ marginRight: 8 }} />
@@ -334,7 +336,7 @@ export default function Organizations() {
           loading={loading}
         >
           {organizations.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#999' }}>
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: token.colorTextTertiary }}>
               暂无组织
             </div>
           ) : (
@@ -346,15 +348,15 @@ export default function Organizations() {
                   hoverable
                   style={{
                     cursor: 'pointer',
-                    border: selectedOrg?.id === org.id ? '2px solid #1890ff' : '1px solid #d9d9d9',
-                    background: selectedOrg?.id === org.id ? '#e6f7ff' : 'transparent'
+                    border: selectedOrg?.id === org.id ? `2px solid ${token.colorPrimary}` : `1px solid ${token.colorBorder}`,
+                    background: selectedOrg?.id === org.id ? token.colorPrimaryBg : 'transparent'
                   }}
                   onClick={() => handleSelectOrganization(org)}
                 >
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
                     <strong style={{ fontSize: 14 }}>{org.name}</strong>
                     <Tag color="blue">{org.type}</Tag>
-                    <div style={{ fontSize: '12px', color: '#666' }}>
+                    <div style={{ fontSize: '12px', color: token.colorTextSecondary }}>
                       成员: {org.member_count} | 势力: {org.power_level}
                     </div>
                   </Space>
@@ -376,7 +378,7 @@ export default function Organizations() {
           styles={{ body: { padding: 0 } }}
         >
           {organizations.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#999' }}>
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: token.colorTextTertiary }}>
               暂无组织
             </div>
           ) : (
@@ -388,8 +390,8 @@ export default function Organizations() {
                   hoverable
                   style={{
                     cursor: 'pointer',
-                    border: selectedOrg?.id === org.id ? '2px solid #1890ff' : '1px solid #d9d9d9',
-                    background: selectedOrg?.id === org.id ? '#e6f7ff' : 'transparent'
+                    border: selectedOrg?.id === org.id ? `2px solid ${token.colorPrimary}` : `1px solid ${token.colorBorder}`,
+                    background: selectedOrg?.id === org.id ? token.colorPrimaryBg : 'transparent'
                   }}
                   onClick={() => {
                     handleSelectOrganization(org);
@@ -399,7 +401,7 @@ export default function Organizations() {
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
                     <strong style={{ fontSize: 14 }}>{org.name}</strong>
                     <Tag color="blue">{org.type}</Tag>
-                    <div style={{ fontSize: '12px', color: '#666' }}>
+                    <div style={{ fontSize: '12px', color: token.colorTextSecondary }}>
                       成员: {org.member_count} | 势力: {org.power_level}
                     </div>
                   </Space>
@@ -414,7 +416,7 @@ export default function Organizations() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
         {!selectedOrg ? (
           <Card style={{ height: '100%' }}>
-            <div style={{ textAlign: 'center', padding: '100px 20px', color: '#999' }}>
+            <div style={{ textAlign: 'center', padding: '100px 20px', color: token.colorTextTertiary }}>
               {isMobile && organizations.length > 0 && (
                 <Button
                   type="primary"

@@ -1,14 +1,26 @@
 # 多阶段构建 Dockerfile for AI Story Creator
+# 支持多架构构建: linux/amd64, linux/arm64
+
+# 构建参数
+ARG USE_CN_MIRROR=false
+
 # 阶段1: 构建前端
 FROM node:22-alpine AS frontend-builder
+
+ARG USE_CN_MIRROR
 
 WORKDIR /frontend
 
 # 复制前端依赖文件
 COPY frontend/package*.json ./
 
-# 使用国内npm镜像加速
-RUN npm config set registry https://registry.npmmirror.com
+# 根据参数决定是否使用国内npm镜像
+RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
+        npm config set registry https://registry.npmmirror.com; \
+    fi
+
+# 删除 package-lock.json 以避免因镜像源不一致导致的 404 错误
+RUN rm -f package-lock.json
 
 # 安装依赖
 RUN npm install
@@ -25,12 +37,18 @@ RUN npm run build
 # 阶段2: 构建最终镜像
 FROM python:3.11-slim
 
+ARG USE_CN_MIRROR
+ARG TARGETPLATFORM
+ARG TARGETARCH
+
 # 设置工作目录
 WORKDIR /app
 
-# 使用国内镜像源加速
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources \
-    && sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+# 根据参数决定是否使用国内镜像源
+RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
+        sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+        sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    fi
 
 # 安装系统依赖（添加数据库工具）
 RUN apt-get update && apt-get install -y \
@@ -42,13 +60,35 @@ RUN apt-get update && apt-get install -y \
 # 复制后端依赖文件
 COPY backend/requirements.txt ./
 
-# 先从PyTorch官方源安装CPU版本的torch（避免GPU依赖）
-RUN pip install --no-cache-dir torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+# 安装 Python 依赖
+# 先安装 torch CPU版本（~200MB vs 完整版~2GB，节省90%下载时间）
+# 对于embedding场景，CPU版本完全够用
+RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
+        pip install --no-cache-dir torch==2.8.0 --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/; \
+    else \
+        pip install --no-cache-dir torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
 
-# 再安装其他Python依赖（使用阿里云镜像加速）
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 创建embedding目录
+RUN mkdir -p /app/embedding
 
-# 复制后端代码（包含embedding模型）
+# 设置 Sentence-Transformers 缓存目录
+ENV SENTENCE_TRANSFORMERS_HOME=/app/embedding
+
+# 下载 embedding 模型（从 HuggingFace）
+# 使用 Python 脚本预下载模型，这样运行时不需要网络
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+import os; \
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/app/embedding'; \
+print('Downloading sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2...'); \
+model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
+print('Model downloaded successfully!'); \
+"
+
+# 复制后端代码（不包含embedding，因为已经下载了）
 COPY backend/ ./
 
 # 从前端构建阶段复制构建好的静态文件
@@ -74,11 +114,10 @@ ENV PYTHONUNBUFFERED=1
 ENV APP_HOST=0.0.0.0
 ENV APP_PORT=8000
 
-# 设置Transformers和Sentence-Transformers离线模式
+# 设置运行时为离线模式（模型已在构建时下载）
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_DATASETS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
-ENV SENTENCE_TRANSFORMERS_HOME=/app/embedding
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

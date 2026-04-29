@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Spin, Button } from 'antd';
+import { Modal, Spin, Button, theme } from 'antd';
 import { LoadingOutlined, StopOutlined } from '@ant-design/icons';
 
 interface SSEProgressModalProps {
@@ -27,6 +27,8 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
   onCancel,
   cancelButtonText = '取消任务',
 }) => {
+  const { token } = theme.useToken();
+
   if (!visible) return null;
 
   return (
@@ -53,13 +55,13 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
             marginBottom: 24
           }}>
             <Spin
-              indicator={<LoadingOutlined style={{ fontSize: 48, color: 'var(--color-primary)' }} spin />}
+              indicator={<LoadingOutlined style={{ fontSize: 48, color: token.colorPrimary }} spin />}
             />
             <div style={{
               fontSize: 20,
               fontWeight: 'bold',
               marginTop: 16,
-              color: 'var(--color-text-primary)'
+              color: token.colorText
             }}>
               {title}
             </div>
@@ -72,7 +74,7 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
         }}>
           <div style={{
             height: 12,
-            background: 'var(--color-bg-layout)',
+            background: token.colorBgLayout,
             borderRadius: 6,
             overflow: 'hidden',
             marginBottom: showPercentage ? 12 : 0
@@ -80,12 +82,12 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
             <div style={{
               height: '100%',
               background: progress === 100
-                ? 'linear-gradient(90deg, var(--color-success) 0%, var(--color-success-active) 100%)'
-                : 'linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-active) 100%)',
+                ? `linear-gradient(90deg, ${token.colorSuccess} 0%, ${token.colorSuccess} 100%)`
+                : `linear-gradient(90deg, ${token.colorPrimary} 0%, ${token.colorPrimary} 100%)`,
               width: `${progress}%`,
               transition: 'all 0.3s ease',
               borderRadius: 6,
-              boxShadow: progress > 0 ? 'var(--shadow-card)' : 'none'
+              boxShadow: progress > 0 ? token.boxShadow : 'none'
             }} />
           </div>
 
@@ -95,7 +97,7 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
               textAlign: 'center',
               fontSize: 32,
               fontWeight: 'bold',
-              color: progress === 100 ? 'var(--color-success)' : 'var(--color-primary)',
+              color: progress === 100 ? token.colorSuccess : token.colorPrimary,
               marginBottom: 8
             }}>
               {progress}%
@@ -107,7 +109,7 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
         <div style={{
           textAlign: 'center',
           fontSize: 16,
-          color: 'var(--color-text-secondary)',
+          color: token.colorTextSecondary,
           minHeight: 24,
           padding: '0 20px',
           marginBottom: 16
@@ -119,7 +121,7 @@ export const SSEProgressModal: React.FC<SSEProgressModalProps> = ({
         <div style={{
           textAlign: 'center',
           fontSize: 13,
-          color: 'var(--color-text-tertiary)',
+          color: token.colorTextTertiary,
           marginBottom: onCancel ? 16 : 0
         }}>
           请勿关闭页面，生成过程需要一定时间

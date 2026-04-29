@@ -98,10 +98,19 @@ class GeminiClient:
                     "function": {"name": fc["name"], "arguments": fc.get("args", {})}
                 })
         
+        usage = data.get("usageMetadata") or {}
+        prompt_tokens = usage.get("promptTokenCount")
+        completion_tokens = usage.get("candidatesTokenCount")
+        total_tokens = usage.get("totalTokenCount")
         return {
             "content": text,
             "tool_calls": tool_calls if tool_calls else None,
-            "finish_reason": "tool_calls" if tool_calls else "stop"
+            "finish_reason": "tool_calls" if tool_calls else "stop",
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }
         }
 
     async def chat_completion_stream(
@@ -148,6 +157,15 @@ class GeminiClient:
                             import json
                             try:
                                 data = json.loads(line[6:])
+                                usage = data.get("usageMetadata") or {}
+                                if usage:
+                                    yield {
+                                        "usage": {
+                                            "prompt_tokens": usage.get("promptTokenCount"),
+                                            "completion_tokens": usage.get("candidatesTokenCount"),
+                                            "total_tokens": usage.get("totalTokenCount"),
+                                        }
+                                    }
                                 candidates = data.get("candidates", [])
                                 if candidates and len(candidates) > 0:
                                     parts = candidates[0].get("content", {}).get("parts", [])

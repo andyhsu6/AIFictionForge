@@ -388,6 +388,42 @@ async def create_sse_generator(
         yield await SSEResponse.send_error(str(e))
 
 
+class _HeartbeatSentinel:
+    """心跳哨兵对象，用于标识心跳事件（非AI内容）"""
+    pass
+
+HEARTBEAT = _HeartbeatSentinel()
+
+
+async def wrap_stream_with_heartbeat(
+    async_gen: AsyncGenerator,
+    heartbeat_interval: float = 15.0
+) -> AsyncGenerator:
+    """
+    包装异步生成器，在等待数据时产生心跳哨兵，防止连接超时断开。
+    
+    用法：
+        async for chunk in wrap_stream_with_heartbeat(
+            ai_service.generate_text_stream(prompt), 
+            heartbeat_interval=15
+        ):
+            if chunk is HEARTBEAT:
+                yield await tracker.heartbeat()
+                continue
+            # chunk 是原始AI数据
+    """
+    ait = async_gen.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(ait.__anext__(), timeout=heartbeat_interval)
+            yield item
+        except asyncio.TimeoutError:
+            # 等待超时，产生心跳哨兵
+            yield HEARTBEAT
+        except StopAsyncIteration:
+            return
+
+
 def create_sse_response(generator: AsyncGenerator[str, None]) -> StreamingResponse:
     """
     创建SSE StreamingResponse - 兼容HTTP/2协议

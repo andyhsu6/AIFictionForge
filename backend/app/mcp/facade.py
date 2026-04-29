@@ -307,18 +307,21 @@ class MCPClientFacade:
             是否注册成功
         """
         self._ensure_background_tasks()
-        
+
         key = self._get_key(config.user_id, config.plugin_name)
         user_lock = await self._get_user_lock(config.user_id)
-        
+
         async with user_lock:
             # 如果已存在，先关闭
             if key in self._sessions:
                 await self._close_session_unsafe(key)
+
+            stream_ctx = None
+            session = None
             
             try:
                 logger.info(f"🔗 连接MCP服务器: {config.plugin_name} -> {config.url} (类型: {config.plugin_type})")
-                
+
                 # 根据类型选择客户端
                 if config.plugin_type == "sse":
                     # SSE 客户端 - 返回 2 个值
@@ -357,9 +360,27 @@ class MCPClientFacade:
                 logger.info(f"✅ MCP会话建立成功: {key}")
                 await self._emit_status_change(config.user_id, config.plugin_name, "inactive", "active", "连接成功")
                 return True
+
+            except ExceptionGroup as eg:
+                # 处理 TaskGroup 的异常组，提取详细错误信息
+                error_details = []
+                for exc in eg.exceptions:
+                    error_details.append(f"{type(exc).__name__}: {exc}")
+                error_msg = "; ".join(error_details)
+                logger.error(f"❌ MCP连接失败 {key}: TaskGroup异常 - {error_msg}")
                 
+                # 在同一任务中清理已创建的上下文，避免跨任务清理cancel scope
+                await self._cleanup_contexts_in_task(session, stream_ctx)
+                
+                await self._emit_status_change(config.user_id, config.plugin_name, "inactive", "error", error_msg)
+                return False
+
             except Exception as e:
-                logger.error(f"❌ MCP连接失败 {key}: {e}")
+                logger.error(f"❌ MCP连接失败 {key}: {type(e).__name__}: {e}")
+                
+                # 在同一任务中清理已创建的上下文，避免跨任务清理cancel scope
+                await self._cleanup_contexts_in_task(session, stream_ctx)
+                
                 await self._emit_status_change(config.user_id, config.plugin_name, "inactive", "error", str(e))
                 return False
     
@@ -381,6 +402,27 @@ class MCPClientFacade:
             self._invalidate_cache(key)
         
         await self._emit_status_change(user_id, plugin_name, old_status, "inactive", "已注销")
+    
+    async def _cleanup_contexts_in_task(self, session, stream_ctx):
+        """在当前任务中清理已创建的上下文（异步方法）
+        
+        当MCP连接失败时，上下文（cancel scope）必须在与创建时相同的任务中清理。
+        由于异常处理和上下文创建在同一个任务中，这里可以安全地await __aexit__。
+        """
+        # 先清理session，再清理stream（LIFO顺序）
+        if session is not None:
+            try:
+                await session.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"清理session上下文: {e}")
+        
+        if stream_ctx is not None:
+            try:
+                await stream_ctx.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug(f"清理stream上下文: {e}")
+        
+        logger.debug("已在当前任务中清理MCP上下文")
     
     async def _close_session_unsafe(self, key: str):
         """关闭会话（不加用户锁，需要调用者确保线程安全）"""
@@ -428,7 +470,37 @@ class MCPClientFacade:
         info.last_access = time.time()
         info.request_count += 1
         return info.session
-    
+
+    def is_registered(self, user_id: str, plugin_name: str) -> bool:
+        """
+        检查插件是否已注册（同步方法，仅检查内存状态）
+
+        Args:
+            user_id: 用户ID
+            plugin_name: 插件名称
+
+        Returns:
+            是否已注册且状态正常
+        """
+        key = self._get_key(user_id, plugin_name)
+        info = self._sessions.get(key)
+        return info is not None and info.status != "error"
+
+    def get_session_status(self, user_id: str, plugin_name: str) -> Optional[str]:
+        """
+        获取会话状态（同步方法）
+
+        Args:
+            user_id: 用户ID
+            plugin_name: 插件名称
+
+        Returns:
+            会话状态，如果不存在返回 None
+        """
+        key = self._get_key(user_id, plugin_name)
+        info = self._sessions.get(key)
+        return info.status if info else None
+
     async def ensure_registered(
         self,
         user_id: str,
@@ -963,7 +1035,7 @@ class MCPClientFacade:
                 try:
                     content_obj = json.loads(content)
                     content = json.dumps(content_obj, ensure_ascii=False, indent=2)
-                except:
+                except Exception:
                     pass
                 lines.append(f"```json\n{content}\n```\n")
             else:

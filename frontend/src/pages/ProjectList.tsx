@@ -1,40 +1,130 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Card, Button, Empty, Modal, message, Spin, Row, Col, Statistic, Space, Tag, Progress, Typography, Badge, Alert, Upload, Checkbox, Divider, Switch, Dropdown } from 'antd';
-import { EditOutlined, DeleteOutlined, BookOutlined, RocketOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, FireOutlined, SettingOutlined, InfoCircleOutlined, CloseOutlined, UploadOutlined, DownloadOutlined, ApiOutlined, MoreOutlined, BulbOutlined, LoadingOutlined, FileSearchOutlined } from '@ant-design/icons';
-import { projectApi } from '../services/api';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Card, Button, Modal, message, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme } from 'antd';
+import { EditOutlined, BookOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, SettingOutlined, UploadOutlined, ApiOutlined, FileSearchOutlined, MenuUnfoldOutlined, MenuFoldOutlined, BulbOutlined, MoonOutlined, DesktopOutlined, MailOutlined } from '@ant-design/icons';
+import { authApi, projectApi } from '../services/api';
 import { useStore } from '../store';
 import { useProjectSync } from '../store/hooks';
+import { eventBus, EventNames } from '../store/eventBus';
 import type { ReactNode } from 'react';
-import { cardStyles, cardHoverHandlers, gridConfig } from '../components/CardStyles';
+import type { Project, User } from '../types';
 import UserMenu from '../components/UserMenu';
 import ChangelogFloatingButton from '../components/ChangelogFloatingButton';
+import ThemeSwitch from '../components/ThemeSwitch';
+import { useThemeMode } from '../theme/useThemeMode';
+import SettingsPage from './Settings';
+import SystemSettingsPage from './SystemSettings';
+import MCPPluginsPage from './MCPPlugins';
+import PromptTemplates from './PromptTemplates';
+import BookImport from './BookImport';
+import BookshelfPage from './BookshelfPage';
+import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text } = Typography;
+
+/**
+ * 格式化字数显示
+ * @param count 字数
+ * @returns 格式化后的字符串，如 "1.2K", "3.5W", "1.2M"
+ */
+const formatWordCount = (count: number): string => {
+  if (count < 1000) {
+    return count.toString();
+  } else if (count < 10000) {
+    // 1K - 9.9K
+    return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  } else if (count < 1000000) {
+    // 1W - 99.9W (万)
+    return (count / 10000).toFixed(1).replace(/\.0$/, '') + 'W';
+  } else {
+    // 1M+ (百万)
+    return (count / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  }
+};
+
+type ProjectListView = 'projects' | 'settings' | 'system-settings' | 'mcp' | 'prompts' | 'book-import';
+
+const parseViewFromSearch = (search: string): ProjectListView => {
+  const view = new URLSearchParams(search).get('view');
+  if (view === 'settings' || view === 'system-settings' || view === 'mcp' || view === 'prompts' || view === 'book-import' || view === 'projects') {
+    return view;
+  }
+  return 'projects';
+};
 
 export default function ProjectList() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { projects, loading } = useStore();
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [modal, contextHolder] = Modal.useModal();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showApiTip, setShowApiTip] = useState(true);
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [exportModalVisible, setExportModalVisible] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [validationResult, setValidationResult] = useState<any>(null);
+  const [validationResult, setValidationResult] = useState<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
   const [importing, setImporting] = useState(false);
   const [validating, setValidating] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [exportOptions, setExportOptions] = useState({
     includeWritingStyles: true,
-    includeGenerationHistory: true,
+    includeGenerationHistory: false,
+    includeCareers: true,
+    includeMemories: false,
+    includePlotAnalysis: false,
   });
   const { refreshProjects, deleteProject } = useProjectSync();
+  const { mode, resolvedMode, setMode } = useThemeMode();
+  const { token } = theme.useToken();
+  const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
+
+  const activeView = useMemo<ProjectListView>(() => parseViewFromSearch(location.search), [location.search]);
+  const cycleThemeMode = () => {
+    const nextMode = mode === 'light' ? 'dark' : mode === 'dark' ? 'system' : 'light';
+    setMode(nextMode);
+  };
+  const collapsedThemeIcon = mode === 'light' ? <BulbOutlined /> : mode === 'dark' ? <MoonOutlined /> : <DesktopOutlined />;
+
+  const changeView = useCallback((view: ProjectListView) => {
+    const searchParams = new URLSearchParams(location.search);
+    if (view === 'projects') {
+      searchParams.delete('view');
+    } else {
+      searchParams.set('view', view);
+    }
+
+    const search = searchParams.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: search ? `?${search}` : '',
+      },
+      { replace: false }
+    );
+  }, [location.pathname, location.search, navigate]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // 处理切换到 MCP 视图的事件
+  const handleSwitchToMcp = useCallback(() => {
+    changeView('mcp');
+  }, [changeView]);
 
   useEffect(() => {
     refreshProjects();
+    authApi.getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
+    
+    // 监听切换到 MCP 视图的事件
+    eventBus.on(EventNames.SWITCH_TO_MCP_VIEW, handleSwitchToMcp);
+    
+    return () => {
+      eventBus.off(EventNames.SWITCH_TO_MCP_VIEW, handleSwitchToMcp);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [handleSwitchToMcp]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -49,6 +139,10 @@ export default function ProjectList() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setStoredSidebarCollapsed(collapsed);
+  }, [collapsed]);
 
   const handleDelete = (id: string) => {
     const isMobile = window.innerWidth <= 768;
@@ -73,30 +167,57 @@ export default function ProjectList() {
     });
   };
 
-  const handleEnterProject = async (project: any) => {
-    // 检查项目是否未完成生成(wizard_status为incomplete)
+  const handleEnterProject = async (project: Project) => {
     if (project.wizard_status === 'incomplete') {
-      // 未完成的项目跳转到生成页面继续生成
       navigate(`/wizard?project_id=${project.id}`);
     } else {
-      // 已完成的项目进入项目详情页
       navigate(`/project/${project.id}`);
+    }
+  };
+
+  const handleGenerateCover = async (project: Project, overwrite: boolean = true) => {
+    try {
+      message.loading({ content: `正在为《${project.title}》生成封面...`, key: `cover-${project.id}` });
+      await projectApi.generateCover(project.id, overwrite);
+      message.success({ content: `《${project.title}》封面生成成功`, key: `cover-${project.id}` });
+      await refreshProjects();
+    } catch (error) {
+      console.error('生成封面失败:', error);
+      message.error({ content: `《${project.title}》封面生成失败`, key: `cover-${project.id}` });
+    }
+  };
+
+  const handleDownloadCover = async (project: Project) => {
+    try {
+      await projectApi.downloadCover(project.id, `${project.title}-cover.png`);
+      message.success(`《${project.title}》封面已开始下载`);
+    } catch (error) {
+      console.error('下载封面失败:', error);
+      message.error('下载封面失败');
     }
   };
 
   const getStatusTag = (status: string) => {
     const statusConfig: Record<string, { color: string; text: string; icon: ReactNode }> = {
-      planning: { color: 'blue', text: '规划中', icon: <CalendarOutlined /> },
-      writing: { color: 'green', text: '创作中', icon: <EditOutlined /> },
-      revising: { color: 'orange', text: '修改中', icon: <FileTextOutlined /> },
-      completed: { color: 'purple', text: '已完成', icon: <TrophyOutlined /> },
+      planning: { color: 'blue', text: '规划', icon: <CalendarOutlined /> },
+      writing: { color: 'green', text: '创作', icon: <EditOutlined /> },
+      revising: { color: 'orange', text: '修订', icon: <FileTextOutlined /> },
+      completed: { color: 'purple', text: '已完结', icon: <TrophyOutlined /> },
     };
     const config = statusConfig[status] || statusConfig.planning;
     return (
-      <Tag color={config.color} icon={config.icon}>
+      <Tag color={config.color} icon={config.icon} style={{ margin: 0, borderRadius: 4, flexShrink: 0 }}>
         {config.text}
       </Tag>
     );
+  };
+
+  // 根据进度获取显示状态（进度达到100%时显示已完结）
+  const getDisplayStatus = (status: string, progress: number): string => {
+    if (progress >= 100) {
+      return 'completed';
+    }
+    return status;
   };
 
   const getProgress = (current: number, target: number) => {
@@ -105,10 +226,10 @@ export default function ProjectList() {
   };
 
   const getProgressColor = (progress: number) => {
-    if (progress >= 80) return '#52c41a';
-    if (progress >= 50) return '#1890ff';
-    if (progress >= 20) return '#faad14';
-    return '#ff4d4f';
+    if (progress >= 80) return token.colorSuccess;
+    if (progress >= 50) return token.colorPrimary;
+    if (progress >= 20) return token.colorWarning;
+    return token.colorError;
   };
 
   const formatDate = (dateString: string) => {
@@ -120,24 +241,24 @@ export default function ProjectList() {
     if (days === 0) return '今天';
     if (days === 1) return '昨天';
     if (days < 7) return `${days}天前`;
-    if (days < 30) return `${Math.floor(days / 7)}周前`;
     return date.toLocaleDateString('zh-CN');
   };
 
   const totalWords = projects.reduce((sum, p) => sum + (p.current_words || 0), 0);
   const activeProjects = projects.filter(p => p.status === 'writing').length;
+  // 计算已完结项目数（进度>=100%或状态为completed）
+  const completedProjects = projects.filter(p => {
+    const progress = getProgress(p.current_words || 0, p.target_words || 0);
+    return progress >= 100 || p.status === 'completed';
+  }).length;
 
-  // 处理文件选择
   const handleFileSelect = async (file: File) => {
     setSelectedFile(file);
     setValidationResult(null);
-
-    // 验证文件
     try {
       setValidating(true);
       const result = await projectApi.validateImportFile(file);
       setValidationResult(result);
-
       if (!result.valid) {
         message.error('文件验证失败');
       }
@@ -147,31 +268,23 @@ export default function ProjectList() {
     } finally {
       setValidating(false);
     }
-
-    return false; // 阻止自动上传
+    return false;
   };
 
-  // 处理导入
   const handleImport = async () => {
     if (!selectedFile || !validationResult?.valid) {
       message.warning('请选择有效的导入文件');
       return;
     }
-
     try {
       setImporting(true);
       const result = await projectApi.importProject(selectedFile);
-
       if (result.success) {
         message.success(`项目导入成功！${result.message}`);
         setImportModalVisible(false);
         setSelectedFile(null);
         setValidationResult(null);
-
-        // 刷新项目列表
         await refreshProjects();
-
-        // 跳转到新项目
         if (result.project_id) {
           navigate(`/project/${result.project_id}`);
         }
@@ -186,29 +299,24 @@ export default function ProjectList() {
     }
   };
 
-  // 关闭导入对话框
   const handleCloseImportModal = () => {
     setImportModalVisible(false);
     setSelectedFile(null);
     setValidationResult(null);
   };
 
-  // 打开导出对话框
   const handleOpenExportModal = () => {
     setExportModalVisible(true);
     setSelectedProjectIds([]);
   };
 
-  // 获取所有可导出的项目
   const exportableProjects = projects;
 
-  // 关闭导出对话框
   const handleCloseExportModal = () => {
     setExportModalVisible(false);
     setSelectedProjectIds([]);
   };
 
-  // 切换项目选择
   const handleToggleProject = (projectId: string) => {
     setSelectedProjectIds(prev =>
       prev.includes(projectId)
@@ -217,7 +325,6 @@ export default function ProjectList() {
     );
   };
 
-  // 全选/取消全选
   const handleToggleAll = () => {
     if (selectedProjectIds.length === exportableProjects.length) {
       setSelectedProjectIds([]);
@@ -226,52 +333,49 @@ export default function ProjectList() {
     }
   };
 
-  // 执行导出
   const handleExport = async () => {
     if (selectedProjectIds.length === 0) {
       message.warning('请至少选择一个项目');
       return;
     }
-
     try {
       setExporting(true);
-
       if (selectedProjectIds.length === 1) {
-        // 单个项目导出
         const projectId = selectedProjectIds[0];
         const project = projects.find(p => p.id === projectId);
         await projectApi.exportProjectData(projectId, {
           include_generation_history: exportOptions.includeGenerationHistory,
-          include_writing_styles: exportOptions.includeWritingStyles
+          include_writing_styles: exportOptions.includeWritingStyles,
+          include_careers: exportOptions.includeCareers,
+          include_memories: exportOptions.includeMemories,
+          include_plot_analysis: exportOptions.includePlotAnalysis
         });
         message.success(`项目 "${project?.title}" 导出成功`);
       } else {
-        // 批量导出
         let successCount = 0;
         let failCount = 0;
-
         for (const projectId of selectedProjectIds) {
           try {
             await projectApi.exportProjectData(projectId, {
               include_generation_history: exportOptions.includeGenerationHistory,
-              include_writing_styles: exportOptions.includeWritingStyles
+              include_writing_styles: exportOptions.includeWritingStyles,
+              include_careers: exportOptions.includeCareers,
+              include_memories: exportOptions.includeMemories,
+              include_plot_analysis: exportOptions.includePlotAnalysis
             });
             successCount++;
-            // 添加延迟避免浏览器阻止多个下载
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (error) {
             console.error(`导出项目 ${projectId} 失败:`, error);
             failCount++;
           }
         }
-
         if (failCount === 0) {
           message.success(`成功导出 ${successCount} 个项目`);
         } else {
           message.warning(`导出完成：成功 ${successCount} 个，失败 ${failCount} 个`);
         }
       }
-
       handleCloseExportModal();
     } catch (error) {
       console.error('导出失败:', error);
@@ -281,1022 +385,680 @@ export default function ProjectList() {
     }
   };
 
-  // 计算页脚高度和页面内边距
   const isMobile = window.innerWidth <= 768;
-  const footerHeight = isMobile ? 48 : 52;
-  const topPadding = isMobile ? 20 : 32;
-  const sidePadding = isMobile ? 16 : 24;
+  const headerHeight = isMobile ? 56 : 70;
+  const expandedSiderWidth = 220;
+  const collapsedSiderWidth = 60;
+  const desktopSiderWidth = collapsed ? collapsedSiderWidth : expandedSiderWidth;
+
+  const currentViewTitle = activeView === 'projects'
+    ? '我的书架'
+    : activeView === 'prompts'
+      ? '提示词模板'
+      : activeView === 'book-import'
+        ? '拆书导入'
+        : activeView === 'mcp'
+          ? 'MCP 插件'
+          : activeView === 'system-settings'
+            ? '系统设置'
+            : 'API 设置';
+
+  const isAdmin = !!currentUser?.is_admin;
+
+  const sideMenuItems = [
+    {
+      key: 'projects',
+      icon: <BookOutlined />,
+      label: '我的书架',
+    },
+    {
+      type: 'group' as const,
+      label: '创作工具',
+      children: [
+        {
+          key: 'book-import',
+          icon: <UploadOutlined />,
+          label: '拆书导入',
+        },
+        {
+          key: 'mcp',
+          icon: <ApiOutlined />,
+          label: 'MCP 插件',
+        },
+        {
+          key: 'prompts',
+          icon: <FileSearchOutlined />,
+          label: '提示词管理',
+        },
+      ],
+    },
+    {
+      type: 'group' as const,
+      label: '系统设置',
+      children: [
+        {
+          key: 'settings',
+          icon: <SettingOutlined />,
+          label: 'API 设置',
+        },
+        ...(isAdmin ? [{
+          key: 'system-settings',
+          icon: <MailOutlined />,
+          label: '系统设置',
+        }] : []),
+        {
+          key: 'mumu-api',
+          icon: <ApiOutlined />,
+          label: 'MuMuのAPI',
+        },
+      ],
+    },
+  ];
+
+  const sideMenuItemsCollapsed = [
+    {
+      key: 'projects',
+      icon: <BookOutlined />,
+      label: '我的书架',
+    },
+    {
+      key: 'book-import',
+      icon: <UploadOutlined />,
+      label: '拆书导入',
+    },
+    {
+      key: 'mcp',
+      icon: <ApiOutlined />,
+      label: 'MCP 插件',
+    },
+    {
+      key: 'prompts',
+      icon: <FileSearchOutlined />,
+      label: '提示词管理',
+    },
+    {
+      key: 'settings',
+      icon: <SettingOutlined />,
+      label: 'API 设置',
+    },
+    ...(isAdmin ? [{
+      key: 'system-settings',
+      icon: <MailOutlined />,
+      label: '系统设置',
+    }] : []),
+    {
+      key: 'mumu-api',
+      icon: <ApiOutlined />,
+      label: 'MuMuのAPI',
+    },
+  ];
 
   return (
     <div style={{
       height: '100vh',
       display: 'flex',
       flexDirection: 'column',
-      background: 'linear-gradient(180deg, var(--color-bg-base) 0%, #EEF2F3 100%)',
+      background: token.colorBgLayout,
       overflow: 'hidden'
     }}>
       {contextHolder}
 
-      {/* 固定头部区域 */}
-      <div style={{
-        flexShrink: 0,
-        padding: `${topPadding}px ${sidePadding}px 0`,
-      }}>
-        <div style={{
-          maxWidth: 1800,
-          margin: '0 auto'
+      {!isMobile && (
+        <div
+          style={{
+          width: desktopSiderWidth,
+          background: token.colorBgContainer,
+          borderRight: `1px solid ${token.colorBorderSecondary}`,
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          height: '100vh',
+          overflow: 'hidden',
+          transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          boxShadow: `4px 0 16px ${alphaColor(token.colorText, 0.06)}`,
+          zIndex: 1000
         }}>
-          {/* 现代化头部区域 */}
-          <Card
-            variant="borderless"
-            style={{
-              background: 'linear-gradient(135deg, var(--color-primary) 0%, #5A9BA5 50%, var(--color-primary-hover) 100%)',
-              borderRadius: window.innerWidth <= 768 ? 16 : 24,
-              boxShadow: '0 12px 40px rgba(77, 128, 136, 0.25), 0 4px 12px rgba(0, 0, 0, 0.06)',
-              border: 'none',
-              position: 'relative',
-              overflow: 'hidden'
-            }}
-          >
-            {/* 装饰性背景元素 */}
-            <div style={{
-              position: 'absolute',
-              top: -60,
-              right: -60,
-              width: 200,
-              height: 200,
-              borderRadius: '50%',
-              background: 'rgba(255, 255, 255, 0.08)',
-              pointerEvents: 'none'
-            }} />
-            <div style={{
-              position: 'absolute',
-              bottom: -40,
-              left: '30%',
-              width: 120,
-              height: 120,
-              borderRadius: '50%',
-              background: 'rgba(255, 255, 255, 0.05)',
-              pointerEvents: 'none'
-            }} />
-            <div style={{
-              position: 'absolute',
-              top: '50%',
-              right: '15%',
-              width: 80,
-              height: 80,
-              borderRadius: '50%',
-              background: 'rgba(255, 255, 255, 0.06)',
-              pointerEvents: 'none'
-            }} />
-            <Row align="middle" justify="space-between" gutter={[16, 16]} style={{ position: 'relative', zIndex: 1 }}>
-              <Col xs={24} sm={12} md={10}>
-                <Space direction="vertical" size={8}>
-                  <Title level={window.innerWidth <= 768 ? 3 : 2} style={{ margin: 0, color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-                    <FireOutlined style={{ color: 'rgba(255,255,255,0.9)', marginRight: 12 }} />
-                    我的创作空间
-                  </Title>
-                  <Text style={{ fontSize: window.innerWidth <= 768 ? 13 : 15, color: 'rgba(255,255,255,0.85)' }}>
-                    ✨ 开启你的小说创作之旅
-                  </Text>
-                </Space>
-              </Col>
-              <Col xs={24} sm={12} md={14}>
-                {window.innerWidth <= 768 ? (
-                  // 移动端：优化布局
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    {/* 第一行：主要创建按钮 */}
-                    <Row gutter={8}>
-                      <Col span={12}>
-                        <Button
-                          type="primary"
-                          size="middle"
-                          icon={<BulbOutlined />}
-                          onClick={() => navigate('/inspiration')}
-                          block
-                          style={{
-                            borderRadius: 10,
-                            background: 'rgba(255, 193, 7, 0.95)',
-                            border: '1px solid rgba(255, 255, 255, 0.3)',
-                            boxShadow: '0 4px 12px rgba(255, 193, 7, 0.35)',
-                            color: '#fff',
-                            height: 42,
-                            fontWeight: 500
-                          }}
-                        >
-                          灵感模式
-                        </Button>
-                      </Col>
-                      <Col span={12}>
-                        <Button
-                          type="primary"
-                          size="middle"
-                          icon={<RocketOutlined />}
-                          onClick={() => navigate('/wizard')}
-                          block
-                          style={{
-                            borderRadius: 10,
-                            background: 'rgba(255, 255, 255, 0.2)',
-                            border: '1px solid rgba(255, 255, 255, 0.4)',
-                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-                            color: '#fff',
-                            height: 42,
-                            fontWeight: 500,
-                            backdropFilter: 'blur(8px)'
-                          }}
-                        >
-                          向导创建
-                        </Button>
-                      </Col>
-                    </Row>
-                    {/* 第二行：功能按钮 */}
-                    <Row gutter={8}>
-                      <Col span={8}>
-                        <Button
-                          type="default"
-                          size="middle"
-                          icon={<SettingOutlined />}
-                          onClick={() => navigate('/settings')}
-                          block
-                          style={{
-                            borderRadius: 10,
-                            background: 'rgba(255, 255, 255, 0.15)',
-                            border: '1px solid rgba(255, 255, 255, 0.3)',
-                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-                            height: 38,
-                            padding: '0 8px',
-                            color: '#fff',
-                            backdropFilter: 'blur(8px)'
-                          }}
-                        >
-                          设置
-                        </Button>
-                      </Col>
-                      <Col span={8}>
-                        <Dropdown
-                          menu={{
-                            items: [
-                              {
-                                key: 'export',
-                                label: '导出项目',
-                                icon: <DownloadOutlined />,
-                                onClick: handleOpenExportModal,
-                                disabled: exportableProjects.length === 0
-                              },
-                              {
-                                key: 'import',
-                                label: '导入项目',
-                                icon: <UploadOutlined />,
-                                onClick: () => setImportModalVisible(true)
-                              },
-                              {
-                                type: 'divider'
-                              },
-                              {
-                                key: 'prompt-templates',
-                                label: '提示词管理',
-                                icon: <FileSearchOutlined />,
-                                onClick: () => navigate('/prompt-templates')
-                              },
-                              {
-                                key: 'mcp',
-                                label: 'MCP插件',
-                                icon: <ApiOutlined />,
-                                onClick: () => navigate('/mcp-plugins')
-                              }
-                            ]
-                          }}
-                          placement="bottomRight"
-                          trigger={['click']}
-                        >
-                          <Button
-                            size="middle"
-                            icon={<MoreOutlined />}
-                            block
-                            style={{
-                              borderRadius: 10,
-                              background: 'rgba(255, 255, 255, 0.15)',
-                              border: '1px solid rgba(255, 255, 255, 0.3)',
-                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-                              height: 38,
-                              color: '#fff',
-                              backdropFilter: 'blur(8px)'
-                            }}
-                          >
-                            更多
-                          </Button>
-                        </Dropdown>
-                      </Col>
-                      <Col span={8}>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <UserMenu />
-                        </div>
-                      </Col>
-                    </Row>
-                  </Space>
-                ) : (
-                  // PC端：优化后的布局 - 主要按钮 + 下拉菜单
-                  <Space size={12} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                    <Button
-                      type="primary"
-                      size="large"
-                      icon={<BulbOutlined />}
-                      onClick={() => navigate('/inspiration')}
-                      style={{
-                        borderRadius: 12,
-                        background: 'rgba(255, 193, 7, 0.95)',
-                        border: '1px solid rgba(255, 255, 255, 0.3)',
-                        boxShadow: '0 4px 16px rgba(255, 193, 7, 0.4)',
-                        color: '#fff',
-                        fontWeight: 600,
-                        height: 44,
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      灵感模式
-                    </Button>
-                    <Button
-                      type="primary"
-                      size="large"
-                      icon={<RocketOutlined />}
-                      onClick={() => navigate('/wizard')}
-                      style={{
-                        borderRadius: 12,
-                        background: 'rgba(255, 255, 255, 0.2)',
-                        border: '1px solid rgba(255, 255, 255, 0.4)',
-                        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.15)',
-                        color: '#fff',
-                        fontWeight: 500,
-                        height: 44,
-                        backdropFilter: 'blur(10px)',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      向导创建
-                    </Button>
-                    <Button
-                      type="default"
-                      size="large"
-                      icon={<SettingOutlined />}
-                      onClick={() => navigate('/settings')}
-                      style={{
-                        borderRadius: 12,
-                        background: 'rgba(255, 255, 255, 0.15)',
-                        border: '1px solid rgba(255, 255, 255, 0.3)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                        color: '#fff',
-                        height: 44,
-                        backdropFilter: 'blur(10px)',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      API设置
-                    </Button>
-                    <Dropdown
-                      menu={{
-                        items: [
-                          {
-                            key: 'export',
-                            label: '导出项目',
-                            icon: <DownloadOutlined />,
-                            onClick: handleOpenExportModal,
-                            disabled: exportableProjects.length === 0
-                          },
-                          {
-                            key: 'import',
-                            label: '导入项目',
-                            icon: <UploadOutlined />,
-                            onClick: () => setImportModalVisible(true)
-                          },
-                          {
-                            type: 'divider'
-                          },
-                          {
-                            key: 'prompt-templates',
-                            label: '提示词管理',
-                            icon: <FileSearchOutlined />,
-                            onClick: () => navigate('/prompt-templates')
-                          },
-                          {
-                            key: 'mcp',
-                            label: 'MCP插件',
-                            icon: <ApiOutlined />,
-                            onClick: () => navigate('/mcp-plugins')
-                          }
-                        ]
-                      }}
-                      placement="bottomRight"
-                    >
-                      <Button
-                        size="large"
-                        icon={<MoreOutlined />}
-                        style={{
-                          borderRadius: 12,
-                          background: 'rgba(255, 255, 255, 0.15)',
-                          border: '1px solid rgba(255, 255, 255, 0.3)',
-                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                          color: '#fff',
-                          height: 44,
-                          backdropFilter: 'blur(10px)',
-                          transition: 'all 0.3s ease'
-                        }}
-                      >
-                        更多
-                      </Button>
-                    </Dropdown>
-                    <UserMenu />
-                  </Space>
-                )}
-              </Col>
-            </Row>
-
-            {showApiTip && projects.length === 0 && (
-              <Alert
-                message={
-                  <Space align="center" style={{ width: '100%' }}>
-                    <InfoCircleOutlined style={{ fontSize: 16, color: '#1890ff' }} />
-                    <Text strong style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>
-                      首次使用提示
-                    </Text>
-                  </Space>
-                }
-                description={
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Text style={{ fontSize: window.innerWidth <= 768 ? 12 : 13 }}>
-                      在开始创作之前，请先配置您的AI接口。系统支持OpenAI和Anthropic两种接口。
-                    </Text>
-                    <Space size={8}>
-                      <Button
-                        type="primary"
-                        size="small"
-                        icon={<SettingOutlined />}
-                        onClick={() => navigate('/settings')}
-                        style={{
-                          borderRadius: 6,
-                          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                          border: 'none'
-                        }}
-                      >
-                        立即配置
-                      </Button>
-                      <Button
-                        size="small"
-                        onClick={() => setShowApiTip(false)}
-                        style={{ borderRadius: 6 }}
-                      >
-                        暂不提醒
-                      </Button>
-                    </Space>
-                  </Space>
-                }
-                type="info"
-                showIcon={false}
-                closable
-                closeIcon={<CloseOutlined style={{ fontSize: 12 }} />}
-                onClose={() => setShowApiTip(false)}
+          <div style={{
+            height: 70,
+            display: 'flex',
+            alignItems: 'center',
+            padding: collapsed ? 0 : '0 12px',
+            background: token.colorPrimary,
+            flexShrink: 0,
+            justifyContent: collapsed ? 'center' : 'space-between',
+            gap: 8
+          }}>
+            {collapsed ? (
+              <Button
+                type="text"
+                icon={<MenuUnfoldOutlined />}
+                onClick={() => setCollapsed(false)}
                 style={{
-                  marginTop: window.innerWidth <= 768 ? 16 : 24,
-                  borderRadius: 12,
-                  background: 'linear-gradient(135deg, #e6f7ff 0%, #f0f5ff 100%)',
-                  border: '1px solid #91d5ff'
+                  color: token.colorWhite,
+                  width: '100%',
+                  height: '100%',
+                  padding: 0,
+                  borderRadius: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}
               />
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
+                  <div style={{
+                    width: 30,
+                    height: 30,
+                    background: alphaColor(token.colorWhite, 0.2),
+                    borderRadius: 8,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: token.colorWhite,
+                    fontSize: 16,
+                    backdropFilter: 'blur(4px)'
+                  }}>
+                    <BookOutlined />
+                  </div>
+                  <span style={{
+                    color: token.colorWhite,
+                    fontWeight: 600,
+                    fontSize: 15,
+                    fontFamily: token.fontFamily,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}>
+                    MuMuAINovel
+                  </span>
+                </div>
+                <Button
+                  type="text"
+                  icon={<MenuFoldOutlined />}
+                  onClick={() => setCollapsed(true)}
+                  style={{
+                    color: token.colorWhite,
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    flexShrink: 0
+                  }}
+                />
+              </>
             )}
+          </div>
 
-            {projects.length > 0 && (
-              <Row gutter={[isMobile ? 8 : 16, 16]} style={{ marginTop: isMobile ? 16 : 28, position: 'relative', zIndex: 1 }}>
-                <Col xs={8} sm={8}>
-                  <Card
-                    variant="borderless"
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.2)',
-                      borderRadius: isMobile ? 12 : 16,
-                      border: '1px solid rgba(255, 255, 255, 0.3)',
-                      backdropFilter: 'blur(10px)',
-                      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.08)',
-                      padding: isMobile ? '8px 4px' : '12px'
-                    }}
-                    styles={{ body: { padding: isMobile ? '4px' : '12px' } }}
-                  >
-                    <Statistic
-                      title={
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? 4 : 8 }}>
-                          <span style={{ fontSize: isMobile ? 16 : 24, color: 'rgba(255,255,255,0.9)', marginRight: isMobile ? 0 : 8 }}>📚</span>
-                          {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 16 }}>总项目数</span>}
-                          {isMobile && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 2 }}>项目</div>}
-                        </div>
-                      }
-                      value={projects.length}
-                      valueStyle={{
-                        color: '#fff',
-                        fontSize: isMobile ? 18 : 32,
-                        fontWeight: 'bold',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                        textAlign: 'center'
-                      }}
-                    />
-                  </Card>
-                </Col>
-                <Col xs={8} sm={8}>
-                  <Card
-                    variant="borderless"
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.2)',
-                      borderRadius: isMobile ? 12 : 16,
-                      border: '1px solid rgba(255, 255, 255, 0.3)',
-                      backdropFilter: 'blur(10px)',
-                      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.08)',
-                      padding: isMobile ? '8px 4px' : '12px'
-                    }}
-                    styles={{ body: { padding: isMobile ? '4px' : '12px' } }}
-                  >
-                    <Statistic
-                      title={
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? 4 : 8 }}>
-                          <span style={{ fontSize: isMobile ? 16 : 24, color: 'rgba(255,255,255,0.9)', marginRight: isMobile ? 0 : 8 }}>✍️</span>
-                          {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 16 }}>创作中</span>}
-                          {isMobile && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 2 }}>创作</div>}
-                        </div>
-                      }
-                      value={activeProjects}
-                      valueStyle={{
-                        color: '#fff',
-                        fontSize: isMobile ? 18 : 32,
-                        fontWeight: 'bold',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                        textAlign: 'center'
-                      }}
-                    />
-                  </Card>
-                </Col>
-                <Col xs={8} sm={8}>
-                  <Card
-                    variant="borderless"
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.2)',
-                      borderRadius: isMobile ? 12 : 16,
-                      border: '1px solid rgba(255, 255, 255, 0.3)',
-                      backdropFilter: 'blur(10px)',
-                      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.08)',
-                      padding: isMobile ? '8px 4px' : '12px'
-                    }}
-                    styles={{ body: { padding: isMobile ? '4px' : '12px' } }}
-                  >
-                    <Statistic
-                      title={
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? 4 : 8 }}>
-                          <span style={{ fontSize: isMobile ? 16 : 24, color: 'rgba(255,255,255,0.9)', marginRight: isMobile ? 0 : 8 }}>📝</span>
-                          {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 16 }}>总字数</span>}
-                          {isMobile && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 2 }}>字数</div>}
-                        </div>
-                      }
-                      value={totalWords}
-                      formatter={(value) => {
-                        const val = Number(value);
-                        return isMobile && val > 10000 ? `${(val / 10000).toFixed(1)}w` : val;
-                      }}
-                      valueStyle={{
-                        color: '#fff',
-                        fontSize: isMobile ? 18 : 32,
-                        fontWeight: 'bold',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                        textAlign: 'center'
-                      }}
-                    />
-                  </Card>
-                </Col>
-              </Row>
+          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+            <Menu
+              mode="inline"
+              inlineCollapsed={collapsed}
+              selectedKeys={[activeView]}
+              style={{ borderRight: 0, paddingTop: 12, width: '100%' }}
+              onClick={({ key }) => {
+                if (key === 'mumu-api') {
+                  window.open('https://api.mumuverse.space/register?aff=4NN8', '_blank', 'noopener,noreferrer');
+                  return;
+                }
+                changeView(key as ProjectListView);
+              }}
+              items={collapsed ? sideMenuItemsCollapsed : sideMenuItems}
+            />
+          </div>
+
+          <div style={{
+            padding: collapsed ? '12px 8px' : 16,
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+            flexShrink: 0
+          }}>
+            {collapsed ? (
+              <Space direction="vertical" style={{ width: '100%', alignItems: 'center' }} size={10}>
+                <Button
+                  type="text"
+                  icon={collapsedThemeIcon}
+                  onClick={cycleThemeMode}
+                  title={`主题模式：${mode === 'light' ? '浅色' : mode === 'dark' ? '深色' : '跟随系统'}（点击切换）`}
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    background: alphaColor(token.colorBgContainer, 0.65),
+                    border: `1px solid ${token.colorBorder}`,
+                    color: token.colorTextSecondary,
+                  }}
+                />
+                <UserMenu compact />
+              </Space>
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary }}>
+                  <span>主题模式</span>
+                  <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+                </div>
+                <ThemeSwitch block />
+                <UserMenu />
+              </Space>
             )}
-          </Card>
+          </div>
+        </div>
+      )}
+
+      <div style={{
+        background: token.colorPrimary,
+        padding: isMobile ? '0 12px' : '0 24px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: 'fixed',
+        top: 0,
+        left: isMobile ? 0 : desktopSiderWidth,
+        right: 0,
+        zIndex: 1000,
+        boxShadow: `0 2px 10px ${alphaColor(token.colorText, 0.16)}`,
+        height: headerHeight,
+        flexShrink: 0,
+        transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        overflow: 'hidden'
+      }}>
+        {isMobile ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Button
+                type="text"
+                icon={<MenuUnfoldOutlined />}
+                onClick={() => setDrawerVisible(true)}
+                style={{
+                  fontSize: 18,
+                  color: token.colorWhite,
+                  width: 36,
+                  height: 36
+                }}
+              />
+            </div>
+
+            <h2 style={{
+              margin: 0,
+              color: token.colorWhite,
+              fontSize: 16,
+              fontWeight: 600,
+              textShadow: `0 2px 4px ${alphaColor(token.colorText, 0.2)}`,
+              flex: 1,
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              paddingRight: 36
+            }}>
+              {currentViewTitle}
+            </h2>
+
+            <div style={{ width: 36, height: 36 }} />
+          </>
+        ) : (
+          <>
+            <div style={{ width: 40, zIndex: 1 }} />
+
+            <h2 style={{
+              margin: 0,
+              color: token.colorWhite,
+              fontSize: '24px',
+              fontWeight: 600,
+              textShadow: `0 2px 4px ${alphaColor(token.colorText, 0.2)}`,
+              position: 'absolute',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '45%'
+            }}>
+              {currentViewTitle}
+            </h2>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, zIndex: 1 }}>
+              {activeView === 'projects' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+                  {projects.length > 0 && (
+                    <div style={{ display: 'flex', gap: '16px' }}>
+                      {[
+                        { label: '创作中', value: activeProjects, unit: '本' },
+                        { label: '已完结', value: completedProjects, unit: '本' },
+                        { label: '总字数', value: totalWords, unit: '字' },
+                      ].map((item, index) => (
+                        <div
+                          key={index}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            backdropFilter: 'blur(4px)',
+                            borderRadius: '28px',
+                            minWidth: '56px',
+                            height: '56px',
+                            padding: '0 12px',
+                            boxShadow: `inset 0 0 15px ${alphaColor(token.colorWhite, 0.15)}, 0 4px 10px ${alphaColor(token.colorText, 0.1)}`,
+                            cursor: 'default',
+                            transition: 'transform 0.3s ease, box-shadow 0.3s ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.transform = 'translateY(-3px) scale(1.02)';
+                            e.currentTarget.style.boxShadow = `inset 0 0 20px ${alphaColor(token.colorWhite, 0.25)}, 0 8px 16px ${alphaColor(token.colorText, 0.15)}`;
+                            e.currentTarget.style.border = `1px solid ${alphaColor(token.colorWhite, 0.1)}`;
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.transform = 'translateY(0) scale(1)';
+                            e.currentTarget.style.boxShadow = `inset 0 0 15px ${alphaColor(token.colorWhite, 0.15)}, 0 4px 10px ${alphaColor(token.colorText, 0.1)}`;
+                          }}
+                        >
+                          <span style={{ fontSize: '11px', color: alphaColor(token.colorWhite, 0.9), marginBottom: '2px', lineHeight: 1 }}>
+                            {item.label}
+                          </span>
+                          <span style={{ fontSize: '15px', fontWeight: '600', color: token.colorWhite, lineHeight: 1, fontFamily: 'Monaco, monospace' }}>
+                            {item.label === '总字数' ? formatWordCount(item.value) : item.value}
+                            {item.unit && <span style={{ fontSize: '10px', marginLeft: '2px', opacity: 0.8 }}>{item.unit}</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {isMobile && (
+        <Drawer
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{
+                width: 30,
+                height: 30,
+                background: token.colorPrimary,
+                borderRadius: 8,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: token.colorWhite,
+                fontSize: 16,
+              }}>
+                <BookOutlined />
+              </div>
+              <span style={{ fontWeight: 600, fontSize: 16, fontFamily: token.fontFamily }}>MuMuAINovel</span>
+            </div>
+          }
+          placement="left"
+          onClose={() => setDrawerVisible(false)}
+          open={drawerVisible}
+          width={280}
+          styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+        >
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            <Menu
+              mode="inline"
+              selectedKeys={[activeView]}
+              style={{ borderRight: 0, paddingTop: 8 }}
+              onClick={({ key }) => {
+                if (key === 'mumu-api') {
+                  window.open('https://api.mumuverse.space/register?aff=4NN8', '_blank', 'noopener,noreferrer');
+                  setDrawerVisible(false);
+                  return;
+                }
+                changeView(key as ProjectListView);
+                setDrawerVisible(false);
+              }}
+              items={sideMenuItems}
+            />
+
+          </div>
+
+          <div style={{ padding: 16, borderTop: `1px solid ${token.colorBorderSecondary}` }}>
+            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary }}>
+                <span>主题模式</span>
+                <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+              </div>
+              <ThemeSwitch block />
+              <UserMenu showFullInfo />
+            </Space>
+          </div>
+        </Drawer>
+      )}
+
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
+        marginLeft: isMobile ? 0 : desktopSiderWidth,
+        marginTop: headerHeight,
+        transition: 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+      }}>
+
+        {/* 内容显示区 */}
+        <div
+          ref={scrollContainerRef}
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: activeView === 'projects'
+              ? (isMobile ? '20px 16px 70px' : '24px 24px 70px')
+              : 0,
+            background: activeView === 'projects'
+              ? `linear-gradient(180deg, ${alphaColor(token.colorPrimary, 0.04)} 0%, ${token.colorBgLayout} 26%)`
+              : token.colorBgLayout,
+          }}
+        >
+          {activeView === 'settings' && <SettingsPage />}
+          {activeView === 'system-settings' && <SystemSettingsPage />}
+          {activeView === 'mcp' && <MCPPluginsPage />}
+          {activeView === 'prompts' && <PromptTemplates />}
+          
+          {activeView === 'book-import' && <BookImport />}
+          
+          {activeView === 'projects' && (
+            <BookshelfPage
+              isMobile={isMobile}
+              loading={loading}
+              projects={projects}
+              showApiTip={showApiTip}
+              setShowApiTip={setShowApiTip}
+              exportableProjectsCount={exportableProjects.length}
+              onOpenImportModal={() => setImportModalVisible(true)}
+              onOpenExportModal={handleOpenExportModal}
+              onGoSettings={() => changeView('settings')}
+              onStartWizard={() => navigate('/wizard')}
+              onOpenInspiration={() => navigate('/inspiration')}
+              onEnterProject={handleEnterProject}
+              onDeleteProject={handleDelete}
+              onGenerateCover={handleGenerateCover}
+              onDownloadCover={handleDownloadCover}
+              formatWordCount={formatWordCount}
+              getProgress={getProgress}
+              getProgressColor={getProgressColor}
+              getDisplayStatus={getDisplayStatus}
+              getStatusTag={getStatusTag}
+              formatDate={formatDate}
+            />
+          )}
+        
+        <ChangelogFloatingButton />
         </div>
       </div>
 
-      {/* 可滚动的项目列表区域 */}
-      <div style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: `${isMobile ? 16 : 24}px ${sidePadding}px`,
-        paddingBottom: footerHeight + (isMobile ? 24 : 32),
-      }}>
-        <div style={{ maxWidth: 1800, margin: '0 auto' }}>
-          <Spin spinning={loading}>
-            {!Array.isArray(projects) || projects.length === 0 ? (
-              <Card
-                variant="borderless"
-                style={{
-                  background: 'var(--color-bg-container)',
-                  borderRadius: 16,
-                  boxShadow: 'var(--shadow-card)',
-                  border: '1px solid var(--color-border-secondary)'
-                }}
-              >
-                <Empty
-                  description={
-                    <Space direction="vertical" size={16}>
-                      <Text style={{ fontSize: 16, color: '#8c8c8c' }}>
-                        还没有项目，开始创建你的第一个小说项目吧！
-                      </Text>
-                      <Space size={12}>
-                        <Button
-                          type="primary"
-                          size="large"
-                          icon={<BulbOutlined />}
-                          onClick={() => navigate('/inspiration')}
-                          style={{
-                            background: 'var(--color-warning)',
-                            border: 'none',
-                            color: '#fff',
-                            boxShadow: '0 2px 8px rgba(227, 173, 54, 0.2)'
-                          }}
-                        >
-                          灵感模式
-                        </Button>
-                        <Button
-                          type="primary"
-                          size="large"
-                          icon={<RocketOutlined />}
-                          onClick={() => navigate('/wizard')}
-                          style={{
-                            background: 'var(--color-primary)',
-                            border: 'none',
-                            boxShadow: '0 2px 8px rgba(77, 128, 136, 0.2)'
-                          }}
-                        >
-                          向导创建
-                        </Button>
-                      </Space>
-                    </Space>
-                  }
-                  style={{ padding: '80px 0' }}
-                />
-              </Card>
-            ) : (
-              <Row gutter={[16, 16]}>
-                {projects.map((project) => {
-                  const progress = getProgress(project.current_words, project.target_words || 0);
-
-                  return (
-                    <Col {...gridConfig} key={project.id}>
-                      <Badge.Ribbon
-                        text={project.wizard_status === 'incomplete' ? (
-                          <Tag color="orange" icon={<LoadingOutlined spin />}>生成中断</Tag>
-                        ) : getStatusTag(project.status)}
-                        color="transparent"
-                        style={{ top: 12, right: 12 }}
-                      >
-                        <Card
-                          hoverable
-                          variant="borderless"
-                          onClick={() => handleEnterProject(project)}
-                          style={cardStyles.project}
-                          styles={{ body: { padding: 0, overflow: 'hidden' } }}
-                          {...cardHoverHandlers}
-                        >
-                          {/* 项目卡片头部 - 添加装饰元素 */}
-                          <div style={{
-                            background: 'linear-gradient(135deg, var(--color-primary) 0%, #5A9BA5 60%, var(--color-primary-hover) 100%)',
-                            padding: window.innerWidth <= 768 ? '18px 16px' : '24px',
-                            position: 'relative',
-                            overflow: 'hidden'
-                          }}>
-                            {/* 装饰性圆圈 */}
-                            <div style={{
-                              position: 'absolute',
-                              top: -20,
-                              right: -20,
-                              width: 80,
-                              height: 80,
-                              borderRadius: '50%',
-                              background: 'rgba(255, 255, 255, 0.1)',
-                              pointerEvents: 'none'
-                            }} />
-                            <Space direction="vertical" size={8} style={{ width: '100%', position: 'relative', zIndex: 1 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: window.innerWidth <= 768 ? 10 : 12 }}>
-                                <div style={{
-                                  width: window.innerWidth <= 768 ? 36 : 44,
-                                  height: window.innerWidth <= 768 ? 36 : 44,
-                                  borderRadius: 12,
-                                  background: 'rgba(255, 255, 255, 0.2)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  backdropFilter: 'blur(4px)'
-                                }}>
-                                  <BookOutlined style={{ fontSize: window.innerWidth <= 768 ? 18 : 22, color: '#fff' }} />
-                                </div>
-                                <Title level={window.innerWidth <= 768 ? 5 : 4} style={{ margin: 0, color: '#fff', flex: 1, textShadow: '0 1px 2px rgba(0,0,0,0.1)' }} ellipsis>
-                                  {project.title}
-                                </Title>
-                              </div>
-                              {project.genre && (
-                                <Tag
-                                  color="rgba(255,255,255,0.2)"
-                                  style={{
-                                    color: '#fff',
-                                    border: '1px solid rgba(255,255,255,0.3)',
-                                    borderRadius: 6,
-                                    backdropFilter: 'blur(4px)'
-                                  }}
-                                >
-                                  {project.genre}
-                                </Tag>
-                              )}
-                            </Space>
-                          </div>
-
-                          <div style={{ padding: window.innerWidth <= 768 ? '16px' : '20px' }}>
-                            <Paragraph
-                              ellipsis={{ rows: 2 }}
-                              style={{
-                                color: 'rgba(0,0,0,0.65)',
-                                minHeight: 44,
-                                marginBottom: 16
-                              }}
-                            >
-                              {project.description || '暂无描述'}
-                            </Paragraph>
-
-                            {project.target_words && project.target_words > 0 && (
-                              <div style={{ marginBottom: 16 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                                  <Text type="secondary" style={{ fontSize: 12 }}>完成进度</Text>
-                                  <Text strong style={{ fontSize: 12 }}>{progress}%</Text>
-                                </div>
-                                <Progress
-                                  percent={progress}
-                                  strokeColor={getProgressColor(progress)}
-                                  showInfo={false}
-                                  size={{ height: 8 }}
-                                />
-                              </div>
-                            )}
-
-                            <Row gutter={12}>
-                              <Col span={12}>
-                                <div style={{
-                                  textAlign: 'center',
-                                  padding: '14px 0',
-                                  background: 'linear-gradient(135deg, #E8F4FC 0%, #F0F9FF 100%)',
-                                  borderRadius: 12,
-                                  border: '1px solid rgba(24, 144, 255, 0.15)'
-                                }}>
-                                  <div style={{ fontSize: 22, fontWeight: 'bold', color: 'var(--color-primary)' }}>
-                                    {project.current_words >= 1000000
-                                      ? (project.current_words / 1000000).toFixed(1) + 'M'
-                                      : project.current_words >= 1000
-                                        ? (project.current_words / 1000).toFixed(1) + 'K'
-                                        : project.current_words
-                                    }
-                                  </div>
-                                  <Text type="secondary" style={{ fontSize: 12 }}>已写字数</Text>
-                                </div>
-                              </Col>
-                              <Col span={12}>
-                                <div style={{
-                                  textAlign: 'center',
-                                  padding: '14px 0',
-                                  background: 'linear-gradient(135deg, #F0FDF4 0%, #ECFDF5 100%)',
-                                  borderRadius: 12,
-                                  border: '1px solid rgba(82, 196, 26, 0.15)'
-                                }}>
-                                  <div style={{ fontSize: 22, fontWeight: 'bold', color: 'var(--color-success)' }}>
-                                    {project.target_words
-                                      ? (project.target_words >= 1000000
-                                        ? (project.target_words / 1000000).toFixed(1) + 'M'
-                                        : project.target_words >= 1000
-                                          ? (project.target_words / 1000).toFixed(1) + 'K'
-                                          : project.target_words)
-                                      : '--'
-                                    }
-                                  </div>
-                                  <Text type="secondary" style={{ fontSize: 12 }}>目标字数</Text>
-                                </div>
-                              </Col>
-                            </Row>
-
-                            <div style={{
-                              marginTop: 18,
-                              paddingTop: 16,
-                              borderTop: '1px solid rgba(0, 0, 0, 0.06)',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center'
-                            }}>
-                              <Text type="secondary" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <CalendarOutlined style={{ color: 'var(--color-primary)' }} />
-                                {formatDate(project.updated_at)}
-                              </Text>
-                              <Space size={4}>
-                                <Button
-                                  type="text"
-                                  size="small"
-                                  danger
-                                  icon={<DeleteOutlined />}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDelete(project.id);
-                                  }}
-                                  style={{
-                                    borderRadius: 8,
-                                    transition: 'all 0.2s ease'
-                                  }}
-                                />
-                              </Space>
-                            </div>
-                          </div>
-                        </Card>
-                      </Badge.Ribbon>
-                    </Col>
-                  );
-                })}
-              </Row>
-            )}
-          </Spin>
-        </div>
-
-        {/* 导入项目对话框 */}
-        <Modal
-          title="导入项目"
-          open={importModalVisible}
-          onOk={handleImport}
-          onCancel={handleCloseImportModal}
-          confirmLoading={importing}
-          okText="导入"
-          cancelText="取消"
-          width={window.innerWidth <= 768 ? '90%' : 500}
-          centered
-          okButtonProps={{ disabled: !validationResult?.valid }}
-          styles={{
-            body: {
-              maxHeight: window.innerWidth <= 768 ? '60vh' : 'auto',
-              overflowY: 'auto',
-              padding: window.innerWidth <= 768 ? '16px' : '24px'
-            }
-          }}
-        >
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            <div>
-              <p style={{ marginBottom: '12px', color: '#666', fontSize: window.innerWidth <= 768 ? 13 : 14 }}>
-                选择之前导出的 JSON 格式项目文件
-              </p>
-              <Upload
-                accept=".json"
-                beforeUpload={handleFileSelect}
-                maxCount={1}
-                onRemove={() => {
-                  setSelectedFile(null);
-                  setValidationResult(null);
-                }}
-                fileList={selectedFile ? [{ uid: '-1', name: selectedFile.name, status: 'done' }] as any : []}
-              >
-                <Button icon={<UploadOutlined />} block>选择文件</Button>
-              </Upload>
-            </div>
-
-            {validating && (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Spin tip="验证文件中..." />
-              </div>
-            )}
-
-            {validationResult && (
-              <Card size="small" style={{ background: validationResult.valid ? '#f6ffed' : '#fff2f0' }}>
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <div>
-                    <Text strong style={{
-                      color: validationResult.valid ? '#52c41a' : '#ff4d4f',
-                      fontSize: window.innerWidth <= 768 ? 13 : 14
-                    }}>
-                      {validationResult.valid ? '✓ 文件验证通过' : '✗ 文件验证失败'}
-                    </Text>
-                  </div>
-
-                  {validationResult.project_name && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>项目名称：</Text>
-                      <Text strong style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>{validationResult.project_name}</Text>
-                    </div>
-                  )}
-
-                  {validationResult.statistics && Object.keys(validationResult.statistics).length > 0 && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>数据统计：</Text>
-                      <div style={{ marginTop: 8 }}>
-                        <Row gutter={[8, 8]}>
-                          {validationResult.statistics.chapters > 0 && (
-                            <Col span={12}>
-                              <Tag color="blue">章节: {validationResult.statistics.chapters}</Tag>
-                            </Col>
-                          )}
-                          {validationResult.statistics.characters > 0 && (
-                            <Col span={12}>
-                              <Tag color="green">角色: {validationResult.statistics.characters}</Tag>
-                            </Col>
-                          )}
-                          {validationResult.statistics.outlines > 0 && (
-                            <Col span={12}>
-                              <Tag color="purple">大纲: {validationResult.statistics.outlines}</Tag>
-                            </Col>
-                          )}
-                          {validationResult.statistics.relationships > 0 && (
-                            <Col span={12}>
-                              <Tag color="orange">关系: {validationResult.statistics.relationships}</Tag>
-                            </Col>
-                          )}
-                        </Row>
-                      </div>
-                    </div>
-                  )}
-
-                  {validationResult.errors && validationResult.errors.length > 0 && (
-                    <div>
-                      <Text type="danger" strong style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>错误：</Text>
-                      <ul style={{
-                        margin: '4px 0 0 0',
-                        paddingLeft: '20px',
-                        color: '#ff4d4f',
-                        fontSize: window.innerWidth <= 768 ? 12 : 13
-                      }}>
-                        {validationResult.errors.map((error: string, index: number) => (
-                          <li key={index}>{error}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {validationResult.warnings && validationResult.warnings.length > 0 && (
-                    <div>
-                      <Text type="warning" strong style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>警告：</Text>
-                      <ul style={{
-                        margin: '4px 0 0 0',
-                        paddingLeft: '20px',
-                        color: '#faad14',
-                        fontSize: window.innerWidth <= 768 ? 12 : 13
-                      }}>
-                        {validationResult.warnings.map((warning: string, index: number) => (
-                          <li key={index}>{warning}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </Space>
-              </Card>
-            )}
-          </Space>
-        </Modal>
-
-        {/* 导出项目对话框 */}
-        <Modal
-          title="导出项目"
-          open={exportModalVisible}
-          onOk={handleExport}
-          onCancel={handleCloseExportModal}
-          confirmLoading={exporting}
-          okText={selectedProjectIds.length > 0 ? `导出 (${selectedProjectIds.length})` : '导出'}
-          cancelText="取消"
-          width={window.innerWidth <= 768 ? '90%' : 700}
-          centered
-          okButtonProps={{ disabled: selectedProjectIds.length === 0 }}
-          styles={{
-            body: {
-              maxHeight: window.innerWidth <= 768 ? '70vh' : 'auto',
-              overflowY: 'auto',
-              padding: window.innerWidth <= 768 ? '16px' : '24px'
-            }
-          }}
-        >
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            {/* 导出选项 */}
-            <Card
-              size="small"
-              style={{ background: '#f5f5f5' }}
-              styles={{ body: { padding: window.innerWidth <= 768 ? 12 : 16 } }}
+      {/* 导入项目对话框 */}
+      <Modal
+        title="导入项目"
+        open={importModalVisible}
+        onOk={handleImport}
+        onCancel={handleCloseImportModal}
+        confirmLoading={importing}
+        okText="导入"
+        cancelText="取消"
+        width={isMobile ? '90%' : 500}
+        centered
+        okButtonProps={{ disabled: !validationResult?.valid }}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <div>
+            <p style={{ marginBottom: '12px', color: token.colorTextSecondary }}>
+              选择之前导出的 JSON 格式项目文件
+            </p>
+            <Upload
+              accept=".json"
+              beforeUpload={handleFileSelect}
+              maxCount={1}
+              onRemove={() => {
+                setSelectedFile(null);
+                setValidationResult(null);
+              }}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              fileList={selectedFile ? [{ uid: '-1', name: selectedFile.name, status: 'done' }] as any : []}
             >
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <Text strong style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>导出选项</Text>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Switch
-                    size={window.innerWidth <= 768 ? 'small' : 'default'}
-                    checked={exportOptions.includeWritingStyles}
-                    onChange={(checked) => setExportOptions(prev => ({ ...prev, includeWritingStyles: checked }))}
-                    style={{
-                      flexShrink: 0,
-                      height: window.innerWidth <= 768 ? 16 : 22,
-                      minHeight: window.innerWidth <= 768 ? 16 : 22,
-                      lineHeight: window.innerWidth <= 768 ? '16px' : '22px'
-                    }}
-                  />
-                  <Text style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>包含写作风格</Text>
-                  <InfoCircleOutlined
-                    title="导出项目关联的写作风格数据"
-                    style={{ color: '#999', fontSize: window.innerWidth <= 768 ? 12 : 14 }}
-                  />
+              <Button icon={<UploadOutlined />} block>选择文件</Button>
+            </Upload>
+          </div>
+
+          {validating && (
+            <div style={{ textAlign: 'center', padding: '20px' }}>
+              <Spin tip="验证文件中..." />
+            </div>
+          )}
+
+          {validationResult && (
+            <Card size="small" style={{ background: validationResult.valid ? token.colorSuccessBg : token.colorErrorBg }}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <div>
+                  <Text strong style={{ color: validationResult.valid ? token.colorSuccess : token.colorError }}>
+                    {validationResult.valid ? '✓ 文件验证通过' : '✗ 文件验证失败'}
+                  </Text>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Switch
-                    size={window.innerWidth <= 768 ? 'small' : 'default'}
-                    checked={exportOptions.includeGenerationHistory}
-                    onChange={(checked) => setExportOptions(prev => ({ ...prev, includeGenerationHistory: checked }))}
-                    style={{
-                      flexShrink: 0,
-                      height: window.innerWidth <= 768 ? 16 : 22,
-                      minHeight: window.innerWidth <= 768 ? 16 : 22,
-                      lineHeight: window.innerWidth <= 768 ? '16px' : '22px'
-                    }}
-                  />
-                  <Text style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>包含生成历史</Text>
-                  <InfoCircleOutlined
-                    title="导出AI生成的历史记录（最多100条）"
-                    style={{ color: '#999', fontSize: window.innerWidth <= 768 ? 12 : 14 }}
-                  />
+                {validationResult.project_name && (
+                  <div>
+                    <Text type="secondary">项目名称：</Text>
+                    <Text strong>{validationResult.project_name}</Text>
+                  </div>
+                )}
+                {validationResult.statistics && (
+                   <div style={{ marginTop: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>数据统计：</Text>
+                      <Space size={[6, 6]} wrap>
+                        {validationResult.statistics.chapters > 0 && <Tag color="blue">章节: {validationResult.statistics.chapters}</Tag>}
+                        {validationResult.statistics.characters > 0 && <Tag color="green">角色: {validationResult.statistics.characters}</Tag>}
+                        {validationResult.statistics.outlines > 0 && <Tag color="cyan">大纲: {validationResult.statistics.outlines}</Tag>}
+                        {validationResult.statistics.relationships > 0 && <Tag color="purple">关系: {validationResult.statistics.relationships}</Tag>}
+                        {validationResult.statistics.organizations > 0 && <Tag color="orange">组织: {validationResult.statistics.organizations}</Tag>}
+                        {validationResult.statistics.careers > 0 && <Tag color="magenta">职业: {validationResult.statistics.careers}</Tag>}
+                        {validationResult.statistics.character_careers > 0 && <Tag color="geekblue">职业关联: {validationResult.statistics.character_careers}</Tag>}
+                        {validationResult.statistics.writing_styles > 0 && <Tag color="lime">写作风格: {validationResult.statistics.writing_styles}</Tag>}
+                        {validationResult.statistics.story_memories > 0 && <Tag color="gold">故事记忆: {validationResult.statistics.story_memories}</Tag>}
+                        {validationResult.statistics.plot_analysis > 0 && <Tag color="volcano">剧情分析: {validationResult.statistics.plot_analysis}</Tag>}
+                        {validationResult.statistics.generation_history > 0 && <Tag>生成历史: {validationResult.statistics.generation_history}</Tag>}
+                        {validationResult.statistics.has_default_style && <Tag color="success">含默认风格</Tag>}
+                      </Space>
+                   </div>
+                )}
+                {validationResult.warnings?.length > 0 && (
+                   <div style={{ marginTop: 8 }}>
+                     <Text type="warning" strong style={{ fontSize: 12 }}>提示：</Text>
+                     <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: token.colorWarning, fontSize: 12 }}>
+                       {validationResult.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                     </ul>
+                   </div>
+                )}
+                {validationResult.errors?.length > 0 && (
+                   <div>
+                     <Text type="danger" strong>错误：</Text>
+                     <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: token.colorError, fontSize: 13 }}>
+                       {validationResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}
+                     </ul>
+                   </div>
+                )}
+              </Space>
+            </Card>
+          )}
+        </Space>
+      </Modal>
+
+      {/* 导出项目对话框 */}
+      <Modal
+        title="导出项目"
+        open={exportModalVisible}
+        onOk={handleExport}
+        onCancel={handleCloseExportModal}
+        confirmLoading={exporting}
+        okText={selectedProjectIds.length > 0 ? `导出 (${selectedProjectIds.length})` : '导出'}
+        cancelText="取消"
+        width={isMobile ? '90%' : 700}
+        centered
+        okButtonProps={{ disabled: selectedProjectIds.length === 0 }}
+      >
+         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card size="small" style={{ background: token.colorFillTertiary }}>
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Text strong>导出选项</Text>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
+                  <Checkbox checked={exportOptions.includeWritingStyles} onChange={e => setExportOptions(prev => ({...prev, includeWritingStyles: e.target.checked}))}>写作风格</Checkbox>
+                  <Checkbox checked={exportOptions.includeCareers} onChange={e => setExportOptions(prev => ({...prev, includeCareers: e.target.checked}))}>职业系统</Checkbox>
+                  <Tooltip title="包含生成历史记录，文件可能较大">
+                    <Checkbox checked={exportOptions.includeGenerationHistory} onChange={e => setExportOptions(prev => ({...prev, includeGenerationHistory: e.target.checked}))}>生成历史</Checkbox>
+                  </Tooltip>
+                  <Tooltip title="包含故事记忆数据，文件可能较大">
+                    <Checkbox checked={exportOptions.includeMemories} onChange={e => setExportOptions(prev => ({...prev, includeMemories: e.target.checked}))}>故事记忆</Checkbox>
+                  </Tooltip>
+                  <Tooltip title="包含AI剧情分析数据">
+                    <Checkbox checked={exportOptions.includePlotAnalysis} onChange={e => setExportOptions(prev => ({...prev, includePlotAnalysis: e.target.checked}))}>剧情分析</Checkbox>
+                  </Tooltip>
                 </div>
               </Space>
             </Card>
 
-            <Divider style={{ margin: '8px 0' }} />
-
-            {/* 项目列表 */}
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: window.innerWidth <= 768 ? 'wrap' : 'nowrap', gap: 8 }}>
-                <Text strong style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>
-                  选择要导出的项目 {exportableProjects.length > 0 && <Text type="secondary" style={{ fontSize: window.innerWidth <= 768 ? 12 : 14 }}>({exportableProjects.length}个可导出)</Text>}
-                </Text>
-                <Checkbox
-                  checked={selectedProjectIds.length === exportableProjects.length && exportableProjects.length > 0}
-                  indeterminate={selectedProjectIds.length > 0 && selectedProjectIds.length < exportableProjects.length}
-                  onChange={handleToggleAll}
-                  style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}
-                >
-                  全选
-                </Checkbox>
-              </div>
-
-              <div style={{ maxHeight: window.innerWidth <= 768 ? 300 : 400, overflowY: 'auto' }}>
-                {exportableProjects.length === 0 ? (
-                  <Empty
-                    description="暂无可导出的项目"
-                    style={{ padding: '40px 0' }}
-                  />
-                ) : (
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    {exportableProjects.map((project) => (
-                      <Card
-                        key={project.id}
-                        size="small"
-                        hoverable
-                        style={{
+               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <Text>选择项目 ({exportableProjects.length})</Text>
+                  <Checkbox 
+                    checked={selectedProjectIds.length === exportableProjects.length && exportableProjects.length > 0}
+                    indeterminate={selectedProjectIds.length > 0 && selectedProjectIds.length < exportableProjects.length}
+                    onChange={handleToggleAll}
+                  >
+                    全选
+                  </Checkbox>
+               </div>
+               <div style={{ maxHeight: 300, overflowY: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: 8 }}>
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    {exportableProjects.map(p => (
+                      <div 
+                        key={p.id}
+                        style={{ 
+                          padding: '8px 12px', 
+                          background: selectedProjectIds.includes(p.id) ? token.colorPrimaryBg : token.colorBgContainer,
+                          borderRadius: 6,
                           cursor: 'pointer',
-                          border: selectedProjectIds.includes(project.id) ? '2px solid #1890ff' : '1px solid #d9d9d9',
-                          background: selectedProjectIds.includes(project.id) ? '#e6f7ff' : '#fff'
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12
                         }}
-                        onClick={() => handleToggleProject(project.id)}
+                        onClick={() => handleToggleProject(p.id)}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <Checkbox
-                            checked={selectedProjectIds.includes(project.id)}
-                            onChange={() => handleToggleProject(project.id)}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <BookOutlined style={{ fontSize: 20, color: '#1890ff' }} />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                              <Text strong style={{ fontSize: window.innerWidth <= 768 ? 13 : 14 }}>{project.title}</Text>
-                              {project.genre && (
-                                <Tag color="blue" style={{ margin: 0, fontSize: window.innerWidth <= 768 ? 11 : 12 }}>{project.genre}</Tag>
-                              )}
-                              {getStatusTag(project.status)}
-                            </div>
-                            <Text type="secondary" style={{ fontSize: window.innerWidth <= 768 ? 11 : 12 }}>
-                              {project.current_words || 0} 字
-                              {project.description && ` · ${project.description.substring(0, window.innerWidth <= 768 ? 30 : 50)}${project.description.length > (window.innerWidth <= 768 ? 30 : 50) ? '...' : ''}`}
-                            </Text>
-                          </div>
-                          {window.innerWidth > 768 && (
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              {formatDate(project.updated_at)}
-                            </Text>
-                          )}
+                        <Checkbox checked={selectedProjectIds.includes(p.id)} />
+                        <div style={{ flex: 1 }}>
+                           <div>{p.title}</div>
+                           <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{formatWordCount(p.current_words || 0)} 字 · {getStatusTag(getDisplayStatus(p.status, getProgress(p.current_words || 0, p.target_words || 0)))}</div>
                         </div>
-                      </Card>
+                      </div>
                     ))}
                   </Space>
-                )}
-              </div>
+               </div>
             </div>
+         </Space>
+      </Modal>
 
-            {selectedProjectIds.length > 0 && (
-              <Alert
-                message={`已选择 ${selectedProjectIds.length} 个项目`}
-                type="info"
-                showIcon
-                style={{ marginTop: 8 }}
-              />
-            )}
-          </Space>
-        </Modal>
-
-        <ChangelogFloatingButton />
-      </div>
     </div>
   );
 }

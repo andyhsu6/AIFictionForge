@@ -16,6 +16,7 @@ from app.models.relationship import CharacterRelationship, Organization, Organiz
 from app.models.writing_style import WritingStyle
 from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
 from app.logger import get_logger
@@ -24,6 +25,18 @@ from app.api.settings import get_user_ai_service
 
 router = APIRouter(prefix="/wizard-stream", tags=["项目创建向导(流式)"])
 logger = get_logger(__name__)
+
+
+async def get_owned_project(db: AsyncSession, project_id: str, user_id: str | None) -> Project | None:
+    if not project_id or not user_id:
+        return None
+    result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def world_building_generator(
@@ -157,7 +170,7 @@ async def world_building_generator(
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
                     logger.info(f"   清洗后预览: {cleaned_text[:300]}...")
                     
-                    world_data = json.loads(cleaned_text)
+                    world_data = loads_json(cleaned_text)
                     logger.info(f"✅ 世界观JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_generation_success = True  # 解析成功，标记完成
                             
@@ -326,12 +339,9 @@ async def career_system_generator(
         
         # 获取项目信息
         yield await tracker.loading("加载项目信息...")
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
         
         # 设置用户信息以启用MCP
@@ -355,6 +365,7 @@ async def career_system_generator(
             title=project.title,
             genre=project.genre or '未设定',
             theme=project.theme or '未设定',
+            description=project.description or '暂无简介',
             time_period=world_data.get('time_period', '未设定'),
             location=world_data.get('location', '未设定'),
             atmosphere=world_data.get('atmosphere', '未设定'),
@@ -423,7 +434,7 @@ async def career_system_generator(
                 # 清洗并解析JSON
                 try:
                     cleaned_response = user_ai_service._clean_json_response(career_response)
-                    career_data = json.loads(cleaned_response)
+                    career_data = loads_json(cleaned_response)
                     logger.info(f"✅ 职业体系JSON解析成功（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）")
                     
                     yield await tracker.saving("保存职业数据...")
@@ -598,12 +609,9 @@ async def characters_generator(
         
         # 验证项目
         yield await tracker.loading("验证项目...", 0.3)
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
         
         project.wizard_step = 2
@@ -764,7 +772,7 @@ async def characters_generator(
                     
                     # 解析批次结果 - 使用统一的JSON清洗方法
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
-                    characters_data = json.loads(cleaned_text)
+                    characters_data = loads_json(cleaned_text)
                     if not isinstance(characters_data, list):
                         characters_data = [characters_data]
                     
@@ -897,7 +905,6 @@ async def characters_generator(
                 relationships=relationships_text,
                 organization_type=char_data.get("organization_type") if is_organization else None,
                 organization_purpose=char_data.get("organization_purpose") if is_organization else None,
-                organization_members=json.dumps(char_data.get("organization_members", []), ensure_ascii=False) if is_organization else None,
                 traits=json.dumps(char_data.get("traits", []), ensure_ascii=False) if char_data.get("traits") else None
             )
             db.add(character)
@@ -1200,10 +1207,10 @@ async def characters_generator(
                     "personality": char.personality,
                     "background": char.background,
                     "appearance": char.appearance,
-                    "relationships": char.relationships,
+                    "relationships": "",
                     "organization_type": char.organization_type,
                     "organization_purpose": char.organization_purpose,
-                    "organization_members": char.organization_members,
+                    "organization_members": "",
                     "traits": char.traits,
                     "created_at": char.created_at.isoformat() if char.created_at else None,
                     "updated_at": char.updated_at.isoformat() if char.updated_at else None
@@ -1270,13 +1277,15 @@ async def outline_generator(
         
         # 获取项目信息
         yield await tracker.loading("加载项目信息...", 0.3)
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
+
+        # 设置用户信息以启用MCP，并确保后续自动角色/组织补全使用当前请求的AI服务上下文
+        if user_id:
+            user_ai_service.user_id = user_id
+            user_ai_service.db_session = db
         
         # 获取角色信息
         yield await tracker.loading("加载角色信息...", 0.8)
@@ -1354,7 +1363,7 @@ async def outline_generator(
         
         try:
             cleaned_text = user_ai_service._clean_json_response(accumulated_text)
-            outline_data = json.loads(cleaned_text)
+            outline_data = loads_json(cleaned_text)
             if not isinstance(outline_data, list):
                 outline_data = [outline_data]
         except json.JSONDecodeError as e:
@@ -1381,6 +1390,52 @@ async def outline_generator(
             await db.refresh(outline)
         
         logger.info(f"✅ 成功创建{len(created_outlines)}个大纲节点")
+        
+        # 🎭 角色校验：检查大纲structure中的characters是否存在对应角色
+        yield await tracker.saving("🎭 校验角色信息...", 0.5)
+        try:
+            from app.services.auto_character_service import get_auto_character_service
+            
+            auto_char_service = get_auto_character_service(user_ai_service)
+            char_check_result = await auto_char_service.check_and_create_missing_characters(
+                project_id=project_id,
+                outline_data_list=outline_data[:outline_count],
+                db=db,
+                user_id=user_id,
+                enable_mcp=enable_mcp
+            )
+            if char_check_result["created_count"] > 0:
+                created_names = [c.name for c in char_check_result["created_characters"]]
+                logger.info(f"🎭 向导大纲：自动创建了 {char_check_result['created_count']} 个角色: {', '.join(created_names)}")
+                yield await tracker.saving(
+                    f"🎭 自动创建了 {char_check_result['created_count']} 个角色: {', '.join(created_names)}",
+                    0.6
+                )
+        except Exception as e:
+            logger.error(f"⚠️ 向导大纲角色校验失败（不影响主流程）: {e}")
+        
+        # 🏛️ 组织校验：检查大纲structure中的characters（type=organization）是否存在对应组织
+        yield await tracker.saving("🏛️ 校验组织信息...", 0.55)
+        try:
+            from app.services.auto_organization_service import get_auto_organization_service
+            
+            auto_org_service = get_auto_organization_service(user_ai_service)
+            org_check_result = await auto_org_service.check_and_create_missing_organizations(
+                project_id=project_id,
+                outline_data_list=outline_data[:outline_count],
+                db=db,
+                user_id=user_id,
+                enable_mcp=enable_mcp
+            )
+            if org_check_result["created_count"] > 0:
+                created_names = [c.name for c in org_check_result["created_organizations"]]
+                logger.info(f"🏛️ 向导大纲：自动创建了 {org_check_result['created_count']} 个组织: {', '.join(created_names)}")
+                yield await tracker.saving(
+                    f"🏛️ 自动创建了 {org_check_result['created_count']} 个组织: {', '.join(created_names)}",
+                    0.65
+                )
+        except Exception as e:
+            logger.error(f"⚠️ 向导大纲组织校验失败（不影响主流程）: {e}")
         
         # 根据项目的大纲模式决定是否自动创建章节
         created_chapters = []
@@ -1479,6 +1534,7 @@ async def outline_generator(
 
 @router.post("/outline", summary="流式生成完整大纲")
 async def generate_outline_stream(
+    request: Request,
     data: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
     user_ai_service: AIService = Depends(get_user_ai_service)
@@ -1486,6 +1542,10 @@ async def generate_outline_stream(
     """
     使用SSE流式生成完整大纲，避免超时
     """
+    # 从中间件注入user_id到data中，供outline_generator进行项目归属校验
+    if hasattr(request.state, 'user_id'):
+        data['user_id'] = request.state.user_id
+
     return create_sse_response(outline_generator(data, db, user_ai_service))
 
 
@@ -1503,21 +1563,18 @@ async def world_building_regenerate_generator(
     try:
         yield await tracker.start("开始重新生成世界观...")
         
-        # 获取项目信息
-        yield await tracker.loading("加载项目信息...")
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
-        if not project:
-            yield await tracker.error("项目不存在", 404)
-            return
-        
         # 提取参数
         provider = data.get("provider")
         model = data.get("model")
         enable_mcp = data.get("enable_mcp", True)
         user_id = data.get("user_id")
+
+        # 获取项目信息
+        yield await tracker.loading("加载项目信息...")
+        project = await get_owned_project(db, project_id, user_id)
+        if not project:
+            yield await tracker.error("项目不存在或无权访问", 404)
+            return
         
         # 获取基础提示词（支持自定义）
         yield await tracker.preparing("准备AI提示词...")
@@ -1612,7 +1669,7 @@ async def world_building_regenerate_generator(
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
                     
-                    world_data = json.loads(cleaned_text)
+                    world_data = loads_json(cleaned_text)
                     logger.info(f"✅ 世界观重新生成JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_generation_success = True
                             

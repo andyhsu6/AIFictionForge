@@ -1,4 +1,4 @@
-"""自动组织引入服务 - 在续写大纲时根据剧情推进自动引入新组织"""
+"""自动组织服务 - 大纲生成后校验并自动补全缺失组织"""
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -20,293 +20,34 @@ class AutoOrganizationService:
     def __init__(self, ai_service: AIService):
         self.ai_service = ai_service
     
-    async def analyze_and_create_organizations(
-        self,
-        project_id: str,
-        outline_content: str,
-        existing_characters: List[Character],
-        existing_organizations: List[Dict[str, Any]],
-        db: AsyncSession,
-        user_id: str = None,
-        enable_mcp: bool = True,
-        all_chapters_brief: str = "",
-        start_chapter: int = 1,
-        chapter_count: int = 3,
-        plot_stage: str = "发展",
-        story_direction: str = "继续推进主线剧情",
-        preview_only: bool = False,
-        progress_callback: Optional[Callable[[str], Awaitable[None]]] = None
-    ) -> Dict[str, Any]:
-        """
-        预测性分析并创建需要的新组织
+    def _build_character_summary(self, characters: List[Character]) -> str:
+        """构建现有角色摘要信息"""
+        if not characters:
+            return "暂无已有角色"
         
-        Args:
-            project_id: 项目ID
-            outline_content: 当前批次大纲内容（用于向后兼容，实际不使用）
-            existing_characters: 现有角色列表
-            existing_organizations: 现有组织列表
-            db: 数据库会话
-            user_id: 用户ID(用于MCP和自定义提示词)
-            enable_mcp: 是否启用MCP增强
-            all_chapters_brief: 已有章节概览
-            start_chapter: 起始章节号
-            chapter_count: 续写章节数
-            plot_stage: 剧情阶段
-            story_direction: 故事发展方向
-            preview_only: 仅预测不创建（用于组织确认机制）
-            
-        Returns:
-            {
-                "new_organizations": [组织对象列表],  # preview_only=True时为空
-                "members_created": [成员关系列表],  # preview_only=True时为空
-                "organization_count": 新增组织数量,
-                "analysis_result": AI分析结果,
-                "predicted_organizations": [预测的组织数据]  # 仅preview_only=True时返回
-                "needs_new_organizations": bool,
-                "reason": str
-            }
-        """
-        logger.info(f"🏛️ 【组织引入】预测性分析：检测是否需要引入新组织...")
-        logger.info(f"  - 项目ID: {project_id}")
-        logger.info(f"  - 续写计划: 第{start_chapter}章起，共{chapter_count}章")
-        logger.info(f"  - 剧情阶段: {plot_stage}")
-        logger.info(f"  - 发展方向: {story_direction}")
-        logger.info(f"  - 现有角色数: {len(existing_characters)}")
-        logger.info(f"  - 现有组织数: {len(existing_organizations)}")
+        lines = []
+        for char in characters:
+            parts = [f"- {char.name}"]
+            if char.role_type:
+                role_map = {"protagonist": "主角", "supporting": "配角", "antagonist": "反派"}
+                parts.append(f"({role_map.get(char.role_type, char.role_type)})")
+            if char.personality:
+                parts.append(f"性格: {char.personality[:50]}")
+            lines.append(" ".join(parts))
         
-        # 1. 获取项目信息
-        project_result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = project_result.scalar_one_or_none()
-        if not project:
-            raise ValueError("项目不存在")
-        
-        # 2. 构建现有组织信息摘要
-        existing_orgs_summary = self._build_organization_summary(existing_organizations)
-        existing_chars_summary = self._build_character_summary(existing_characters)
-        
-        # 3. AI预测性分析是否需要新组织
-        if progress_callback:
-            await progress_callback("🤖 AI分析组织需求...")
-        
-        analysis_result = await self._analyze_organization_needs(
-            project=project,
-            outline_content=outline_content,
-            existing_orgs_summary=existing_orgs_summary,
-            existing_chars_summary=existing_chars_summary,
-            db=db,
-            user_id=user_id,
-            enable_mcp=enable_mcp,
-            all_chapters_brief=all_chapters_brief,
-            start_chapter=start_chapter,
-            chapter_count=chapter_count,
-            plot_stage=plot_stage,
-            story_direction=story_direction
-        )
-        
-        if progress_callback:
-            await progress_callback("✅ 组织需求分析完成")
-        
-        # 4. 判断是否需要创建组织
-        if not analysis_result or not analysis_result.get("needs_new_organizations"):
-            logger.info("✅ AI判断：当前剧情不需要引入新组织")
-            return {
-                "new_organizations": [],
-                "members_created": [],
-                "organization_count": 0,
-                "analysis_result": analysis_result,
-                "predicted_organizations": [],
-                "needs_new_organizations": False,
-                "reason": analysis_result.get("reason", "当前剧情不需要新组织")
-            }
-        
-        # 5. 如果是预览模式，仅返回预测结果，不创建组织
-        if preview_only:
-            organization_specs = analysis_result.get("organization_specifications", [])
-            logger.info(f"🔮 预览模式：预测到 {len(organization_specs)} 个组织，不创建数据库记录")
-            return {
-                "new_organizations": [],
-                "members_created": [],
-                "organization_count": 0,
-                "analysis_result": analysis_result,
-                "predicted_organizations": organization_specs,
-                "needs_new_organizations": True,
-                "reason": analysis_result.get("reason", "预测需要新组织")
-            }
-        
-        # 6. 批量生成新组织（非预览模式）
-        new_organizations = []
-        members_created = []
-        
-        organization_specs = analysis_result.get("organization_specifications", [])
-        logger.info(f"🎯 AI建议引入 {len(organization_specs)} 个新组织")
-        
-        for idx, spec in enumerate(organization_specs):
-            try:
-                spec_name = spec.get('name', spec.get('organization_description', '未命名'))
-                logger.info(f"  [{idx+1}/{len(organization_specs)}] 生成组织规格: {spec_name}")
-                logger.debug(f"     组织规格内容: {json.dumps(spec, ensure_ascii=False)}")
-                
-                if progress_callback:
-                    await progress_callback(f"🏛️ [{idx+1}/{len(organization_specs)}] 生成组织详情: {spec_name}")
-                
-                # 生成组织详细信息
-                organization_data = await self._generate_organization_details(
-                    spec=spec,
-                    project=project,
-                    existing_characters=existing_characters,
-                    existing_organizations=existing_organizations,
-                    db=db,
-                    user_id=user_id,
-                    enable_mcp=enable_mcp
-                )
-                
-                logger.debug(f"     AI生成的组织数据: {json.dumps(organization_data, ensure_ascii=False)[:200]}")
-                
-                if progress_callback:
-                    await progress_callback(f"💾 [{idx+1}/{len(organization_specs)}] 保存组织: {organization_data.get('name', spec_name)}")
-                
-                # 创建组织记录（先创建Character记录，再创建Organization记录）
-                character, organization = await self._create_organization_record(
-                    project_id=project_id,
-                    organization_data=organization_data,
-                    db=db
-                )
-                
-                new_organizations.append({
-                    "character": character,
-                    "organization": organization
-                })
-                logger.info(f"  ✅ 创建新组织: {character.name}, ID: {organization.id}")
-                
-                if progress_callback:
-                    await progress_callback(f"✅ [{idx+1}/{len(organization_specs)}] 组织创建成功: {character.name}")
-                
-                # 建立成员关系
-                members_data = organization_data.get("initial_members", [])
-                if members_data:
-                    logger.info(f"  🔗 开始创建 {len(members_data)} 个成员关系...")
-                    
-                    if progress_callback:
-                        await progress_callback(f"🔗 [{idx+1}/{len(organization_specs)}] 建立 {len(members_data)} 个成员关系")
-                    
-                    members = await self._create_member_relationships(
-                        organization=organization,
-                        member_specs=members_data,
-                        existing_characters=existing_characters,
-                        project_id=project_id,
-                        db=db
-                    )
-                    members_created.extend(members)
-                    logger.info(f"  ✅ 实际创建了 {len(members)} 个成员关系记录")
-                
-            except Exception as e:
-                logger.error(f"  ❌ 创建组织失败: {e}", exc_info=True)
-                continue
-        
-        # 7. 提交事务（注意：这里只flush，让调用方commit）
-        await db.flush()
-        
-        logger.info(f"🎉 自动组织引入完成: 新增{len(new_organizations)}个组织, {len(members_created)}个成员关系")
-        
-        return {
-            "new_organizations": new_organizations,
-            "members_created": members_created,
-            "organization_count": len(new_organizations),
-            "analysis_result": analysis_result,
-            "predicted_organizations": [],
-            "needs_new_organizations": True,
-            "reason": analysis_result.get("reason", "")
-        }
+        return "\n".join(lines)
     
     def _build_organization_summary(self, organizations: List[Dict[str, Any]]) -> str:
-        """构建现有组织摘要"""
+        """构建现有组织摘要信息"""
         if not organizations:
-            return "暂无组织"
+            return "暂无已有组织"
         
-        summary = []
+        lines = []
         for org in organizations:
-            org_name = org.get("name", "未知")
-            org_type = org.get("organization_type", "未知类型")
-            power_level = org.get("power_level", 50)
-            purpose = (org.get("organization_purpose") or "")[:50]
-            summary.append(f"- {org_name} ({org_type}, 势力等级:{power_level}): {purpose}")
+            name = org.get("name", "未知") if isinstance(org, dict) else getattr(org, "name", "未知")
+            lines.append(f"- {name}")
         
-        return "\n".join(summary[:15])  # 最多显示15个
-    
-    def _build_character_summary(self, characters: List[Character]) -> str:
-        """构建现有角色摘要"""
-        if not characters:
-            return "暂无角色"
-        
-        summary = []
-        for char in characters:
-            if not char.is_organization:  # 只统计非组织角色
-                char_role = char.role_type or "未知"
-                personality = (char.personality or "")[:30]
-                summary.append(f"- {char.name} ({char_role}): {personality}")
-        
-        return "\n".join(summary[:20])  # 最多显示20个
-    
-    async def _analyze_organization_needs(
-        self,
-        project: Project,
-        outline_content: str,
-        existing_orgs_summary: str,
-        existing_chars_summary: str,
-        db: AsyncSession,
-        user_id: str,
-        enable_mcp: bool,
-        all_chapters_brief: str = "",
-        start_chapter: int = 1,
-        chapter_count: int = 3,
-        plot_stage: str = "发展",
-        story_direction: str = "继续推进主线剧情"
-    ) -> Dict[str, Any]:
-        """AI预测性分析是否需要新组织"""
-        
-        # 构建分析提示词
-        template = await PromptService.get_template(
-            "AUTO_ORGANIZATION_ANALYSIS",
-            user_id,
-            db
-        )
-        
-        # 使用新的预测性分析参数
-        prompt = PromptService.format_prompt(
-            template,
-            title=project.title,
-            theme=project.theme or "未设定",
-            genre=project.genre or "未设定",
-            time_period=project.world_time_period or "未设定",
-            location=project.world_location or "未设定",
-            atmosphere=project.world_atmosphere or "未设定",
-            existing_organizations=existing_orgs_summary,
-            existing_characters=existing_chars_summary,
-            all_chapters_brief=all_chapters_brief,
-            start_chapter=start_chapter,
-            chapter_count=chapter_count,
-            plot_stage=plot_stage,
-            story_direction=story_direction
-        )
-        
-        try:
-            # 使用统一的JSON调用方法（支持自动MCP工具加载）
-            analysis = await self.ai_service.call_with_json_retry(
-                prompt=prompt,
-                max_retries=3,
-            )
-            
-            logger.info(f"  ✅ AI分析完成: needs_new_organizations={analysis.get('needs_new_organizations')}")
-            return analysis
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"  ❌ 组织需求分析JSON解析失败: {e}")
-            return {"needs_new_organizations": False}
-        except Exception as e:
-            logger.error(f"  ❌ 组织需求分析失败: {e}")
-            return {"needs_new_organizations": False}
+        return "\n".join(lines)
     
     async def _generate_organization_details(
         self,
@@ -483,6 +224,233 @@ class AutoOrganizationService:
             organization.member_count = (organization.member_count or 0) + len(members)
         
         return members
+
+
+    async def check_and_create_missing_organizations(
+        self,
+        project_id: str,
+        outline_data_list: list,
+        db: AsyncSession,
+        user_id: str = None,
+        enable_mcp: bool = True,
+        progress_callback: Optional[Callable[[str], Awaitable[None]]] = None
+    ) -> Dict[str, Any]:
+        """
+        根据大纲structure中的characters字段（type=organization）校验项目是否存在对应组织，
+        如果不存在则根据大纲摘要自动生成组织信息。
+        
+        Args:
+            project_id: 项目ID
+            outline_data_list: 大纲数据列表（每个元素包含 characters、summary 等字段）
+            db: 数据库会话
+            user_id: 用户ID
+            enable_mcp: 是否启用MCP
+            progress_callback: 进度回调
+            
+        Returns:
+            {
+                "created_organizations": [组织对象列表],
+                "missing_names": [缺失的组织名称列表],
+                "created_count": 创建的组织数量
+            }
+        """
+        logger.info(f"🔍 【组织校验】开始校验大纲中提到的组织是否存在...")
+        
+        # 1. 从所有大纲的structure中提取组织名称（兼容新旧格式）
+        all_organization_names = set()
+        organization_context = {}  # 记录组织出现的上下文（大纲摘要）
+        
+        for outline_item in outline_data_list:
+            if isinstance(outline_item, dict):
+                characters = outline_item.get("characters", [])
+                summary = outline_item.get("summary", "") or outline_item.get("content", "")
+                title = outline_item.get("title", "")
+                
+                if isinstance(characters, list):
+                    for char_entry in characters:
+                        # 新格式：{"name": "xxx", "type": "character"/"organization"}
+                        if isinstance(char_entry, dict):
+                            entry_type = char_entry.get("type", "character")
+                            entry_name = char_entry.get("name", "")
+                            # 只处理 organization 类型
+                            if entry_type != "organization" or not entry_name.strip():
+                                continue
+                            name = entry_name.strip()
+                            all_organization_names.add(name)
+                            if name not in organization_context:
+                                organization_context[name] = []
+                            organization_context[name].append(f"《{title}》: {summary[:200]}")
+                        # 旧格式：纯字符串，无法区分类型，跳过
+        
+        if not all_organization_names:
+            logger.info("🔍 【组织校验】大纲中未提到任何组织，跳过校验")
+            return {
+                "created_organizations": [],
+                "missing_names": [],
+                "created_count": 0
+            }
+        
+        logger.info(f"🔍 【组织校验】大纲中提到的组织: {', '.join(all_organization_names)}")
+        
+        # 2. 获取项目现有组织（通过Character表的is_organization字段）
+        existing_result = await db.execute(
+            select(Character).where(
+                Character.project_id == project_id,
+                Character.is_organization == True
+            )
+        )
+        existing_org_characters = existing_result.scalars().all()
+        existing_org_names = {char.name for char in existing_org_characters}
+        
+        # 3. 找出缺失的组织
+        missing_names = all_organization_names - existing_org_names
+        
+        if not missing_names:
+            logger.info("✅ 【组织校验】所有组织已存在，无需创建")
+            return {
+                "created_organizations": [],
+                "missing_names": [],
+                "created_count": 0
+            }
+        
+        logger.info(f"⚠️ 【组织校验】发现 {len(missing_names)} 个缺失组织: {', '.join(missing_names)}")
+        
+        # 4. 获取项目信息
+        project_result = await db.execute(
+            select(Project).where(Project.id == project_id)
+        )
+        project = project_result.scalar_one_or_none()
+        if not project:
+            logger.error("❌ 【组织校验】项目不存在")
+            return {
+                "created_organizations": [],
+                "missing_names": list(missing_names),
+                "created_count": 0
+            }
+        
+        # 5. 获取现有角色和组织信息
+        all_chars_result = await db.execute(
+            select(Character).where(Character.project_id == project_id)
+        )
+        existing_characters = list(all_chars_result.scalars().all())
+        
+        existing_organizations = []
+        for char in existing_org_characters:
+            org_result = await db.execute(
+                select(Organization).where(Organization.character_id == char.id)
+            )
+            org = org_result.scalar_one_or_none()
+            if org:
+                existing_organizations.append({
+                    "name": char.name,
+                    "organization_type": char.organization_type,
+                    "organization_purpose": char.organization_purpose,
+                    "power_level": org.power_level,
+                    "location": org.location,
+                    "motto": org.motto
+                })
+        
+        # 6. 为每个缺失的组织生成并创建组织信息
+        created_organizations = []
+        
+        for idx, org_name in enumerate(missing_names):
+            try:
+                if progress_callback:
+                    await progress_callback(
+                        f"🏛️ [{idx+1}/{len(missing_names)}] 自动创建组织：{org_name}..."
+                    )
+                
+                # 构建组织规格（基于大纲上下文）
+                context_summaries = organization_context.get(org_name, [])
+                context_text = "\n".join(context_summaries[:3])
+                
+                spec = {
+                    "name": org_name,
+                    "organization_description": f"在大纲中出现的组织/势力，出现场景：\n{context_text}",
+                    "organization_type": "未知",
+                    "importance": "medium"
+                }
+                
+                logger.info(f"  🤖 [{idx+1}/{len(missing_names)}] 生成组织详情: {org_name}")
+                
+                # 生成组织详细信息
+                organization_data = await self._generate_organization_details(
+                    spec=spec,
+                    project=project,
+                    existing_characters=existing_characters,
+                    existing_organizations=existing_organizations,
+                    db=db,
+                    user_id=user_id,
+                    enable_mcp=enable_mcp
+                )
+                
+                # 确保使用大纲中的组织名称
+                organization_data['name'] = org_name
+                
+                if progress_callback:
+                    await progress_callback(
+                        f"💾 [{idx+1}/{len(missing_names)}] 保存组织：{org_name}..."
+                    )
+                
+                # 创建组织记录
+                org_character, organization = await self._create_organization_record(
+                    project_id=project_id,
+                    organization_data=organization_data,
+                    db=db
+                )
+                
+                created_organizations.append(org_character)
+                existing_characters.append(org_character)
+                existing_organizations.append({
+                    "name": org_character.name,
+                    "organization_type": org_character.organization_type,
+                    "organization_purpose": org_character.organization_purpose,
+                    "power_level": organization.power_level,
+                    "location": organization.location,
+                    "motto": organization.motto
+                })
+                logger.info(f"  ✅ [{idx+1}/{len(missing_names)}] 组织创建成功: {org_character.name}")
+                
+                # 建立成员关系
+                members_data = organization_data.get("initial_members", [])
+                if members_data:
+                    if progress_callback:
+                        await progress_callback(
+                            f"🔗 [{idx+1}/{len(missing_names)}] 建立 {len(members_data)} 个成员关系：{org_name}..."
+                        )
+                    
+                    await self._create_member_relationships(
+                        organization=organization,
+                        member_specs=members_data,
+                        existing_characters=existing_characters,
+                        project_id=project_id,
+                        db=db
+                    )
+                
+                if progress_callback:
+                    await progress_callback(
+                        f"✅ [{idx+1}/{len(missing_names)}] 组织创建完成：{org_name}"
+                    )
+                
+            except Exception as e:
+                logger.error(f"  ❌ 创建组织 {org_name} 失败: {e}", exc_info=True)
+                if progress_callback:
+                    await progress_callback(
+                        f"⚠️ [{idx+1}/{len(missing_names)}] 组织 {org_name} 创建失败"
+                    )
+                continue
+        
+        # 7. flush 到数据库（让调用方 commit）
+        if created_organizations:
+            await db.flush()
+        
+        logger.info(f"🎉 【组织校验】完成: 发现 {len(missing_names)} 个缺失组织，成功创建 {len(created_organizations)} 个")
+        
+        return {
+            "created_organizations": created_organizations,
+            "missing_names": list(missing_names),
+            "created_count": len(created_organizations)
+        }
 
 
 # 全局实例缓存

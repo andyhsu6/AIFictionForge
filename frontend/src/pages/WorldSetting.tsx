@@ -1,8 +1,8 @@
-import { Card, Descriptions, Empty, Typography, Button, Modal, Form, Input, message, Flex, InputNumber, Select } from 'antd';
+import { Card, Descriptions, Empty, Typography, Button, Modal, Form, Input, message, Flex, InputNumber, Select, theme } from 'antd';
 import { GlobalOutlined, EditOutlined, SyncOutlined, FormOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useStore } from '../store';
-import { cardStyles } from '../components/CardStyles';
+import { worldSettingCardStyles } from '../components/CardStyles';
 import { projectApi, wizardStreamApi } from '../services/api';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 
@@ -29,6 +29,7 @@ export default function WorldSetting() {
   } | null>(null);
   const [isSavingPreview, setIsSavingPreview] = useState(false);
   const [modal, contextHolder] = Modal.useModal();
+  const { token } = theme.useToken();
 
   // AI重新生成世界观
   const handleRegenerate = async () => {
@@ -58,7 +59,7 @@ export default function WorldSetting() {
                 // 可以在这里显示生成的内容片段（可选）
                 console.log('生成片段:', chunk);
               },
-              onResult: (result: any) => {
+              onResult: (result: { time_period: string; location: string; atmosphere: string; rules: string }) => {
                 // 保存新生成的数据
                 const newData = {
                   time_period: result.time_period,
@@ -140,14 +141,14 @@ export default function WorldSetting() {
           position: 'sticky',
           top: 0,
           zIndex: 10,
-          backgroundColor: '#fff',
+          backgroundColor: token.colorBgContainer,
           padding: '16px 0',
           marginBottom: 16,
-          borderBottom: '1px solid var(--color-border-secondary)',
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
           display: 'flex',
           alignItems: 'center'
         }}>
-          <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: 'var(--color-primary)' }} />
+          <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: token.colorPrimary }} />
           <h2 style={{ margin: 0 }}>世界设定</h2>
         </div>
 
@@ -174,10 +175,10 @@ export default function WorldSetting() {
         position: 'sticky',
         top: 0,
         zIndex: 10,
-        backgroundColor: '#fff',
+        backgroundColor: token.colorBgContainer,
         padding: '16px 0',
         marginBottom: 24,
-        borderBottom: '1px solid #f0f0f0'
+        borderBottom: `1px solid ${token.colorBorderSecondary}`
       }}>
         <Flex
           justify="space-between"
@@ -186,7 +187,7 @@ export default function WorldSetting() {
           wrap="wrap"
         >
           <div style={{ display: 'flex', alignItems: 'center', minWidth: 'fit-content' }}>
-            <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: 'var(--color-primary)' }} />
+            <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: token.colorPrimary }} />
             <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>世界设定</h2>
           </div>
           <Flex gap={8} wrap="wrap" style={{ flex: '0 1 auto' }}>
@@ -249,7 +250,7 @@ export default function WorldSetting() {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <Card
           style={{
-            ...cardStyles.base,
+            ...worldSettingCardStyles.sectionCard,
             marginBottom: 16
           }}
           title={
@@ -274,7 +275,7 @@ export default function WorldSetting() {
 
         <Card
           style={{
-            ...cardStyles.base,
+            ...worldSettingCardStyles.sectionCard,
             marginBottom: 16
           }}
           title={
@@ -287,16 +288,16 @@ export default function WorldSetting() {
           <div style={{ padding: '16px 0' }}>
             {currentProject.world_time_period && (
               <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: 'var(--color-primary)', marginBottom: 12 }}>
+                <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
                   时间设定
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
                   padding: 16,
-                  background: 'var(--color-bg-layout)',
+                  background: token.colorBgLayout,
                   borderRadius: 8,
-                  borderLeft: '4px solid var(--color-primary)'
+                  borderLeft: `4px solid ${token.colorPrimary}`
                 }}>
                   {currentProject.world_time_period}
                 </Paragraph>
@@ -305,16 +306,16 @@ export default function WorldSetting() {
 
             {currentProject.world_location && (
               <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: 'var(--color-success)', marginBottom: 12 }}>
+                <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
                   地点设定
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
                   padding: 16,
-                  background: 'var(--color-bg-layout)',
+                  background: token.colorBgLayout,
                   borderRadius: 8,
-                  borderLeft: '4px solid var(--color-success)'
+                  borderLeft: `4px solid ${token.colorSuccess}`
                 }}>
                   {currentProject.world_location}
                 </Paragraph>
@@ -323,16 +324,16 @@ export default function WorldSetting() {
 
             {currentProject.world_atmosphere && (
               <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: 'var(--color-warning)', marginBottom: 12 }}>
+                <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
                   氛围设定
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
                   padding: 16,
-                  background: 'var(--color-bg-layout)',
+                  background: token.colorBgLayout,
                   borderRadius: 8,
-                  borderLeft: '4px solid var(--color-warning)'
+                  borderLeft: `4px solid ${token.colorWarning}`
                 }}>
                   {currentProject.world_atmosphere}
                 </Paragraph>
@@ -341,16 +342,16 @@ export default function WorldSetting() {
 
             {currentProject.world_rules && (
               <div style={{ marginBottom: 0 }}>
-                <Title level={5} style={{ color: 'var(--color-error)', marginBottom: 12 }}>
+                <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
                   规则设定
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
                   padding: 16,
-                  background: 'var(--color-bg-layout)',
+                  background: token.colorBgLayout,
                   borderRadius: 8,
-                  borderLeft: '4px solid var(--color-error)'
+                  borderLeft: `4px solid ${token.colorError}`
                 }}>
                   {currentProject.world_rules}
                 </Paragraph>
@@ -616,71 +617,71 @@ export default function WorldSetting() {
       >
         {newWorldData && (
           <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-            <div style={{ marginBottom: 24, padding: 16, background: 'var(--color-warning-bg)', border: '1px solid var(--color-warning-border)', borderRadius: 8 }}>
+            <div style={{ marginBottom: 24, padding: 16, background: token.colorWarningBg, border: `1px solid ${token.colorWarningBorder}`, borderRadius: 8 }}>
               <Typography.Text type="warning" strong>
                 ⚠️ 注意：点击"确认替换"将会用新内容替换当前的世界观设定
               </Typography.Text>
             </div>
 
             <div style={{ marginBottom: 24 }}>
-              <Title level={5} style={{ color: 'var(--color-primary)', marginBottom: 12 }}>
+              <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
                 时间设定
               </Title>
               <Paragraph style={{
                 fontSize: 15,
                 lineHeight: 1.8,
                 padding: 16,
-                background: '#f5f5f5',
+                background: token.colorBgLayout,
                 borderRadius: 8,
-                borderLeft: '4px solid #1890ff'
+                borderLeft: `4px solid ${token.colorPrimary}`
               }}>
                 {newWorldData.time_period}
               </Paragraph>
             </div>
 
             <div style={{ marginBottom: 24 }}>
-              <Title level={5} style={{ color: '#52c41a', marginBottom: 12 }}>
+              <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
                 地点设定
               </Title>
               <Paragraph style={{
                 fontSize: 15,
                 lineHeight: 1.8,
                 padding: 16,
-                background: '#f5f5f5',
+                background: token.colorBgLayout,
                 borderRadius: 8,
-                borderLeft: '4px solid #52c41a'
+                borderLeft: `4px solid ${token.colorSuccess}`
               }}>
                 {newWorldData.location}
               </Paragraph>
             </div>
 
             <div style={{ marginBottom: 24 }}>
-              <Title level={5} style={{ color: '#faad14', marginBottom: 12 }}>
+              <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
                 氛围设定
               </Title>
               <Paragraph style={{
                 fontSize: 15,
                 lineHeight: 1.8,
                 padding: 16,
-                background: '#f5f5f5',
+                background: token.colorBgLayout,
                 borderRadius: 8,
-                borderLeft: '4px solid #faad14'
+                borderLeft: `4px solid ${token.colorWarning}`
               }}>
                 {newWorldData.atmosphere}
               </Paragraph>
             </div>
 
             <div style={{ marginBottom: 0 }}>
-              <Title level={5} style={{ color: '#f5222d', marginBottom: 12 }}>
+              <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
                 规则设定
               </Title>
               <Paragraph style={{
                 fontSize: 15,
                 lineHeight: 1.8,
                 padding: 16,
-                background: '#f5f5f5',
+                background: token.colorBgLayout,
                 borderRadius: 8,
-                borderLeft: '4px solid #f5222d'
+                borderLeft: `4px solid ${token.colorError}`
               }}>
                 {newWorldData.rules}
               </Paragraph>

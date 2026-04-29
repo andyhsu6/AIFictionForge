@@ -32,7 +32,6 @@ class CharacterCreate(BaseModel):
     personality: Optional[str] = Field(None, description="性格特点/组织特性")
     background: Optional[str] = Field(None, description="背景故事")
     appearance: Optional[str] = Field(None, description="外貌特征")
-    relationships: Optional[str] = Field(None, description="人际关系(JSON)")
     organization_type: Optional[str] = Field(None, description="组织类型")
     organization_purpose: Optional[str] = Field(None, description="组织目的")
     organization_members: Optional[str] = Field(None, description="组织成员(JSON)")
@@ -61,7 +60,6 @@ class CharacterUpdate(BaseModel):
     personality: Optional[str] = None
     background: Optional[str] = None
     appearance: Optional[str] = None
-    relationships: Optional[str] = None
     organization_type: Optional[str] = None
     organization_purpose: Optional[str] = None
     organization_members: Optional[str] = None
@@ -97,6 +95,14 @@ class CharacterResponse(CharacterBase):
     main_career_id: Optional[str] = Field(None, description="主职业ID")
     main_career_stage: Optional[int] = Field(None, description="主职业阶段")
     sub_careers: Optional[List[Dict[str, Any]]] = Field(None, description="副职业列表")
+    
+    # 角色/组织存活状态
+    status: Optional[str] = Field("active", description="状态：active/deceased/missing/retired/destroyed")
+    status_changed_chapter: Optional[int] = Field(None, description="状态变更的章节号")
+    
+    # 心理状态追踪字段
+    current_state: Optional[str] = Field(None, description="角色当前心理状态")
+    state_updated_chapter: Optional[int] = Field(None, description="心理状态最后更新的章节号")
     
     model_config = ConfigDict(from_attributes=True)
 

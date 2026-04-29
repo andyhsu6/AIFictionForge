@@ -36,6 +36,7 @@ env/
 *.swo
 *~
 .DS_Store
+.kilocode/
 
 # Environment variables
 .env
@@ -78,6 +79,7 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/users.json
 backend/data/admins.json
+backend/storage/
 
 # Temporary files
 *.bak
@@ -108,8 +110,11 @@ launcher.py
 launcher.spec
 mumuainovel.md
 logo.ico
+.embed_cache
+dist_embed/
+embed_build.py
 
-
+.roo/
 data/
 docs/
 data_old/
@@ -117,3 +122,7 @@ backend/migrate_all_databases.py
 test_api.py
 # Embedding models (downloaded from HuggingFace at runtime)
 backend/embedding/
+
+# 提示词工坊实例标识（每个部署实例必须唯一）
+backend/.instance_id
+test.json

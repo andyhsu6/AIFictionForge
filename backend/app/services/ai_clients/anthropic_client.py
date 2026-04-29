@@ -58,10 +58,19 @@ class AnthropicClient:
             elif block.type == "text":
                 content += block.text
 
+        usage = getattr(response, "usage", None)
         return {
             "content": content,
             "tool_calls": tool_calls if tool_calls else None,
             "finish_reason": response.stop_reason,
+            "usage": {
+                "prompt_tokens": getattr(usage, "input_tokens", None),
+                "completion_tokens": getattr(usage, "output_tokens", None),
+                "total_tokens": (
+                    (getattr(usage, "input_tokens", 0) or 0) +
+                    (getattr(usage, "output_tokens", 0) or 0)
+                ) if usage else None,
+            },
         }
 
     async def chat_completion_stream(

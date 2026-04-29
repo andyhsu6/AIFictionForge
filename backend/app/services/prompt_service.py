@@ -25,6 +25,53 @@ class WritingStyleManager:
 
 class PromptService:
     """提示词模板管理"""
+
+    NOVEL_COVER_PROMPT_TEMPLATE = """创作一幅高质量小说封面插图，适用于竖版书籍封面。
+
+小说标题是：“{title}”。
+类型为 {genre}。核心主题是 {theme}。故事摘要如下：{description}
+
+画面应具有电影感、精致、富有氛围和情感表现力，并具备清晰的视觉焦点和强烈的象征性意象。请优先展现符合小说类型的视觉叙事和情绪，而不是死板地描绘具体场景。
+
+这必须看起来像一幅专业的网络小说或实体出版物风格的封面。
+
+硬性要求：
+- 必须在画面醒目位置包含小说标题文字：“{title}”，文字排版需极具艺术感，并与小说的 {genre} 类型风格完美融合。
+- 适用于标准小说封面的竖版构图（2:3 比例）。
+- 画面中只能出现标题文字，绝不能出现作者名字、副标题或其他无关的随机字母。
+- 无标志 (Logo)。
+- 无水印。
+- 无边框。
+- 无 UI 元素。
+- 无样机展示效果 (Mockup)。
+
+最终图像必须是一张完整、专业的书籍封面艺术作品，背景插画与标题排版需相得益彰。"""
+
+    @classmethod
+    async def build_novel_cover_prompt(
+        cls,
+        project: Any,
+        user_id: str = None,
+        db = None,
+    ) -> str:
+        """基于项目基础信息构建小说封面提示词，支持用户自定义模板"""
+        title = (getattr(project, "title", "") or "未命名小说").strip()
+        genre = (getattr(project, "genre", "") or "未指定类型").strip()
+        theme = (getattr(project, "theme", "") or "未指定主题").strip()
+        description = (getattr(project, "description", "") or "无额外简介").strip()
+
+        compact_description = description[:300]
+        template = await cls.get_template_with_fallback(
+            "NOVEL_COVER_PROMPT_TEMPLATE",
+            user_id=user_id,
+            db=db,
+        )
+        return template.format(
+            title=title,
+            genre=genre,
+            theme=theme,
+            description=compact_description,
+        )
     
     # ========== V2版本提示词模板（RTCO框架）==========
     
@@ -295,7 +342,6 @@ class PromptService:
 类型：{genre}
 开篇章节数：{chapter_count}
 叙事视角：{narrative_perspective}
-全书目标字数：{target_words}
 </project>
 
 <worldview priority="P1">
@@ -326,31 +372,42 @@ class PromptService:
 
 [
   {{
-    "chapter_number": 1,
-    "title": "章节标题",
-    "summary": "章节概要（300-500字）：主要情节、冲突、转折",
-    "scenes": ["场景1描述", "场景2描述", "场景3描述"],
-    "characters": ["角色1", "角色2"],
-    "key_points": ["情节要点1", "情节要点2"],
-    "emotion": "本章情感基调",
-    "goal": "本章叙事目标"
-  }},
-  {{
-    "chapter_number": 2,
-    "title": "章节标题",
-    "summary": "章节概要...",
-    "scenes": ["场景1", "场景2"],
-    "characters": ["角色1", "角色2"],
-    "key_points": ["要点1", "要点2"],
-    "emotion": "情感基调",
-    "goal": "叙事目标"
-  }}
+   "chapter_number": 1,
+   "title": "章节标题",
+   "summary": "章节概要（500-1000字）：主要情节、角色互动、关键事件、冲突与转折",
+   "scenes": ["场景1描述", "场景2描述", "场景3描述"],
+   "characters": [
+     {{"name": "角色名1", "type": "character"}},
+     {{"name": "组织/势力名1", "type": "organization"}}
+   ],
+   "key_points": ["情节要点1", "情节要点2"],
+   "emotion": "本章情感基调",
+   "goal": "本章叙事目标"
+ }},
+ {{
+   "chapter_number": 2,
+   "title": "章节标题",
+   "summary": "章节概要...",
+   "scenes": ["场景1", "场景2"],
+   "characters": [
+     {{"name": "角色名2", "type": "character"}},
+     {{"name": "组织名2", "type": "organization"}}
+   ],
+   "key_points": ["要点1", "要点2"],
+   "emotion": "情感基调",
+   "goal": "叙事目标"
+ }}
 ]
+
+【characters字段说明】
+- type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等
+- 必须区分角色和组织，不要把组织当作角色
 
 【格式规范】
 - 纯JSON数组输出，无markdown标记
-- 内容描述中严禁使用特殊符号（引号、方括号、书名号等）
-- 专有名词、事件名直接书写
+- 内容描述中严禁使用特殊符号
+- 专有名词直接书写
+- 字段结构与已有章节完全一致
 </output>
 
 <constraints>
@@ -368,6 +425,7 @@ class PromptService:
 ✅ 符合类型：情节符合{genre}类型特征
 ✅ 主题贴合：体现主题"{theme}"
 ✅ 开篇定位：是开局而非完整故事
+✅ 描述详细：每个summary 500-1000字
 
 【禁止事项】
 ❌ 输出markdown或代码块标记
@@ -376,7 +434,7 @@ class PromptService:
 ❌ 节奏过快，信息过载
 </constraints>"""
     
-    # 大纲续写提示词 V2（RTCO框架 + 记忆增强）
+    # 大纲续写提示词 V2（RTCO框架 - 简化版）
     OUTLINE_CONTINUE = """<system>
 你是经验丰富的小说作家和编剧，擅长续写{genre}类型的小说大纲。
 </system>
@@ -400,7 +458,7 @@ class PromptService:
 叙事视角：{narrative_perspective}
 </project>
 
-<worldview priority="P2">
+<worldview priority="P1">
 【世界观】
 时间背景：{time_period}
 地理位置：{location}
@@ -408,34 +466,26 @@ class PromptService:
 世界规则：{rules}
 </worldview>
 
-<characters priority="P1">
-【角色信息】
+<previous_context priority="P0">
+{recent_outlines}
+</previous_context>
+
+<characters priority="P0">
+【所有角色信息】
 {characters_info}
 </characters>
 
-<previous_context priority="P0">
-【已有章节概览】（共{current_chapter_count}章）
-{all_chapters_brief}
-
-【最近剧情】
-{recent_plot}
-</previous_context>
-
-<memory priority="P1">
-【🧠 智能记忆系统 - 续写参考】
-以下是从故事记忆库中检索到的相关信息：
-
-{memory_context}
-</memory>
+<user_input priority="P0">
+【用户输入】
+续写章节数：{chapter_count}章
+情节阶段：{plot_stage_instruction}
+故事方向：{story_direction}
+其他要求：{requirements}
+</user_input>
 
 <mcp_context priority="P2">
 {mcp_references}
 </mcp_context>
-
-<requirements priority="P1">
-【其他要求】
-{requirements}
-</requirements>
 
 <output priority="P0">
 【输出格式】
@@ -443,26 +493,36 @@ class PromptService:
 
 [
   {{
-    "chapter_number": {start_chapter},
-    "title": "章节标题",
-    "summary": "章节概要（300-500字）：主要情节、角色互动、关键事件、冲突与转折",
-    "scenes": ["场景1描述", "场景2描述", "场景3描述"],
-    "characters": ["涉及角色1", "涉及角色2"],
-    "key_points": ["情节要点1", "情节要点2"],
-    "emotion": "本章情感基调",
-    "goal": "本章叙事目标"
-  }},
-  {{
-    "chapter_number": {start_chapter} + 1,
-    "title": "章节标题",
-    "summary": "章节概要...",
-    "scenes": ["场景1", "场景2"],
-    "characters": ["角色1", "角色2"],
-    "key_points": ["要点1", "要点2"],
-    "emotion": "情感基调",
-    "goal": "叙事目标"
-  }}
+   "chapter_number": {start_chapter},
+   "title": "章节标题",
+   "summary": "章节概要（500-1000字）：主要情节、角色互动、关键事件、冲突与转折",
+   "scenes": ["场景1描述", "场景2描述", "场景3描述"],
+   "characters": [
+     {{"name": "角色名1", "type": "character"}},
+     {{"name": "组织/势力名1", "type": "organization"}}
+   ],
+   "key_points": ["情节要点1", "情节要点2"],
+   "emotion": "本章情感基调",
+   "goal": "本章叙事目标"
+ }},
+ {{
+   "chapter_number": {start_chapter} + 1,
+   "title": "章节标题",
+   "summary": "章节概要...",
+   "scenes": ["场景1", "场景2"],
+   "characters": [
+     {{"name": "角色名2", "type": "character"}},
+     {{"name": "组织名2", "type": "organization"}}
+   ],
+   "key_points": ["要点1", "要点2"],
+   "emotion": "情感基调",
+   "goal": "叙事目标"
+ }}
 ]
+
+【characters字段说明】
+- type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等
+- 必须区分角色和组织，不要把组织当作角色
 
 【格式规范】
 - 纯JSON数组输出，无markdown标记
@@ -474,16 +534,15 @@ class PromptService:
 <constraints>
 【续写要求】
 ✅ 剧情连贯：与前文自然衔接，保持连贯性
-✅ 记忆参考：适当参考记忆中的伏笔、钩子、情节点
-✅ 伏笔回收：考虑回收未完结伏笔，制造呼应
-✅ 角色发展：遵循角色成长轨迹
+✅ 角色发展：遵循角色成长轨迹，充分利用角色信息
 ✅ 情节阶段：遵循{plot_stage_instruction}的要求
 ✅ 风格一致：保持与已有章节相同风格和详细程度
+✅ 大纲详细：充分解析最近10章大纲的structure字段信息
 
 【必须遵守】
 ✅ 数量精确：数组包含{chapter_count}个章节
 ✅ 编号正确：从第{start_chapter}章开始
-✅ 描述详细：每个summary 100-200字
+✅ 描述详细：每个summary 500-1000字
 ✅ 承上启下：自然衔接前文
 
 【禁止事项】
@@ -491,10 +550,11 @@ class PromptService:
 ❌ 在描述中使用特殊符号
 ❌ 与前文矛盾或脱节
 ❌ 忽略已有角色发展
+❌ 忽略最近大纲中的情节线索
 </constraints>"""
     
-    # 章节生成V2 - 无前置章节版本（用于第1章）
-    CHAPTER_GENERATION_V2 = """<system>
+    # 章节生成 - 1-N模式（第1章）
+    CHAPTER_GENERATION_ONE_TO_MANY = """<system>
 你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
 </system>
 
@@ -513,21 +573,45 @@ class PromptService:
 </outline>
 
 <characters priority="P1">
-【本章角色】
+【本章角色 - 请严格遵循角色设定】
 {characters_info}
+
+⚠️ 角色互动须知：
+- 角色之间的对话和行为必须符合其关系设定（如师徒、敌对等）
+- 涉及组织的情节须体现角色在组织中的身份和职位
+- 角色的能力表现须符合其职业和阶段设定
 </characters>
+
+<careers priority="P2">
+【本章职业】
+{chapter_careers}
+</careers>
+
+<foreshadow_reminders priority="P2">
+【🎯 伏笔提醒】
+{foreshadow_reminders}
+</foreshadow_reminders>
+
+<memory priority="P2">
+【相关记忆】
+{relevant_memories}
+</memory>
 
 <constraints>
 【必须遵守】
 ✅ 严格按照大纲推进情节
 ✅ 保持角色性格、说话方式一致
+✅ 角色互动须符合关系设定（师徒、朋友、敌对等）
+✅ 组织相关情节须体现成员身份和职位层级
 ✅ 字数控制在目标范围内
+✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
 
 【禁止事项】
 ❌ 输出章节标题、序号等元信息
 ❌ 使用"总之"、"综上所述"等AI常见总结语
 ❌ 在结尾处使用开放式反问
 ❌ 添加作者注释或创作说明
+❌ 角色行为超出其职业阶段的能力范围
 </constraints>
 
 <output>
@@ -538,8 +622,143 @@ class PromptService:
 现在开始创作：
 </output>"""
 
-    # 章节生成V2 - 带前置章节版本（用于第2章及以后）
-    CHAPTER_GENERATION_V2_WITH_CONTEXT = """<system>
+    # 章节生成 - 1-1模式（第1章）
+    CHAPTER_GENERATION_ONE_TO_ONE = """<system>
+你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+</system>
+
+<task priority="P0">
+【创作任务】
+撰写第{chapter_number}章《{chapter_title}》的完整正文。
+
+【基本要求】
+- 目标字数：{target_word_count}字（允许±200字浮动）
+- 叙事视角：{narrative_perspective}
+</task>
+
+<outline priority="P0">
+【本章大纲】
+{chapter_outline}
+</outline>
+
+<characters priority="P1">
+【本章角色】
+{characters_info}
+</characters>
+
+<careers priority="P2">
+【本章职业】
+{chapter_careers}
+</careers>
+
+<foreshadow_reminders priority="P2">
+【🎯 伏笔提醒】
+{foreshadow_reminders}
+</foreshadow_reminders>
+
+<memory priority="P2">
+【相关记忆】
+{relevant_memories}
+</memory>
+
+<constraints>
+【必须遵守】
+✅ 严格按照大纲推进情节
+✅ 保持角色性格、说话方式一致
+✅ 字数需要严格控制在目标字数内
+✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
+
+【禁止事项】
+❌ 输出章节标题、序号等元信息
+❌ 使用"总之"、"综上所述"等AI常见总结语
+❌ 添加作者注释或创作说明
+❌ 生成字数禁止超过目标字数
+</constraints>
+
+<output>
+【输出规范】
+直接输出小说正文内容，从故事场景或动作开始。
+无需任何前言、后记或解释性文字。
+
+现在开始创作：
+</output>"""
+
+    # 章节生成 - 1-1模式（第2章及以后）
+    CHAPTER_GENERATION_ONE_TO_ONE_NEXT = """<system>
+你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+</system>
+
+<task priority="P0">
+【创作任务】
+撰写第{chapter_number}章《{chapter_title}》的完整正文。
+
+【基本要求】
+- 目标字数：{target_word_count}字（允许±200字浮动）
+- 叙事视角：{narrative_perspective}
+</task>
+
+<outline priority="P0">
+【本章大纲】
+{chapter_outline}
+</outline>
+
+<previous_chapter_summary priority="P1">
+【上一章剧情概要】
+{previous_chapter_summary}
+</previous_chapter_summary>
+
+<previous_chapter priority="P1">
+【上一章末尾500字内容】
+{previous_chapter_content}
+</previous_chapter>
+
+<characters priority="P1">
+【本章角色】
+{characters_info}
+</characters>
+
+<careers priority="P2">
+【本章职业】
+{chapter_careers}
+</careers>
+
+<foreshadow_reminders priority="P2">
+【🎯 伏笔提醒】
+{foreshadow_reminders}
+</foreshadow_reminders>
+
+<memory priority="P2">
+【相关记忆】
+{relevant_memories}
+</memory>
+
+<constraints>
+【必须遵守】
+✅ 严格按照大纲推进情节
+✅ 自然承接上一章末尾内容，保持连贯性
+✅ 保持角色性格、说话方式一致
+✅ 字数需要严格控制在目标字数内
+✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
+
+【禁止事项】
+❌ 输出章节标题、序号等元信息
+❌ 使用"总之"、"综上所述"等AI常见总结语
+❌ 在结尾处使用开放式反问
+❌ 添加作者注释或创作说明
+❌ 重复上一章已发生的事件
+❌ 生成字数禁止超过目标字数
+</constraints>
+
+<output>
+【输出规范】
+直接输出小说正文内容，从故事场景或动作开始。
+无需任何前言、后记或解释性文字。
+
+现在开始创作：
+</output>"""
+
+    # 章节生成 - 1-N模式（第2章及以后）
+    CHAPTER_GENERATION_ONE_TO_MANY_NEXT = """<system>
 你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
 </system>
 
@@ -548,7 +767,7 @@ class PromptService:
 撰写第{chapter_number}章《{chapter_title}》的完整正文。
 
 【基本要求】
-- 目标字数：{target_word_count}字（允许±500字浮动）
+- 目标字数：{target_word_count}字（允许±200字浮动）
 - 叙事视角：{narrative_perspective}
 </task>
 
@@ -557,42 +776,74 @@ class PromptService:
 {chapter_outline}
 </outline>
 
+<recent_context priority="P1">
+【最近章节规划 - 故事脉络参考】
+{recent_chapters_context}
+</recent_context>
+
 <continuation priority="P0">
 【衔接锚点 - 必须承接】
 上一章结尾：
 「{continuation_point}」
 
-⚠️ 要求：从此处自然续写，不得重复上述内容
+【🔴 上一章已完成剧情（禁止重复！）】
+{previous_chapter_summary}
+
+⚠️ 严重警告：
+1. 上述"已完成剧情"和"衔接锚点"是**已经写过的**内容
+2. 本章必须推进到**新的情节点**，绝对不能重新叙述已经发生的事件
+3. 如果锚点是对话结束，请描写对话后的动作或场景转换，不要重复对话
+4. 如果锚点是场景描写，请直接开始人物行动，不要重复描写环境
 </continuation>
 
 <characters priority="P1">
-【本章角色】
+【本章角色 - 请严格遵循角色设定】
 {characters_info}
+
+⚠️ 角色互动须知：
+- 角色之间的对话和行为必须符合其关系设定（如师徒、敌对等）
+- 涉及组织的情节须体现角色在组织中的身份和职位
+- 角色的能力表现须符合其职业和阶段设定
 </characters>
+
+<careers priority="P2">
+【本章职业】
+{chapter_careers}
+</careers>
+
+<foreshadow_reminders priority="P1">
+【🎯 伏笔提醒 - 需关注】
+{foreshadow_reminders}
+</foreshadow_reminders>
 
 <memory priority="P2">
 【相关记忆 - 参考】
 {relevant_memories}
 </memory>
 
-<skeleton priority="P2">
-【故事骨架 - 背景】
-{story_skeleton}
-</skeleton>
-
 <constraints>
 【必须遵守】
 ✅ 严格按照大纲推进情节
 ✅ 自然承接上一章结尾，不重复已发生事件
 ✅ 保持角色性格、说话方式一致
+✅ 角色互动须符合关系设定（师徒、朋友、敌对等）
+✅ 组织相关情节须体现成员身份和职位层级
 ✅ 字数控制在目标范围内
+✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
+
+【🔴 反重复特别指令】
+✅ 检查本章开篇是否与"衔接锚点"内容重复
+✅ 检查本章情节是否与"上一章已完成剧情"重复
+✅ 确保本章推进到了大纲中规划的新事件
 
 【禁止事项】
 ❌ 输出章节标题、序号等元信息
 ❌ 使用"总之"、"综上所述"等AI常见总结语
 ❌ 在结尾处使用开放式反问
 ❌ 添加作者注释或创作说明
-❌ 重复叙述上一章已发生的事件
+❌ 重复叙述上一章已发生的事件（包括环境描写、心理活动）
+❌ 在开篇使用"接上回"、"书接上文"等套话
+❌ 角色行为超出其职业阶段的能力范围
 </constraints>
 
 <output>
@@ -784,7 +1035,7 @@ class PromptService:
 ❌ 空泛的描述
 </constraints>"""
 
-    # 情节分析提示词 V2（RTCO框架）
+    # 情节分析提示词 V2（RTCO框架 + 伏笔ID追踪）
     PLOT_ANALYSIS = """<system>
 你是专业的小说编辑和剧情分析师，擅长深度剖析章节内容。
 </system>
@@ -792,6 +1043,12 @@ class PromptService:
 <task>
 【分析任务】
 全面分析第{chapter_number}章《{title}》的剧情要素、钩子、伏笔、冲突和角色发展。
+
+【🔴 伏笔追踪任务（重要）】
+系统已提供【已埋入伏笔列表】，当你识别到章节中有回收伏笔时：
+1. 必须从列表中找出对应的伏笔ID
+2. 在 foreshadows 数组中使用 reference_foreshadow_id 字段关联
+3. 如果无法确定是哪个伏笔，reference_foreshadow_id 填 null
 </task>
 
 <chapter priority="P0">
@@ -803,6 +1060,20 @@ class PromptService:
 【章节内容】
 {content}
 </chapter>
+
+<existing_foreshadows priority="P1">
+【已埋入伏笔列表 - 用于回收匹配】
+以下是本项目中已埋入但尚未回收的伏笔，分析时如发现章节内容回收了某个伏笔，请使用对应的ID：
+
+{existing_foreshadows}
+</existing_foreshadows>
+
+<characters priority="P1">
+【项目角色信息 - 用于角色状态分析】
+以下是项目中已有的角色列表，分析 character_states 和 relationship_changes 时请使用这些角色的准确名称：
+
+{characters_info}
+</characters>
 
 <analysis_framework priority="P0">
 【分析维度】
@@ -821,11 +1092,30 @@ class PromptService:
 - 出现位置(开头/中段/结尾)
 - **关键词**：【必填】从原文逐字复制8-25字的文本片段，用于精确定位
 
-**2. 伏笔分析 (Foreshadowing)**
+**2. 伏笔分析 (Foreshadowing) - 🔴 支持ID追踪**
 - 埋下的新伏笔：内容、预期作用、隐藏程度(1-10)
-- 回收的旧伏笔：呼应哪一章、回收效果
+- 回收的旧伏笔：【必须】从已埋入伏笔列表中匹配ID
 - 伏笔质量：巧妙性和合理性
 - **关键词**：【必填】从原文逐字复制8-25字
+
+每个伏笔需要：
+- **title**：简洁标题（10-20字，概括伏笔核心）
+  - ⚠️ 回收伏笔时，标题应与原伏笔标题保持一致，不要添加"回收"等后缀
+  - 例如：原伏笔标题是"绿头发的视觉符号"，回收时标题仍为"绿头发的视觉符号"，而非"绿头发的视觉符号回收"
+- **content**：详细描述伏笔内容和预期作用
+- **type**：planted（埋下）或 resolved（回收）
+- **strength**：强度1-10（对读者的吸引力）
+- **subtlety**：隐藏度1-10（越高越隐蔽）
+- **reference_chapter**：回收时引用的原埋入章节号，埋下时为null
+- **reference_foreshadow_id**：【回收时必填】被回收伏笔的ID（从已埋入伏笔列表中选择），埋下时为null
+  - 🔴 重要：回收伏笔时，必须从【已埋入伏笔列表】中找到对应的伏笔ID并填写
+  - 如果列表中有标注【ID: xxx】的伏笔，回收时必须使用该ID
+  - 如果无法确定是哪个伏笔，才填写null（但应尽量避免）
+- **keyword**：【必填】从原文逐字复制8-25字的定位文本
+- **category**：分类（identity=身世/mystery=悬念/item=物品/relationship=关系/event=事件/ability=能力/prophecy=预言）
+- **is_long_term**：是否长线伏笔（跨10章以上回收为true）
+- **related_characters**：涉及的角色名列表
+- **estimated_resolve_chapter**：【必填】预估回收章节号（埋下时必须预估，回收时为当前章节）
 
 **3. 冲突分析 (Conflict)**
 - 冲突类型：人与人/人与己/人与环境/人与社会
@@ -844,12 +1134,33 @@ class PromptService:
 - 关系变化
 - 关键行动和决策
 - 成长或退步
-- **💼 职业变化（可选）**：
+- **💀 存活状态（重要）**：
+  - survival_status: 角色当前存活状态
+  - 可选值：active(正常)/deceased(死亡)/missing(失踪)/retired(退场)
+  - 默认为null（表示无变化），仅当章节中角色明确死亡、失踪或永久退场时才填写
+  - 死亡/失踪需要有明确的剧情依据，不可臆测
+- ** 职业变化（可选）**：
   - 仅当章节明确描述职业进展时填写
   - main_career_stage_change: 整数(+1晋升/-1退步/0无变化)
   - sub_career_changes: 副职业变化数组
   - new_careers: 新获得职业
   - career_breakthrough: 突破过程描述
+- **🏛️ 组织变化（可选）**：
+  - 仅当章节明确描述角色与组织关系变化时填写
+  - organization_changes: 组织变动数组
+  - 每项包含：organization_name(组织名)、change_type(加入joined/离开left/晋升promoted/降级demoted/开除expelled/叛变betrayed)、new_position(新职位，可选)、loyalty_change(忠诚度变化描述，可选)、description(变化描述)
+
+**5b. 组织状态追踪 (Organization Status) - 可选**
+仅当章节涉及组织势力变化时填写，分析出场组织的状态变化：
+- 组织名称
+- 势力等级变化(power_change: 整数，+N增强/-N削弱/0无变化)
+- 据点变化(new_location: 新据点，可选)
+- 宗旨/目标变化(new_purpose: 新目标，可选)
+- 组织状态描述(status_description: 当前状态概述)
+- 关键事件(key_event: 触发变化的事件)
+- **💀 组织存续状态（重要）**：
+  - is_destroyed: 组织是否被覆灭（true/false，默认false）
+  - 仅当章节明确描述组织被彻底消灭、瓦解、灭亡时设为true
 
 **6. 关键情节点 (Plot Points)**
 列出3-5个核心情节点：
@@ -922,12 +1233,32 @@ class PromptService:
   ],
   "foreshadows": [
     {{
-      "content": "伏笔内容",
+      "title": "伏笔简洁标题",
+      "content": "伏笔详细内容和预期作用",
       "type": "planted",
       "strength": 7,
       "subtlety": 8,
       "reference_chapter": null,
-      "keyword": "从原文逐字复制的8-25字文本"
+      "reference_foreshadow_id": null,
+      "keyword": "从原文逐字复制的8-25字文本",
+      "category": "mystery",
+      "is_long_term": false,
+      "related_characters": ["角色A", "角色B"],
+      "estimated_resolve_chapter": 15
+    }},
+    {{
+      "title": "回收的伏笔标题",
+      "content": "伏笔如何被回收的描述",
+      "type": "resolved",
+      "strength": 8,
+      "subtlety": 6,
+      "reference_chapter": 5,
+      "reference_foreshadow_id": "abc123-已埋入伏笔的ID",
+      "keyword": "从原文逐字复制的8-25字文本",
+      "category": "mystery",
+      "is_long_term": false,
+      "related_characters": ["角色A"],
+      "estimated_resolve_chapter": 10
     }}
   ],
   "conflict": {{
@@ -946,6 +1277,7 @@ class PromptService:
   "character_states": [
     {{
       "character_name": "张三",
+      "survival_status": null,
       "state_before": "犹豫",
       "state_after": "坚定",
       "psychological_change": "心理变化描述",
@@ -956,7 +1288,16 @@ class PromptService:
         "sub_career_changes": [{{"career_name": "炼丹", "stage_change": 1}}],
         "new_careers": [],
         "career_breakthrough": "突破描述"
-      }}
+      }},
+      "organization_changes": [
+        {{
+          "organization_name": "某门派",
+          "change_type": "promoted",
+          "new_position": "长老",
+          "loyalty_change": "忠诚度提升",
+          "description": "因立下大功被提拔为长老"
+        }}
+      ]
     }}
   ],
   "plot_points": [
@@ -973,6 +1314,17 @@ class PromptService:
       "location": "地点",
       "atmosphere": "氛围",
       "duration": "时长估计"
+    }}
+  ],
+  "organization_states": [
+    {{
+      "organization_name": "某门派",
+      "power_change": -10,
+      "new_location": null,
+      "new_purpose": null,
+      "status_description": "因内乱势力受损，但核心力量未动摇",
+      "key_event": "长老叛变导致分支瓦解",
+      "is_destroyed": false
     }}
   ],
   "pacing": "varied",
@@ -999,6 +1351,15 @@ class PromptService:
 ✅ 逐字复制：keyword必须从原文复制，长度8-25字
 ✅ 精确定位：keyword能在原文中精确找到
 ✅ 职业变化可选：仅当章节明确描述时填写
+✅ 组织变化可选：仅当章节明确描述角色与组织关系变动时填写（character_states中的organization_changes）
+✅ 组织状态可选：仅当章节明确描述组织势力/据点/目标变化时填写（organization_states顶级字段）
+✅ 存活状态谨慎：survival_status仅当章节有明确死亡/失踪/退场描写时填写，默认null
+✅ 组织覆灭谨慎：is_destroyed仅当组织被彻底消灭时设true，组织受损不算覆灭
+✅ 【伏笔ID追踪】回收伏笔时，必须从【已埋入伏笔列表】中查找匹配的ID填入 reference_foreshadow_id
+✅ 【suggestions严格格式】suggestions 必须是“字符串数组”，每个元素都必须是纯字符串
+✅ suggestions 的正确格式示例："suggestions": ["【节奏问题】...", "【描写不足】..."]
+✅ suggestions 中禁止返回对象、字典、键值对或嵌套结构，例如禁止 {{"suggestion": "..."}}、{{"content": "..."}}
+✅ 如果没有改进建议，必须返回空数组 []，不要返回 null，不要省略字段
 
 【评分约束 - 严格执行】
 ✅ 严格按评分标准打分，支持小数（如6.5、7.2、8.3）
@@ -1010,14 +1371,19 @@ class PromptService:
    - overall 6.0-8.0 → 1-2条建议
    - overall≥8.0 → 0-1条建议
 ✅ 每条建议必须标注问题类型（如【节奏问题】【描写不足】等）
+✅ 每条建议必须直接输出完整文本，不能包裹为对象字段
 
 【禁止事项】
 ❌ keyword使用概括或改写的文字
 ❌ 输出markdown标记
 ❌ 遗漏必填的keyword字段
 ❌ 无根据地添加职业变化
+❌ 无根据地添加组织变化或组织状态变化
+❌ 无确切剧情依据地标记角色死亡或组织覆灭
 ❌ 所有章节都打7-8分的"安全分"
 ❌ 高分章节给大量建议，或低分章节不给建议
+❌ suggestions 返回 {{"suggestion": "建议内容"}} 这类对象数组
+❌ suggestions 返回带编号对象、content对象、explanation对象等任何非字符串元素
 </constraints>"""
 
     # 大纲单批次展开提示词 V2（RTCO框架）
@@ -1931,7 +2297,12 @@ class PromptService:
 
 <task>
 【设计任务】
-根据世界观信息，设计一个完整且合理的职业体系，包括主职业和副职业。
+根据世界观信息和项目简介，设计一个完整且合理的职业体系。
+职业体系必须与项目简介中的故事背景和角色设定高度契合。
+
+【数量要求】
+- 主职业：精确生成1个
+- 副职业：精确生成1个
 </task>
 
 <worldview priority="P0">
@@ -1939,6 +2310,9 @@ class PromptService:
 书名：{title}
 类型：{genre}
 主题：{theme}
+简介：{description}
+
+【世界观设定】
 时间背景：{time_period}
 地理位置：{location}
 氛围基调：{atmosphere}
@@ -1948,23 +2322,30 @@ class PromptService:
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）**
-- 根据世界观特点，决定需要多少个主职业
+**1. 主职业（main_careers）- 必须精确生成1个**
 - 主职业是角色的核心发展方向
-- 必须严格符合世界观规则
+- 必须严格符合世界观规则和简介中的故事背景
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
+- 职业设计要能支撑简介中描述的故事情节
 
-**2. 副职业（sub_careers）**
-- 根据世界需要，决定需要多少个副职业
+**2. 副职业（sub_careers）- 必须精确生成1个**
 - 副职业包含生产、辅助、特殊技能类
 - 每个副职业的阶段数量可以不同
 - 不要让所有副职业都是相同的阶段数
+- 副职业要能为主职业提供辅助或增益
 
 **3. 阶段设计（stages）**
 - 每个职业的stages数组长度必须等于max_stage
 - 阶段名称要符合世界观文化背景
 - 阶段描述要体现明确的能力提升路径
 - 确保职业间的阶段数量有差异
+- 主职业阶段数建议：8-12个
+- 副职业阶段数建议：5-8个
+
+**4. 简介契合度**
+- 职业体系必须与项目简介中的故事设定相匹配
+- 如果简介中提到特定职业或能力，优先设计相关职业
+- 职业的能力和特点要能支撑简介中的情节发展
 </design_requirements>
 
 <output priority="P0">
@@ -2006,17 +2387,215 @@ class PromptService:
 
 <constraints>
 【必须遵守】
-✅ 职业数量和类型根据世界观自行决定
-✅ 不同职业的max_stage必须不同
-✅ 主职业阶段数建议：5-15个
-✅ 副职业阶段数建议：3-10个
+✅ 主职业数量：必须精确生成1个，不多不少
+✅ 副职业数量：必须精确生成1个，不多不少
+✅ 主职业阶段数建议：8-12个
+✅ 副职业阶段数建议：5-8个
 ✅ stages数组长度必须等于max_stage
 ✅ 确保职业体系与世界观高度契合
+✅ 职业设计必须支撑项目简介中的故事情节
 
 【禁止事项】
 ❌ 所有职业使用相同的阶段数
 ❌ 输出markdown标记
-❌ 职业设计与世界观脱节
+❌ 职业设计与世界观或简介脱节
+❌ 忽略简介中提到的职业或能力设定
+</constraints>"""
+
+    # 局部重写提示词（RTCO框架）
+    PARTIAL_REGENERATE = """<system>
+你是一位专业的小说改写助手，擅长根据用户的修改要求精准改写指定段落，同时确保与前后文无缝衔接。
+</system>
+
+<task>
+【改写任务】
+根据用户的修改要求，重写下面选中的文本段落。
+
+【重要要求】
+1. 只输出重写后的内容，不要包含任何解释、前缀或后缀
+2. 保持与前后文的自然衔接和语气连贯
+3. 严格遵循用户的修改要求
+4. 保持整体叙事风格的一致性
+</task>
+
+<context priority="P0">
+【前文参考】（用于衔接，勿重复）
+{context_before}
+
+【需要重写的原文】（共{original_word_count}字）
+{selected_text}
+
+【后文参考】（用于衔接，勿重复）
+{context_after}
+</context>
+
+<user_requirements priority="P0">
+【用户修改要求】
+{user_instructions}
+
+【字数要求】
+{length_requirement}
+</user_requirements>
+
+<style priority="P1">
+【写作风格】
+{style_content}
+</style>
+
+<output>
+【输出规范】
+直接输出重写后的内容，从故事内容开始写。
+- 不要输出任何解释或说明文字
+- 不要输出"重写后："等前缀
+- 不要输出引号包裹内容
+- 确保输出内容可以直接替换原文
+
+请直接输出重写后的内容：
+</output>
+
+<constraints>
+【必须遵守】
+✅ 前后衔接：输出内容必须与前文自然衔接，与后文平滑过渡
+✅ 风格一致：保持与原文相同的叙事风格、语气和人称
+✅ 要求优先：严格执行用户的修改要求
+✅ 字数控制：遵循字数要求
+
+【禁止事项】
+❌ 重复前文内容
+❌ 重复后文内容
+❌ 添加任何元信息或说明
+❌ 改变叙事人称或视角
+❌ 偏离用户的修改要求
+</constraints>"""
+
+    # 拆书导入-反向项目提炼提示词
+    BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION = """<system>
+你是资深网文策划编辑，擅长从小说正文中反向提炼项目立项信息。
+</system>
+
+<task>
+【任务】
+基于提供的前3章内容，提炼该小说的核心立项信息，用于创建新项目。
+
+【目标】
+在不偏离原文的前提下，输出可直接用于项目初始化的结构化信息。
+</task>
+
+<input priority="P0">
+【输入信息】
+书名：{title}
+前3章内容：
+{sampled_text}
+</input>
+
+<output priority="P0">
+【输出格式】
+仅输出一个纯JSON对象（不要markdown、不要代码块、不要解释）：
+
+{{
+  "description": "小说简介",
+  "theme": "核心主题",
+  "genre": "小说类型",
+  "narrative_perspective": "第一人称/第三人称/全知视角",
+  "target_words": 100000
+}}
+
+【字段要求】
+1) description：120-260字，聚焦主角、核心冲突、主线目标与故事张力。
+2) theme：120-260字，提炼作品想表达的核心命题。
+3) genre：2-12字，如都市、玄幻、悬疑、科幻、言情等。
+4) narrative_perspective：只能是“第一人称”或“第三人称”或“全知视角”。
+5) target_words：整数。按网文体量合理预估；无法判断时返回100000。
+</output>
+
+<constraints>
+【必须遵守】
+✅ 严格基于已给正文内容，不凭空添加关键设定
+✅ 保持信息自洽，避免互相矛盾
+✅ 输出必须是可解析JSON对象
+✅ 小说的genre可以由多个类型组成
+
+【禁止事项】
+❌ 输出JSON以外的任何文字
+❌ 使用markdown标记或代码块包裹
+❌ narrative_perspective输出枚举值之外的内容
+❌ target_words输出非整数
+</constraints>"""
+
+    # 拆书导入-反向生成章节大纲（严格对齐 OUTLINE_CREATE 结构）
+    BOOK_IMPORT_REVERSE_OUTLINES = """<system>
+你是资深网文总编与剧情策划，擅长基于已完成章节反向提炼标准化章节大纲。
+</system>
+
+<task>
+【任务】
+基于给定的章节正文（每批最多5章），为每章反向生成对应大纲结构。
+
+【核心目标】
+输出结构必须与系统现有大纲生成结构严格一致（与 OUTLINE_CREATE 字段一致），用于直接入库。
+</task>
+
+<project priority="P0">
+【项目信息】
+书名：{title}
+类型：{genre}
+主题：{theme}
+叙事视角：{narrative_perspective}
+</project>
+
+<input priority="P0">
+【批次范围】
+第{start_chapter}章 - 第{end_chapter}章（共{expected_count}章）
+
+【章节内容】
+{chapters_text}
+</input>
+
+<output priority="P0">
+【输出格式】
+仅输出纯JSON数组（不要markdown、不要代码块、不要解释）。
+数组长度必须严格等于 {expected_count}。
+
+每个对象字段必须严格为：
+[
+  {{
+    "chapter_number": 1,
+    "title": "章节标题",
+    "summary": "章节概要（200-600字）：主要情节、角色互动、关键事件、冲突与转折",
+    "scenes": ["场景1描述", "场景2描述"],
+    "characters": [
+      {{"name": "角色名1", "type": "character"}},
+      {{"name": "组织/势力名1", "type": "organization"}}
+    ],
+    "key_points": ["情节要点1", "情节要点2"],
+    "emotion": "本章情感基调",
+    "goal": "本章叙事目标"
+  }}
+]
+
+【字段约束】
+- chapter_number：必须与输入章节号一致
+- title：必须与输入章节标题一致
+- summary：根据本章正文反向提炼，不得臆造未出现关键事件
+- scenes：2-6条
+- characters：可为空；type 仅允许 character 或 organization
+- key_points：2-6条
+- emotion：一句话
+- goal：一句话
+</output>
+
+<constraints>
+【必须遵守】
+✅ 严格一章对应一个对象，数量与顺序完全一致
+✅ 字段名、字段层级、字段类型严格一致
+✅ 仅基于输入正文提炼，不擅自扩展设定
+✅ 输出必须可被JSON直接解析
+
+【禁止事项】
+❌ 输出JSON之外任何文本
+❌ 缺失字段或新增字段
+❌ chapter_number/title 与输入不一致
+❌ 使用 markdown 或代码块
 </constraints>"""
 
     @staticmethod
@@ -2284,11 +2863,32 @@ class PromptService:
         
         # 定义所有模板及其元信息
         template_definitions = {
+            "NOVEL_COVER_PROMPT_TEMPLATE": {
+                "name": "小说封面生成",
+                "category": "封面生成",
+                "description": "根据项目基础信息生成小说封面绘制提示词，适用于竖版书籍封面",
+                "parameters": ["title", "genre", "theme", "description"]
+            },
             "WORLD_BUILDING": {
                 "name": "世界构建",
                 "category": "世界构建",
                 "description": "用于生成小说世界观设定，包括时间背景、地理位置、氛围基调和世界规则",
                 "parameters": ["title", "theme", "genre", "description"]
+            },
+            "BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION": {
+                "name": "拆书导入-反向项目提炼",
+                "category": "拆书导入",
+                "description": "基于前3章内容反向提炼简介、主题、类型、叙事视角与目标字数",
+                "parameters": ["title", "sampled_text"]
+            },
+            "BOOK_IMPORT_REVERSE_OUTLINES": {
+                "name": "拆书导入-反向章节大纲",
+                "category": "拆书导入",
+                "description": "基于章节正文反向生成与OUTLINE_CREATE一致结构的大纲（单批次5章）",
+                "parameters": [
+                    "title", "genre", "theme", "narrative_perspective",
+                    "start_chapter", "end_chapter", "expected_count", "chapters_text"
+                ]
             },
             "CHARACTERS_BATCH_GENERATION": {
                 "name": "批量角色生成",
@@ -2309,7 +2909,7 @@ class PromptService:
                 "parameters": ["project_context", "user_input"]
             },
             "OUTLINE_CREATE": {
-                "name": "初始大纲生成",
+                "name": "大纲生成",
                 "category": "大纲生成",
                 "description": "根据项目信息生成完整的章节大纲",
                 "parameters": ["title", "theme", "genre", "chapter_count", "narrative_perspective", "target_words", 
@@ -2324,27 +2924,49 @@ class PromptService:
                              "all_chapters_brief", "recent_plot", "memory_context", "mcp_references", 
                              "plot_stage_instruction", "start_chapter", "end_chapter", "story_direction", "requirements"]
             },
-            "CHAPTER_GENERATION_V2": {
-                "name": "章节创作V2（首章）",
+            "CHAPTER_GENERATION_ONE_TO_MANY": {
+                "name": "章节创作-1-N模式（第1章）",
                 "category": "章节创作",
-                "description": "根据大纲创作章节内容（用于第1章，无前置章节）",
+                "description": "1-N模式：根据大纲创作章节内容（用于第1章，无前置章节）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
                              "target_word_count", "narrative_perspective", "characters_info"]
             },
-            "CHAPTER_GENERATION_V2_WITH_CONTEXT": {
-                "name": "章节创作V2（续章）",
+            "CHAPTER_GENERATION_ONE_TO_MANY_NEXT": {
+                "name": "章节创作-1-N模式（第2章及以后）",
                 "category": "章节创作",
-                "description": "基于前置章节内容创作新章节（用于第2章及以后）",
+                "description": "1-N模式：基于前置章节内容创作新章节（用于第2章及以后）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
                              "target_word_count", "narrative_perspective", "characters_info", "continuation_point",
-                             "relevant_memories", "story_skeleton"]
+                             "foreshadow_reminders", "relevant_memories", "story_skeleton", "previous_chapter_summary"]
+            },
+            "CHAPTER_GENERATION_ONE_TO_ONE": {
+                "name": "章节创作-1-1模式（第1章）",
+                "category": "章节创作",
+                "description": "1-1模式：章节创作（用于第1章，无前置章节）",
+                "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
+                             "target_word_count", "narrative_perspective", "characters_info", "chapter_careers"]
+            },
+            "CHAPTER_GENERATION_ONE_TO_ONE_NEXT": {
+                "name": "章节创作-1-1模式（第2章及以后）",
+                "category": "章节创作",
+                "description": "1-1模式：基于上一章内容创作新章节（用于第2章及以后）",
+                "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
+                             "target_word_count", "narrative_perspective", "previous_chapter_content",
+                             "characters_info", "chapter_careers", "foreshadow_reminders", "relevant_memories"]
             },
             "CHAPTER_REGENERATION_SYSTEM": {
                 "name": "章节重写系统提示",
                 "category": "章节重写",
                 "description": "用于章节重写的系统提示词",
-                "parameters": ["chapter_number", "title", "word_count", "content", "modification_instructions", 
+                "parameters": ["chapter_number", "title", "word_count", "content", "modification_instructions",
                              "project_context", "style_content", "target_word_count"]
+            },
+            "PARTIAL_REGENERATE": {
+                "name": "局部重写",
+                "category": "章节重写",
+                "description": "根据用户修改要求重写选中的段落内容",
+                "parameters": ["context_before", "original_word_count", "selected_text", "context_after",
+                             "user_instructions", "length_requirement", "style_content"]
             },
             "PLOT_ANALYSIS": {
                 "name": "情节分析",
@@ -2426,8 +3048,8 @@ class PromptService:
             "CAREER_SYSTEM_GENERATION": {
                 "name": "职业体系生成",
                 "category": "世界构建",
-                "description": "根据世界观自动生成完整的职业体系，包括主职业和副职业",
-                "parameters": ["title", "genre", "theme", "time_period", "location", "atmosphere", "rules"]
+                "description": "根据世界观和项目简介自动生成完整的职业体系，包括主职业和副职业",
+                "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules"]
             },
             "INSPIRATION_TITLE_SYSTEM": {
                 "name": "灵感模式-书名生成(系统提示词)",

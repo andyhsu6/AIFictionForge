@@ -3,7 +3,7 @@
  * 提供沉浸式阅读体验，支持主题切换、字体调节、翻页导航等功能
  */
 import { useState, useEffect, useCallback } from 'react';
-import { Modal, Button, Slider, Radio, Space, Typography, Spin, message } from 'antd';
+import { Modal, Button, Slider, Radio, Space, Typography, Spin, message, theme } from 'antd';
 import {
   LeftOutlined,
   RightOutlined,
@@ -37,27 +37,12 @@ interface NavigationInfo {
   current: { id: string; chapter_number: number; title: string };
 }
 
-// 主题样式配置
-const themeStyles = {
-  light: { 
-    bg: '#ffffff', 
-    text: '#333333',
-    headerBg: '#fafafa',
-    border: '#e8e8e8'
-  },
-  sepia: { 
-    bg: '#f5e6c8', 
-    text: '#5b4636',
-    headerBg: '#e8d9b8',
-    border: '#d4c5a5'
-  },
-  dark: { 
-    bg: '#1a1a1a', 
-    text: '#cccccc',
-    headerBg: '#252525',
-    border: '#333333'
-  }
-};
+interface ReaderThemeStyle {
+  bg: string;
+  text: string;
+  headerBg: string;
+  border: string;
+}
 
 // 本地存储key
 const SETTINGS_STORAGE_KEY = 'chapter-reader-settings';
@@ -94,6 +79,8 @@ export default function ChapterReader({
   onClose, 
   onChapterChange 
 }: ChapterReaderProps) {
+  const { token } = theme.useToken();
+
   // 阅读器设置
   const [settings, setSettings] = useState<ReaderSettings>(loadSettings);
   
@@ -200,6 +187,26 @@ export default function ChapterReader({
   }, [chapter?.id]);
 
   // 当前主题样式
+  const themeStyles: Record<ReaderSettings['theme'], ReaderThemeStyle> = {
+    light: {
+      bg: token.colorBgContainer,
+      text: token.colorText,
+      headerBg: token.colorBgElevated,
+      border: token.colorBorderSecondary,
+    },
+    sepia: {
+      bg: `color-mix(in srgb, ${token.colorWarningBg} 72%, ${token.colorBgContainer} 28%)`,
+      text: `color-mix(in srgb, ${token.colorText} 85%, ${token.colorTextSecondary} 15%)`,
+      headerBg: `color-mix(in srgb, ${token.colorWarningBg} 58%, ${token.colorBgElevated} 42%)`,
+      border: `color-mix(in srgb, ${token.colorWarningBorder} 65%, ${token.colorBorder} 35%)`,
+    },
+    dark: {
+      bg: `color-mix(in srgb, ${token.colorTextBase} 92%, ${token.colorBgContainer} 8%)`,
+      text: `color-mix(in srgb, ${token.colorTextLightSolid} 82%, ${token.colorTextSecondary} 18%)`,
+      headerBg: `color-mix(in srgb, ${token.colorTextBase} 84%, ${token.colorBgElevated} 16%)`,
+      border: `color-mix(in srgb, ${token.colorTextBase} 60%, ${token.colorBorder} 40%)`,
+    },
+  };
   const currentTheme = themeStyles[settings.theme];
 
   // 更新设置的便捷函数

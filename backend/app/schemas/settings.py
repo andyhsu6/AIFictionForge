@@ -15,6 +15,11 @@ class SettingsBase(BaseModel):
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="温度参数")
     max_tokens: Optional[int] = Field(default=2000, ge=1, description="最大token数")
     system_prompt: Optional[str] = Field(default=None, description="系统级别提示词，每次AI调用都会使用")
+    cover_api_provider: Optional[str] = Field(default=None, description="封面图片API提供商")
+    cover_api_key: Optional[str] = Field(default=None, description="封面图片API密钥")
+    cover_api_base_url: Optional[str] = Field(default=None, description="封面图片自定义API地址")
+    cover_image_model: Optional[str] = Field(default=None, description="封面图片模型名称")
+    cover_enabled: Optional[bool] = Field(default=False, description="是否启用封面图片生成")
     preferences: Optional[str] = Field(default=None, description="其他偏好设置(JSON)")
 
 
@@ -38,6 +43,47 @@ class SettingsResponse(SettingsBase):
     updated_at: datetime
 
 
+class SystemSMTPSettingsBase(BaseModel):
+    """系统 SMTP 设置基础模型"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    smtp_provider: str = Field(default="qq", description="SMTP 提供商")
+    smtp_host: Optional[str] = Field(default=None, description="SMTP 主机")
+    smtp_port: int = Field(default=465, ge=1, le=65535, description="SMTP 端口")
+    smtp_username: Optional[str] = Field(default=None, description="SMTP 用户名")
+    smtp_password: Optional[str] = Field(default=None, description="SMTP 密码或授权码")
+    smtp_use_tls: bool = Field(default=False, description="是否启用 TLS")
+    smtp_use_ssl: bool = Field(default=True, description="是否启用 SSL")
+    smtp_from_email: Optional[str] = Field(default=None, description="发件人邮箱")
+    smtp_from_name: str = Field(default="MuMuAINovel", description="发件人名称")
+    email_auth_enabled: bool = Field(default=True, description="是否启用邮箱认证")
+    email_register_enabled: bool = Field(default=True, description="是否启用邮箱注册")
+    verification_code_ttl_minutes: int = Field(default=10, ge=1, le=120, description="验证码有效期（分钟）")
+    verification_resend_interval_seconds: int = Field(default=60, ge=10, le=3600, description="验证码重发间隔（秒）")
+
+
+class SystemSMTPSettingsUpdate(SystemSMTPSettingsBase):
+    """系统 SMTP 设置更新模型"""
+    pass
+
+
+class SystemSMTPSettingsResponse(SystemSMTPSettingsBase):
+    """系统 SMTP 设置响应模型"""
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SMTPTestRequest(BaseModel):
+    """SMTP 测试请求模型"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    to_email: str = Field(..., min_length=3, max_length=255, description="测试收件邮箱")
+
+
 # ========== API配置预设相关模型 ==========
 
 class APIKeyPresetConfig(BaseModel):
@@ -50,6 +96,7 @@ class APIKeyPresetConfig(BaseModel):
     llm_model: str = Field(..., description="模型名称")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="温度参数")
     max_tokens: int = Field(default=2000, ge=1, description="最大token数")
+    system_prompt: Optional[str] = Field(default=None, description="系统级别提示词")
 
 
 class APIKeyPreset(BaseModel):

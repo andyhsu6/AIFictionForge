@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, List, Button, Space, Empty, Tag, Spin, Alert, Switch, Drawer, message } from 'antd';
+import { Card, List, Button, Space, Empty, Tag, Spin, Alert, Switch, Drawer, message, theme } from 'antd';
 import {
   EyeOutlined,
   EyeInvisibleOutlined,
@@ -77,6 +77,7 @@ const ChapterAnalysis: React.FC = () => {
   const [scrollToContentAnnotation, setScrollToContentAnnotation] = useState<string | undefined>();
   const [scrollToSidebarAnnotation, setScrollToSidebarAnnotation] = useState<string | undefined>();
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const { token } = theme.useToken();
 
   // 监听窗口大小变化
   useEffect(() => {
@@ -196,7 +197,7 @@ const ChapterAnalysis: React.FC = () => {
         <div style={{
           padding: '16px 0',
           marginBottom: 16,
-          borderBottom: '1px solid #f0f0f0'
+          borderBottom: `1px solid ${token.colorBorderSecondary}`
         }}>
           <h2 style={{ margin: 0, fontSize: 24 }}>
             <FundOutlined style={{ marginRight: 8 }} />
@@ -231,8 +232,8 @@ const ChapterAnalysis: React.FC = () => {
                   style={{
                     cursor: 'pointer',
                     padding: '12px 16px',
-                    background: selectedChapter?.id === chapter.id ? '#e6f7ff' : 'transparent',
-                    borderLeft: selectedChapter?.id === chapter.id ? '3px solid #1890ff' : '3px solid transparent',
+                    background: selectedChapter?.id === chapter.id ? token.colorPrimaryBg : 'transparent',
+                    borderLeft: selectedChapter?.id === chapter.id ? `3px solid ${token.colorPrimary}` : '3px solid transparent',
                   }}
                 >
                   <List.Item.Meta
@@ -278,8 +279,8 @@ const ChapterAnalysis: React.FC = () => {
                   style={{
                     cursor: 'pointer',
                     padding: '12px 16px',
-                    background: selectedChapter?.id === chapter.id ? '#e6f7ff' : 'transparent',
-                    borderLeft: selectedChapter?.id === chapter.id ? '3px solid #1890ff' : '3px solid transparent',
+                    background: selectedChapter?.id === chapter.id ? token.colorPrimaryBg : 'transparent',
+                    borderLeft: selectedChapter?.id === chapter.id ? `3px solid ${token.colorPrimary}` : '3px solid transparent',
                   }}
                 >
                   <List.Item.Meta
@@ -430,7 +431,7 @@ const ChapterAnalysis: React.FC = () => {
                           checkedChildren={<EyeOutlined />}
                           unCheckedChildren={<EyeInvisibleOutlined />}
                         />
-                        <span style={{ fontSize: 13, color: '#666' }}>显示标注</span>
+                        <span style={{ fontSize: 13, color: token.colorTextSecondary }}>显示标注</span>
                       </>
                     )}
                   </Space>
@@ -441,7 +442,7 @@ const ChapterAnalysis: React.FC = () => {
                 <div style={{
                   marginTop: 12,
                   fontSize: isMobile ? 11 : 12,
-                  color: '#999',
+                  color: token.colorTextTertiary,
                   lineHeight: 1.5
                 }}>
                   共有 {annotationsData.summary.total_annotations} 个标注：

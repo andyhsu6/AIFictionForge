@@ -112,4 +112,7 @@ export const EventNames = {
   CHAPTER_UPDATED: 'chapter:updated',
   CHAPTER_DELETED: 'chapter:deleted',
   CHAPTER_NEEDS_REFRESH: 'chapter:needsRefresh',
+
+  // 视图切换事件
+  SWITCH_TO_MCP_VIEW: 'view:switchToMcp',
 } as const;

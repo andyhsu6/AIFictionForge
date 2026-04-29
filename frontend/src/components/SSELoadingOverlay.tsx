@@ -1,5 +1,5 @@
 import React from 'react';
-import { Spin } from 'antd';
+import { Spin, theme } from 'antd';
 import { LoadingOutlined } from '@ant-design/icons';
 
 interface SSELoadingOverlayProps {
@@ -13,6 +13,8 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
   progress,
   message
 }) => {
+  const { token } = theme.useToken();
+
   if (!loading) return null;
 
   return (
@@ -22,19 +24,19 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
       left: 0,
       right: 0,
       bottom: 0,
-      background: 'rgba(0, 0, 0, 0.45)',
+      background: token.colorBgMask,
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
       zIndex: 9999
     }}>
       <div style={{
-        background: '#fff',
+        background: token.colorBgElevated,
         borderRadius: 12,
         padding: '40px 60px',
         minWidth: 400,
         maxWidth: 600,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.2)'
+        boxShadow: token.boxShadowSecondary
       }}>
         {/* 标题和图标 */}
         <div style={{
@@ -42,13 +44,13 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
           marginBottom: 24
         }}>
           <Spin
-            indicator={<LoadingOutlined style={{ fontSize: 48, color: 'var(--color-primary)' }} spin />}
+            indicator={<LoadingOutlined style={{ fontSize: 48, color: token.colorPrimary }} spin />}
           />
           <div style={{
             fontSize: 20,
             fontWeight: 'bold',
             marginTop: 16,
-            color: 'var(--color-text-primary)'
+            color: token.colorTextHeading
           }}>
             AI生成中...
           </div>
@@ -60,7 +62,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
         }}>
           <div style={{
             height: 12,
-            background: 'var(--color-bg-layout)',
+            background: token.colorFillTertiary,
             borderRadius: 6,
             overflow: 'hidden',
             marginBottom: 12
@@ -68,12 +70,12 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
             <div style={{
               height: '100%',
               background: progress === 100
-                ? 'linear-gradient(90deg, var(--color-success) 0%, var(--color-success-active) 100%)'
-                : 'linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-active) 100%)',
+                ? `linear-gradient(90deg, ${token.colorSuccess} 0%, ${token.colorSuccessActive} 100%)`
+                : `linear-gradient(90deg, ${token.colorPrimary} 0%, ${token.colorPrimaryActive} 100%)`,
               width: `${progress}%`,
               transition: 'all 0.3s ease',
               borderRadius: 6,
-              boxShadow: progress > 0 ? 'var(--shadow-card)' : 'none'
+              boxShadow: progress > 0 ? token.boxShadow : 'none'
             }} />
           </div>
 
@@ -82,7 +84,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
             textAlign: 'center',
             fontSize: 32,
             fontWeight: 'bold',
-            color: progress === 100 ? 'var(--color-success)' : 'var(--color-primary)',
+            color: progress === 100 ? token.colorSuccess : token.colorPrimary,
             marginBottom: 8
           }}>
             {progress}%
@@ -93,7 +95,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
         <div style={{
           textAlign: 'center',
           fontSize: 16,
-          color: '#595959',
+          color: token.colorText,
           minHeight: 24,
           padding: '0 20px'
         }}>
@@ -104,7 +106,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
         <div style={{
           textAlign: 'center',
           fontSize: 13,
-          color: '#8c8c8c',
+          color: token.colorTextTertiary,
           marginTop: 16
         }}>
           请勿关闭页面,生成过程需要一定时间

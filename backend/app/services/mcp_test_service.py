@@ -25,32 +25,20 @@ logger = get_logger(__name__)
 
 class MCPTestService:
     """MCP插件测试服务（使用统一门面重构）"""
-    
-    async def _ensure_plugin_registered(
-        self, 
-        plugin: MCPPlugin, 
-        user_id: str
-    ) -> bool:
+
+    def _check_plugin_registered(self, plugin: MCPPlugin, user_id: str) -> bool:
         """
-        确保插件已注册到统一门面
-        
+        检查插件是否已注册（同步方法，不触发新的连接）
+
         Args:
             plugin: 插件配置
             user_id: 用户ID
-            
+
         Returns:
-            是否成功
+            是否已注册
         """
-        if plugin.plugin_type in ("http", "streamable_http", "sse") and plugin.server_url:
-            return await mcp_client.ensure_registered(
-                user_id=user_id,
-                plugin_name=plugin.plugin_name,
-                url=plugin.server_url,
-                plugin_type=plugin.plugin_type,
-                headers=plugin.headers
-            )
-        return False
-    
+        return mcp_client.is_registered(user_id, plugin.plugin_name)
+
     async def test_plugin_connection(
         self,
         plugin: MCPPlugin,
@@ -58,27 +46,28 @@ class MCPTestService:
     ) -> MCPTestResult:
         """
         简单连接测试
-        
+
+        注意：调用此方法前，需要确保插件已通过后台任务注册。
+
         Args:
             plugin: 插件配置
             user_id: 用户ID
-            
+
         Returns:
             测试结果
         """
         start_time = time.time()
-        
+
         try:
-            # 确保插件已注册
-            registered = await self._ensure_plugin_registered(plugin, user_id)
-            if not registered:
+            # 检查插件是否已注册（不触发新连接）
+            if not self._check_plugin_registered(plugin, user_id):
                 return MCPTestResult(
                     success=False,
-                    message="插件注册失败",
-                    error="无法创建MCP客户端",
-                    suggestions=["请检查插件配置", "请确认服务器URL正确"]
+                    message="插件未注册",
+                    error="MCP会话不存在，请先启用插件",
+                    suggestions=["请先启用插件", "如果已启用，请稍等片刻后重试"]
                 )
-            
+
             # 使用统一门面测试连接
             test_result = await mcp_client.test_connection(user_id, plugin.plugin_name)
             

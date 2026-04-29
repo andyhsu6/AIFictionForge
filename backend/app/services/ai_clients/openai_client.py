@@ -74,10 +74,16 @@ class OpenAIClient(BaseAIClient):
 
         choice = choices[0]
         message = choice.get("message", {})
+        usage = data.get("usage") or {}
         return {
             "content": message.get("content", ""),
             "tool_calls": message.get("tool_calls"),
             "finish_reason": choice.get("finish_reason"),
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
         }
 
     async def chat_completion_stream(
@@ -138,6 +144,16 @@ class OpenAIClient(BaseAIClient):
                                                             existing["function"].get("arguments", "") +
                                                             tc["function"]["arguments"]
                                                         )
+
+                                    usage = data.get("usage")
+                                    if usage:
+                                        yield {
+                                            "usage": {
+                                                "prompt_tokens": usage.get("prompt_tokens"),
+                                                "completion_tokens": usage.get("completion_tokens"),
+                                                "total_tokens": usage.get("total_tokens"),
+                                            }
+                                        }
                                     
                                     if content:
                                         yield {"content": content}

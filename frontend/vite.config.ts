@@ -21,10 +21,31 @@ export default defineConfig({
   build: {
     outDir: '../backend/static',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // 手动分割代码块,将大型依赖库分离
+        manualChunks: {
+          // React 核心库
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          // Ant Design UI库（最大的依赖）
+          'vendor-antd': ['antd', '@ant-design/icons'],
+          // 其他工具库
+          'vendor-utils': ['axios', 'dayjs', 'zustand'],
+          // Diff查看器（较大的组件）
+          'vendor-diff': ['react-diff-viewer-continued'],
+          // 拖拽库
+          'vendor-dnd': ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
+        },
+      },
+    },
   },
   server: {
     proxy: {
       '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/generated-assets': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       }

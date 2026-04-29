@@ -7,7 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
-from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
+from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.career import Career, CharacterCareer
 from app.models.character import Character
 from app.models.project import Project
@@ -25,31 +25,13 @@ from app.schemas.career import (
     CareerStage
 )
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
+from app.api.common import verify_project_access
 
 router = APIRouter(prefix="/careers", tags=["职业管理"])
 logger = get_logger(__name__)
-
-
-async def verify_project_access(project_id: str, user_id: str, db: AsyncSession) -> Project:
-    """验证用户是否有权访问指定项目"""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
-    
-    result = await db.execute(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == user_id
-        )
-    )
-    project = result.scalar_one_or_none()
-    
-    if not project:
-        logger.warning(f"项目访问被拒绝: project_id={project_id}, user_id={user_id}")
-        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
-    
-    return project
 
 
 @router.get("", response_model=CareerListResponse, summary="获取职业列表")
@@ -174,13 +156,10 @@ async def create_career(
         raise HTTPException(status_code=500, detail=f"创建职业失败: {str(e)}")
 
 
-@router.get("/generate-system", summary="AI生成新职业（增量式，流式）")
+@router.post("/generate-system", summary="AI生成新职业（增量式，流式）")
 async def generate_career_system(
-    project_id: str,
-    main_career_count: int = 3,
-    sub_career_count: int = 6,
-    enable_mcp: bool = False,
-    http_request: Request = None,
+    request_data: CareerGenerateRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     user_ai_service: AIService = Depends(get_user_ai_service)
 ):
@@ -194,6 +173,10 @@ async def generate_career_system(
         try:
             # 验证用户权限和项目是否存在
             user_id = getattr(http_request.state, 'user_id', None)
+            project_id = request_data.project_id
+            main_career_count = request_data.main_career_count
+            sub_career_count = request_data.sub_career_count
+            user_requirements = request_data.user_requirements
             project = await verify_project_access(project_id, user_id, db)
             
             yield await tracker.start()
@@ -242,7 +225,20 @@ async def generate_career_system(
 - 世界规则：{project.world_rules or '未设定'}
 """
             
-            user_requirements = f"""
+            sanitized_user_requirements = user_requirements.strip()
+            extra_requirement_text = ""
+            if sanitized_user_requirements:
+                extra_requirement_text = f"""
+用户额外要求：
+{sanitized_user_requirements}
+
+执行要求：
+- 请优先满足用户提出的职业方向、能力风格、限制条件和避雷项
+- 如果用户要求与已有职业高度相似，请保留需求核心，但生成定位差异明确的新职业
+- 如果用户要求与项目世界观冲突，请在不违背世界观的前提下进行合理改写和本土化适配
+"""
+
+            generation_requirements = f"""
 已有职业情况：{existing_careers_text}
 
 生成要求（增量式）：
@@ -252,14 +248,15 @@ async def generate_career_system(
 - 新职业应填补已有职业体系的空缺，丰富职业多样性
 - 主职业必须严格符合世界观规则，体现核心能力体系
 - 副职业可以更加自由灵活，包含生产、辅助、特殊类型
-"""
+
+{extra_requirement_text}"""
             
             yield await tracker.preparing("构建AI提示词...")
             
             # 构建提示词
             prompt = f"""{project_context}
 
-{user_requirements}
+{generation_requirements}
 
 请为这个小说项目生成新的补充职业（增量式）。要求：
 1. **仔细分析已有职业**，避免生成重复或相似的职业
@@ -307,7 +304,8 @@ async def generate_career_system(
 4. 阶段名称要符合世界观特色
 5. 副职业可以相对简化，但要有独特性
 6. 所有职业都要符合项目的整体世界观设定
-7. 只返回纯JSON，不要添加任何解释文字
+7. 如果提供了用户额外要求，请优先满足；若与世界观冲突，必须以世界观为准进行合理改写
+8. 只返回纯JSON，不要添加任何解释文字
 """
             
             yield await tracker.generating(0, max(3000, len(prompt) * 8), "调用AI生成新职业...")
@@ -319,7 +317,15 @@ async def generate_career_system(
                 chunk_count = 0
                 estimated_total = max(3000, len(prompt) * 8)
                 
-                async for chunk in user_ai_service.generate_text_stream(prompt=prompt):
+                async for chunk in wrap_stream_with_heartbeat(
+                    user_ai_service.generate_text_stream(prompt=prompt),
+                    heartbeat_interval=15.0
+                ):
+                    # 心跳哨兵：发送心跳保活，不混入AI响应
+                    if chunk is HEARTBEAT:
+                        yield await tracker.heartbeat()
+                        continue
+
                     chunk_count += 1
                     ai_response += chunk
                     
@@ -348,7 +354,7 @@ async def generate_career_system(
             # 清洗并解析JSON
             try:
                 cleaned_response = user_ai_service._clean_json_response(ai_response)
-                career_data = json.loads(cleaned_response)
+                career_data = loads_json(cleaned_response)
                 logger.info(f"✅ 职业体系JSON解析成功")
             except json.JSONDecodeError as e:
                 logger.error(f"❌ 职业体系JSON解析失败: {e}")

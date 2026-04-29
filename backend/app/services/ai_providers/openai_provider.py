@@ -97,8 +97,13 @@ class OpenAIProvider(BaseAIProvider):
                             final_messages, model, temperature, max_tokens, tools, user_id
                         ):
                             yield final_chunk
+                    if chunk.get("finish_reason"):
+                        yield {"finish_reason": chunk.get("finish_reason"), "done": True}
                     break
                 
+                if chunk.get("usage"):
+                    yield {"usage": chunk.get("usage")}
+
                 # 输出文本内容
                 if chunk.get("content"):
                     yield chunk["content"]
@@ -111,8 +116,11 @@ class OpenAIProvider(BaseAIProvider):
             temperature=temperature,
             max_tokens=max_tokens,
         ):
-            # 确保只 yield 字符串内容，避免 yield 字典导致类型错误
             if isinstance(chunk, dict):
+                if chunk.get("usage"):
+                    yield {"usage": chunk.get("usage")}
+                if chunk.get("finish_reason"):
+                    yield {"finish_reason": chunk.get("finish_reason")}
                 if chunk.get("content"):
                     yield chunk["content"]
             else:
@@ -155,7 +163,12 @@ class OpenAIProvider(BaseAIProvider):
                 break
             
             if chunk.get("done"):
+                if chunk.get("finish_reason"):
+                    yield {"finish_reason": chunk.get("finish_reason"), "done": True}
                 break
+
+            if chunk.get("usage"):
+                yield {"usage": chunk.get("usage")}
             
             if chunk.get("content"):
                 yield chunk["content"]

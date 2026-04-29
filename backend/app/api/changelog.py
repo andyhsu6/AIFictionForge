@@ -2,7 +2,7 @@
 更新日志API
 提供GitHub提交历史的缓存和代理服务
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from typing import List, Optional
 import httpx
 from datetime import datetime, timedelta
@@ -12,6 +12,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def require_login(request: Request):
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise HTTPException(status_code=401, detail="需要登录")
+    return request.state.user
 
 # GitHub API配置
 GITHUB_API_BASE = "https://api.github.com"
@@ -173,7 +179,7 @@ async def get_changelog(
 
 
 @router.post("/changelog/refresh")
-async def refresh_changelog():
+async def refresh_changelog(user=Depends(require_login)):
     """
     刷新更新日志缓存
     

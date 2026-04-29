@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.2.5-blue.svg)
+![Version](https://img.shields.io/badge/version-1.4.7-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109.0-green.svg)
 ![React](https://img.shields.io/badge/react-18.3.1-blue.svg)
@@ -18,28 +18,44 @@
 
 <div align="center">
 
+## 💬 加入交流群
+
+欢迎扫码加入 QQ 交流群，一起交流 AI 小说创作心得、反馈问题、获取最新动态！
+
+<img src="frontend/public/qq.jpg" alt="QQ交流群二维码" width="300" />
+
+</div>
+
+---
+
+<div align="center">
+
 ## 💖 支持项目
 
 如果这个项目对你有帮助，欢迎通过以下方式支持开发：
 
 **[☕ 请我喝杯咖啡](https://mumuverse.space:1588/)**
 
+**[🌐 MuMuのAPI站点](https://api.mumuverse.space/register?aff=4NN8)**
+
+> 在 MuMu の API 站点充值满 50 元及以上，也可以获得下方赞助专属权益。
+
 ### 🎁 赞助专属权益
 
 | 权益 | 说明 |
 |------|------|
 | 📋 **优先需求响应** | 您的功能需求和问题反馈将获得优先处理 |
-| 🚀 **Windows一键启动** | 获取免安装EXE程序，双击即可使用 |
+| 🚀 **Windows一键启动** | 获取免安装 EXE 程序，双击即可使用 |
 | 💬 **专属技术支持** | 加入赞助者内部群，获得远程协助和配置指导 |
 
-### ☕ 赞助金额
+### ☕ 赞助 / API 站点充值档位
 
 | 金额 | 描述 |
 |------|------|
 | ¥5 | 🌶️ 一包辣条 |
 | ¥10 | 🍱 一顿拼好饭 |
 | ¥20 | 🧋 一杯咖啡 |
-| ¥50 | 🍖 一次烧烤 |
+| ¥50 | 🍖 一次烧烤  |
 | ¥99 | 🍲 一顿海底捞 |
 
 您的支持是我持续开发的动力！🙏
@@ -70,14 +86,22 @@
 ### 登录界面
 ![登录界面](images/1.png)
 
+![登录界面](images/1-1.png)
+
 ### 主界面
 ![主界面](images/2.png)
+
+![主界面（暗色）](images/2-1.png)
 
 ### 项目管理
 ![项目管理](images/3.png)
 
+![项目管理](images/3-1.png)
+
 ### 赞助我 💖
 ![赞助我](images/4.png)
+
+![赞助我](images/4-1.png)
 
 </div>
 
@@ -97,13 +121,50 @@
 - [x] **Linux DO 自动创建账号** - OAuth 登录自动生成账号
 - [x] **职业等级体系** - 自定义职业和等级系统，支持修仙境界、魔法等级等多种体系
 - [x] **角色/组织卡片导入导出** - 单独导出角色和组织卡片，支持跨项目数据共享
+- [x] **伏笔管理** - 智能追踪剧情伏笔，提醒未回收线索，可视化伏笔时间线
+- [x] **提示词工坊** - 社区驱动的 Prompt 模板分享平台，一键导入优质提示词
+- [x] **拆书功能** - 目前呼声比较高的功能，一键拆书，给当年的ta一个圆满的结局
 
 ### 📝 规划中功能
 
-- [ ] **伏笔管理** - 智能追踪剧情伏笔，提醒未回收线索，可视化伏笔时间线
-- [ ] **提示词工坊** - 社区驱动的 Prompt 模板分享平台，一键导入优质提示词
+......
 
 > 💡 欢迎提交 Issue 或 Pull Request！
+
+## 💻 硬件配置要求
+
+### 最低配置（个人使用/开发环境）
+
+| 组件 | 要求 |
+|------|------|
+| **CPU** | 2 核 |
+| **内存** | 2 GB RAM |
+| **存储** | 10 GB 可用空间 |
+| **网络** | 稳定互联网连接（用于调用 AI API） |
+
+### 推荐配置（小型团队/生产环境）
+
+| 组件 | 要求 |
+|------|------|
+| **CPU** | 4 核 |
+| **内存** | 8 GB RAM |
+| **存储** | 20 GB SSD |
+| **网络** | 稳定互联网连接 |
+
+### 高并发配置（80-150 用户）
+
+| 组件 | 要求 |
+|------|------|
+| **CPU** | 8 核 |
+| **内存** | 16 GB RAM |
+| **存储** | 50 GB+ SSD |
+| **网络** | 高带宽连接 |
+
+> **📌 说明**
+> - **Embedding 模型**：约 400 MB 磁盘空间，运行时加载到内存
+> - **PostgreSQL**：默认配置使用 256 MB shared_buffers，1 GB effective_cache_size
+> - **Docker 部署**：建议预留额外 1-2 GB 内存给容器运行时
+> - 本项目主要依赖外部 AI API（OpenAI/Claude/Gemini），不需要本地 GPU
 
 ## 🚀 快速开始
 
@@ -165,7 +226,7 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
       - ./backend/scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -216,6 +277,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      - ./storage/generated_covers:/app/backend/storage/generated_covers
     environment:
       # 应用配置
       - APP_NAME=${APP_NAME:-MuMuAINovel}
@@ -263,6 +325,7 @@ services:
       # 会话配置
       - SESSION_EXPIRE_MINUTES=${SESSION_EXPIRE_MINUTES:-120}
       - SESSION_REFRESH_THRESHOLD_MINUTES=${SESSION_REFRESH_THRESHOLD_MINUTES:-30}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -379,7 +442,17 @@ LINUXDO_REDIRECT_URI=http://localhost:8000/api/auth/callback
 # PostgreSQL 连接池（高并发优化）
 DATABASE_POOL_SIZE=30
 DATABASE_MAX_OVERFLOW=20
+
+# 会话 Cookie Secure 标记
+# 默认 true，适合 HTTPS 部署；如果使用 HTTP 访问并且浏览器不保存登录 Cookie，可设为 false
+SESSION_COOKIE_SECURE=true
 ```
+
+> **🔐 Cookie Secure 说明**
+>
+> - HTTPS 部署：建议保持 `SESSION_COOKIE_SECURE=true`，浏览器只会通过 HTTPS 发送登录 Cookie。
+> - HTTP 部署：如果登录后浏览器没有保存 Cookie，请在 `.env` 中设置 `SESSION_COOKIE_SECURE=false`，然后重启后端或 Docker 容器。
+> - Docker Compose 示例默认使用 `SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}`，如需关闭必须在 `.env` 中显式配置。
 
 ### 中转 API 配置
 

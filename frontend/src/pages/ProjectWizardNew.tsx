@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Form, Input, InputNumber, Select, Button, Card,
-  Row, Col, Typography, Space, message, Radio
+  Row, Col, Typography, Space, message, Radio, theme
 } from 'antd';
 import {
   RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined
@@ -18,6 +18,7 @@ export default function ProjectWizardNew() {
   const [searchParams] = useSearchParams();
   const [form] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const { token } = theme.useToken();
 
   // 状态管理
   const [currentStep, setCurrentStep] = useState<'form' | 'generating'>('form');
@@ -39,6 +40,7 @@ export default function ProjectWizardNew() {
       setResumeProjectId(projectId);
       handleResumeGeneration(projectId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   // 恢复未完成项目的生成
@@ -121,7 +123,7 @@ export default function ProjectWizardNew() {
           narrative_perspective: '第三人称',
           character_count: 5,
           target_words: 100000,
-          outline_mode: 'one-to-many', // 默认为细化模式
+          outline_mode: 'one-to-one', // 默认为传统模式（1-1）
         }}
       >
         <Form.Item
@@ -195,7 +197,7 @@ export default function ProjectWizardNew() {
                 <Card
                   hoverable
                   style={{
-                    borderColor: form.getFieldValue('outline_mode') === 'one-to-one' ? 'var(--color-primary)' : 'var(--color-border)',
+                    // borderColor: form.getFieldValue('outline_mode') === 'one-to-one' ? token.colorPrimary : token.colorBorder,
                     borderWidth: 2,
                     height: '100%',
                   }}
@@ -204,13 +206,13 @@ export default function ProjectWizardNew() {
                   <Radio value="one-to-one" style={{ width: '100%' }}>
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
                       <div style={{ fontSize: 16, fontWeight: 'bold' }}>
-                        <CheckCircleOutlined style={{ marginRight: 8, color: 'var(--color-success)' }} />
+                        <CheckCircleOutlined style={{ marginRight: 8, color: token.colorSuccess }} />
                         传统模式 (1→1)
                       </div>
-                      <div style={{ fontSize: 12, color: '#666' }}>
+                      <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
                         一个大纲对应一个章节，简单直接
                       </div>
-                      <div style={{ fontSize: 11, color: '#999' }}>
+                      <div style={{ fontSize: 11, color: token.colorTextTertiary }}>
                         💡 适合：简单剧情、快速创作、短篇小说
                       </div>
                     </Space>
@@ -222,7 +224,7 @@ export default function ProjectWizardNew() {
                 <Card
                   hoverable
                   style={{
-                    borderColor: form.getFieldValue('outline_mode') === 'one-to-many' ? 'var(--color-primary)' : 'var(--color-border)',
+                    // borderColor: form.getFieldValue('outline_mode') === 'one-to-many' ? token.colorPrimary : token.colorBorder,
                     borderWidth: 2,
                     height: '100%',
                   }}
@@ -231,13 +233,13 @@ export default function ProjectWizardNew() {
                   <Radio value="one-to-many" style={{ width: '100%' }}>
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
                       <div style={{ fontSize: 16, fontWeight: 'bold' }}>
-                        <CheckCircleOutlined style={{ marginRight: 8, color: 'var(--color-success)' }} />
+                        <CheckCircleOutlined style={{ marginRight: 8, color: token.colorSuccess }} />
                         细化模式 (1→N) 推荐
                       </div>
-                      <div style={{ fontSize: 12, color: '#666' }}>
+                      <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
                         一个大纲可展开为多个章节，灵活控制
                       </div>
-                      <div style={{ fontSize: 11, color: '#999' }}>
+                      <div style={{ fontSize: 11, color: token.colorTextTertiary }}>
                         💡 适合：复杂剧情、长篇创作、需要细化控制
                       </div>
                     </Space>
@@ -320,16 +322,16 @@ export default function ProjectWizardNew() {
 
   return (
     <div style={{
-      minHeight: '100vh',
-      background: 'var(--color-bg-base)',
+      minHeight: '100dvh',
+      background: token.colorBgBase,
     }}>
       {/* 顶部标题栏 - 固定不滚动 */}
       <div style={{
         position: 'sticky',
         top: 0,
         zIndex: 100,
-        background: 'var(--color-primary)',
-        boxShadow: 'var(--shadow-header)',
+        background: token.colorPrimary,
+        boxShadow: `0 6px 20px color-mix(in srgb, ${token.colorPrimary} 30%, transparent)`,
       }}>
         <div style={{
           maxWidth: 1200,
@@ -345,9 +347,9 @@ export default function ProjectWizardNew() {
             size={isMobile ? 'middle' : 'large'}
             disabled={currentStep === 'generating'}
             style={{
-              background: 'rgba(255,255,255,0.2)',
-              borderColor: 'rgba(255,255,255,0.3)',
-              color: '#fff',
+              background: `color-mix(in srgb, ${token.colorWhite} 20%, transparent)`,
+              borderColor: `color-mix(in srgb, ${token.colorWhite} 30%, transparent)`,
+              color: token.colorWhite,
             }}
           >
             {isMobile ? '返回' : '返回首页'}
@@ -355,9 +357,10 @@ export default function ProjectWizardNew() {
 
           <Title level={isMobile ? 4 : 2} style={{
             margin: 0,
-            color: '#fff',
-            textShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            color: token.colorWhite,
+            textShadow: '0 2px 4px color-mix(in srgb, var(--ant-color-black) 18%, transparent)',
           }}>
+            <RocketOutlined style={{ marginRight: 8 }} />
             项目创建向导
           </Title>
 
@@ -369,7 +372,7 @@ export default function ProjectWizardNew() {
       <div style={{
         maxWidth: 800,
         margin: '0 auto',
-        padding: isMobile ? '16px 12px' : '24px 24px',
+        padding: isMobile ? '8px 12px 12px' : '12px 20px 16px',
       }}>
         {currentStep === 'form' && renderForm()}
         {currentStep === 'generating' && generationConfig && (

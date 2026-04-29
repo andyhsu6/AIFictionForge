@@ -21,7 +21,8 @@ from app.models import (
     Settings, WritingStyle, ProjectDefaultStyle,
     RelationshipType, CharacterRelationship, Organization, OrganizationMember,
     StoryMemory, PlotAnalysis, AnalysisTask, BatchGenerationTask,
-    RegenerationTask, Career, CharacterCareer, User, MCPPlugin, PromptTemplate
+    RegenerationTask, Career, CharacterCareer, User, MCPPlugin, PromptTemplate,
+    BackgroundTask
 )
 
 # 引擎缓存：每个用户一个引擎
@@ -205,7 +206,7 @@ async def get_db(request: Request):
             _session_stats["active"] -= 1
             _session_stats["last_check"] = datetime.now().isoformat()
             
-            logger.debug(f"📊 会话关闭 [User:{user_id}][ID:{session_id}] - 活跃:{_session_stats['active']}, 总创建:{_session_stats['created']}, 总关闭:{_session_stats['closed']}, 错误:{_session_stats['errors']}")
+            # logger.debug(f"📊 会话关闭 [User:{user_id}][ID:{session_id}] - 活跃:{_session_stats['active']}, 总创建:{_session_stats['created']}, 总关闭:{_session_stats['closed']}, 错误:{_session_stats['errors']}")
             
             # 使用优化后的会话监控阈值
             if _session_stats["active"] > settings.database_session_leak_threshold:
@@ -220,7 +221,7 @@ async def get_db(request: Request):
             logger.error(f"❌ 关闭会话时出错 [User:{user_id}][ID:{session_id}]: {str(e)}", exc_info=True)
             try:
                 await session.close()
-            except:
+            except Exception:
                 pass
 
 async def init_db(user_id: str = None):

@@ -4,71 +4,6 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
-# 角色预测相关Schema
-class CharacterPredictionRequest(BaseModel):
-    """角色预测请求"""
-    project_id: str
-    start_chapter: int
-    chapter_count: int = 3
-    plot_stage: str = "development"
-    story_direction: Optional[str] = "自然延续"
-    enable_mcp: bool = True
-
-
-class PredictedCharacter(BaseModel):
-    """预测的角色信息"""
-    name: Optional[str] = None
-    role_description: str
-    suggested_role_type: str
-    importance: str
-    appearance_chapter: int
-    key_abilities: List[str] = []
-    plot_function: str
-    relationship_suggestions: List[Dict[str, str]] = []
-
-
-class CharacterPredictionResponse(BaseModel):
-    """角色预测响应"""
-    needs_new_characters: bool
-    reason: str
-    character_count: int
-    predicted_characters: List[PredictedCharacter]
-
-
-# 组织预测相关Schema
-class OrganizationPredictionRequest(BaseModel):
-    """组织预测请求"""
-    project_id: str
-    start_chapter: int
-    chapter_count: int = 3
-    plot_stage: str = "development"
-    story_direction: Optional[str] = "自然延续"
-    enable_mcp: bool = True
-
-
-class PredictedOrganization(BaseModel):
-    """预测的组织信息"""
-    name: Optional[str] = None
-    organization_description: str
-    organization_type: str
-    importance: str
-    appearance_chapter: int
-    power_level: int = 50
-    plot_function: str
-    location: Optional[str] = None
-    motto: Optional[str] = None
-    initial_members: List[Dict[str, Any]] = []
-    relationship_suggestions: List[Dict[str, str]] = []
-
-
-class OrganizationPredictionResponse(BaseModel):
-    """组织预测响应"""
-    needs_new_organizations: bool
-    reason: str
-    organization_count: int
-    predicted_organizations: List[PredictedOrganization]
-
-
 class OutlineBase(BaseModel):
     """大纲基础模型"""
     title: str = Field(..., description="章节标题")
@@ -88,8 +23,8 @@ class OutlineUpdate(BaseModel):
     """更新大纲的请求模型"""
     title: Optional[str] = None
     content: Optional[str] = None
+    structure: Optional[str] = Field(None, description="结构化大纲数据(JSON)")
     # order_index 不允许通过普通更新修改，只能通过 reorder_outlines 接口批量调整
-    # structure 暂不支持修改
 
 
 class OutlineResponse(BaseModel):
@@ -100,9 +35,10 @@ class OutlineResponse(BaseModel):
     content: str
     structure: Optional[str] = None
     order_index: int
+    has_chapters: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -126,16 +62,6 @@ class OutlineGenerateRequest(BaseModel):
     plot_stage: str = Field("development", description="情节阶段: development(发展), climax(高潮), ending(结局)")
     keep_existing: bool = Field(False, description="是否保留现有大纲(续写时)")
     enable_mcp: bool = Field(True, description="是否启用MCP工具增强（搜索情节设计参考）")
-    
-    # 自动角色引入相关参数
-    enable_auto_characters: bool = Field(True, description="是否启用自动角色引入（根据剧情推进自动创建新角色）")
-    require_character_confirmation: bool = Field(True, description="是否需要用户确认新角色（False则AI预测的角色直接创建）")
-    confirmed_characters: Optional[List[Dict[str, Any]]] = Field(None, description="用户确认的角色列表（跳过预测直接创建）")
-    
-    # 自动组织引入相关参数
-    enable_auto_organizations: bool = Field(True, description="是否启用自动组织引入（根据剧情推进自动创建新组织）")
-    require_organization_confirmation: bool = Field(True, description="是否需要用户确认新组织（False则AI预测的组织直接创建）")
-    confirmed_organizations: Optional[List[Dict[str, Any]]] = Field(None, description="用户确认的组织列表（跳过预测直接创建）")
 
 
 class ChapterOutlineGenerateRequest(BaseModel):

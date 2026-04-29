@@ -14,6 +14,10 @@ from app.models.chapter import Chapter
 from app.models.generation_history import GenerationHistory
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
 from app.models.memory import StoryMemory, PlotAnalysis
+from app.models.foreshadow import Foreshadow
+from app.models.career import Career, CharacterCareer
+from app.models.analysis_task import AnalysisTask
+from app.models.batch_generation_task import BatchGenerationTask
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
@@ -234,11 +238,15 @@ async def delete_project(
         else:
             logger.warning(f"⚠️ 未找到用户ID，跳过向量数据库清理")
         
+        # === 删除所有关联数据（SQLite默认不启用外键约束，需要显式删除）===
+        
+        # 1. 删除角色关系
         relationships_result = await db.execute(
             delete(CharacterRelationship).where(CharacterRelationship.project_id == project_id)
         )
         logger.debug(f"删除角色关系数: {relationships_result.rowcount}")
         
+        # 2. 删除组织成员和组织
         orgs_result = await db.execute(
             select(Organization).where(Organization.project_id == project_id)
         )
@@ -256,29 +264,73 @@ async def delete_project(
         )
         logger.debug(f"删除组织数: {organizations_result.rowcount}")
         
+        # 3. 删除生成历史
         history_result = await db.execute(
             delete(GenerationHistory).where(GenerationHistory.project_id == project_id)
         )
         logger.debug(f"删除生成历史数: {history_result.rowcount}")
         
+        # 4. 删除分析任务
+        analysis_tasks_result = await db.execute(
+            delete(AnalysisTask).where(AnalysisTask.project_id == project_id)
+        )
+        logger.debug(f"删除分析任务数: {analysis_tasks_result.rowcount}")
+        
+        # 5. 删除批量生成任务
+        batch_tasks_result = await db.execute(
+            delete(BatchGenerationTask).where(BatchGenerationTask.project_id == project_id)
+        )
+        logger.debug(f"删除批量生成任务数: {batch_tasks_result.rowcount}")
+        
+        # 6. 删除角色职业关联（先获取角色ID列表）
+        characters_query = await db.execute(
+            select(Character.id).where(Character.project_id == project_id)
+        )
+        character_ids = [row[0] for row in characters_query.fetchall()]
+        
+        if character_ids:
+            character_careers_result = await db.execute(
+                delete(CharacterCareer).where(CharacterCareer.character_id.in_(character_ids))
+            )
+            logger.debug(f"删除角色职业关联数: {character_careers_result.rowcount}")
+        
+        # 7. 删除职业体系
+        careers_result = await db.execute(
+            delete(Career).where(Career.project_id == project_id)
+        )
+        logger.debug(f"删除职业体系数: {careers_result.rowcount}")
+        
+        # 8. 删除故事记忆
+        story_memories_result = await db.execute(
+            delete(StoryMemory).where(StoryMemory.project_id == project_id)
+        )
+        logger.debug(f"删除故事记忆数: {story_memories_result.rowcount}")
+        
+        # 9. 删除章节（会级联删除 PlotAnalysis）
         chapters_result = await db.execute(
             delete(Chapter).where(Chapter.project_id == project_id)
         )
         logger.debug(f"删除章节数: {chapters_result.rowcount}")
         
+        # 10. 删除大纲
         outlines_result = await db.execute(
             delete(Outline).where(Outline.project_id == project_id)
         )
         logger.debug(f"删除大纲数: {outlines_result.rowcount}")
         
+        # 11. 删除角色
         characters_result = await db.execute(
             delete(Character).where(Character.project_id == project_id)
         )
         logger.debug(f"删除角色数: {characters_result.rowcount}")
         
-        # 注意：StoryMemory和PlotAnalysis会通过数据库级联删除自动清理
-        # 但向量数据库已在上面手动清理
+        # 12. 删除伏笔
+        foreshadows_result = await db.execute(
+            delete(Foreshadow).where(Foreshadow.project_id == project_id)
+        )
+        logger.debug(f"删除伏笔数: {foreshadows_result.rowcount}")
         
+        # 最后删除项目本身
         await db.delete(project)
         await db.commit()
         
@@ -299,7 +351,7 @@ async def export_project_chapters(
 ):
     """
     导出项目的所有章节内容为TXT文本文件
-    按章节顺序组织，包含项目基本信息
+    按章节顺序组织，使用便于再次拆书导入的纯章节格式
     """
     try:
         # 从认证中间件获取用户ID
@@ -336,46 +388,32 @@ async def export_project_chapters(
         
         txt_content = []
         
-        txt_content.append("=" * 80)
-        txt_content.append(f"项目标题: {project.title}")
-        txt_content.append("=" * 80)
-        
-        if project.description:
-            txt_content.append(f"\n简介: {project.description}\n")
-        
-        if project.theme:
-            txt_content.append(f"主题: {project.theme}")
-        
-        if project.genre:
-            txt_content.append(f"类型: {project.genre}")
-        
-        txt_content.append(f"总章节数: {len(chapters)}")
-        txt_content.append(f"总字数: {project.current_words}")
-        txt_content.append("\n" + "=" * 80 + "\n\n")
-        
-        for chapter in chapters:
-            # 只显示主章节号，不显示子索引
-            txt_content.append(f"第 {chapter.chapter_number} 章  {chapter.title}")
-            txt_content.append("-" * 80)
-            txt_content.append("")  # 空行
-            
-            if chapter.content:
-                txt_content.append(chapter.content)
+        for idx, chapter in enumerate(chapters):
+            chapter_title = (chapter.title or "").strip() or f"未命名章节{chapter.chapter_number}"
+            raw_content = (chapter.content or "").strip()
+            if raw_content:
+                formatted_lines = []
+                for line in raw_content.splitlines():
+                    stripped_line = line.strip()
+                    if stripped_line:
+                        formatted_lines.append(f"　　{stripped_line}")
+                    else:
+                        formatted_lines.append("")
+                chapter_content = "\n".join(formatted_lines)
             else:
-                txt_content.append("（本章暂无内容）")
+                chapter_content = "　　（本章暂无内容）"
             
-            txt_content.append("\n\n" + "=" * 80 + "\n\n")
-        
-        txt_content.append(f"--- 全文完 ---")
-        
-        # 获取当前时间
-        from datetime import datetime
-        export_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        txt_content.append(f"\n导出时间: {export_time}")
+            # 使用拆书强匹配可稳定识别的章节标题格式：第X章 标题
+            txt_content.append(f"第{chapter.chapter_number}章 {chapter_title}")
+            txt_content.append(chapter_content)
+            
+            # 章节之间只保留一个空行，避免装饰性分割线干扰拆书识别
+            if idx < len(chapters) - 1:
+                txt_content.append("")
         
         final_content = "\n".join(txt_content)
         
-        safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
+        safe_title = "".join(c for c in (project.title or "未命名项目") if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
         filename = f"{safe_title}.txt"
         
         from urllib.parse import quote
@@ -564,6 +602,11 @@ async def export_project_data(
     Args:
         project_id: 项目ID
         options: 导出选项
+            - include_generation_history: 是否包含生成历史
+            - include_writing_styles: 是否包含写作风格
+            - include_careers: 是否包含职业系统
+            - include_memories: 是否包含故事记忆
+            - include_plot_analysis: 是否包含剧情分析
     
     Returns:
         JSON文件下载
@@ -575,7 +618,7 @@ async def export_project_data(
             logger.warning("未登录用户尝试导出项目数据")
             raise HTTPException(status_code=401, detail="未登录")
         
-        logger.info(f"开始导出项目数据: project_id={project_id}, user_id={user_id}")
+        logger.info(f"开始导出项目数据: project_id={project_id}, user_id={user_id}, options={options.model_dump()}")
         
         # 只查询当前用户的项目
         result = await db.execute(
@@ -590,12 +633,15 @@ async def export_project_data(
             logger.warning(f"项目不存在或无权访问: project_id={project_id}, user_id={user_id}")
             raise HTTPException(status_code=404, detail="项目不存在")
         
-        # 导出数据
+        # 导出数据（使用所有选项）
         export_data = await ImportExportService.export_project(
             project_id=project_id,
             db=db,
             include_generation_history=options.include_generation_history,
-            include_writing_styles=options.include_writing_styles
+            include_writing_styles=options.include_writing_styles,
+            include_careers=options.include_careers,
+            include_memories=options.include_memories,
+            include_plot_analysis=options.include_plot_analysis
         )
         
         # 转换为JSON

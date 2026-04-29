@@ -723,6 +723,59 @@ class MemoryService:
         
         return "\n".join(lines) + "\n"
     
+    async def delete_foreshadow_memories(
+        self,
+        user_id: str,
+        project_id: str,
+        foreshadow_keywords: List[str]
+    ) -> int:
+        """
+        根据伏笔关键词删除向量库中的相关伏笔记忆
+        
+        说明：当前记忆系统未持久化 [reference_foreshadow_id](backend/app/services/prompt_service.py:1109) /
+        [foreshadow_id](backend/app/services/foreshadow_service.py:230) 映射，因此这里采用内容关键词匹配作为清理策略，
+        仅删除 [memory_type='foreshadow'](backend/app/models/memory.py:23) 的向量记忆。
+        
+        Args:
+            user_id: 用户ID
+            project_id: 项目ID
+            foreshadow_keywords: 伏笔关键词列表
+        
+        Returns:
+            实际删除数量
+        """
+        try:
+            keywords = [kw.strip() for kw in foreshadow_keywords if kw and kw.strip()]
+            if not keywords:
+                return 0
+
+            collection = self.get_collection(user_id, project_id)
+            results = collection.get(where={"memory_type": "foreshadow"})
+
+            ids_to_delete = []
+            documents = results.get('documents') or []
+            metadatas = results.get('metadatas') or []
+            result_ids = results.get('ids') or []
+
+            for index, memory_id in enumerate(result_ids):
+                document = documents[index] if index < len(documents) else ""
+                metadata = metadatas[index] if index < len(metadatas) else {}
+                title = str((metadata or {}).get('title', ''))
+                haystack = f"{title}\n{document}".lower()
+
+                if any(keyword.lower() in haystack for keyword in keywords):
+                    ids_to_delete.append(memory_id)
+
+            if ids_to_delete:
+                collection.delete(ids=ids_to_delete)
+                logger.info(f"🗑️ 已删除项目{project_id[:8]}的{len(ids_to_delete)}条伏笔相关向量记忆")
+
+            return len(ids_to_delete)
+
+        except Exception as e:
+            logger.error(f"❌ 删除伏笔相关向量记忆失败: {str(e)}")
+            return 0
+
     async def delete_chapter_memories(
         self,
         user_id: str,

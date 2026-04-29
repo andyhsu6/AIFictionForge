@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Drawer, Input, List, Typography, Empty, Tag } from 'antd';
+import { Drawer, Input, List, Typography, Empty, Tag, theme } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import type { Chapter } from '../types';
 
@@ -24,6 +24,7 @@ export default function FloatingIndexPanel({
   groupedChapters,
   onChapterSelect,
 }: FloatingIndexPanelProps) {
+  const { token } = theme.useToken();
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredGroups = useMemo(() => {
@@ -56,7 +57,7 @@ export default function FloatingIndexPanel({
         body: { padding: 0 },
       }}
     >
-      <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0' }}>
+      <div style={{ padding: '16px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
         <Input
           placeholder="搜索章节标题"
           prefix={<SearchOutlined />}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Dropdown, Avatar, Space, Typography, message, Modal, Form, Input, Button } from 'antd';
+import { Dropdown, Avatar, Space, Typography, message, Modal, Form, Input, Button, theme } from 'antd';
 import { UserOutlined, LogoutOutlined, TeamOutlined, CrownOutlined, LockOutlined } from '@ant-design/icons';
 import { authApi } from '../services/api';
 import type { User } from '../types';
@@ -8,12 +8,21 @@ import { useNavigate } from 'react-router-dom';
 
 const { Text } = Typography;
 
-export default function UserMenu() {
+interface UserMenuProps {
+  /** 是否总是显示完整信息（用于移动端侧边栏） */
+  showFullInfo?: boolean;
+  /** 紧凑模式（用于折叠侧边栏，仅展示头像） */
+  compact?: boolean;
+}
+
+export default function UserMenu({ showFullInfo = false, compact = false }: UserMenuProps) {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [changePasswordForm] = Form.useForm();
   const [changingPassword, setChangingPassword] = useState(false);
+  const { token } = theme.useToken();
+  const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
 
   useEffect(() => {
     loadCurrentUser();
@@ -54,9 +63,10 @@ export default function UserMenu() {
       message.success('密码修改成功');
       setShowChangePassword(false);
       changePasswordForm.resetFields();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('修改密码失败:', error);
-      message.error(error.response?.data?.detail || '修改密码失败');
+      const err = error as { response?: { data?: { detail?: string } } };
+      message.error(err.response?.data?.detail || '修改密码失败');
     } finally {
       setChangingPassword(false);
     }
@@ -120,36 +130,36 @@ export default function UserMenu() {
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
-            padding: '8px 16px',
-            background: 'rgba(255, 255, 255, 0.6)', // 保持半透明以配合 Backdrop
+            gap: compact ? 0 : 12,
+            padding: compact ? '4px' : '8px 16px',
+            background: alphaColor(token.colorBgContainer, 0.65), // 保持半透明以配合 Backdrop
             backdropFilter: 'blur(10px)',
             WebkitBackdropFilter: 'blur(10px)',
-            borderRadius: 24,
-            border: '1px solid var(--color-border)',
+            borderRadius: compact ? 16 : 24,
+            border: `1px solid ${token.colorBorder}`,
             transition: 'all 0.3s ease',
-            boxShadow: 'var(--shadow-card)',
+            boxShadow: `0 8px 20px ${alphaColor(token.colorText, 0.08)}`,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--color-bg-container)'; // 悬浮时变实
+            e.currentTarget.style.background = token.colorBgContainer; // 悬浮时变实
             e.currentTarget.style.transform = 'translateY(-2px)';
-            e.currentTarget.style.boxShadow = 'var(--shadow-elevated)';
+            e.currentTarget.style.boxShadow = `0 12px 28px ${alphaColor(token.colorText, 0.14)}`;
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.6)';
+            e.currentTarget.style.background = alphaColor(token.colorBgContainer, 0.65);
             e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.boxShadow = 'var(--shadow-card)';
+            e.currentTarget.style.boxShadow = `0 8px 20px ${alphaColor(token.colorText, 0.08)}`;
           }}
         >
           <div style={{ position: 'relative' }}>
             <Avatar
               src={currentUser.avatar_url}
               icon={<UserOutlined />}
-              size={40}
+              size={compact ? 32 : 40}
               style={{
-                backgroundColor: 'var(--color-primary)',
-                border: '3px solid #fff',
-                boxShadow: 'var(--shadow-card)',
+                backgroundColor: token.colorPrimary,
+                border: `3px solid ${token.colorWhite}`,
+                boxShadow: `0 8px 20px ${alphaColor(token.colorText, 0.12)}`,
               }}
             />
             {currentUser.is_admin && (
@@ -159,28 +169,28 @@ export default function UserMenu() {
                 right: -2,
                 width: 18,
                 height: 18,
-                background: 'linear-gradient(135deg, #ffd700 0%, #ffaa00 100%)',
+                background: `linear-gradient(135deg, ${token.colorWarning} 0%, ${token.colorWarningHover} 100%)`,
                 borderRadius: '50%',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                border: '2px solid white',
-                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)',
+                border: `2px solid ${token.colorWhite}`,
+                boxShadow: `0 2px 4px ${alphaColor(token.colorText, 0.2)}`,
               }}>
-                <CrownOutlined style={{ fontSize: 9, color: '#fff' }} />
+                <CrownOutlined style={{ fontSize: 9, color: token.colorWhite }} />
               </div>
             )}
           </div>
-          <Space direction="vertical" size={0} style={{ display: window.innerWidth <= 768 ? 'none' : 'flex' }}>
+          <Space direction="vertical" size={0} style={{ display: compact ? 'none' : ((window.innerWidth <= 768 && !showFullInfo) ? 'none' : 'flex') }}>
             <Text strong style={{
-              color: 'var(--color-text-primary)',
+              color: token.colorText,
               fontSize: 14,
               lineHeight: '20px',
             }}>
               {currentUser.display_name || currentUser.username}
             </Text>
             <Text style={{
-              color: 'var(--color-text-secondary)',
+              color: token.colorTextSecondary,
               fontSize: 12,
               lineHeight: '18px',
             }}>

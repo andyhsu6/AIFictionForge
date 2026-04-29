@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect, useRef } from 'react';
-import { Card, Tag, Badge, Empty, Collapse, Divider } from 'antd';
+import { Card, Tag, Badge, Empty, Collapse, Divider, theme } from 'antd';
 import {
   FireOutlined,
   StarOutlined,
@@ -22,22 +22,18 @@ const TYPE_CONFIG = {
   hook: {
     label: '钩子',
     icon: <FireOutlined />,
-    color: '#ff6b6b',
   },
   foreshadow: {
     label: '伏笔',
     icon: <StarOutlined />,
-    color: '#6b7bff',
   },
   plot_point: {
     label: '情节点',
     icon: <ThunderboltOutlined />,
-    color: '#51cf66',
   },
   character_event: {
     label: '角色事件',
     icon: <UserOutlined />,
-    color: '#ffd93d',
   },
 };
 
@@ -51,7 +47,14 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
   onAnnotationClick,
   scrollToAnnotation,
 }) => {
+  const { token } = theme.useToken();
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const typeColors: Record<keyof typeof TYPE_CONFIG, string> = {
+    hook: token.colorError,
+    foreshadow: token.colorInfo,
+    plot_point: token.colorSuccess,
+    character_event: token.colorWarning,
+  };
 
   // 当需要滚动到特定标注卡片时
   useEffect(() => {
@@ -100,6 +103,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
   // 渲染单个记忆卡片
   const renderMemoryCard = (annotation: MemoryAnnotation) => {
     const config = TYPE_CONFIG[annotation.type];
+    const color = typeColors[annotation.type];
     const isActive = activeAnnotationId === annotation.id;
 
     return (
@@ -115,8 +119,8 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
           onClick={() => onAnnotationClick?.(annotation)}
           style={{
             marginBottom: 12,
-            borderLeft: `4px solid ${config.color}`,
-            backgroundColor: isActive ? `${config.color}11` : 'transparent',
+            borderLeft: `4px solid ${color}`,
+            backgroundColor: isActive ? `color-mix(in srgb, ${color} 8%, transparent)` : 'transparent',
             cursor: 'pointer',
             transition: 'all 0.2s',
           }}
@@ -126,7 +130,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
           <Badge
             count={`${(annotation.importance * 10).toFixed(1)}`}
             style={{
-              backgroundColor: config.color,
+              backgroundColor: color,
               float: 'right',
             }}
           />
@@ -138,7 +142,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
         <div
           style={{
             fontSize: 13,
-            color: '#666',
+            color: token.colorTextSecondary,
             lineHeight: 1.6,
             marginBottom: 8,
           }}
@@ -160,7 +164,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
 
         {/* 特殊元数据 */}
         {annotation.metadata.strength && (
-          <div style={{ marginTop: 4, fontSize: 11, color: '#999' }}>
+          <div style={{ marginTop: 4, fontSize: 11, color: token.colorTextTertiary }}>
             强度: {annotation.metadata.strength}/10
           </div>
         )}
@@ -192,27 +196,27 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
         <div style={{ fontWeight: 600, marginBottom: 12 }}>📊 分析概览</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <div>
-            <div style={{ fontSize: 12, color: '#999' }}>钩子</div>
-            <div style={{ fontSize: 20, fontWeight: 600, color: TYPE_CONFIG.hook.color }}>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>钩子</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.hook }}>
               {stats.hooks}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: '#999' }}>伏笔</div>
-            <div style={{ fontSize: 20, fontWeight: 600, color: TYPE_CONFIG.foreshadow.color }}>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>伏笔</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.foreshadow }}>
               {stats.foreshadows}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: '#999' }}>情节点</div>
-            <div style={{ fontSize: 20, fontWeight: 600, color: TYPE_CONFIG.plot_point.color }}>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>情节点</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.plot_point }}>
               {stats.plotPoints}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: '#999' }}>角色事件</div>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>角色事件</div>
             <div
-              style={{ fontSize: 20, fontWeight: 600, color: TYPE_CONFIG.character_event.color }}
+              style={{ fontSize: 20, fontWeight: 600, color: typeColors.character_event }}
             >
               {stats.characterEvents}
             </div>

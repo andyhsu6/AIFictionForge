@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col } from 'antd';
-import { SettingOutlined, SaveOutlined, DeleteOutlined, ReloadOutlined, ArrowLeftOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined } from '@ant-design/icons';
+import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, theme } from 'antd';
+import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
+import { eventBus, EventNames } from '../store/eventBus';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -11,7 +11,7 @@ const { useBreakpoint } = Grid;
 const { TextArea } = Input;
 
 export default function SettingsPage() {
-  const navigate = useNavigate();
+  const { token } = theme.useToken();
   const screens = useBreakpoint();
   const isMobile = !screens.md; // md断点是768px
   const [form] = Form.useForm();
@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string; description: string }>>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [modelsFetched, setModelsFetched] = useState(false);
+  const [modelSearchText, setModelSearchText] = useState('');
   const [testingApi, setTestingApi] = useState(false);
   const [testResult, setTestResult] = useState<{
     success: boolean;
@@ -34,6 +35,13 @@ export default function SettingsPage() {
     suggestions?: string[];
   } | null>(null);
   const [showTestResult, setShowTestResult] = useState(false);
+  const [testingCoverApi, setTestingCoverApi] = useState(false);
+  const [coverTestResult, setCoverTestResult] = useState<{
+    success: boolean;
+    message: string;
+    provider?: string;
+    model?: string;
+  } | null>(null);
 
   // 预设相关状态
   const [activeTab, setActiveTab] = useState('current');
@@ -44,25 +52,50 @@ export default function SettingsPage() {
   const [isPresetModalVisible, setIsPresetModalVisible] = useState(false);
   const [testingPresetId, setTestingPresetId] = useState<string | null>(null);
   const [presetForm] = Form.useForm();
+  
+  // 预设编辑窗口的模型列表状态（独立于当前配置的模型列表）
+  const [presetModelOptions, setPresetModelOptions] = useState<Array<{ value: string; label: string; description: string }>>([]);
+  const [fetchingPresetModels, setFetchingPresetModels] = useState(false);
+  const [presetModelsFetched, setPresetModelsFetched] = useState(false);
+  const [presetModelSearchText, setPresetModelSearchText] = useState('');
+
+  const pageBackground = `linear-gradient(180deg, ${token.colorBgLayout} 0%, ${token.colorFillSecondary} 100%)`;
+  const headerBackground = `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`;
 
   useEffect(() => {
     loadSettings();
     if (activeTab === 'presets') {
       loadPresets();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (activeTab === 'presets') {
       loadPresets();
+    } else if (activeTab === 'current') {
+      // 切换到当前配置Tab时，刷新设置以获取最新数据
+      loadSettings();
+      // 清除旧的测试结果，因为可能是其他配置的测试结果
+      setTestResult(null);
+      setShowTestResult(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
   const loadSettings = async () => {
     setInitialLoading(true);
     try {
       const settings = await settingsApi.getSettings();
-      form.setFieldsValue(settings);
+      form.setFieldsValue({
+        ...defaultCoverSettings,
+        ...settings,
+        cover_api_provider: settings.cover_api_provider || defaultCoverSettings.cover_api_provider,
+        cover_api_key: settings.cover_api_key ?? defaultCoverSettings.cover_api_key,
+        cover_api_base_url: settings.cover_api_base_url || defaultCoverSettings.cover_api_base_url,
+        cover_image_model: settings.cover_image_model || defaultCoverSettings.cover_image_model,
+        cover_enabled: settings.cover_enabled ?? defaultCoverSettings.cover_enabled,
+      });
 
       // 判断是否为默认设置（id='0'表示来自.env的默认配置）
       if (settings.id === '0' || !settings.id) {
@@ -72,6 +105,7 @@ export default function SettingsPage() {
         setIsDefaultSettings(false);
         setHasSettings(true);
       }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       // 如果404表示还没有设置，使用默认值
       if (error?.response?.status === 404) {
@@ -83,6 +117,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          ...defaultCoverSettings,
         });
       } else {
         message.error('加载设置失败');
@@ -116,6 +151,25 @@ export default function SettingsPage() {
       setHasSettings(true);
       setIsDefaultSettings(false);
       
+      // 保存后清除测试结果，因为配置可能已变更
+      setTestResult(null);
+      setShowTestResult(false);
+      
+      // 手动保存配置后，同步刷新预设激活状态。
+      // 后端会在配置与激活预设不一致时自动取消激活，这里统一拉取最新状态，
+      // 确保设置界面与预设列表联动一致。
+      const previousActivePresetId = activePresetId;
+      await loadPresets();
+      
+      if (previousActivePresetId) {
+        const latestPresets = await settingsApi.getPresets();
+        const stillActive = latestPresets.active_preset_id === previousActivePresetId;
+        if (!stillActive) {
+          setActivePresetId(undefined);
+          message.info('配置已更改，预设激活状态已取消');
+        }
+      }
+      
       // 如果配置发生变化，需要处理 MCP 插件
       if (configChanged) {
         // 清除 MCP 验证缓存
@@ -136,7 +190,7 @@ export default function SettingsPage() {
             modal.warning({
               title: (
                 <Space>
-                  <WarningOutlined style={{ color: '#faad14' }} />
+                  <WarningOutlined style={{ color: token.colorWarning }} />
                   <span>API 配置已更改</span>
                 </Space>
               ),
@@ -151,8 +205,8 @@ export default function SettingsPage() {
                   />
                   <div style={{
                     padding: 12,
-                    background: 'var(--color-info-bg)',
-                    border: '1px solid var(--color-info-border)',
+                    background: token.colorInfoBg,
+                    border: `1px solid ${token.colorInfoBorder}`,
                     borderRadius: 8
                   }}>
                     <Text strong style={{ display: 'block', marginBottom: 8 }}>请完成以下步骤：</Text>
@@ -167,7 +221,7 @@ export default function SettingsPage() {
               okText: '前往 MCP 页面',
               cancelText: '稍后处理',
               onOk: () => {
-                navigate('/mcp-plugins');
+                eventBus.emit(EventNames.SWITCH_TO_MCP_VIEW);
               },
             });
           }
@@ -175,7 +229,7 @@ export default function SettingsPage() {
           console.error('Failed to disable MCP plugins:', err);
         }
       }
-    } catch (error) {
+    } catch {
       message.error('保存设置失败');
     } finally {
       setLoading(false);
@@ -197,6 +251,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          ...defaultCoverSettings,
         });
         message.info('已重置为默认值，请点击保存');
       },
@@ -218,7 +273,7 @@ export default function SettingsPage() {
           message.success('设置已删除');
           setHasSettings(false);
           form.resetFields();
-        } catch (error) {
+        } catch {
           message.error('删除设置失败');
         } finally {
           setLoading(false);
@@ -227,20 +282,129 @@ export default function SettingsPage() {
     });
   };
 
+  const mumuTextDefaultUrl = 'https://api.mumuverse.space/v1';
+  const mumuRegisterUrl = 'https://api.mumuverse.space/register?aff=4NN8';
+  const mumuCoverBaseUrlOptions = [
+    { value: 'https://api.mumuverse.space/v1beta', label: 'https://api.mumuverse.space/v1beta', defaultModel: 'gemini-3.1-flash-image-preview' },
+    { value: 'https://api.mumuverse.space/v1', label: 'https://api.mumuverse.space/v1', defaultModel: 'gpt-image-1.5' },
+  ];
+  const defaultCoverSettings = {
+    cover_enabled: false,
+    cover_api_provider: 'mumu',
+    cover_api_key: '',
+    cover_api_base_url: mumuCoverBaseUrlOptions[0].value,
+    cover_image_model: mumuCoverBaseUrlOptions[0].defaultModel,
+  };
+
   const apiProviders = [
+    {
+      value: 'mumu',
+      label: 'MuMuのAPI',
+      defaultUrl: mumuTextDefaultUrl,
+      defaultModel: 'gemini-3-flash-preview'
+    },
     { value: 'openai', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
     // { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
     { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   ];
 
+  const selectedProvider = Form.useWatch('api_provider', form);
+  const selectedCoverProvider = Form.useWatch('cover_api_provider', form);
+  const selectedPresetProvider = Form.useWatch('api_provider', presetForm);
+
   const handleProviderChange = (value: string) => {
     const provider = apiProviders.find(p => p.value === value);
-    if (provider && provider.defaultUrl) {
-      form.setFieldValue('api_base_url', provider.defaultUrl);
+    if (provider) {
+      const nextValues: Record<string, string> = {};
+      if (provider.defaultUrl) {
+        nextValues.api_base_url = provider.defaultUrl;
+      }
+      if (provider.value === 'mumu') {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
+      }
+      form.setFieldsValue(nextValues);
     }
     // 清空模型列表，需要重新获取
     setModelOptions([]);
     setModelsFetched(false);
+  };
+
+  const coverApiProviders = [
+    {
+      value: 'mumu',
+      label: 'MuMuのAPI',
+      defaultUrl: mumuCoverBaseUrlOptions[0].value,
+      defaultModel: mumuCoverBaseUrlOptions[0].defaultModel,
+    },
+    { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+    { value: 'grok', label: 'Grok', defaultUrl: 'https://api.x.ai/v1' },
+  ];
+
+  const handleCoverProviderChange = (value: string) => {
+    const provider = coverApiProviders.find(p => p.value === value);
+    if (!provider) {
+      setCoverTestResult(null);
+      return;
+    }
+
+    const nextValues: Record<string, string> = {};
+    if (provider.defaultUrl) {
+      nextValues.cover_api_base_url = provider.defaultUrl;
+    }
+    if (provider.value === 'mumu') {
+      nextValues.cover_api_key = '';
+      nextValues.cover_image_model = provider.defaultModel || mumuCoverBaseUrlOptions[0].defaultModel;
+    }
+
+    form.setFieldsValue(nextValues);
+    setCoverTestResult(null);
+  };
+
+  const handleMumuCoverBaseUrlChange = (value: string) => {
+    const option = mumuCoverBaseUrlOptions.find(item => item.value === value);
+    form.setFieldsValue({
+      cover_api_base_url: value,
+      cover_image_model: option?.defaultModel || mumuCoverBaseUrlOptions[0].defaultModel,
+    });
+    setCoverTestResult(null);
+  };
+
+  const handleCoverTestConnection = async () => {
+    const coverApiProvider = form.getFieldValue('cover_api_provider');
+    const coverApiKey = form.getFieldValue('cover_api_key');
+    const coverApiBaseUrl = form.getFieldValue('cover_api_base_url');
+    const coverImageModel = form.getFieldValue('cover_image_model');
+
+    if (!coverApiProvider || !coverApiKey || !coverImageModel) {
+      message.warning('请先填写完整的封面图片配置信息');
+      return;
+    }
+
+    setTestingCoverApi(true);
+    setCoverTestResult(null);
+    try {
+      const result = await settingsApi.testCoverConnection({
+        cover_api_provider: coverApiProvider,
+        cover_api_key: coverApiKey,
+        cover_api_base_url: coverApiBaseUrl,
+        cover_image_model: coverImageModel,
+      });
+      setCoverTestResult(result);
+      if (result.success) {
+        message.success('封面图片接口测试成功');
+      } else {
+        message.error(result.message || '封面图片接口测试失败');
+      }
+    } catch (error) {
+      console.error('封面图片接口测试失败:', error);
+      setCoverTestResult({
+        success: false,
+        message: '封面图片接口测试失败',
+      });
+    } finally {
+      setTestingCoverApi(false);
+    }
   };
 
   const handleFetchModels = async (silent: boolean = false) => {
@@ -268,6 +432,7 @@ export default function SettingsPage() {
       if (!silent) {
         message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
       }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       const errorMsg = error?.response?.data?.detail || '获取模型列表失败';
       if (!silent) {
@@ -292,6 +457,8 @@ export default function SettingsPage() {
     const apiBaseUrl = form.getFieldValue('api_base_url');
     const provider = form.getFieldValue('api_provider');
     const modelName = form.getFieldValue('llm_model');
+    const temperature = form.getFieldValue('temperature');
+    const maxTokens = form.getFieldValue('max_tokens');
 
     if (!apiKey || !apiBaseUrl || !provider || !modelName) {
       message.warning('请先填写完整的配置信息');
@@ -306,7 +473,9 @@ export default function SettingsPage() {
         api_key: apiKey,
         api_base_url: apiBaseUrl,
         provider: provider,
-        llm_model: modelName
+        llm_model: modelName,
+        temperature: temperature,
+        max_tokens: maxTokens
       });
 
       setTestResult(result);
@@ -317,6 +486,7 @@ export default function SettingsPage() {
       } else {
         message.error('API 测试失败，请查看详细信息');
       }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       const errorMsg = error?.response?.data?.detail || '测试请求失败';
       message.error(errorMsg);
@@ -350,6 +520,10 @@ export default function SettingsPage() {
   };
 
   const showPresetModal = (preset?: APIKeyPreset) => {
+    // 重置预设模型列表状态
+    setPresetModelOptions([]);
+    setPresetModelsFetched(false);
+    
     if (preset) {
       setEditingPreset(preset);
       presetForm.setFieldsValue({
@@ -362,6 +536,7 @@ export default function SettingsPage() {
       presetForm.resetFields();
       presetForm.setFieldsValue({
         api_provider: 'openai',
+        api_base_url: 'https://api.openai.com/v1',
         temperature: 0.7,
         max_tokens: 2000,
       });
@@ -373,6 +548,75 @@ export default function SettingsPage() {
     setIsPresetModalVisible(false);
     setEditingPreset(null);
     presetForm.resetFields();
+    // 清除预设模型列表状态
+    setPresetModelOptions([]);
+    setPresetModelsFetched(false);
+    setPresetModelSearchText('');
+  };
+
+  // 预设编辑窗口：获取模型列表
+  const handleFetchPresetModels = async (silent: boolean = false) => {
+    const apiKey = presetForm.getFieldValue('api_key');
+    const apiBaseUrl = presetForm.getFieldValue('api_base_url');
+    const provider = presetForm.getFieldValue('api_provider');
+
+    if (!apiKey || !apiBaseUrl) {
+      if (!silent) {
+        message.warning('请先填写 API 密钥和 API 地址');
+      }
+      return;
+    }
+
+    setFetchingPresetModels(true);
+    try {
+      const response = await settingsApi.getAvailableModels({
+        api_key: apiKey,
+        api_base_url: apiBaseUrl,
+        provider: provider || 'openai'
+      });
+
+      setPresetModelOptions(response.models);
+      setPresetModelsFetched(true);
+      if (!silent) {
+        message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
+      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      const errorMsg = error?.response?.data?.detail || '获取模型列表失败';
+      if (!silent) {
+        message.error(errorMsg);
+      }
+      setPresetModelOptions([]);
+      setPresetModelsFetched(true);
+    } finally {
+      setFetchingPresetModels(false);
+    }
+  };
+
+  // 预设编辑窗口：模型选择框获得焦点时自动获取
+  const handlePresetModelSelectFocus = () => {
+    if (!presetModelsFetched && !fetchingPresetModels) {
+      handleFetchPresetModels(true);
+    }
+  };
+
+  // 预设编辑窗口：提供商变更时更新默认URL并清空模型列表
+  const handlePresetProviderChange = (value: string) => {
+    const provider = apiProviders.find(p => p.value === value);
+    if (provider) {
+      const nextValues: Record<string, string> = {};
+      if (provider.defaultUrl) {
+        nextValues.api_base_url = provider.defaultUrl;
+      }
+      if (provider.value === 'mumu') {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
+      }
+      presetForm.setFieldsValue(nextValues);
+    }
+    // 清空模型列表，需要重新获取
+    setPresetModelOptions([]);
+    setPresetModelsFetched(false);
   };
 
   const handlePresetSave = async () => {
@@ -385,6 +629,7 @@ export default function SettingsPage() {
         llm_model: values.llm_model,
         temperature: values.temperature,
         max_tokens: values.max_tokens,
+        system_prompt: values.system_prompt,
       };
 
       if (editingPreset) {
@@ -416,6 +661,7 @@ export default function SettingsPage() {
       await settingsApi.deletePreset(presetId);
       message.success('预设已删除');
       loadPresets();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       message.error(error.response?.data?.detail || '删除失败');
       console.error(error);
@@ -429,6 +675,15 @@ export default function SettingsPage() {
       
       await settingsApi.activatePreset(presetId);
       message.success(`已激活预设: ${presetName}`);
+      
+      // 激活预设后清除当前配置Tab的测试结果
+      setTestResult(null);
+      setShowTestResult(false);
+      
+      // 清除模型列表缓存，因为API配置可能已变更
+      setModelOptions([]);
+      setModelsFetched(false);
+      
       loadPresets();
       loadSettings(); // 重新加载当前配置
       
@@ -472,7 +727,7 @@ export default function SettingsPage() {
               modal.warning({
                 title: (
                   <Space>
-                    <WarningOutlined style={{ color: '#faad14' }} />
+                    <WarningOutlined style={{ color: token.colorWarning }} />
                     <span>API 配置已更改</span>
                   </Space>
                 ),
@@ -487,8 +742,8 @@ export default function SettingsPage() {
                     />
                     <div style={{
                       padding: 12,
-                      background: 'var(--color-info-bg)',
-                      border: '1px solid var(--color-info-border)',
+                      background: token.colorInfoBg,
+                      border: `1px solid ${token.colorInfoBorder}`,
                       borderRadius: 8
                     }}>
                       <Text strong style={{ display: 'block', marginBottom: 8 }}>请完成以下步骤：</Text>
@@ -503,7 +758,7 @@ export default function SettingsPage() {
                 okText: '前往 MCP 页面',
                 cancelText: '稍后处理',
                 onOk: () => {
-                  navigate('/mcp-plugins');
+                  eventBus.emit(EventNames.SWITCH_TO_MCP_VIEW);
                 },
               });
             }
@@ -529,15 +784,15 @@ export default function SettingsPage() {
           width: isMobile ? '90%' : 600,
           content: (
             <div style={{ padding: '8px 0' }}>
-              <div style={{ marginBottom: 24, padding: 16, background: 'var(--color-success-bg)', border: '1px solid var(--color-success-border)', borderRadius: 8 }}>
-                <Typography.Text strong style={{ color: 'var(--color-success)' }}>
+              <div style={{ marginBottom: 24, padding: 16, background: token.colorSuccessBg, border: `1px solid ${token.colorSuccessBorder}`, borderRadius: 8 }}>
+                <Typography.Text strong style={{ color: token.colorSuccess }}>
                   ✓ API 连接正常
                 </Typography.Text>
               </div>
 
               <div style={{
                 padding: 16,
-                background: 'var(--color-bg-layout)',
+                background: token.colorBgLayout,
                 borderRadius: 8,
                 marginBottom: 16
               }}>
@@ -583,13 +838,13 @@ export default function SettingsPage() {
               {result.error && (
                 <div style={{
                   padding: 16,
-                  background: 'var(--color-error-bg)',
-                  border: '1px solid var(--color-error-border)',
+                  background: token.colorErrorBg,
+                  border: `1px solid ${token.colorErrorBorder}`,
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
                   <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>错误信息:</Text>
-                  <Text style={{ fontSize: 13, color: 'var(--color-error)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  <Text style={{ fontSize: 13, color: token.colorError, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {result.error}
                   </Text>
                 </div>
@@ -598,8 +853,8 @@ export default function SettingsPage() {
               {result.suggestions && result.suggestions.length > 0 && (
                 <div style={{
                   padding: 16,
-                  background: 'var(--color-warning-bg)',
-                  border: '1px solid var(--color-warning-border)',
+                  background: token.colorWarningBg,
+                  border: `1px solid ${token.colorWarningBorder}`,
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
@@ -648,6 +903,8 @@ export default function SettingsPage() {
       //   return 'purple';
       case 'gemini':
         return 'green';
+      case 'mumu':
+        return 'magenta';
       default:
         return 'default';
     }
@@ -689,10 +946,10 @@ export default function SettingsPage() {
                 <List.Item
                   key={preset.id}
                   style={{
-                    background: isActive ? '#f0f5ff' : 'transparent',
+                    background: isActive ? token.colorInfoBg : 'transparent',
                     padding: '16px',
                     marginBottom: '8px',
-                    border: isActive ? '2px solid #1890ff' : '1px solid #f0f0f0',
+                    border: isActive ? `2px solid ${token.colorPrimary}` : `1px solid ${token.colorBorderSecondary}`,
                     borderRadius: '8px',
                   }}
                   actions={[
@@ -742,7 +999,7 @@ export default function SettingsPage() {
                     avatar={
                       isActive && (
                         <CheckCircleOutlined
-                          style={{ fontSize: '24px', color: '#52c41a' }}
+                          style={{ fontSize: '24px', color: token.colorSuccess }}
                         />
                       )
                     }
@@ -755,7 +1012,7 @@ export default function SettingsPage() {
                     description={
                       <Space direction="vertical" size="small" style={{ width: '100%' }}>
                         {preset.description && (
-                          <div style={{ color: '#666' }}>{preset.description}</div>
+                          <div style={{ color: token.colorTextSecondary }}>{preset.description}</div>
                         )}
                         <Space wrap>
                           <Tag color={getProviderColor(preset.config.api_provider)}>
@@ -765,7 +1022,7 @@ export default function SettingsPage() {
                           <Tag>温度: {preset.config.temperature}</Tag>
                           <Tag>Tokens: {preset.config.max_tokens}</Tag>
                         </Space>
-                        <div style={{ fontSize: '12px', color: '#999' }}>
+                        <div style={{ fontSize: '12px', color: token.colorTextTertiary }}>
                           创建于: {new Date(preset.created_at).toLocaleString()}
                         </div>
                       </Space>
@@ -784,9 +1041,9 @@ export default function SettingsPage() {
     <>
       {contextHolder}
       <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(180deg, var(--color-bg-base) 0%, #EEF2F3 100%)',
-        padding: isMobile ? '20px 16px' : '40px 24px',
+        minHeight: '90vh',
+        background: pageBackground,
+        padding: isMobile ? '20px 16px 70px' : '24px 24px 70px',
         display: 'flex',
         flexDirection: 'column',
       }}>
@@ -802,9 +1059,9 @@ export default function SettingsPage() {
           <Card
             variant="borderless"
             style={{
-              background: 'linear-gradient(135deg, var(--color-primary) 0%, #5A9BA5 50%, var(--color-primary-hover) 100%)',
+              background: headerBackground,
               borderRadius: isMobile ? 16 : 24,
-              boxShadow: '0 12px 40px rgba(77, 128, 136, 0.25), 0 4px 12px rgba(0, 0, 0, 0.06)',
+              boxShadow: token.boxShadowSecondary,
               marginBottom: isMobile ? 20 : 24,
               border: 'none',
               position: 'relative',
@@ -812,48 +1069,23 @@ export default function SettingsPage() {
             }}
           >
             {/* 装饰性背景元素 */}
-            <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.08)', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', bottom: -40, left: '30%', width: 120, height: 120, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.05)', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', top: '50%', right: '15%', width: 80, height: 80, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.06)', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: token.colorWhite, opacity: 0.08, pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', bottom: -40, left: '30%', width: 120, height: 120, borderRadius: '50%', background: token.colorWhite, opacity: 0.05, pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', top: '50%', right: '15%', width: 80, height: 80, borderRadius: '50%', background: token.colorWhite, opacity: 0.06, pointerEvents: 'none' }} />
 
             <Row align="middle" justify="space-between" gutter={[16, 16]} style={{ position: 'relative', zIndex: 1 }}>
               <Col xs={24} sm={12}>
                 <Space direction="vertical" size={4}>
-                  <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-                    <SettingOutlined style={{ color: 'rgba(255,255,255,0.9)', marginRight: 8 }} />
+                  <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: token.colorWhite, textShadow: `0 2px 4px ${token.colorBgMask}` }}>
                     AI API 设置
                   </Title>
-                  <Text style={{ fontSize: isMobile ? 12 : 14, color: 'rgba(255,255,255,0.85)', marginLeft: isMobile ? 40 : 48 }}>
+                  <Text style={{ fontSize: isMobile ? 12 : 14, color: token.colorTextLightSolid, marginLeft: isMobile ? 40 : 48, opacity: 0.85 }}>
                     配置AI接口参数，管理多个API配置预设
                   </Text>
                 </Space>
               </Col>
               <Col xs={24} sm={12}>
-                <Space size={12} style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end', width: '100%' }}>
-                  <Button
-                    icon={<ArrowLeftOutlined />}
-                    onClick={() => navigate('/')}
-                    style={{
-                      borderRadius: 12,
-                      background: 'rgba(255, 255, 255, 0.15)',
-                      border: '1px solid rgba(255, 255, 255, 0.3)',
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                      color: '#fff',
-                      backdropFilter: 'blur(10px)',
-                      transition: 'all 0.3s ease'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
-                      e.currentTarget.style.transform = 'translateY(-1px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
-                      e.currentTarget.style.transform = 'none';
-                    }}
-                  >
-                    返回主页
-                  </Button>
-                </Space>
+                {/* 按钮区域预留 */}
               </Col>
             </Row>
           </Card>
@@ -862,9 +1094,9 @@ export default function SettingsPage() {
           <Card
             variant="borderless"
             style={{
-              background: 'rgba(255, 255, 255, 0.95)',
+              background: token.colorBgContainer,
               borderRadius: isMobile ? 12 : 16,
-              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+              boxShadow: token.boxShadowSecondary,
               flex: 1,
             }}
             styles={{
@@ -879,7 +1111,7 @@ export default function SettingsPage() {
               items={[
                 {
                   key: 'current',
-                  label: '当前配置',
+                  label: <Space size={6}><ThunderboltOutlined />文本模型配置</Space>,
                   children: (
                     <Space direction="vertical" size={isMobile ? 'middle' : 'large'} style={{ width: '100%' }}>
 
@@ -927,7 +1159,7 @@ export default function SettingsPage() {
                                 <span>API 提供商</span>
                                 <InfoCircleOutlined
                                   title="选择你的AI服务提供商"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -943,13 +1175,37 @@ export default function SettingsPage() {
                             </Select>
                           </Form.Item>
 
+                          {selectedProvider === 'mumu' && (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="MuMuのAPI 专属供应商"
+                              description={
+                                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                                  <Text>
+                                    已自动填入专属地址，API Key 保持留空。免费注册后即可获取可用 Key。
+                                  </Text>
+                                  <div>
+                                    <Button
+                                      type="primary"
+                                      onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                                    >
+                                      打开 MuMuのAPI 站点免费注册
+                                    </Button>
+                                  </div>
+                                </Space>
+                              }
+                              style={{ marginBottom: 16 }}
+                            />
+                          )}
+
                           <Form.Item
                             label={
                               <Space size={4}>
                                 <span>API 密钥</span>
                                 <InfoCircleOutlined
                                   title="你的API密钥，将加密存储"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -969,7 +1225,7 @@ export default function SettingsPage() {
                                 <span>API 地址</span>
                                 <InfoCircleOutlined
                                   title="API的基础URL地址"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -991,7 +1247,7 @@ export default function SettingsPage() {
                                 <span>模型名称</span>
                                 <InfoCircleOutlined
                                   title="AI模型的名称，如 gpt-4, gpt-3.5-turbo"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -1001,30 +1257,35 @@ export default function SettingsPage() {
                             <Select
                               size={isMobile ? 'middle' : 'large'}
                               showSearch
-                              placeholder={isMobile ? "选择模型" : "输入模型名称或点击获取"}
+                              placeholder={isMobile ? "输入或选择模型" : "输入模型名称或点击获取"}
                               optionFilterProp="label"
                               loading={fetchingModels}
                               onFocus={handleModelSelectFocus}
-                              filterOption={(input, option) =>
-                                (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
-                                (option?.description ?? '').toLowerCase().includes(input.toLowerCase())
-                              }
+                              onSearch={(value) => setModelSearchText(value)}
+                              onSelect={() => setModelSearchText('')}
+                              onBlur={() => setModelSearchText('')}
+                              filterOption={(input, option) => {
+                                // 手动输入的选项始终显示
+                                if (option?.value === input && !modelOptions.some(m => m.value === input)) return true;
+                                return (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                                  (option?.description ?? '').toLowerCase().includes(input.toLowerCase());
+                              }}
                               dropdownRender={(menu) => (
                                 <>
                                   {menu}
                                   {fetchingModels && (
-                                    <div style={{ padding: '8px 12px', color: 'var(--color-text-secondary)', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
+                                    <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
                                       <Spin size="small" /> 正在获取模型列表...
                                     </div>
                                   )}
-                                  {!fetchingModels && modelOptions.length === 0 && modelsFetched && (
-                                    <div style={{ padding: '8px 12px', color: '#ff4d4f', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                      未能获取到模型列表，请检查 API 配置
+                                  {!fetchingModels && modelOptions.length === 0 && modelsFetched && !modelSearchText && (
+                                    <div style={{ padding: '8px 12px', color: token.colorError, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
+                                      未能获取到模型列表，可直接输入模型名称
                                     </div>
                                   )}
-                                  {!fetchingModels && modelOptions.length === 0 && !modelsFetched && (
-                                    <div style={{ padding: '8px 12px', color: 'var(--color-text-secondary)', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                      点击输入框自动获取模型列表
+                                  {!fetchingModels && modelOptions.length === 0 && !modelsFetched && !modelSearchText && (
+                                    <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
+                                      点击输入框自动获取，或直接输入模型名称
                                     </div>
                                   )}
                                 </>
@@ -1034,11 +1295,7 @@ export default function SettingsPage() {
                                   <div style={{ padding: '8px 12px', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
                                     <Spin size="small" /> 加载中...
                                   </div>
-                                ) : (
-                                  <div style={{ padding: '8px 12px', color: 'var(--color-text-secondary)', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                    未找到匹配的模型
-                                  </div>
-                                )
+                                ) : null
                               }
                               suffixIcon={
                                 !isMobile ? (
@@ -1072,16 +1329,37 @@ export default function SettingsPage() {
                                   </div>
                                 ) : undefined
                               }
-                              options={modelOptions.map(model => ({
-                                value: model.value,
-                                label: model.label,
-                                description: model.description
-                              }))}
+                              options={(() => {
+                                const opts = modelOptions.map(model => ({
+                                  value: model.value,
+                                  label: model.label,
+                                  description: model.description
+                                }));
+                                // 如果用户输入了文本且不在已有选项中，添加手动输入选项
+                                if (modelSearchText && !modelOptions.some(m =>
+                                  m.value.toLowerCase() === modelSearchText.toLowerCase() ||
+                                  m.label.toLowerCase() === modelSearchText.toLowerCase()
+                                )) {
+                                  opts.unshift({
+                                    value: modelSearchText,
+                                    label: modelSearchText,
+                                    description: '手动输入的模型名称'
+                                  });
+                                }
+                                return opts;
+                              })()}
                               optionRender={(option) => (
                                 <div>
-                                  <div style={{ fontWeight: 500, fontSize: isMobile ? '13px' : '14px' }}>{option.data.label}</div>
-                                  {option.data.description && (
-                                    <div style={{ fontSize: isMobile ? '11px' : '12px', color: '#8c8c8c', marginTop: '2px' }}>
+                                  <div style={{ fontWeight: 500, fontSize: isMobile ? '13px' : '14px' }}>
+                                    {option.data.description === '手动输入的模型名称' ? (
+                                      <Space size={4}>
+                                        <EditOutlined style={{ color: token.colorPrimary }} />
+                                        <span>使用 "{option.data.label}"</span>
+                                      </Space>
+                                    ) : option.data.label}
+                                  </div>
+                                  {option.data.description && option.data.description !== '手动输入的模型名称' && (
+                                    <div style={{ fontSize: isMobile ? '11px' : '12px', color: token.colorTextTertiary, marginTop: '2px' }}>
                                       {option.data.description}
                                     </div>
                                   )}
@@ -1096,7 +1374,7 @@ export default function SettingsPage() {
                                 <span>温度参数</span>
                                 <InfoCircleOutlined
                                   title="控制输出的随机性，值越高越随机（0.0-2.0）"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -1121,7 +1399,7 @@ export default function SettingsPage() {
                                 <span>最大 Token 数</span>
                                 <InfoCircleOutlined
                                   title="单次请求的最大token数量"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -1145,7 +1423,7 @@ export default function SettingsPage() {
                                 <span>系统提示词</span>
                                 <InfoCircleOutlined
                                   title="设置全局系统提示词，每次AI调用时都会自动使用。可用于设定AI的角色、语言风格等"
-                                  style={{ color: 'var(--color-text-secondary)', fontSize: isMobile ? '12px' : '14px' }}
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
@@ -1166,9 +1444,9 @@ export default function SettingsPage() {
                               message={
                                 <Space>
                                   {testResult.success ? (
-                                    <CheckCircleOutlined style={{ color: 'var(--color-success)', fontSize: isMobile ? '16px' : '18px' }} />
+                                    <CheckCircleOutlined style={{ color: token.colorSuccess, fontSize: isMobile ? '16px' : '18px' }} />
                                   ) : (
-                                    <CloseCircleOutlined style={{ color: 'var(--color-error)', fontSize: isMobile ? '16px' : '18px' }} />
+                                    <CloseCircleOutlined style={{ color: token.colorError, fontSize: isMobile ? '16px' : '18px' }} />
                                   )}
                                   <span style={{ fontSize: isMobile ? '14px' : '16px', fontWeight: 500 }}>
                                     {testResult.message}
@@ -1188,16 +1466,16 @@ export default function SettingsPage() {
                                         <div style={{
                                           fontSize: isMobile ? '12px' : '13px',
                                           padding: '8px 12px',
-                                          background: '#f6ffed',
+                                          background: token.colorSuccessBg,
                                           borderRadius: '4px',
-                                          border: '1px solid #b7eb8f',
+                                          border: `1px solid ${token.colorSuccessBorder}`,
                                           marginTop: '8px'
                                         }}>
                                           <div style={{ marginBottom: '4px', fontWeight: 500 }}>AI 响应预览:</div>
-                                          <div style={{ color: '#595959' }}>{testResult.response_preview}</div>
+                                          <div style={{ color: token.colorTextSecondary }}>{testResult.response_preview}</div>
                                         </div>
                                       )}
-                                      <div style={{ color: 'var(--color-success)', fontSize: isMobile ? '12px' : '13px', marginTop: '4px' }}>
+                                      <div style={{ color: token.colorSuccess, fontSize: isMobile ? '12px' : '13px', marginTop: '4px' }}>
                                         ✓ API 配置正确，可以正常使用
                                       </div>
                                     </Space>
@@ -1207,16 +1485,16 @@ export default function SettingsPage() {
                                         <div style={{
                                           fontSize: isMobile ? '12px' : '13px',
                                           padding: '8px 12px',
-                                          background: '#fff2e8',
+                                          background: token.colorErrorBg,
                                           borderRadius: '4px',
-                                          border: '1px solid #ffbb96',
-                                          color: '#d4380d'
+                                          border: `1px solid ${token.colorErrorBorder}`,
+                                          color: token.colorError
                                         }}>
                                           <strong>错误信息:</strong> {testResult.error}
                                         </div>
                                       )}
                                       {testResult.error_type && (
-                                        <div style={{ fontSize: isMobile ? '11px' : '12px', color: 'var(--color-text-secondary)' }}>
+                                        <div style={{ fontSize: isMobile ? '11px' : '12px', color: token.colorTextSecondary }}>
                                           错误类型: {testResult.error_type}
                                         </div>
                                       )}
@@ -1229,7 +1507,7 @@ export default function SettingsPage() {
                                             margin: 0,
                                             paddingLeft: isMobile ? '16px' : '20px',
                                             fontSize: isMobile ? '12px' : '13px',
-                                            color: '#595959'
+                                            color: token.colorTextSecondary
                                           }}>
                                             {testResult.suggestions.map((suggestion, index) => (
                                               <li key={index} style={{ marginBottom: '4px' }}>{suggestion}</li>
@@ -1261,7 +1539,7 @@ export default function SettingsPage() {
                                   loading={loading}
                                   block
                                   style={{
-                                    background: 'var(--color-primary)',
+                                    background: token.colorPrimary,
                                     border: 'none',
                                     height: '44px'
                                   }}
@@ -1275,8 +1553,8 @@ export default function SettingsPage() {
                                   loading={testingApi}
                                   block
                                   style={{
-                                    borderColor: 'var(--color-success)',
-                                    color: 'var(--color-success)',
+                                    borderColor: token.colorSuccess,
+                                    color: token.colorSuccess,
                                     fontWeight: 500,
                                     height: '44px'
                                   }}
@@ -1341,8 +1619,8 @@ export default function SettingsPage() {
                                     onClick={handleTestConnection}
                                     loading={testingApi}
                                     style={{
-                                      borderColor: 'var(--color-success)',
-                                      color: 'var(--color-success)',
+                                      borderColor: token.colorSuccess,
+                                      color: token.colorSuccess,
                                       fontWeight: 500,
                                       minWidth: '100px'
                                     }}
@@ -1366,7 +1644,7 @@ export default function SettingsPage() {
                                     htmlType="submit"
                                     loading={loading}
                                     style={{
-                                      background: 'var(--color-primary)',
+                                      background: token.colorPrimary,
                                       border: 'none',
                                       minWidth: '120px',
                                       fontWeight: 500
@@ -1384,8 +1662,118 @@ export default function SettingsPage() {
                   ),
                 },
                 {
+                  key: 'cover',
+                  label: <Space size={6}><PictureOutlined />图片模型配置</Space>,
+                  children: (
+                    <Spin spinning={initialLoading}>
+                      <Form form={form} layout="vertical" onFinish={handleSave} autoComplete="off">
+
+                        <Form.Item label="封面图片生成功能" name="cover_enabled" style={{ marginBottom: 16 }}>
+                          <Select
+                            size={isMobile ? 'middle' : 'large'}
+                            onChange={() => setCoverTestResult(null)}
+                            options={[
+                              { value: true, label: '启用封面图片生成' },
+                              { value: false, label: '停用封面图片生成' },
+                            ]}
+                          />
+                        </Form.Item>
+
+                        <Form.Item label="封面图片 Provider" name="cover_api_provider" rules={[{ required: true, message: '请选择封面图片 Provider' }]}>
+                          <Select size={isMobile ? 'middle' : 'large'} onChange={handleCoverProviderChange}>
+                            {coverApiProviders.map(provider => (
+                              <Option key={provider.value} value={provider.value}>{provider.label}</Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+
+                        {selectedCoverProvider === 'mumu' && (
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="MuMuのAPI 专属适配器"
+                            description={
+                              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                                <Text>
+                                  已固定提供 MuMuのAPI 图片接口地址选项，切换地址时会自动带出推荐模型。API Key 需前往 MuMuのAPI 站点注册获取。
+                                </Text>
+                                <div>
+                                  <Button
+                                    type="primary"
+                                    onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                                  >
+                                    打开 MuMuのAPI 站点免费注册
+                                  </Button>
+                                </div>
+                              </Space>
+                            }
+                            style={{ marginBottom: 16 }}
+                          />
+                        )}
+
+                        <Form.Item label="封面图片 API Key" name="cover_api_key" rules={[{ required: true, message: '请输入封面图片 API Key' }]}>
+                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'mumu' ? '请输入 MuMuのAPI Key' : '输入封面图片 API Key'} autoComplete="new-password" />
+                        </Form.Item>
+
+                        <Form.Item label="封面图片 API 地址" name="cover_api_base_url" rules={[{ type: 'url', message: '请输入有效的URL' }]}>
+                          {selectedCoverProvider === 'mumu' ? (
+                            <Select
+                              size={isMobile ? 'middle' : 'large'}
+                              onChange={handleMumuCoverBaseUrlChange}
+                              options={mumuCoverBaseUrlOptions.map(option => ({
+                                value: option.value,
+                                label: option.label,
+                              }))}
+                            />
+                          ) : (
+                            <Input size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'grok' ? 'https://api.x.ai/v1' : 'https://generativelanguage.googleapis.com/v1beta'} />
+                          )}
+                        </Form.Item>
+
+                        <Form.Item label="封面图片模型" name="cover_image_model" rules={[{ required: true, message: '请输入封面图片模型名称' }]}>
+                          <Input
+                            size={isMobile ? 'middle' : 'large'}
+                            placeholder={selectedCoverProvider === 'mumu'
+                              ? '选择地址后自动填入推荐模型'
+                              : selectedCoverProvider === 'grok'
+                                ? 'grok-2-image'
+                                : 'gemini-2.0-flash-exp-image-generation'}
+                          />
+                        </Form.Item>
+
+                        {coverTestResult && (
+                          <Alert
+                            type={coverTestResult.success ? 'success' : 'error'}
+                            showIcon
+                            message={coverTestResult.message}
+                            description={coverTestResult.success ? `Provider: ${coverTestResult.provider || '-'} / Model: ${coverTestResult.model || '-'}` : undefined}
+                            style={{ marginBottom: 16 }}
+                          />
+                        )}
+
+                        <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
+                          <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+                            <Space wrap>
+                              <Button
+                                icon={<ThunderboltOutlined />}
+                                onClick={handleCoverTestConnection}
+                                loading={testingCoverApi}
+                                style={{ borderColor: token.colorSuccess, color: token.colorSuccess, fontWeight: 500 }}
+                              >
+                                {testingCoverApi ? '测试中...' : '测试封面接口'}
+                              </Button>
+                              <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>
+                            </Space>
+                            <Button type="primary" icon={<SaveOutlined />} htmlType="submit" loading={loading}>保存封面配置</Button>
+                          </Space>
+                        </Form.Item>
+                      </Form>
+                    </Spin>
+                  ),
+                },
+                {
                   key: 'presets',
-                  label: '配置预设',
+                  label: <Space size={6}><CopyOutlined />配置预设</Space>,
                   children: renderPresetsList(),
                 },
               ]}
@@ -1399,99 +1787,276 @@ export default function SettingsPage() {
           open={isPresetModalVisible}
           onOk={handlePresetSave}
           onCancel={handlePresetCancel}
-          width={isMobile ? '90%' : 600}
+          width={isMobile ? '95%' : 640}
           centered
           okText="保存"
           cancelText="取消"
+          styles={{
+            body: {
+              padding: isMobile ? '16px' : '20px 24px'
+            }
+          }}
         >
           <Form
             form={presetForm}
             layout="vertical"
+            size={isMobile ? 'middle' : 'large'}
           >
-            <Form.Item
-              name="name"
-              label="预设名称"
-              rules={[
-                { required: true, message: '请输入预设名称' },
-                { max: 50, message: '名称不能超过50个字符' },
-              ]}
-            >
-              <Input placeholder="例如：工作账号-GPT4" />
-            </Form.Item>
+            {/* 基本信息 */}
+            <Row gutter={16}>
+              <Col xs={24} sm={16}>
+                <Form.Item
+                  name="name"
+                  label="预设名称"
+                  rules={[
+                    { required: true, message: '请输入预设名称' },
+                    { max: 50, message: '名称不能超过50个字符' },
+                  ]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <Input placeholder="例如：工作账号-GPT4" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={8}>
+                <Form.Item
+                  name="api_provider"
+                  label="API 提供商"
+                  rules={[{ required: true, message: '请选择' }]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <Select placeholder="选择提供商" onChange={handlePresetProviderChange}>
+                    <Select.Option value="mumu">MuMuのAPI</Select.Option>
+                    <Select.Option value="openai">OpenAI</Select.Option>
+                    <Select.Option value="gemini">Google Gemini</Select.Option>
+                  </Select>
+                </Form.Item>
+
+                {selectedPresetProvider === 'mumu' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="MuMuのAPI 专属供应商"
+                    description={
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Text>
+                          已自动填入专属地址，API Key 保持留空。免费注册后即可获取可用 Key。
+                        </Text>
+                        <div>
+                          <Button
+                            type="primary"
+                            onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                          >
+                            打开 MuMuのAPI 站点免费注册
+                          </Button>
+                        </div>
+                      </Space>
+                    }
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
+              </Col>
+            </Row>
 
             <Form.Item
               name="description"
               label="预设描述"
               rules={[{ max: 200, message: '描述不能超过200个字符' }]}
+              style={{ marginBottom: 16 }}
             >
-              <TextArea rows={2} placeholder="例如：用于日常写作任务（可选）" />
+              <Input placeholder="例如：用于日常写作任务（可选）" />
             </Form.Item>
 
-            <Form.Item
-              name="api_provider"
-              label="API 提供商"
-              rules={[{ required: true, message: '请选择API提供商' }]}
-            >
-              <Select>
-                <Select.Option value="openai">OpenAI</Select.Option>
-                {/* <Select.Option value="anthropic">Anthropic (Claude)</Select.Option> */}
-                <Select.Option value="gemini">Google Gemini</Select.Option>
-              </Select>
-            </Form.Item>
+            {/* API 配置 */}
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="api_key"
+                  label="API Key"
+                  rules={[{ required: true, message: '请输入API Key' }]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <Input.Password placeholder="sk-..." />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="api_base_url"
+                  label="API Base URL"
+                  style={{ marginBottom: 16 }}
+                >
+                  <Input placeholder="https://api.openai.com/v1" />
+                </Form.Item>
+              </Col>
+            </Row>
 
-            <Form.Item
-              name="api_key"
-              label="API Key"
-              rules={[{ required: true, message: '请输入API Key' }]}
-            >
-              <Input.Password placeholder="sk-..." />
-            </Form.Item>
-
-            <Form.Item name="api_base_url" label="API Base URL">
-              <Input placeholder="https://api.openai.com/v1（可选）" />
-            </Form.Item>
-
-            <Form.Item
-              name="llm_model"
-              label="模型名称"
-              rules={[{ required: true, message: '请输入模型名称' }]}
-            >
-              <Input placeholder="例如：gpt-4, claude-3-opus-20240229" />
-            </Form.Item>
-
-            <Form.Item
-              name="temperature"
-              label="温度参数"
-              rules={[{ required: true, message: '请输入温度参数' }]}
-            >
-              <InputNumber
-                min={0}
-                max={2}
-                step={0.1}
-                style={{ width: '100%' }}
-                placeholder="0.7"
-              />
-            </Form.Item>
-
-            <Form.Item
-              name="max_tokens"
-              label="最大 Tokens"
-              rules={[{ required: true, message: '请输入最大tokens' }]}
-            >
-              <InputNumber
-                min={1}
-                max={100000}
-                style={{ width: '100%' }}
-                placeholder="2000"
-              />
-            </Form.Item>
+            {/* 模型配置 */}
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="llm_model"
+                  label={
+                    <Space size={4}>
+                      <span>模型名称</span>
+                      <InfoCircleOutlined
+                        title="AI模型的名称，点击下拉框自动获取可用模型"
+                        style={{ color: token.colorTextSecondary, fontSize: '12px' }}
+                      />
+                    </Space>
+                  }
+                  rules={[{ required: true, message: '请选择或输入模型名称' }]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <Select
+                    showSearch
+                    placeholder="输入模型名称或点击获取"
+                    optionFilterProp="label"
+                    loading={fetchingPresetModels}
+                    onFocus={handlePresetModelSelectFocus}
+                    onSearch={(value) => setPresetModelSearchText(value)}
+                    onSelect={() => setPresetModelSearchText('')}
+                    onBlur={() => setPresetModelSearchText('')}
+                    filterOption={(input, option) => {
+                      // 手动输入的选项始终显示
+                      if (option?.value === input && !presetModelOptions.some(m => m.value === input)) return true;
+                      return (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                        (option?.description ?? '').toLowerCase().includes(input.toLowerCase());
+                    }}
+                    dropdownRender={(menu) => (
+                      <>
+                        {menu}
+                        {fetchingPresetModels && (
+                          <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: '12px' }}>
+                            <Spin size="small" /> 正在获取模型列表...
+                          </div>
+                        )}
+                        {!fetchingPresetModels && presetModelOptions.length === 0 && presetModelsFetched && !presetModelSearchText && (
+                          <div style={{ padding: '8px 12px', color: token.colorError, textAlign: 'center', fontSize: '12px' }}>
+                            未能获取到模型列表，可直接输入模型名称
+                          </div>
+                        )}
+                        {!fetchingPresetModels && presetModelOptions.length === 0 && !presetModelsFetched && !presetModelSearchText && (
+                          <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: '12px' }}>
+                            点击输入框自动获取，或直接输入模型名称
+                          </div>
+                        )}
+                      </>
+                    )}
+                    notFoundContent={
+                      fetchingPresetModels ? (
+                        <div style={{ padding: '8px 12px', textAlign: 'center', fontSize: '12px' }}>
+                          <Spin size="small" /> 加载中...
+                        </div>
+                      ) : null
+                    }
+                    suffixIcon={
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!fetchingPresetModels) {
+                            setPresetModelsFetched(false);
+                            handleFetchPresetModels(false);
+                          }
+                        }}
+                        style={{
+                          cursor: fetchingPresetModels ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '0 4px',
+                          height: '100%',
+                          marginRight: -8
+                        }}
+                        title="获取模型列表"
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ReloadOutlined />}
+                          loading={fetchingPresetModels}
+                          style={{ pointerEvents: 'none' }}
+                        >
+                          获取
+                        </Button>
+                      </div>
+                    }
+                    options={(() => {
+                      const opts = presetModelOptions.map(model => ({
+                        value: model.value,
+                        label: model.label,
+                        description: model.description
+                      }));
+                      // 如果用户输入了文本且不在已有选项中，添加手动输入选项
+                      if (presetModelSearchText && !presetModelOptions.some(m =>
+                        m.value.toLowerCase() === presetModelSearchText.toLowerCase() ||
+                        m.label.toLowerCase() === presetModelSearchText.toLowerCase()
+                      )) {
+                        opts.unshift({
+                          value: presetModelSearchText,
+                          label: presetModelSearchText,
+                          description: '手动输入的模型名称'
+                        });
+                      }
+                      return opts;
+                    })()}
+                    optionRender={(option) => (
+                      <div>
+                        <div style={{ fontWeight: 500, fontSize: '13px' }}>
+                          {option.data.description === '手动输入的模型名称' ? (
+                            <Space size={4}>
+                              <EditOutlined style={{ color: token.colorPrimary }} />
+                              <span>使用 "{option.data.label}"</span>
+                            </Space>
+                          ) : option.data.label}
+                        </div>
+                        {option.data.description && option.data.description !== '手动输入的模型名称' && (
+                          <div style={{ fontSize: '11px', color: token.colorTextTertiary, marginTop: '2px' }}>
+                            {option.data.description}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Form.Item
+                  name="temperature"
+                  label="温度"
+                  rules={[{ required: true, message: '必填' }]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <InputNumber
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    style={{ width: '100%' }}
+                    placeholder="0.7"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Form.Item
+                  name="max_tokens"
+                  label="最大Tokens"
+                  rules={[{ required: true, message: '必填' }]}
+                  style={{ marginBottom: 16 }}
+                >
+                  <InputNumber
+                    min={1}
+                    max={100000}
+                    style={{ width: '100%' }}
+                    placeholder="2000"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
 
             <Form.Item
               name="system_prompt"
               label="系统提示词"
+              style={{ marginBottom: 0 }}
             >
               <TextArea
-                rows={3}
+                rows={isMobile ? 2 : 3}
                 placeholder="例如：你是一个专业的小说创作助手...（可选）"
                 maxLength={10000}
                 showCount

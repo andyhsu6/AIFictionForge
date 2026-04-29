@@ -14,19 +14,30 @@ import time
 
 from app.database import get_db
 from app.models.settings import Settings
+from app.services.cover_generation_service import cover_generation_service
 from app.schemas.settings import (
     SettingsCreate, SettingsUpdate, SettingsResponse,
     APIKeyPreset, APIKeyPresetConfig, PresetCreateRequest,
-    PresetUpdateRequest, PresetResponse, PresetListResponse
+    PresetUpdateRequest, PresetResponse, PresetListResponse,
+    SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
 )
 from app.user_manager import User
 from app.logger import get_logger
 from app.config import settings as app_settings, PROJECT_ROOT
-from app.services.ai_service import AIService, create_user_ai_service, create_user_ai_service_with_mcp
+from app.services.ai_service import AIService, create_user_ai_service, create_user_ai_service_with_mcp, normalize_provider
+from app.services.email_service import email_service
+from app.security import validate_public_http_url
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["设置管理"])
+
+
+class CoverSettingsTestRequest(BaseModel):
+    cover_api_provider: str
+    cover_api_key: str
+    cover_api_base_url: Optional[str] = None
+    cover_image_model: str
 
 
 def read_env_defaults() -> Dict[str, Any]:
@@ -46,6 +57,46 @@ def require_login(request: Request):
     if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="需要登录")
     return request.state.user
+
+
+def require_admin(user: User = Depends(require_login)):
+    """依赖：要求管理员权限"""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="仅管理员可访问系统设置")
+    return user
+
+
+async def get_or_create_admin_settings(db: AsyncSession, user: User) -> Settings:
+    """获取或创建管理员设置，系统级 SMTP 配置挂在管理员设置记录上"""
+    result = await db.execute(
+        select(Settings).where(Settings.user_id == user.user_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        env_defaults = read_env_defaults()
+        settings = Settings(
+            user_id=user.user_id,
+            smtp_provider=app_settings.SMTP_PROVIDER,
+            smtp_host=app_settings.SMTP_HOST,
+            smtp_port=app_settings.SMTP_PORT,
+            smtp_username=app_settings.SMTP_USERNAME,
+            smtp_password=app_settings.SMTP_PASSWORD,
+            smtp_use_tls=app_settings.SMTP_USE_TLS,
+            smtp_use_ssl=app_settings.SMTP_USE_SSL,
+            smtp_from_email=app_settings.SMTP_FROM_EMAIL,
+            smtp_from_name=app_settings.SMTP_FROM_NAME,
+            email_auth_enabled=app_settings.EMAIL_AUTH_ENABLED,
+            email_register_enabled=app_settings.EMAIL_REGISTER_ENABLED,
+            verification_code_ttl_minutes=app_settings.EMAIL_VERIFICATION_CODE_TTL_MINUTES,
+            verification_resend_interval_seconds=app_settings.EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS,
+            **env_defaults
+        )
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+
+    return settings
 
 
 async def get_user_ai_service(
@@ -109,6 +160,44 @@ async def get_user_ai_service(
     )
 
 
+async def get_user_ai_service_from_db(user_id: str, db: AsyncSession) -> AIService:
+    """
+    从数据库直接创建用户AI服务实例（用于后台任务，不依赖FastAPI的Depends）
+    """
+    from app.models.mcp_plugin import MCPPlugin
+
+    result = await db.execute(
+        select(Settings).where(Settings.user_id == user_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        env_defaults = read_env_defaults()
+        settings = Settings(user_id=user_id, **env_defaults)
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+
+    mcp_result = await db.execute(
+        select(MCPPlugin).where(MCPPlugin.user_id == user_id)
+    )
+    mcp_plugins = mcp_result.scalars().all()
+    enable_mcp = any(plugin.enabled for plugin in mcp_plugins) if mcp_plugins else False
+
+    return create_user_ai_service_with_mcp(
+        api_provider=settings.api_provider,
+        api_key=settings.api_key,
+        api_base_url=settings.api_base_url or "",
+        model_name=settings.llm_model,
+        temperature=settings.temperature,
+        max_tokens=settings.max_tokens,
+        user_id=user_id,
+        db_session=db,
+        system_prompt=settings.system_prompt,
+        enable_mcp=enable_mcp,
+    )
+
+
 @router.get("", response_model=SettingsResponse)
 async def get_settings(
     user: User = Depends(require_login),
@@ -142,6 +231,134 @@ async def get_settings(
     return settings
 
 
+@router.post("/cover/test")
+async def test_cover_settings(
+    data: CoverSettingsTestRequest,
+    user: User = Depends(require_login),
+):
+    result = await cover_generation_service.test_cover_settings(
+        provider=data.cover_api_provider,
+        api_key=data.cover_api_key,
+        api_base_url=data.cover_api_base_url,
+        model=data.cover_image_model,
+    )
+    return {
+        "success": result.success,
+        "message": result.message,
+        "provider": result.provider,
+        "model": result.model,
+    }
+
+
+@router.get("/system/smtp", response_model=SystemSMTPSettingsResponse)
+async def get_system_smtp_settings(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取系统 SMTP 设置（仅管理员）"""
+    settings = await get_or_create_admin_settings(db, user)
+    return settings
+
+
+@router.put("/system/smtp", response_model=SystemSMTPSettingsResponse)
+async def update_system_smtp_settings(
+    data: SystemSMTPSettingsUpdate,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新系统 SMTP 设置（仅管理员）"""
+    settings = await get_or_create_admin_settings(db, user)
+    update_data = data.model_dump(exclude_unset=True)
+
+    if update_data.get("smtp_provider") == "qq":
+        update_data.setdefault("smtp_host", "smtp.qq.com")
+        update_data.setdefault("smtp_port", 465)
+        update_data.setdefault("smtp_use_ssl", True)
+        update_data.setdefault("smtp_use_tls", False)
+
+    if update_data.get("smtp_use_ssl") and update_data.get("smtp_use_tls"):
+        raise HTTPException(status_code=400, detail="SSL 和 TLS 不能同时启用")
+
+    for key, value in update_data.items():
+        setattr(settings, key, value)
+
+    await db.commit()
+    await db.refresh(settings)
+    logger.info(f"管理员 {user.user_id} 更新系统 SMTP 设置")
+    return settings
+
+
+@router.post("/system/smtp/test")
+async def test_system_smtp_settings(
+    data: SMTPTestRequest,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """测试系统 SMTP 设置（真实发送测试邮件）"""
+    settings = await get_or_create_admin_settings(db, user)
+
+    if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password:
+        raise HTTPException(status_code=400, detail="请先完善 SMTP 主机、用户名和授权码")
+
+    if settings.smtp_provider == "qq" and settings.smtp_host != "smtp.qq.com":
+        raise HTTPException(status_code=400, detail="QQ 邮箱 SMTP 主机必须为 smtp.qq.com")
+
+    if "@" not in data.to_email or "." not in data.to_email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="测试收件邮箱格式不正确")
+
+    from_email = settings.smtp_from_email or settings.smtp_username
+    if not from_email:
+        raise HTTPException(status_code=400, detail="请先配置发件人邮箱或 SMTP 用户名")
+
+    subject = "MuMuAINovel SMTP 测试邮件"
+    text_body = (
+        "这是一封来自 MuMuAINovel 系统设置页面的 SMTP 测试邮件。\n\n"
+        f"发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"SMTP 服务商：{settings.smtp_provider}\n"
+        f"SMTP 主机：{settings.smtp_host}:{settings.smtp_port}\n"
+        "如果你收到这封邮件，说明当前 SMTP 配置可正常发送邮件。"
+    )
+    html_body = f"""
+    <div style=\"font-family: Arial, sans-serif; line-height: 1.7; color: #1f1f1f;\">
+      <h2 style=\"margin-bottom: 12px;\">MuMuAINovel SMTP 测试邮件</h2>
+      <p>这是一封来自系统设置页面的 SMTP 测试邮件。</p>
+      <ul>
+        <li><strong>发送时间：</strong>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
+        <li><strong>SMTP 服务商：</strong>{settings.smtp_provider}</li>
+        <li><strong>SMTP 主机：</strong>{settings.smtp_host}:{settings.smtp_port}</li>
+      </ul>
+      <p>如果你收到这封邮件，说明当前 SMTP 配置可正常发送邮件。</p>
+    </div>
+    """
+
+    try:
+        await email_service.send_mail(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            use_ssl=settings.smtp_use_ssl,
+            from_email=from_email,
+            from_name=settings.smtp_from_name,
+            to_email=data.to_email,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+        )
+    except Exception as exc:
+        logger.exception(f"SMTP 测试邮件发送失败: {exc}")
+        raise HTTPException(status_code=400, detail=f"SMTP 测试邮件发送失败: {str(exc)}") from exc
+
+    return {
+        "success": True,
+        "message": f"测试邮件已发送至 {data.to_email}，请检查收件箱和垃圾箱",
+        "provider": settings.smtp_provider,
+        "host": settings.smtp_host,
+        "port": settings.smtp_port,
+    }
+
+
 @router.post("", response_model=SettingsResponse)
 async def save_settings(
     data: SettingsCreate,
@@ -152,6 +369,9 @@ async def save_settings(
     创建或更新当前用户的设置（Upsert）
     如果设置已存在则更新，否则创建新设置
     仅保存到数据库
+    
+    注意：手动保存配置后会自动取消之前激活的预设状态，
+    因为手动修改的配置可能与预设不一致
     """
     # 查找现有设置
     result = await db.execute(
@@ -166,6 +386,36 @@ async def save_settings(
         # 更新现有设置
         for key, value in settings_dict.items():
             setattr(settings, key, value)
+        
+        # 检查并取消预设激活状态
+        # 因为用户手动修改了配置，可能与之前激活的预设不一致
+        try:
+            prefs = json.loads(settings.preferences or '{}')
+            api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+            presets = api_presets.get('presets', [])
+            
+            # 找到激活的预设并检查是否与当前保存的配置一致
+            active_preset = next((p for p in presets if p.get('is_active')), None)
+            if active_preset:
+                preset_config = active_preset.get('config', {})
+                # 检查配置是否发生变化
+                config_changed = (
+                    preset_config.get('api_provider') != settings_dict.get('api_provider', settings.api_provider) or
+                    preset_config.get('api_key') != settings_dict.get('api_key', settings.api_key) or
+                    preset_config.get('api_base_url') != settings_dict.get('api_base_url', settings.api_base_url) or
+                    preset_config.get('llm_model') != settings_dict.get('llm_model', settings.llm_model) or
+                    preset_config.get('temperature') != settings_dict.get('temperature', settings.temperature) or
+                    preset_config.get('max_tokens') != settings_dict.get('max_tokens', settings.max_tokens)
+                )
+                
+                if config_changed:
+                    # 取消激活状态
+                    active_preset['is_active'] = False
+                    prefs['api_presets'] = api_presets
+                    settings.preferences = json.dumps(prefs, ensure_ascii=False)
+                    logger.info(f"用户 {user.user_id} 手动修改配置，已取消预设 {active_preset.get('name')} 的激活状态")
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"解析用户 {user.user_id} 的preferences失败: {e}")
         
         await db.commit()
         await db.refresh(settings)
@@ -241,7 +491,8 @@ async def delete_settings(
 async def get_available_models(
     api_key: str,
     api_base_url: str,
-    provider: str = "openai"
+    provider: str = "openai",
+    user: User = Depends(require_login)
 ):
     """
     从配置的 API 获取可用的模型列表
@@ -255,6 +506,8 @@ async def get_available_models(
         模型列表
     """
     try:
+        provider = normalize_provider(provider)
+        api_base_url = validate_public_http_url(api_base_url)
         async with httpx.AsyncClient(timeout=10.0) as client:
             if provider == "openai" or provider == "azure" or provider == "custom":
                 # OpenAI 兼容接口获取模型列表
@@ -323,6 +576,11 @@ async def get_available_models(
             
     except httpx.HTTPStatusError as e:
         logger.error(f"获取模型列表失败 (HTTP {e.response.status_code}): {e.response.text}")
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {api_base_url.rstrip('/')}/models"
+            )
         raise HTTPException(
             status_code=400,
             detail=f"无法从 API 获取模型列表 (HTTP {e.response.status_code})"
@@ -349,6 +607,8 @@ class ApiTestRequest(BaseModel):
     api_base_url: str
     provider: str
     llm_model: str
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 
 @router.post("/check-function-calling")
@@ -369,7 +629,7 @@ async def check_function_calling_support(data: ApiTestRequest):
     """
     api_key = data.api_key
     api_base_url = data.api_base_url
-    provider = data.provider
+    provider = normalize_provider(data.provider)
     llm_model = data.llm_model
     
     try:
@@ -578,28 +838,31 @@ async def test_api_connection(data: ApiTestRequest):
     测试 API 连接和配置是否正确
     
     Args:
-        data: 包含 API 配置的请求数据
+        data: 包含 API 配置的请求数据（包括 temperature 和 max_tokens）
     
     Returns:
         测试结果包含状态、响应时间和详细信息
     """
     api_key = data.api_key
     api_base_url = data.api_base_url
-    provider = data.provider
+    provider = normalize_provider(data.provider)
     llm_model = data.llm_model
+    # 使用前端传递的参数，如果未传递则使用默认值
+    temperature = data.temperature if data.temperature is not None else 0.7
+    max_tokens = data.max_tokens if data.max_tokens is not None else 2000
     import time
     
     try:
         start_time = time.time()
         
-        # 创建临时 AI 服务实例
+        # 创建临时 AI 服务实例，使用前端传递的参数
         test_service = AIService(
             api_provider=provider,
             api_key=api_key,
             api_base_url=api_base_url,
             default_model=llm_model,
-            default_temperature=0.7,
-            default_max_tokens=100
+            default_temperature=temperature,
+            default_max_tokens=max_tokens
         )
         
         # 发送简单的测试请求
@@ -609,13 +872,15 @@ async def test_api_connection(data: ApiTestRequest):
         logger.info(f"  - 提供商: {provider}")
         logger.info(f"  - 模型: {llm_model}")
         logger.info(f"  - Base URL: {api_base_url}")
+        logger.info(f"  - Temperature: {temperature}")
+        logger.info(f"  - Max Tokens: {max_tokens}")
         
         response = await test_service.generate_text(
             prompt=test_prompt,
             provider=provider,
             model=llm_model,
-            temperature=0.7,
-            max_tokens=8000,
+            temperature=temperature,
+            max_tokens=max_tokens,
             auto_mcp=False  # 测试时不加载MCP工具
         )
         
@@ -639,7 +904,9 @@ async def test_api_connection(data: ApiTestRequest):
             "details": {
                 "api_available": True,
                 "model_accessible": True,
-                "response_valid": bool(response)
+                "response_valid": bool(response),
+                "temperature": temperature,
+                "max_tokens": max_tokens
             }
         }
         
@@ -823,7 +1090,10 @@ async def create_preset(
         "description": data.description,
         "is_active": False,
         "created_at": datetime.now().isoformat(),
-        "config": data.config.model_dump()
+        "config": {
+            **data.config.model_dump(),
+            "api_provider": normalize_provider(data.config.api_provider)
+        }
     }
     
     presets.append(new_preset)
@@ -873,7 +1143,10 @@ async def update_preset(
     if data.description is not None:
         target_preset['description'] = data.description
     if data.config is not None:
-        target_preset['config'] = data.config.model_dump()
+        target_preset['config'] = {
+            **data.config.model_dump(),
+            'api_provider': normalize_provider(data.config.api_provider)
+        }
     
     # 保存回preferences
     prefs['api_presets'] = api_presets
@@ -959,12 +1232,13 @@ async def activate_preset(
     
     # 应用配置到Settings主字段
     config = target_preset['config']
-    settings.api_provider = config['api_provider']
+    settings.api_provider = normalize_provider(config['api_provider'])
     settings.api_key = config['api_key']
     settings.api_base_url = config.get('api_base_url')
     settings.llm_model = config['llm_model']
     settings.temperature = config['temperature']
     settings.max_tokens = config['max_tokens']
+    settings.system_prompt = config.get('system_prompt')
     
     # 更新所有预设的is_active状态
     for preset in presets:
@@ -1010,12 +1284,15 @@ async def test_preset(
         raise HTTPException(status_code=404, detail="预设不存在")
     
     # 使用现有的test_api_connection逻辑
+    # 确保传递完整参数，与当前配置测试保持一致
     config = target_preset['config']
     test_request = ApiTestRequest(
         api_key=config['api_key'],
         api_base_url=config.get('api_base_url', ''),
         provider=config['api_provider'],
-        llm_model=config['llm_model']
+        llm_model=config['llm_model'],
+        temperature=config.get('temperature'),   # 使用预设中的温度参数
+        max_tokens=config.get('max_tokens')      # 使用预设中的最大tokens参数
     )
     
     logger.info(f"用户 {user.user_id} 测试预设: {target_preset['name']}")
@@ -1038,12 +1315,13 @@ async def create_preset_from_current(
     
     # 从当前Settings主字段读取配置
     current_config = APIKeyPresetConfig(
-        api_provider=settings.api_provider,
+        api_provider=normalize_provider(settings.api_provider),
         api_key=settings.api_key,
         api_base_url=settings.api_base_url,
         llm_model=settings.llm_model,
         temperature=settings.temperature,
-        max_tokens=settings.max_tokens
+        max_tokens=settings.max_tokens,
+        system_prompt=settings.system_prompt
     )
     
     # 创建预设

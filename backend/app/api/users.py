@@ -32,7 +32,7 @@ class SetAdminRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     user_id: str
-    new_password: Optional[str] = None  # 如果为空则使用默认密码
+    new_password: Optional[str] = None  # 如果为空则由系统生成临时密码
 
 
 @router.get("/current")
@@ -140,7 +140,7 @@ async def reset_user_password(
     重置用户密码（仅管理员）
     
     如果提供了 new_password，则设置为指定密码
-    如果未提供 new_password，则重置为默认密码（username@666）
+    如果未提供 new_password，则由系统生成临时密码
     
     限制：
     - 不能重置自己的密码（应该使用修改密码功能）
@@ -162,10 +162,15 @@ async def reset_user_password(
     
     # 重置密码
     try:
-        actual_password = await password_manager.set_password(
+        generated_password = data.new_password
+        if not generated_password:
+            import secrets
+            generated_password = secrets.token_urlsafe(12)
+
+        await password_manager.set_password(
             target_user.user_id,
             target_user.username,
-            data.new_password
+            generated_password
         )
         
         # 如果使用了默认密码，返回密码供管理员告知用户
@@ -177,8 +182,8 @@ async def reset_user_password(
         }
         
         if not data.new_password:
-            response_data["default_password"] = actual_password
-            response_data["message"] = f"密码已重置为默认密码: {actual_password}"
+            response_data["temporary_password"] = generated_password
+            response_data["message"] = "密码已重置为系统生成的临时密码，请尽快通知用户修改"
         
         return response_data
         

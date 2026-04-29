@@ -1,6 +1,6 @@
-import { Card, Space, Tag, Typography, Popconfirm } from 'antd';
+import { Card, Space, Tag, Typography, Popconfirm, theme } from 'antd';
 import { EditOutlined, DeleteOutlined, UserOutlined, BankOutlined, ExportOutlined } from '@ant-design/icons';
-import { cardStyles } from './CardStyles';
+import { characterCardStyles } from './CardStyles';
 import type { Character } from '../types';
 
 const { Text, Paragraph } = Typography;
@@ -13,6 +13,8 @@ interface CharacterCardProps {
 }
 
 export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit, onDelete, onExport }) => {
+  const { token } = theme.useToken();
+
   const getRoleTypeColor = (roleType?: string) => {
     const roleColors: Record<string, string> = {
       'protagonist': 'blue',
@@ -32,11 +34,28 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
   };
 
   const isOrganization = character.is_organization;
+  const charStatus = character.status || 'active';
+  const isInactive = charStatus !== 'active';
+
+  const getStatusTag = () => {
+    const statusConfig: Record<string, { color: string; label: string }> = {
+      deceased: { color: token.colorTextBase, label: '💀 已死亡' },
+      missing: { color: token.colorWarning, label: '❓ 已失踪' },
+      retired: { color: token.colorTextTertiary, label: '📤 已退场' },
+      destroyed: { color: token.colorTextBase, label: '💀 已覆灭' },
+    };
+    const config = statusConfig[charStatus];
+    if (!config) return null;
+    return <Tag color={config.color} style={{ marginLeft: 4 }}>{config.label}</Tag>;
+  };
 
   return (
     <Card
       hoverable
-      style={isOrganization ? cardStyles.organization : cardStyles.character}
+      style={{
+        ...(isOrganization ? characterCardStyles.organizationCard : characterCardStyles.characterCard),
+        ...(isInactive ? { opacity: 0.6, filter: 'grayscale(40%)' } : {}),
+      }}
       styles={{
         body: {
           flex: 1,
@@ -65,14 +84,14 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
       <Card.Meta
         avatar={
           isOrganization ? (
-            <BankOutlined style={{ fontSize: 32, color: '#52c41a' }} />
+            <BankOutlined style={{ fontSize: 32, color: token.colorSuccess }} />
           ) : (
-            <UserOutlined style={{ fontSize: 32, color: '#1890ff' }} />
+            <UserOutlined style={{ fontSize: 32, color: token.colorPrimary }} />
           )
         }
         title={
           <Space>
-            <span style={cardStyles.ellipsis}>{character.name}</span>
+            <span style={characterCardStyles.nameEllipsis}>{character.name}</span>
             {isOrganization ? (
               <Tag color="green">组织</Tag>
             ) : (
@@ -82,10 +101,11 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                 </Tag>
               )
             )}
+            {getStatusTag()}
           </Space>
         }
         description={
-          <div style={cardStyles.description}>
+          <div style={characterCardStyles.descriptionBlock}>
             {/* 角色特有字段 */}
             {!isOrganization && (
               <>
@@ -109,6 +129,17 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                       ellipsis={{ tooltip: character.personality }}
                     >
                       {character.personality}
+                    </Text>
+                  </div>
+                )}
+                {character.relationships && (
+                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                    <Text type="secondary" style={{ flexShrink: 0 }}>关系：</Text>
+                    <Text
+                      style={{ flex: 1, minWidth: 0 }}
+                      ellipsis={{ tooltip: character.relationships }}
+                    >
+                      {character.relationships}
                     </Text>
                   </div>
                 )}
@@ -174,14 +205,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                 {character.organization_members && (
                   <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>成员：</Text>
-                    <Text
-                      style={{ flex: 1, minWidth: 0 }}
-                      ellipsis={{
-                        tooltip: typeof character.organization_members === 'string'
-                          ? character.organization_members
-                          : JSON.stringify(character.organization_members)
-                      }}
-                    >
+                    <Text style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, wordBreak: 'break-all' }}>
                       {typeof character.organization_members === 'string'
                         ? character.organization_members
                         : JSON.stringify(character.organization_members)}

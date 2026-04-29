@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Spin, Result, Button, Modal, Input, message } from 'antd';
+import { Spin, Result, Button, Modal, Input, message, theme } from 'antd';
 import { authApi } from '../services/api';
 import AnnouncementModal from '../components/AnnouncementModal';
 
@@ -10,7 +10,15 @@ export default function AuthCallback() {
   const [errorMessage, setErrorMessage] = useState('');
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [passwordStatus, setPasswordStatus] = useState<any>(null);
+  const { token } = theme.useToken();
+  const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
+  interface PasswordStatus {
+    has_password: boolean;
+    has_custom_password: boolean;
+    username: string;
+    default_password: string;
+  }
+  const [passwordStatus, setPasswordStatus] = useState<PasswordStatus | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [settingPassword, setSettingPassword] = useState(false);
@@ -86,11 +94,11 @@ export default function AuthCallback() {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #4D8088 0%, #5F9EA8 100%)',
+        background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
       }}>
         <div style={{ textAlign: 'center' }}>
           <Spin size="large" />
-          <div style={{ marginTop: 20, color: 'white', fontSize: 16 }}>
+          <div style={{ marginTop: 20, color: token.colorWhite, fontSize: 16 }}>
             正在处理登录...
           </div>
         </div>
@@ -105,7 +113,7 @@ export default function AuthCallback() {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #4D8088 0%, #5F9EA8 100%)',
+        background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
       }}>
         <Result
           status="error"
@@ -116,7 +124,7 @@ export default function AuthCallback() {
               返回登录
             </Button>
           }
-          style={{ background: 'white', padding: 40, borderRadius: 8 }}
+          style={{ background: token.colorBgContainer, padding: 40, borderRadius: 8 }}
         />
       </div>
     );
@@ -187,7 +195,7 @@ export default function AuthCallback() {
           setShowAnnouncement(true);
         }, 500);
       }
-    } catch (error) {
+    } catch {
       message.error('密码设置失败，请重试');
     } finally {
       setSettingPassword(false);
@@ -251,17 +259,17 @@ export default function AuthCallback() {
           <p>系统已为您自动生成默认密码，您可以选择设置自定义密码或继续使用默认密码。</p>
           {passwordStatus?.default_password && (
             <div style={{
-              background: '#f0f2f5',
+              background: token.colorFillTertiary,
               padding: 12,
               borderRadius: 4,
               marginTop: 12
             }}>
               <strong>账号：</strong>{passwordStatus.username}<br />
               <strong>默认密码：</strong><code style={{
-                background: '#fff',
+                background: token.colorBgContainer,
                 padding: '2px 8px',
                 borderRadius: 3,
-                color: '#1890ff',
+                color: token.colorPrimary,
                 fontSize: 14
               }}>{passwordStatus.default_password}</code>
             </div>
@@ -295,13 +303,13 @@ export default function AuthCallback() {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #4D8088 0%, #5F9EA8 100%)',
+        background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
       }}>
         <Result
           status="success"
           title="登录成功"
           subTitle={showPasswordModal ? "请设置账号密码..." : (showAnnouncement ? "欢迎使用..." : "正在跳转...")}
-          style={{ background: 'white', padding: 40, borderRadius: 8 }}
+          style={{ background: alphaColor(token.colorBgContainer, 0.96), padding: 40, borderRadius: 8 }}
         />
       </div>
     </>

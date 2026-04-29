@@ -119,7 +119,22 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
       setWordCount(0);
 
       // 构建请求数据
-      const requestData: any = {
+      interface RegenerationRequest {
+        modification_source: string;
+        custom_instructions?: string;
+        selected_suggestion_indices: number[];
+        preserve_elements: {
+          preserve_structure: boolean;
+          preserve_dialogues: string[];
+          preserve_plot_points: string[];
+          preserve_character_traits: boolean;
+        };
+        style_id?: string;
+        target_word_count: number;
+        focus_areas: string[];
+      }
+
+      const requestData: RegenerationRequest = {
         modification_source: values.modification_source,
         custom_instructions: values.custom_instructions,
         selected_suggestion_indices: selectedSuggestions,
@@ -158,7 +173,7 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
             currentWordCount = accumulatedContent.length;
             // 不再自己计算进度，完全依赖后端发送的progress消息
           },
-          onResult: (data: any) => {
+          onResult: (data: { word_count?: number }) => {
             // 生成完成，确保使用最新的累积内容
             setProgress(100);
             setStatus('success');
@@ -183,11 +198,12 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
         }
       );
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('提交失败:', error);
       setStatus('error');
-      setErrorMessage(error.message || '提交失败');
-      message.error('操作失败: ' + (error.message || '未知错误'));
+      const err = error as Error;
+      setErrorMessage(err.message || '提交失败');
+      message.error('操作失败: ' + (err.message || '未知错误'));
     } finally {
       setLoading(false);
     }

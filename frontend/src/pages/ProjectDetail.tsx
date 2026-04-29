@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, Outlet, Link, useLocation } from 'react-router-dom';
-import { Layout, Menu, Spin, Button, Drawer } from 'antd';
+import { Layout, Menu, Spin, Button, Drawer, theme } from 'antd';
 import {
   ArrowLeftOutlined,
   FileTextOutlined,
@@ -25,6 +25,9 @@ import {
 import { useStore } from '../store';
 import { useCharacterSync, useOutlineSync, useChapterSync } from '../store/hooks';
 import { projectApi } from '../services/api';
+import ThemeSwitch from '../components/ThemeSwitch';
+import { useThemeMode } from '../theme/useThemeMode';
+import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
 
 const { Header, Sider, Content } = Layout;
 
@@ -35,9 +38,17 @@ export default function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [mobile, setMobile] = useState(isMobile());
+  const { token } = theme.useToken();
+  const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
+  const { mode, resolvedMode, setMode } = useThemeMode();
+  const cycleThemeMode = () => {
+    const nextMode = mode === 'light' ? 'dark' : mode === 'dark' ? 'system' : 'light';
+    setMode(nextMode);
+  };
+  const collapsedThemeIcon = mode === 'light' ? <BulbOutlined /> : mode === 'dark' ? <MoonOutlined /> : <CloudOutlined />;
 
   // 监听窗口大小变化
   useEffect(() => {
@@ -50,6 +61,10 @@ export default function ProjectDetail() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => {
+    setStoredSidebarCollapsed(collapsed);
+  }, [collapsed]);
   const {
     currentProject,
     setCurrentProject,
@@ -231,6 +246,11 @@ export default function ProjectDetail() {
       label: <Link to={`/project/${projectId}/chapter-analysis`}>剧情分析</Link>,
     },
     {
+      key: 'foreshadows',
+      icon: <BulbOutlined />,
+      label: <Link to={`/project/${projectId}/foreshadows`}>伏笔管理</Link>,
+    },
+    {
       key: 'writing-styles',
       icon: <EditOutlined />,
       label: <Link to={`/project/${projectId}/writing-styles`}>写作风格</Link>,
@@ -262,6 +282,7 @@ export default function ProjectDetail() {
     if (path.includes('/outline')) return 'outline';
     if (path.includes('/characters')) return 'characters';
     if (path.includes('/chapter-analysis')) return 'chapter-analysis';
+    if (path.includes('/foreshadows')) return 'foreshadows';
     if (path.includes('/chapters')) return 'chapters';
     if (path.includes('/writing-styles')) return 'writing-styles';
     if (path.includes('/prompt-workshop')) return 'prompt-workshop';
@@ -293,9 +314,9 @@ export default function ProjectDetail() {
         selectedKeys={[selectedKey]}
         style={{
           borderRight: 0,
-          paddingTop: '16px'
+          paddingTop: '12px'
         }}
-        items={menuItems}
+        items={collapsed ? menuItemsCollapsed : menuItems}
         onClick={() => mobile && setDrawerVisible(false)}
       />
     </div>
@@ -304,54 +325,43 @@ export default function ProjectDetail() {
   return (
     <Layout style={{ minHeight: '100vh', height: '100vh', overflow: 'hidden' }}>
       <Header style={{
-        background: 'var(--color-primary)',
+        background: token.colorPrimary,
         padding: mobile ? '0 12px' : '0 24px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         position: 'fixed',
         top: 0,
-        left: 0,
+        left: mobile ? 0 : (collapsed ? 60 : 220),
         right: 0,
         zIndex: 1000,
-        boxShadow: 'var(--shadow-header)',
-        height: mobile ? 56 : 70
+        boxShadow: `0 2px 10px ${alphaColor(token.colorText, 0.16)}`,
+        height: mobile ? 56 : 70,
+        transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        overflow: 'hidden'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', zIndex: 1 }}>
-          <Button
-            type="text"
-            icon={mobile ? <MenuUnfoldOutlined /> : (collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />)}
-            onClick={() => mobile ? setDrawerVisible(true) : setCollapsed(!collapsed)}
-            style={{
-              fontSize: mobile ? '18px' : '20px',
-              color: '#fff',
-              width: mobile ? '36px' : '40px',
-              height: mobile ? '36px' : '40px'
-            }}
-          />
-          {!mobile && (
+          {mobile && (
             <Button
               type="text"
-              icon={<ArrowLeftOutlined />}
-              onClick={() => navigate('/')}
+              icon={<MenuUnfoldOutlined />}
+              onClick={() => setDrawerVisible(true)}
               style={{
-                fontSize: '16px',
-                color: '#fff',
-                height: '40px',
-                padding: '0 16px'
+                fontSize: '18px',
+                color: token.colorWhite,
+                width: '36px',
+                height: '36px'
               }}
-            >
-              返回主页
-            </Button>
+            />
           )}
         </div>
 
         <h2 style={{
           margin: 0,
-          color: '#fff',
+          color: token.colorWhite,
           fontSize: mobile ? '16px' : '24px',
           fontWeight: 600,
-          textShadow: '0 2px 4px rgba(0,0,0,0.1)',
+          textShadow: `0 2px 4px ${alphaColor(token.colorText, 0.2)}`,
           position: mobile ? 'static' : 'absolute',
           left: mobile ? 'auto' : '50%',
           transform: mobile ? 'none' : 'translateX(-50%)',
@@ -373,7 +383,7 @@ export default function ProjectDetail() {
             onClick={() => navigate('/')}
             style={{
               fontSize: '14px',
-              color: '#fff',
+              color: token.colorWhite,
               height: '36px',
               padding: '0 8px',
               zIndex: 1
@@ -404,23 +414,23 @@ export default function ProjectDetail() {
                     minWidth: '56px',
                     height: '56px',
                     padding: '0 12px',
-                    boxShadow: 'inset 0 0 15px rgba(255, 255, 255, 0.15), 0 4px 10px rgba(0, 0, 0, 0.1)',
+                    boxShadow: `inset 0 0 15px ${alphaColor(token.colorWhite, 0.15)}, 0 4px 10px ${alphaColor(token.colorText, 0.1)}`,
                     cursor: 'default',
                     transition: 'all 0.3s ease',
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.transform = 'translateY(-3px) scale(1.02)';
-                    e.currentTarget.style.boxShadow = 'inset 0 0 20px rgba(255, 255, 255, 0.25), 0 8px 16px rgba(0, 0, 0, 0.15)';
-                    e.currentTarget.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+                    e.currentTarget.style.boxShadow = `inset 0 0 20px ${alphaColor(token.colorWhite, 0.25)}, 0 8px 16px ${alphaColor(token.colorText, 0.15)}`;
+                    e.currentTarget.style.border = `1px solid ${alphaColor(token.colorWhite, 0.1)}`;
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.transform = 'translateY(0) scale(1)';
-                    e.currentTarget.style.boxShadow = 'inset 0 0 15px rgba(255, 255, 255, 0.15), 0 4px 10px rgba(0, 0, 0, 0.1)';
+                    e.currentTarget.style.boxShadow = `inset 0 0 15px ${alphaColor(token.colorWhite, 0.15)}, 0 4px 10px ${alphaColor(token.colorText, 0.1)}`;
                   }}
                 >
                   <span style={{
                     fontSize: '11px',
-                    color: 'rgba(255, 255, 255, 0.9)',
+                    color: alphaColor(token.colorWhite, 0.9),
                     marginBottom: '2px',
                     lineHeight: 1
                   }}>
@@ -429,7 +439,7 @@ export default function ProjectDetail() {
                   <span style={{
                     fontSize: '15px',
                     fontWeight: '600',
-                    color: '#fff',
+                    color: token.colorWhite,
                     lineHeight: 1,
                     fontFamily: 'Monaco, monospace'
                   }}>
@@ -446,7 +456,24 @@ export default function ProjectDetail() {
       <Layout style={{ marginTop: mobile ? 56 : 70 }}>
         {mobile ? (
           <Drawer
-            title="导航菜单"
+            title={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 30,
+                  height: 30,
+                  background: token.colorPrimary,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: token.colorWhite,
+                  fontSize: 16,
+                }}>
+                  <BookOutlined />
+                </div>
+                <span style={{ fontWeight: 600, fontSize: 16 }}>MuMuAINovel</span>
+              </div>
+            }
             placement="left"
             onClose={() => setDrawerVisible(false)}
             open={drawerVisible}
@@ -454,6 +481,13 @@ export default function ProjectDetail() {
             styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
           >
             {renderMenu()}
+            <div style={{ padding: 16, borderTop: `1px solid ${token.colorBorderSecondary}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary, marginBottom: 8 }}>
+                <span>主题模式</span>
+                <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+              </div>
+              <ThemeSwitch block />
+            </div>
           </Drawer>
         ) : (
           <Sider
@@ -463,15 +497,18 @@ export default function ProjectDetail() {
             trigger={null}
             width={220}
             collapsedWidth={60}
-            className="modern-sider"
             style={{
               position: 'fixed',
               left: 0,
-              top: 70,
+              top: 0,
               bottom: 0,
               overflow: 'hidden',
               transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              height: 'calc(100vh - 70px)'
+              height: '100vh',
+              background: token.colorBgContainer,
+              borderRight: `1px solid ${token.colorBorderSecondary}`,
+              boxShadow: `4px 0 16px ${alphaColor(token.colorText, 0.06)}`,
+              zIndex: 1000
             }}
           >
             <div style={{
@@ -479,18 +516,148 @@ export default function ProjectDetail() {
               display: 'flex',
               flexDirection: 'column'
             }}>
+              <div style={{
+                height: 70,
+                display: 'flex',
+                alignItems: 'center',
+                padding: collapsed ? 0 : '0 12px',
+                background: token.colorPrimary,
+                flexShrink: 0,
+                justifyContent: collapsed ? 'center' : 'space-between',
+                gap: 8
+              }}>
+                {collapsed ? (
+                  <Button
+                    type="text"
+                    icon={<MenuUnfoldOutlined />}
+                    onClick={() => setCollapsed(false)}
+                    style={{
+                      color: token.colorWhite,
+                      width: '100%',
+                      height: '100%',
+                      padding: 0,
+                      borderRadius: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  />
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
+                      <div style={{
+                        width: 30,
+                        height: 30,
+                        background: alphaColor(token.colorWhite, 0.2),
+                        borderRadius: 8,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: token.colorWhite,
+                        fontSize: 16,
+                        backdropFilter: 'blur(4px)'
+                      }}>
+                        <BookOutlined />
+                      </div>
+                      <span style={{
+                        color: token.colorWhite,
+                        fontWeight: 600,
+                        fontSize: 15,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        MuMuAINovel
+                      </span>
+                    </div>
+                    <Button
+                      type="text"
+                      icon={<MenuFoldOutlined />}
+                      onClick={() => setCollapsed(true)}
+                      style={{
+                        color: token.colorWhite,
+                        width: 32,
+                        height: 32,
+                        padding: 0,
+                        flexShrink: 0
+                      }}
+                    />
+                  </>
+                )}
+              </div>
               {renderMenu()}
+              <div style={{
+                padding: collapsed ? '12px 8px' : '12px',
+                borderTop: `1px solid ${token.colorBorderSecondary}`,
+                flexShrink: 0
+              }}>
+                {collapsed ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                    <Button
+                      type="text"
+                      icon={collapsedThemeIcon}
+                      onClick={cycleThemeMode}
+                      title={`主题模式：${mode === 'light' ? '浅色' : mode === 'dark' ? '深色' : '跟随系统'}（点击切换）`}
+                      style={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 20,
+                        background: alphaColor(token.colorBgContainer, 0.65),
+                        border: `1px solid ${token.colorBorder}`,
+                        color: token.colorText,
+                        padding: 0,
+                      }}
+                    />
+                    <Button
+                      type="text"
+                      icon={<ArrowLeftOutlined />}
+                      onClick={() => navigate('/')}
+                      style={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 20,
+                        background: alphaColor(token.colorBgContainer, 0.65),
+                        border: `1px solid ${token.colorBorder}`,
+                        color: token.colorText,
+                        padding: 0,
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary }}>
+                      <span>主题模式</span>
+                      <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+                    </div>
+                    <ThemeSwitch block />
+                    <Button
+                      type="text"
+                      icon={<ArrowLeftOutlined />}
+                      onClick={() => navigate('/')}
+                      block
+                      style={{
+                        color: token.colorText,
+                        height: 40,
+                        justifyContent: 'flex-start',
+                        padding: '0 12px'
+                      }}
+                    >
+                      返回主页
+                    </Button>
+                  </div>
+                )}
+              </div>
             </div>
           </Sider>
         )}
 
         <Layout style={{
           marginLeft: mobile ? 0 : (collapsed ? 60 : 220),
-          transition: 'all 0.2s'
+          transition: 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
         }}>
           <Content
             style={{
-              background: 'var(--color-bg-base)',
+              background: token.colorBgLayout,
               padding: mobile ? 12 : 24,
               height: mobile ? 'calc(100vh - 56px)' : 'calc(100vh - 70px)',
               overflow: 'hidden',
@@ -499,10 +666,10 @@ export default function ProjectDetail() {
             }}
           >
             <div style={{
-              background: 'var(--color-bg-container)',
+              background: token.colorBgContainer,
               padding: mobile ? 12 : 24,
               borderRadius: mobile ? '8px' : '12px',
-              boxShadow: 'var(--shadow-card)',
+              boxShadow: `0 8px 24px ${alphaColor(token.colorText, 0.08)}`,
               height: '100%',
               overflow: 'hidden',
               display: 'flex',

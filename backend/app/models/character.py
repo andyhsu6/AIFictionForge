@@ -32,6 +32,14 @@ class Character(Base):
     organization_purpose = Column(String(500), comment="组织目的")
     organization_members = Column(Text, comment="组织成员(JSON)")
     
+    # 角色/组织存活状态
+    status = Column(String(20), default="active", comment="状态：active/deceased/missing/retired/destroyed")
+    status_changed_chapter = Column(Integer, comment="状态变更的章节号")
+    
+    # 心理状态追踪（由章节分析自动更新）
+    current_state = Column(Text, comment="角色当前心理状态（由分析自动更新）")
+    state_updated_chapter = Column(Integer, comment="心理状态最后更新的章节号")
+    
     # 职业相关字段（冗余字段，用于提升查询性能）
     main_career_id = Column(String(36), ForeignKey("careers.id", ondelete="SET NULL"), comment="主职业ID")
     main_career_stage = Column(Integer, comment="主职业当前阶段")
