@@ -62,6 +62,8 @@ export default function Chapters() {
   const [selectedModel, setSelectedModel] = useState<string | undefined>();
   const [batchSelectedModel, setBatchSelectedModel] = useState<string | undefined>(); // 批量生成的模型选择
   const [temporaryNarrativePerspective, setTemporaryNarrativePerspective] = useState<string | undefined>(); // 临时人称选择
+  const [availableSkills, setAvailableSkills] = useState<Array<{ template_key: string; template_name: string; description: string; category: string }>>([]);
+  const [selectedSkillKey, setSelectedSkillKey] = useState<string | undefined>();
   const [analysisVisible, setAnalysisVisible] = useState(false);
   const [analysisChapterId, setAnalysisChapterId] = useState<string | null>(null);
   // 分析任务状态管理
@@ -227,6 +229,21 @@ export default function Chapters() {
     } catch (error) {
       console.error('加载写作风格失败:', error);
       message.error('加载写作风格失败');
+    }
+  };
+
+  // 加载可用的 Skill 列表
+  const loadAvailableSkills = async () => {
+    try {
+      const response = await fetch('/api/skills/list');
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          setAvailableSkills(data);
+        }
+      }
+    } catch (error) {
+      console.error('加载 Skill 列表失败:', error);
     }
   };
 
@@ -468,9 +485,11 @@ export default function Chapters() {
       });
       setEditingId(id);
       setTemporaryNarrativePerspective(undefined); // 重置人称选择
+      setSelectedSkillKey(undefined); // 重置Skill选择
       setIsEditorOpen(true);
-      // 打开编辑窗口时加载模型列表
+      // 打开编辑窗口时加载模型列表和Skill列表
       loadAvailableModels();
+      loadAvailableSkills();
     }
   };
 
@@ -520,7 +539,8 @@ export default function Chapters() {
           setSingleChapterProgressMessage(progressMsg);
         },
         selectedModel,  // 传递选中的模型
-        temporaryNarrativePerspective  // 传递临时人称参数
+        temporaryNarrativePerspective,  // 传递临时人称参数
+        selectedSkillKey  // 传递选中的Skill
       );
 
       message.success('AI创作成功，正在分析章节内容...');
@@ -2169,12 +2189,45 @@ export default function Chapters() {
             </Form.Item>
           </div>
 
-          {/* 第二行：目标字数 + AI模型 */}
+          {/* 第二行：目标字数 + AI模型 + Skill */}
           <div style={{
             display: isMobile ? 'block' : 'flex',
             gap: isMobile ? 0 : 16,
             marginBottom: isMobile ? 16 : 12
           }}>
+            <Form.Item
+              label="应用 Skill"
+              tooltip="选择一个 Skill 工作流指导 AI 创作，不选则使用标准创作流程"
+              style={{ flex: 1, marginBottom: isMobile ? 16 : 0 }}
+            >
+              <Select
+                placeholder="不使用 Skill（标准创作）"
+                value={selectedSkillKey}
+                onChange={setSelectedSkillKey}
+                allowClear
+                disabled={isGenerating}
+                showSearch
+                optionFilterProp="label"
+              >
+                {availableSkills.map(skill => (
+                  <Select.Option key={skill.template_key} value={skill.template_key} label={skill.template_name}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span>{skill.template_name}</span>
+                      <Tag style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>{skill.category}</Tag>
+                    </div>
+                  </Select.Option>
+                ))}
+              </Select>
+              {selectedSkillKey && (() => {
+                const skill = availableSkills.find(s => s.template_key === selectedSkillKey);
+                return skill ? (
+                  <div style={{ color: token.colorSuccess, fontSize: 12, marginTop: 4 }}>
+                    ✓ {skill.description}
+                  </div>
+                ) : null;
+              })()}
+            </Form.Item>
+
             <Form.Item
               label="目标字数"
               tooltip="AI生成章节时的目标字数，实际可能略有偏差（修改后会自动记住）"
