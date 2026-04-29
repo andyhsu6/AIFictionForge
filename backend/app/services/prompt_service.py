@@ -1,6 +1,7 @@
 """提示词管理服务"""
 from typing import Dict, Any, Optional
 import json
+from app.services.skill_loader import get_all_skills_cached
 
 
 class WritingStyleManager:
@@ -2495,6 +2496,14 @@ class PromptService:
                     "parameters": info["parameters"],
                     "content": template_content
                 })
+        
+        # 加载 Skill 提示词模板
+        try:
+            skill_templates = get_all_skills_cached()
+            templates.extend(skill_templates)
+        except Exception as e:
+            from app.logger import get_logger
+            get_logger(__name__).warning(f"加载 Skill 模板失败: {e}")
         
         return templates
     

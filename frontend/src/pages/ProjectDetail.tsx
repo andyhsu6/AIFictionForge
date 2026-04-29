@@ -16,6 +16,10 @@ import {
   FundOutlined,
   HeartOutlined,
   TrophyOutlined,
+  BulbOutlined,
+  CloudOutlined,
+  MoonOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync, useOutlineSync, useChapterSync } from '../store/hooks';
@@ -101,6 +105,86 @@ export default function ProjectDetail() {
       label: <Link to={`/project/${projectId}/sponsor`}>赞助支持</Link>,
     },
     {
+      type: 'group' as const,
+      label: '创作管理',
+      children: [
+        {
+          key: 'world-setting',
+          icon: <GlobalOutlined />,
+          label: <Link to={`/project/${projectId}/world-setting`}>世界设定</Link>,
+        },
+        {
+          key: 'characters',
+          icon: <TeamOutlined />,
+          label: <Link to={`/project/${projectId}/characters`}>角色管理</Link>,
+        },
+        {
+          key: 'organizations',
+          icon: <BankOutlined />,
+          label: <Link to={`/project/${projectId}/organizations`}>组织管理</Link>,
+        },
+        {
+          key: 'careers',
+          icon: <TrophyOutlined />,
+          label: <Link to={`/project/${projectId}/careers`}>职业管理</Link>,
+        },
+        {
+          key: 'relationships',
+          icon: <ApartmentOutlined />,
+          label: <Link to={`/project/${projectId}/relationships`}>关系管理</Link>,
+        },
+        {
+          key: 'outline',
+          icon: <FileTextOutlined />,
+          label: <Link to={`/project/${projectId}/outline`}>大纲管理</Link>,
+        },
+        {
+          key: 'chapters',
+          icon: <BookOutlined />,
+          label: <Link to={`/project/${projectId}/chapters`}>章节管理</Link>,
+        },
+        {
+          key: 'chapter-analysis',
+          icon: <FundOutlined />,
+          label: <Link to={`/project/${projectId}/chapter-analysis`}>剧情分析</Link>,
+        },
+        {
+          key: 'foreshadows',
+          icon: <BulbOutlined />,
+          label: <Link to={`/project/${projectId}/foreshadows`}>伏笔管理</Link>,
+        },
+      ],
+    },
+    {
+      type: 'group' as const,
+      label: '创作工具',
+      children: [
+        {
+          key: 'writing-styles',
+          icon: <EditOutlined />,
+          label: <Link to={`/project/${projectId}/writing-styles`}>写作风格</Link>,
+        },
+        {
+          key: 'prompt-workshop',
+          icon: <CloudOutlined />,
+          label: <Link to={`/project/${projectId}/prompt-workshop`}>提示词工坊</Link>,
+        },
+        {
+          key: 'skill-chat',
+          icon: <ThunderboltOutlined />,
+          label: <Link to={`/project/${projectId}/skill-chat`}>Skill 工具箱</Link>,
+        },
+      ],
+    },
+  ];
+
+  const menuItemsCollapsed = [
+    {
+      key: 'sponsor',
+      icon: <HeartOutlined />,
+      label: <Link to={`/project/${projectId}/sponsor`}>赞助支持</Link>,
+    },
+    {
       key: 'world-setting',
       icon: <GlobalOutlined />,
       label: <Link to={`/project/${projectId}/world-setting`}>世界设定</Link>,
@@ -145,11 +229,16 @@ export default function ProjectDetail() {
       icon: <EditOutlined />,
       label: <Link to={`/project/${projectId}/writing-styles`}>写作风格</Link>,
     },
-    // {
-    //   key: 'polish',
-    //   icon: <ToolOutlined />,
-    //   label: <Link to={`/project/${projectId}/polish`}>AI去味</Link>,
-    // },
+    {
+      key: 'prompt-workshop',
+      icon: <CloudOutlined />,
+      label: <Link to={`/project/${projectId}/prompt-workshop`}>提示词工坊</Link>,
+    },
+    {
+      key: 'skill-chat',
+      icon: <ThunderboltOutlined />,
+      label: <Link to={`/project/${projectId}/skill-chat`}>Skill 工具箱</Link>,
+    },
   ];
 
   // 根据当前路径动态确定选中的菜单项
@@ -164,6 +253,8 @@ export default function ProjectDetail() {
     if (path.includes('/chapter-analysis')) return 'chapter-analysis';
     if (path.includes('/chapters')) return 'chapters';
     if (path.includes('/writing-styles')) return 'writing-styles';
+    if (path.includes('/prompt-workshop')) return 'prompt-workshop';
+    if (path.includes('/skill-chat')) return 'skill-chat';
     if (path.includes('/sponsor')) return 'sponsor';
     // if (path.includes('/polish')) return 'polish';
     return 'sponsor'; // 默认选中赞助支持
