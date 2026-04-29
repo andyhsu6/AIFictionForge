@@ -20,6 +20,7 @@ import MCPPlugins from './pages/MCPPlugins';
 import UserManagement from './pages/UserManagement';
 import PromptTemplates from './pages/PromptTemplates';
 import SkillChat from './pages/SkillChat';
+import SkillManage from './pages/SkillManage';
 import Sponsor from './pages/Sponsor';
 // import Polish from './pages/Polish';
 import Login from './pages/Login';
@@ -62,6 +63,7 @@ function App() {
             <Route path="chapter-analysis" element={<ChapterAnalysis />} />
             <Route path="writing-styles" element={<WritingStyles />} />
             <Route path="skill-chat" element={<SkillChat />} />
+            <Route path="skill-manage" element={<SkillManage />} />
             <Route path="sponsor" element={<Sponsor />} />
             {/* <Route path="polish" element={<Polish />} /> */}
           </Route>

@@ -6,12 +6,12 @@
 from fastapi import APIRouter, Request, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from app.database import get_db
 from app.user_manager import User
 from app.api.settings import require_login
-from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger
+from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger, get_skill_detail, create_skill_files, update_skill_files, delete_skill_files, refresh_skills_cache
 from app.services.ai_service import AIService, create_user_ai_service
 from app.utils.sse_response import SSEResponse, create_sse_response, wrap_stream_with_heartbeat, HEARTBEAT
 from app.logger import get_logger
@@ -25,6 +25,21 @@ class SkillChatRequest(BaseModel):
     skill_key: str  # SKILL_STORY_LONG_WRITE 等
     message: str    # 用户消息
     history: Optional[List[dict]] = None  # 历史对话 [{"role": "user/assistant", "content": "..."}]
+
+
+class SkillCreateRequest(BaseModel):
+    """创建 Skill 请求"""
+    name: str           # Skill 名称（英文，如 my-new-skill）
+    description: str    # Skill 描述
+    body: str           # 工作流指令（Markdown 正文）
+    references: Optional[Dict[str, str]] = None  # 参考知识库 {"文件名": "内容"}
+
+
+class SkillUpdateRequest(BaseModel):
+    """更新 Skill 请求"""
+    description: Optional[str] = None
+    body: Optional[str] = None
+    references: Optional[Dict[str, str]] = None
 
 
 @router.get("/list")
@@ -142,3 +157,86 @@ async def skill_chat(
             yield await SSEResponse.send_error(f"生成失败: {str(e)}")
 
     return create_sse_response(generate())
+
+
+# ==================== Skill 管理 CRUD API ====================
+
+@router.get("/detail/{skill_key:path}")
+async def get_skill_detail_api(skill_key: str, user: User = Depends(require_login)):
+    """获取 Skill 详细信息（包括原始内容和 references）"""
+    detail = get_skill_detail(skill_key)
+    if not detail:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"未找到 Skill: {skill_key}")
+    
+    return {
+        "template_key": detail["template_key"],
+        "template_name": detail["template_name"],
+        "category": detail["category"],
+        "description": detail["description"],
+        "triggers": detail.get("triggers", []),
+        "raw_content": detail.get("raw_content", ""),
+        "standalone_references": detail.get("standalone_references", {}),
+    }
+
+
+@router.post("/create")
+async def create_skill(request: SkillCreateRequest, user: User = Depends(require_login)):
+    """创建新的 Skill"""
+    try:
+        result = create_skill_files(
+            name=request.name,
+            description=request.description,
+            body=request.body,
+            references=request.references,
+        )
+        return {"success": True, "skill": result}
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"创建 Skill 失败: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
+
+
+@router.put("/update/{skill_key:path}")
+async def update_skill(skill_key: str, request: SkillUpdateRequest, user: User = Depends(require_login)):
+    """更新 Skill"""
+    try:
+        result = update_skill_files(
+            skill_key=skill_key,
+            description=request.description,
+            body=request.body,
+            references=request.references,
+        )
+        return {"success": True, "skill": result}
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"更新 Skill 失败: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+
+
+@router.delete("/delete/{skill_key:path}")
+async def delete_skill(skill_key: str, user: User = Depends(require_login)):
+    """删除 Skill"""
+    try:
+        delete_skill_files(skill_key)
+        return {"success": True, "message": f"已删除 Skill: {skill_key}"}
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"删除 Skill 失败: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+
+
+@router.post("/refresh-cache")
+async def refresh_cache(user: User = Depends(require_login)):
+    """手动刷新 Skill 缓存"""
+    skills = refresh_skills_cache()
+    return {"success": True, "count": len(skills)}

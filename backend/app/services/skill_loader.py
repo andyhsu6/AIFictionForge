@@ -261,3 +261,180 @@ def refresh_skills_cache():
     global _skills_cache
     _skills_cache = load_skills()
     return _skills_cache
+
+
+def get_skill_detail(skill_key: str) -> Optional[Dict]:
+    """根据 template_key 获取 Skill 完整详情（包括原始 SKILL.md 内容和独立 references）"""
+    skills = get_all_skills_cached()
+    for s in skills:
+        if s["template_key"] == skill_key:
+            # 找到对应的目录
+            skill_name = skill_key.replace("SKILL_", "").lower().replace("_", "-")
+            skill_dir = os.path.join(SKILLS_DIR, skill_name)
+            if not os.path.isdir(skill_dir):
+                # 尝试从 name 字段获取
+                for d in os.listdir(SKILLS_DIR):
+                    d_path = os.path.join(SKILLS_DIR, d)
+                    if os.path.isdir(d_path):
+                        md_path = os.path.join(d_path, "SKILL.md")
+                        if os.path.isfile(md_path):
+                            try:
+                                with open(md_path, 'r', encoding='utf-8') as f:
+                                    meta = _parse_yaml_frontmatter(f.read())
+                                if f"SKILL_{meta.get('name', '').upper().replace('-', '_')}" == skill_key:
+                                    skill_dir = d_path
+                                    break
+                            except:
+                                pass
+
+            # 读取原始 SKILL.md
+            skill_md_path = os.path.join(skill_dir, "SKILL.md")
+            raw_content = ""
+            if os.path.isfile(skill_md_path):
+                with open(skill_md_path, 'r', encoding='utf-8') as f:
+                    raw_content = f.read()
+
+            # 读取独立的 references（不拼接到 content 中）
+            standalone_refs = {}
+            refs_dir = os.path.join(skill_dir, "references")
+            if os.path.isdir(refs_dir):
+                for filename in sorted(os.listdir(refs_dir)):
+                    if filename.endswith('.md'):
+                        filepath = os.path.join(refs_dir, filename)
+                        try:
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                standalone_refs[filename[:-3]] = f.read()
+                        except:
+                            pass
+
+            return {
+                **s,
+                "raw_content": raw_content,
+                "standalone_references": standalone_refs,
+                "skill_dir": skill_dir,
+            }
+    return None
+
+
+def create_skill_files(name: str, description: str, body: str, references: Optional[Dict[str, str]] = None) -> Dict:
+    """创建新的 Skill 文件"""
+    import re
+    # 目录名：小写+短横线
+    dir_name = name.lower().replace("_", "-").replace(" ", "-")
+    dir_name = re.sub(r'[^a-z0-9\-]', '', dir_name)
+    if not dir_name:
+        dir_name = "new-skill"
+    
+    skill_dir = os.path.join(SKILLS_DIR, dir_name)
+    if os.path.exists(skill_dir):
+        raise ValueError(f"Skill 目录已存在: {dir_name}")
+    
+    os.makedirs(skill_dir, exist_ok=True)
+    
+    # 创建 SKILL.md
+    skill_md_content = f"""---
+name: {name}
+description: |
+  {description}
+---
+
+{body}"""
+    
+    skill_md_path = os.path.join(skill_dir, "SKILL.md")
+    with open(skill_md_path, 'w', encoding='utf-8') as f:
+        f.write(skill_md_content)
+    
+    # 创建 references
+    if references:
+        refs_dir = os.path.join(skill_dir, "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        for ref_name, ref_content in references.items():
+            ref_path = os.path.join(refs_dir, f"{ref_name}.md")
+            with open(ref_path, 'w', encoding='utf-8') as f:
+                f.write(ref_content)
+    
+    # 刷新缓存
+    refresh_skills_cache()
+    
+    # 返回新建的 skill
+    skills = get_all_skills_cached()
+    for s in skills:
+        if s["template_key"] == f"SKILL_{name.upper().replace('-', '_')}":
+            return s
+    return {"template_key": f"SKILL_{name.upper().replace('-', '_')}", "template_name": description.split('。')[0], "category": "Skill"}
+
+
+def update_skill_files(skill_key: str, description: Optional[str] = None, body: Optional[str] = None, references: Optional[Dict[str, str]] = None) -> Dict:
+    """更新已有 Skill 文件"""
+    detail = get_skill_detail(skill_key)
+    if not detail:
+        raise ValueError(f"未找到 Skill: {skill_key}")
+    
+    skill_dir = detail.get("skill_dir", "")
+    if not skill_dir or not os.path.isdir(skill_dir):
+        raise ValueError(f"Skill 目录不存在: {skill_dir}")
+    
+    skill_md_path = os.path.join(skill_dir, "SKILL.md")
+    
+    # 读取现有内容
+    with open(skill_md_path, 'r', encoding='utf-8') as f:
+        raw = f.read()
+    
+    # 解析现有元数据
+    metadata = _parse_yaml_frontmatter(raw)
+    name = metadata.get('name', '')
+    
+    # 更新 SKILL.md
+    final_desc = description if description is not None else metadata.get('description', '')
+    final_body = body if body is not None else _get_skill_body(raw)
+    
+    new_content = f"""---
+name: {name}
+description: |
+  {final_desc}
+---
+
+{final_body}"""
+    
+    with open(skill_md_path, 'w', encoding='utf-8') as f:
+        f.write(new_content)
+    
+    # 更新 references
+    if references is not None:
+        refs_dir = os.path.join(skill_dir, "references")
+        # 删除旧的 reference 文件
+        if os.path.isdir(refs_dir):
+            for f in os.listdir(refs_dir):
+                if f.endswith('.md'):
+                    os.remove(os.path.join(refs_dir, f))
+        else:
+            os.makedirs(refs_dir, exist_ok=True)
+        
+        # 写入新的 references
+        for ref_name, ref_content in references.items():
+            if ref_content.strip():  # 只写入非空内容
+                ref_path = os.path.join(refs_dir, f"{ref_name}.md")
+                with open(ref_path, 'w', encoding='utf-8') as f:
+                    f.write(ref_content)
+    
+    # 刷新缓存
+    refresh_skills_cache()
+    
+    # 返回更新后的详情
+    return get_skill_detail(skill_key) or {}
+
+
+def delete_skill_files(skill_key: str) -> bool:
+    """删除 Skill 目录"""
+    import shutil
+    detail = get_skill_detail(skill_key)
+    if not detail:
+        raise ValueError(f"未找到 Skill: {skill_key}")
+    
+    skill_dir = detail.get("skill_dir", "")
+    if not skill_dir or not os.path.isdir(skill_dir):
+        raise ValueError(f"Skill 目录不存在")
+    
+    shutil.rmtree(skill_dir)
+    refresh_skills_cache()
+    return True
