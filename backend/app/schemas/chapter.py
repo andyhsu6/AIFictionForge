@@ -67,6 +67,48 @@ class ChapterListResponse(BaseModel):
     items: list[ChapterResponse]
 
 
+class AnalysisTaskStatusResponse(BaseModel):
+    """单章节分析任务状态响应"""
+    has_task: bool
+    task_id: Optional[str] = None
+    chapter_id: str
+    status: str
+    progress: int = 0
+    error_message: Optional[str] = None
+    auto_recovered: bool = False
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class BatchAnalysisStatusRequest(BaseModel):
+    """批量查询分析状态请求"""
+    chapter_ids: Optional[List[str]] = Field(None, description="待查询章节ID列表；为空时查询项目下全部章节")
+
+
+class BatchAnalysisStatusResponse(BaseModel):
+    """批量查询分析状态响应"""
+    project_id: str
+    total: int
+    items: Dict[str, AnalysisTaskStatusResponse]
+
+
+class BatchAnalyzeUnanalyzedRequest(BaseModel):
+    """一键分析未分析章节请求"""
+    chapter_ids: Optional[List[str]] = Field(None, description="可选：限定待分析章节ID列表；为空则自动识别项目内全部未分析章节")
+
+
+class BatchAnalyzeUnanalyzedResponse(BaseModel):
+    """一键分析未分析章节响应"""
+    project_id: str
+    total_candidates: int = Field(0, description="候选章节总数（有内容章节）")
+    total_started: int = Field(0, description="本次已启动分析任务数")
+    total_skipped_no_content: int = Field(0, description="跳过：无内容章节数")
+    total_skipped_running: int = Field(0, description="跳过：已在分析中的章节数")
+    total_already_completed: int = Field(0, description="跳过：已完成分析章节数")
+    started_tasks: Dict[str, AnalysisTaskStatusResponse] = Field(default_factory=dict, description="本次启动的分析任务状态映射")
+
+
 class ChapterGenerateRequest(BaseModel):
     """AI生成章节内容的请求模型"""
     style_id: Optional[int] = Field(None, description="写作风格ID，不提供则不使用任何风格")
@@ -97,6 +139,8 @@ class BatchGenerateRequest(BaseModel):
     enable_mcp: bool = Field(True, description="是否启用MCP工具增强（搜索参考资料）")
     max_retries: int = Field(3, description="每个章节的最大重试次数", ge=0, le=5)
     model: Optional[str] = Field(None, description="指定使用的AI模型，不提供则使用用户默认模型")
+    narrative_perspective: Optional[str] = Field(None, description="临时指定叙事人称，不提供则使用项目默认")
+    skill_key: Optional[str] = Field(None, description="Skill 标识，指定后以该 Skill 的工作流指导创作")
 
 
 class BatchGenerateResponse(BaseModel):
@@ -166,3 +210,50 @@ class ExpansionPlanResponse(BaseModel):
     id: str = Field(..., description="章节ID")
     expansion_plan: Optional[Dict[str, Any]] = Field(None, description="规划数据")
     message: str = Field(..., description="响应消息")
+
+
+class PartialRegenerateRequest(BaseModel):
+    """局部重写请求参数"""
+    selected_text: str = Field(..., description="选中的原文内容")
+    start_position: int = Field(..., description="在章节内容中的起始位置（字符索引）", ge=0)
+    end_position: int = Field(..., description="在章节内容中的结束位置（字符索引）", ge=0)
+    user_instructions: str = Field(..., description="用户的修改要求", min_length=1, max_length=1000)
+    
+    # 可选参数
+    context_chars: int = Field(
+        500,
+        description="上下文截取长度（前后各截取多少字符）",
+        ge=100,
+        le=2000
+    )
+    style_id: Optional[int] = Field(None, description="写作风格ID，不提供则使用项目默认风格")
+    length_mode: Optional[str] = Field(
+        "similar",
+        description="字数调整模式：similar(保持相近)/expand(适当扩展)/condense(精简压缩)/custom(自定义)"
+    )
+    target_word_count: Optional[int] = Field(
+        None,
+        description="指定目标字数（仅当length_mode为custom时有效）",
+        ge=10,
+        le=5000
+    )
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "selected_text": "林霄挥剑斩向敌人，剑光凌厉，一招制敌。",
+            "start_position": 1234,
+            "end_position": 1260,
+            "user_instructions": "增加更细腻的打斗描写，加入主角的心理活动",
+            "context_chars": 500,
+            "length_mode": "expand"
+        }
+    })
+
+
+class PartialRegenerateResponse(BaseModel):
+    """局部重写响应模型"""
+    success: bool = Field(..., description="是否成功")
+    new_text: str = Field(..., description="重写后的新内容")
+    word_count: int = Field(..., description="新内容字数")
+    original_word_count: int = Field(..., description="原文字数")
+    message: str = Field("重写成功", description="响应消息")
