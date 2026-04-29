@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Button, Table, Modal, Form, Input, Tag, Space, message, Popconfirm, Card, Tabs, theme, Empty, Badge } from 'antd';
+import { Button, Table, Modal, Form, Input, Tag, Space, message, Popconfirm, Card, theme, Empty, Badge } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, FileTextOutlined, BookOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 
