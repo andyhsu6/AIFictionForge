@@ -315,6 +315,11 @@ export const settingsApi = {
       suggestions?: string[];
     }>(`/settings/presets/${presetId}/test`),
 
+  setChapterAnalysisPresetSelection: (presetId?: string) =>
+    api.put<unknown, { message: string; chapter_analysis_preset_id?: string; preset_name?: string }>('/settings/presets/usage/chapter-analysis', {
+      preset_id: presetId || null,
+    }),
+
   createPresetFromCurrent: (name: string, description?: string) =>
     api.post<unknown, APIKeyPreset>('/settings/presets/from-current', null, {
       params: { name, description }

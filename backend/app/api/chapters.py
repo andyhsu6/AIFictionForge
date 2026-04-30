@@ -57,7 +57,7 @@ from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
 from app.logger import get_logger
-from app.api.settings import get_user_ai_service
+from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import SSEResponse, create_sse_response
 
 router = APIRouter(prefix="/chapters", tags=["章节管理"])
@@ -797,7 +797,7 @@ async def analyze_chapter_background(
     user_id: str,
     project_id: str,
     task_id: str,
-    ai_service: AIService
+    ai_service: Optional[AIService] = None
 ) -> bool:
     """
     后台异步分析章节（支持并发，使用锁保护数据库写入）
@@ -865,6 +865,13 @@ async def analyze_chapter_background(
             task.progress = 20
             await db_session.commit()
         
+        if ai_service is None:
+            ai_service = await get_user_ai_service_from_db_by_usage(
+                user_id=user_id,
+                db=db_session,
+                usage="chapter_analysis"
+            )
+
         # 获取已埋入的伏笔列表（用于回收匹配，传入当前章节号以启用智能标记）
         existing_foreshadows = await foreshadow_service.get_planted_foreshadows_for_analysis(
             db=db_session,
@@ -2229,8 +2236,7 @@ async def _run_chapter_generation_bg(
             chapter_id=chapter_id,
             user_id=user_id,
             project_id=current_chapter.project_id,
-            task_id=analysis_task.id,
-            ai_service=ai_service
+            task_id=analysis_task.id
         )
     )
 
@@ -2441,7 +2447,7 @@ async def _run_batch_analysis_in_sequence(
     tasks_queue: list[dict[str, int | str]],
     user_id: str,
     project_id: str,
-    ai_service: AIService
+    ai_service: Optional[AIService] = None
 ) -> None:
     """按章节顺序逐个执行分析任务。"""
     for index, task_item in enumerate(tasks_queue, start=1):
@@ -2477,8 +2483,7 @@ async def batch_analyze_unanalyzed_chapters(
     project_id: str,
     payload: BatchAnalyzeUnanalyzedRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    user_ai_service: AIService = Depends(get_user_ai_service)
+    db: AsyncSession = Depends(get_db)
 ):
     """自动识别项目中未完成分析的章节，并按章节顺序逐个启动分析。"""
     user_id = getattr(request.state, "user_id", None)
@@ -2585,8 +2590,7 @@ async def batch_analyze_unanalyzed_chapters(
             _run_batch_analysis_in_sequence(
                 tasks_queue=tasks_queue,
                 user_id=user_id,
-                project_id=project_id,
-                ai_service=user_ai_service
+                project_id=project_id
             )
         )
 
@@ -2818,8 +2822,7 @@ async def trigger_chapter_analysis(
     chapter_id: str,
     request: Request,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    user_ai_service: AIService = Depends(get_user_ai_service)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     手动触发章节分析(用于重新分析或分析旧章节)
@@ -2876,8 +2879,7 @@ async def trigger_chapter_analysis(
         chapter_id=chapter_id,
         user_id=user_id,
         project_id=project.id,
-        task_id=task_id,
-        ai_service=user_ai_service
+        task_id=task_id
     )
     
     return {
@@ -3274,8 +3276,7 @@ async def execute_batch_generation_in_order(
                                     chapter_id=chapter_id,
                                     user_id=user_id,
                                     project_id=task.project_id,
-                                    task_id=analysis_task.id,
-                                    ai_service=ai_service
+                                    task_id=analysis_task.id
                                 )
                                 
                                 # 直接根据返回值判断

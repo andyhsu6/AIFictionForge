@@ -19,6 +19,7 @@ from app.schemas.settings import (
     SettingsCreate, SettingsUpdate, SettingsResponse,
     APIKeyPreset, APIKeyPresetConfig, PresetCreateRequest,
     PresetUpdateRequest, PresetResponse, PresetListResponse,
+    ChapterAnalysisPresetSelectionRequest,
     SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
 )
 from app.user_manager import User
@@ -50,6 +51,53 @@ def read_env_defaults() -> Dict[str, Any]:
         "temperature": app_settings.default_temperature,
         "max_tokens": app_settings.default_max_tokens,
     }
+
+
+def _safe_load_preferences(raw_preferences: Optional[str]) -> Dict[str, Any]:
+    """安全解析用户偏好设置。"""
+    try:
+        return json.loads(raw_preferences or '{}')
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _get_api_presets_payload(prefs: Dict[str, Any]) -> Dict[str, Any]:
+    """获取API预设偏好结构。"""
+    api_presets = prefs.get('api_presets')
+    if not isinstance(api_presets, dict):
+        api_presets = {'presets': [], 'version': '1.0'}
+    if not isinstance(api_presets.get('presets'), list):
+        api_presets['presets'] = []
+    api_presets.setdefault('version', '1.0')
+    return api_presets
+
+
+def _get_chapter_analysis_preset_id(prefs: Dict[str, Any]) -> Optional[str]:
+    """读取章节内容分析专用API预设ID。"""
+    preset_id = prefs.get('chapter_analysis_preset_id')
+    return preset_id if isinstance(preset_id, str) and preset_id.strip() else None
+
+
+def _build_ai_service_from_config(
+    *,
+    config: Dict[str, Any],
+    user_id: str,
+    db: AsyncSession,
+    enable_mcp: bool,
+) -> AIService:
+    """基于指定配置创建AI服务。"""
+    return create_user_ai_service_with_mcp(
+        api_provider=normalize_provider(config.get('api_provider')),
+        api_key=config.get('api_key') or "",
+        api_base_url=config.get('api_base_url') or "",
+        model_name=config.get('llm_model') or app_settings.default_model,
+        temperature=config.get('temperature') if config.get('temperature') is not None else app_settings.default_temperature,
+        max_tokens=config.get('max_tokens') if config.get('max_tokens') is not None else app_settings.default_max_tokens,
+        user_id=user_id,
+        db_session=db,
+        system_prompt=config.get('system_prompt'),
+        enable_mcp=enable_mcp,
+    )
 
 
 def require_login(request: Request):
@@ -164,6 +212,15 @@ async def get_user_ai_service_from_db(user_id: str, db: AsyncSession) -> AIServi
     """
     从数据库直接创建用户AI服务实例（用于后台任务，不依赖FastAPI的Depends）
     """
+    return await get_user_ai_service_from_db_by_usage(user_id, db, usage="default")
+
+
+async def get_user_ai_service_from_db_by_usage(
+    user_id: str,
+    db: AsyncSession,
+    usage: str = "default"
+) -> AIService:
+    """按用途创建用户AI服务实例。"""
     from app.models.mcp_plugin import MCPPlugin
 
     result = await db.execute(
@@ -183,6 +240,23 @@ async def get_user_ai_service_from_db(user_id: str, db: AsyncSession) -> AIServi
     )
     mcp_plugins = mcp_result.scalars().all()
     enable_mcp = any(plugin.enabled for plugin in mcp_plugins) if mcp_plugins else False
+
+    if usage == "chapter_analysis":
+        prefs = _safe_load_preferences(settings.preferences)
+        api_presets = _get_api_presets_payload(prefs)
+        presets = api_presets.get('presets', [])
+        preset_id = _get_chapter_analysis_preset_id(prefs)
+        if preset_id:
+            target_preset = next((p for p in presets if p.get('id') == preset_id), None)
+            if target_preset and isinstance(target_preset.get('config'), dict):
+                logger.info(f"用户 {user_id} 使用章节内容分析专用API预设: {target_preset.get('name')}")
+                return _build_ai_service_from_config(
+                    config=target_preset['config'],
+                    user_id=user_id,
+                    db=db,
+                    enable_mcp=enable_mcp,
+                )
+            logger.warning(f"用户 {user_id} 配置的章节内容分析预设不存在，回退默认API配置: {preset_id}")
 
     return create_user_ai_service_with_mcp(
         api_provider=settings.api_provider,
@@ -1043,8 +1117,11 @@ async def get_presets(
         logger.warning(f"用户 {user.user_id} 的preferences字段JSON格式错误，重置为空")
         prefs = {}
     
-    api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+    api_presets = _get_api_presets_payload(prefs)
     presets = api_presets.get('presets', [])
+    chapter_analysis_preset_id = _get_chapter_analysis_preset_id(prefs)
+    if chapter_analysis_preset_id and not any(p.get('id') == chapter_analysis_preset_id for p in presets):
+        chapter_analysis_preset_id = None
     
     # 找到激活的预设
     active_preset_id = next(
@@ -1057,7 +1134,8 @@ async def get_presets(
     return {
         "presets": presets,
         "total": len(presets),
-        "active_preset_id": active_preset_id
+        "active_preset_id": active_preset_id,
+        "chapter_analysis_preset_id": chapter_analysis_preset_id
     }
 
 
@@ -1177,7 +1255,7 @@ async def delete_preset(
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="配置数据格式错误")
     
-    api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+    api_presets = _get_api_presets_payload(prefs)
     presets = api_presets.get('presets', [])
     
     # 找到预设
@@ -1191,6 +1269,8 @@ async def delete_preset(
     
     # 删除预设
     presets = [p for p in presets if p['id'] != preset_id]
+    if prefs.get('chapter_analysis_preset_id') == preset_id:
+        prefs.pop('chapter_analysis_preset_id', None)
     
     # 保存回preferences
     api_presets['presets'] = presets
@@ -1255,6 +1335,41 @@ async def activate_preset(
         "message": "预设已激活",
         "preset_id": preset_id,
         "preset_name": target_preset['name']
+    }
+
+
+@router.put("/presets/usage/chapter-analysis")
+async def set_chapter_analysis_preset_selection(
+    data: ChapterAnalysisPresetSelectionRequest,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db)
+):
+    """设置章节内容分析专用API预设；为空则使用默认API配置。"""
+    settings = await get_user_settings(user.user_id, db)
+    prefs = _safe_load_preferences(settings.preferences)
+    api_presets = _get_api_presets_payload(prefs)
+    presets = api_presets.get('presets', [])
+
+    preset_id = data.preset_id.strip() if data.preset_id else None
+    preset_name = None
+    if preset_id:
+        target_preset = next((p for p in presets if p.get('id') == preset_id), None)
+        if not target_preset:
+            raise HTTPException(status_code=404, detail="预设不存在")
+        prefs['chapter_analysis_preset_id'] = preset_id
+        preset_name = target_preset.get('name')
+    else:
+        prefs.pop('chapter_analysis_preset_id', None)
+
+    prefs['api_presets'] = api_presets
+    settings.preferences = json.dumps(prefs, ensure_ascii=False)
+    await db.commit()
+
+    logger.info(f"用户 {user.user_id} 设置章节内容分析API预设: {preset_id or '默认配置'}")
+    return {
+        "message": "章节内容分析API配置已更新",
+        "chapter_analysis_preset_id": preset_id,
+        "preset_name": preset_name
     }
 
 

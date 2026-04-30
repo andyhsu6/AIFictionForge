@@ -48,6 +48,8 @@ export default function SettingsPage() {
   const [presets, setPresets] = useState<APIKeyPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(false);
   const [activePresetId, setActivePresetId] = useState<string | undefined>();
+  const [chapterAnalysisPresetId, setChapterAnalysisPresetId] = useState<string | undefined>();
+  const [savingChapterAnalysisPreset, setSavingChapterAnalysisPreset] = useState(false);
   const [editingPreset, setEditingPreset] = useState<APIKeyPreset | null>(null);
   const [isPresetModalVisible, setIsPresetModalVisible] = useState(false);
   const [testingPresetId, setTestingPresetId] = useState<string | null>(null);
@@ -511,6 +513,7 @@ export default function SettingsPage() {
       const response = await settingsApi.getPresets();
       setPresets(response.presets);
       setActivePresetId(response.active_preset_id);
+      setChapterAnalysisPresetId(response.chapter_analysis_preset_id);
     } catch (error) {
       message.error('加载预设失败');
       console.error(error);
@@ -653,6 +656,23 @@ export default function SettingsPage() {
       loadPresets();
     } catch (error) {
       console.error('保存失败:', error);
+    }
+  };
+
+  const handleChapterAnalysisPresetChange = async (presetId?: string) => {
+    setSavingChapterAnalysisPreset(true);
+    try {
+      const normalizedPresetId = presetId || undefined;
+      await settingsApi.setChapterAnalysisPresetSelection(normalizedPresetId);
+      setChapterAnalysisPresetId(normalizedPresetId);
+      message.success(normalizedPresetId ? '已设置章节内容分析专用API配置' : '章节内容分析已恢复使用默认API配置');
+      loadPresets();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '设置章节内容分析API配置失败');
+      console.error(error);
+    } finally {
+      setSavingChapterAnalysisPreset(false);
     }
   };
 
@@ -927,6 +947,38 @@ export default function SettingsPage() {
           </Space>
         </div>
 
+        <Card size="small" style={{ background: token.colorFillAlter, borderColor: token.colorBorderSecondary }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space direction="vertical" size={2}>
+                <Text strong>章节内容分析 API 配置</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  指定章节内容分析使用的预设；未选择时使用默认的文本模型配置。
+                </Text>
+              </Space>
+              <Select
+                allowClear
+                placeholder="默认API配置"
+                value={chapterAnalysisPresetId}
+                loading={savingChapterAnalysisPreset}
+                disabled={presetsLoading || savingChapterAnalysisPreset}
+                style={{ minWidth: isMobile ? '100%' : 280 }}
+                onChange={(value) => handleChapterAnalysisPresetChange(value)}
+                options={presets.map((preset) => ({
+                  value: preset.id,
+                  label: `${preset.name} (${preset.config.llm_model})`,
+                }))}
+              />
+            </Space>
+            <Alert
+              showIcon
+              type="info"
+              message={chapterAnalysisPresetId ? '章节内容分析将优先使用所选预设。' : '当前未指定章节内容分析预设，将使用默认API配置。'}
+              style={{ padding: '6px 10px' }}
+            />
+          </Space>
+        </Card>
+
         {presets.length === 0 ? (
           <Empty
             description="暂无预设配置"
@@ -1007,6 +1059,7 @@ export default function SettingsPage() {
                       <Space>
                         <span style={{ fontWeight: 'bold' }}>{preset.name}</span>
                         {isActive && <Tag color="success">激活中</Tag>}
+                        {preset.id === chapterAnalysisPresetId && <Tag color="processing">章节分析</Tag>}
                       </Space>
                     }
                     description={
