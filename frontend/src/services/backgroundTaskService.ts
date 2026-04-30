@@ -13,9 +13,10 @@ export interface TaskStatus {
   status_message: string | null;
   progress_details: {
     stage: string;
-    message: string;
+    message?: string;
     current_chars?: number;
     retry_count?: number;
+    queue_size?: number;
   } | null;
   error_message: string | null;
   task_result: Record<string, unknown> | null;

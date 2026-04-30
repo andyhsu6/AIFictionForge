@@ -151,6 +151,8 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
         return '大纲续写';
       case 'outline_expand':
         return '大纲展开';
+      case 'outline_batch_expand':
+        return '批量大纲展开';
       case 'chapter_generate':
         return '章节生成';
       case 'chapter_batch':
