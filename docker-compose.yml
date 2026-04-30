@@ -65,6 +65,9 @@ services:
       - ./storage/generated_covers:/app/storage/generated_covers
       - ./.env:/app/.env:ro
     environment:
+      # 时区配置
+      - TZ=${TZ:-Asia/Shanghai}
+      
       # 应用配置
       - APP_NAME=${APP_NAME:-MuMuAINovel}
       - APP_VERSION=${APP_VERSION:-1.0.0}
