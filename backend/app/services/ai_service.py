@@ -28,12 +28,16 @@ logger = get_logger(__name__)
 
 
 def normalize_provider(provider: Optional[str]) -> Optional[str]:
-    """标准化 provider 名称，兼容 OpenAI 格式渠道别名。"""
+    """标准化 provider 名称，兼容 OpenAI 格式渠道别名。
+
+    内置适配器（例如 Xiaomi MiMo）应在 API 层解析为底层兼容 provider，
+    AIService 只接收可直接初始化的 provider。
+    """
     if provider is None:
         return None
 
     normalized = provider.lower().strip()
-    if normalized in {"mumu", "xiaomi_mimo"}:
+    if normalized == "mumu":
         return "openai"
     return normalized
 
@@ -113,12 +117,8 @@ class AIService:
         openai_key = None
         openai_base_url = None
         if self.api_provider == "openai":
-            if self.raw_api_provider == "xiaomi_mimo":
-                openai_key = api_key or app_settings.xiaomi_mimo_api_key
-                openai_base_url = api_base_url or app_settings.xiaomi_mimo_base_url
-            else:
-                openai_key = api_key or app_settings.openai_api_key
-                openai_base_url = api_base_url or app_settings.openai_base_url
+            openai_key = api_key or app_settings.openai_api_key
+            openai_base_url = api_base_url or app_settings.openai_base_url
         else:
             openai_key = app_settings.openai_api_key
             openai_base_url = app_settings.openai_base_url

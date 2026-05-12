@@ -93,6 +93,23 @@ def _apply_provider_defaults(provider: Optional[str], api_key: Optional[str], ap
     }
 
 
+def resolve_runtime_ai_config(provider: Optional[str], api_key: Optional[str], api_base_url: Optional[str]) -> Dict[str, str]:
+    """在 API 层解析运行时 AI 配置。
+
+    内置适配器（如 Xiaomi MiMo）只在数据库/前端保留 provider 标识与地址，真实 Key
+    仅从后端环境变量读取；传给 AIService 时转换为底层兼容 provider（OpenAI 格式）。
+    """
+    raw_provider = _normalize_raw_provider(provider)
+    resolved = _apply_provider_defaults(raw_provider, api_key, api_base_url)
+    runtime_provider = "openai" if raw_provider == "xiaomi_mimo" else (normalize_provider(raw_provider) or "openai")
+    return {
+        "raw_provider": raw_provider,
+        "api_provider": runtime_provider,
+        "api_key": resolved["api_key"],
+        "api_base_url": resolved["api_base_url"],
+    }
+
+
 def _safe_load_preferences(raw_preferences: Optional[str]) -> Dict[str, Any]:
     """安全解析用户偏好设置。"""
     try:
@@ -126,13 +143,13 @@ def _build_ai_service_from_config(
     enable_mcp: bool,
 ) -> AIService:
     """基于指定配置创建AI服务。"""
-    resolved_config = _apply_provider_defaults(
+    resolved_config = resolve_runtime_ai_config(
         config.get('api_provider'),
         config.get('api_key'),
         config.get('api_base_url'),
     )
     return create_user_ai_service_with_mcp(
-        api_provider=_normalize_raw_provider(config.get('api_provider')),
+        api_provider=resolved_config["api_provider"],
         api_key=resolved_config["api_key"],
         api_base_url=resolved_config["api_base_url"],
         model_name=config.get('llm_model') or app_settings.default_model,
@@ -239,9 +256,9 @@ async def get_user_ai_service(
     
     # ✅ 使用支持MCP的工厂函数创建AI服务实例
     # 传递 user_id 和 db_session，使得 AIService 能够自动加载用户配置的MCP工具
-    resolved_settings = _apply_provider_defaults(settings.api_provider, settings.api_key, settings.api_base_url)
+    resolved_settings = resolve_runtime_ai_config(settings.api_provider, settings.api_key, settings.api_base_url)
     return create_user_ai_service_with_mcp(
-        api_provider=settings.api_provider,
+        api_provider=resolved_settings["api_provider"],
         api_key=resolved_settings["api_key"],
         api_base_url=resolved_settings["api_base_url"],
         model_name=settings.llm_model,
@@ -304,9 +321,9 @@ async def get_user_ai_service_from_db_by_usage(
                 )
             logger.warning(f"用户 {user_id} 配置的章节内容分析预设不存在，回退默认API配置: {preset_id}")
 
-    resolved_settings = _apply_provider_defaults(settings.api_provider, settings.api_key, settings.api_base_url)
+    resolved_settings = resolve_runtime_ai_config(settings.api_provider, settings.api_key, settings.api_base_url)
     return create_user_ai_service_with_mcp(
-        api_provider=settings.api_provider,
+        api_provider=resolved_settings["api_provider"],
         api_key=resolved_settings["api_key"],
         api_base_url=resolved_settings["api_base_url"],
         model_name=settings.llm_model,
@@ -628,8 +645,8 @@ async def get_available_models(
     """
     try:
         raw_provider = _normalize_raw_provider(provider)
-        provider = normalize_provider(raw_provider)
-        resolved_config = _apply_provider_defaults(raw_provider, api_key, api_base_url)
+        resolved_config = resolve_runtime_ai_config(raw_provider, api_key, api_base_url)
+        provider = resolved_config["api_provider"]
         api_key = resolved_config["api_key"]
         api_base_url = validate_public_http_url(resolved_config["api_base_url"])
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -752,10 +769,10 @@ async def check_function_calling_support(data: ApiTestRequest):
         检测结果包含支持状态、详细信息和建议
     """
     raw_provider = _normalize_raw_provider(data.provider)
-    resolved_config = _apply_provider_defaults(raw_provider, data.api_key, data.api_base_url)
+    resolved_config = resolve_runtime_ai_config(raw_provider, data.api_key, data.api_base_url)
     api_key = resolved_config["api_key"]
     api_base_url = resolved_config["api_base_url"]
-    provider = normalize_provider(raw_provider)
+    provider = resolved_config["api_provider"]
     llm_model = data.llm_model
     
     try:
@@ -795,7 +812,7 @@ async def check_function_calling_support(data: ApiTestRequest):
         
         # 创建临时 AI 服务实例进行测试
         test_service = AIService(
-            api_provider=raw_provider,
+            api_provider=provider,
             api_key=api_key,
             api_base_url=api_base_url,
             default_model=llm_model,
@@ -970,10 +987,10 @@ async def test_api_connection(data: ApiTestRequest):
         测试结果包含状态、响应时间和详细信息
     """
     raw_provider = _normalize_raw_provider(data.provider)
-    resolved_config = _apply_provider_defaults(raw_provider, data.api_key, data.api_base_url)
+    resolved_config = resolve_runtime_ai_config(raw_provider, data.api_key, data.api_base_url)
     api_key = resolved_config["api_key"]
     api_base_url = resolved_config["api_base_url"]
-    provider = normalize_provider(raw_provider)
+    provider = resolved_config["api_provider"]
     llm_model = data.llm_model
     # 使用前端传递的参数，如果未传递则使用默认值
     temperature = data.temperature if data.temperature is not None else 0.7
@@ -985,7 +1002,7 @@ async def test_api_connection(data: ApiTestRequest):
         
         # 创建临时 AI 服务实例，使用前端传递的参数
         test_service = AIService(
-            api_provider=raw_provider,
+            api_provider=provider,
             api_key=api_key,
             api_base_url=api_base_url,
             default_model=llm_model,
