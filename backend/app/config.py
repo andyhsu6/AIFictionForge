@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     # 本地开发: http://localhost:8000/api/auth/callback
     # 生产环境: https://your-domain.com/api/auth/callback 或 http://your-ip:8000/api/auth/callback
     LINUXDO_REDIRECT_URI: Optional[str] = None
+    # LinuxDO 专用代理配置（仅用于 OAuth token 与用户信息请求，不影响 AI/SMTP/其他请求）
+    # 示例: http://127.0.0.1:7890
+    LINUXDO_PROXY_URL: Optional[str] = None
     
     # 前端URL配置（用于OAuth回调后重定向）
     # 本地开发: http://localhost:8000
