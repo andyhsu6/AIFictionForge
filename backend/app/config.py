@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # AI服务配置
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
+    xiaomi_mimo_api_key: Optional[str] = None
+    xiaomi_mimo_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
     gemini_api_key: Optional[str] = None
     gemini_base_url: Optional[str] = None
     anthropic_api_key: Optional[str] = None
