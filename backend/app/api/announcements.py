@@ -1,5 +1,5 @@
 """公告 API"""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, AsyncGenerator
 import uuid
 
@@ -100,8 +100,19 @@ async def _get_active_announcement_ids(db: AsyncSession, now: datetime) -> list[
     return list(result.scalars().all())
 
 
+def _to_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """将前端 ISO 时间统一转换为 PostgreSQL TIMESTAMP WITHOUT TIME ZONE 可接受的 UTC 无时区时间"""
+    if value is None:
+        return None
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def _validate_announcement_window(publish_at: Optional[datetime], expire_at: Optional[datetime]):
     """校验公告发布时间窗口"""
+    publish_at = _to_naive_utc(publish_at)
+    expire_at = _to_naive_utc(expire_at)
     if publish_at and expire_at and expire_at <= publish_at:
         raise HTTPException(status_code=400, detail="过期时间必须晚于发布时间")
 
@@ -196,7 +207,7 @@ async def _sync_announcements_local(db: AsyncSession, since: Optional[str], limi
 
     if since:
         try:
-            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00")).replace(tzinfo=None)
+            since_dt = _to_naive_utc(datetime.fromisoformat(since.replace("Z", "+00:00")))
             query = query.where(
                 or_(
                     Announcement.updated_at > since_dt,
@@ -309,8 +320,8 @@ async def admin_create_announcement(
     """管理员创建公告"""
     admin = await check_announcement_admin(request)
     now = datetime.utcnow()
-    publish_at = data.publish_at or now
-    expire_at = data.expire_at
+    publish_at = _to_naive_utc(data.publish_at) or now
+    expire_at = _to_naive_utc(data.expire_at)
     _validate_announcement_window(publish_at, expire_at)
 
     announcement = Announcement(
@@ -349,6 +360,10 @@ async def admin_update_announcement(
         raise HTTPException(status_code=404, detail="公告不存在")
 
     update_data = data.model_dump(exclude_unset=True)
+    if "publish_at" in update_data:
+        update_data["publish_at"] = _to_naive_utc(update_data.get("publish_at"))
+    if "expire_at" in update_data:
+        update_data["expire_at"] = _to_naive_utc(update_data.get("expire_at"))
     if "title" in update_data:
         update_data["title"] = _clean_required_text(update_data.get("title"), "公告标题", 120)
     if "content" in update_data:
