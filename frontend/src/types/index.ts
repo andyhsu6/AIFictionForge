@@ -1217,9 +1217,17 @@ export interface AnnouncementListResponse {
     page: number;
     limit: number;
     items: Announcement[];
+    active_ids?: string[];
     latest_updated_at?: string | null;
     server_time?: string;
   };
+}
+
+export interface AnnouncementStatusResponse {
+  mode: 'client' | 'server' | string;
+  instance_id: string;
+  cloud_url?: string;
+  cloud_connected?: boolean;
 }
 
 // 提示词工坊分类常量

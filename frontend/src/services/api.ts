@@ -41,6 +41,7 @@ import type {
   Announcement,
   AnnouncementCreate,
   AnnouncementListResponse,
+  AnnouncementStatusResponse,
   AnnouncementUpdate,
   MCPPlugin,
   MCPPluginCreate,
@@ -923,7 +924,7 @@ export const promptWorkshopApi = {
 
 export const announcementApi = {
   getStatus: () =>
-    api.get<unknown, { mode: string; instance_id: string; cloud_url?: string; cloud_connected?: boolean }>('/announcements/status'),
+    api.get<unknown, AnnouncementStatusResponse>('/announcements/status'),
 
   list: (params?: { page?: number; limit?: number }) =>
     api.get<unknown, AnnouncementListResponse>('/announcements', { params }),
@@ -931,7 +932,7 @@ export const announcementApi = {
   sync: (params?: { since?: string; limit?: number }) =>
     api.get<unknown, AnnouncementListResponse>('/announcements/sync', { params }),
 
-  adminList: (params?: { status?: string; page?: number; limit?: number; include_expired?: boolean }) =>
+  adminList: (params?: { status?: string; q?: string; page?: number; limit?: number; include_expired?: boolean }) =>
     api.get<unknown, AnnouncementListResponse>('/announcements/admin/items', { params }),
 
   adminCreate: (data: AnnouncementCreate) =>

@@ -1,6 +1,6 @@
 """公告 API"""
 from datetime import datetime
-from typing import Optional, List, AsyncGenerator
+from typing import Optional, AsyncGenerator
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -79,6 +79,55 @@ def _active_announcement_filter(now: datetime):
     )
 
 
+def _keyword_filter(keyword: Optional[str]):
+    """公告关键字搜索条件"""
+    if not keyword or not keyword.strip():
+        return None
+
+    like_value = f"%{keyword.strip()}%"
+    return or_(
+        Announcement.title.ilike(like_value),
+        Announcement.summary.ilike(like_value),
+        Announcement.content.ilike(like_value),
+    )
+
+
+async def _get_active_announcement_ids(db: AsyncSession, now: datetime) -> list[str]:
+    """获取当前仍有效的公告 ID，用于客户端清理已隐藏、删除或过期的公告"""
+    result = await db.execute(
+        select(Announcement.id).where(*_active_announcement_filter(now))
+    )
+    return list(result.scalars().all())
+
+
+def _validate_announcement_window(publish_at: Optional[datetime], expire_at: Optional[datetime]):
+    """校验公告发布时间窗口"""
+    if publish_at and expire_at and expire_at <= publish_at:
+        raise HTTPException(status_code=400, detail="过期时间必须晚于发布时间")
+
+
+def _clean_required_text(value: Optional[str], field_name: str, max_length: Optional[int] = None) -> str:
+    """清理并校验必填文本"""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail=f"{field_name}不能为空")
+    if max_length and len(cleaned) > max_length:
+        raise HTTPException(status_code=400, detail=f"{field_name}不能超过 {max_length} 个字符")
+    return cleaned
+
+
+def _clean_optional_text(value: Optional[str], field_name: str, max_length: int) -> Optional[str]:
+    """清理并校验可选文本"""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > max_length:
+        raise HTTPException(status_code=400, detail=f"{field_name}不能超过 {max_length} 个字符")
+    return cleaned
+
+
 async def _get_announcements_local(
     db: AsyncSession,
     page: int,
@@ -86,6 +135,7 @@ async def _get_announcements_local(
     include_status: bool = False,
     status: Optional[str] = None,
     include_expired: bool = False,
+    q: Optional[str] = None,
 ) -> dict:
     """本地查询公告列表"""
     now = datetime.utcnow()
@@ -103,6 +153,11 @@ async def _get_announcements_local(
     elif not include_expired:
         query = query.where(or_(Announcement.expire_at == None, Announcement.expire_at > now))
         count_query = count_query.where(or_(Announcement.expire_at == None, Announcement.expire_at > now))
+
+    keyword_condition = _keyword_filter(q)
+    if keyword_condition is not None:
+        query = query.where(keyword_condition)
+        count_query = count_query.where(keyword_condition)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar_one()
@@ -127,6 +182,7 @@ async def _get_announcements_local(
             "page": page,
             "limit": limit,
             "items": [_announcement_to_dict(item, include_status=include_status) for item in items],
+            "active_ids": await _get_active_announcement_ids(db, now),
             "latest_updated_at": latest_updated_at.isoformat() if latest_updated_at else None,
             "server_time": now.isoformat(),
         },
@@ -141,19 +197,24 @@ async def _sync_announcements_local(db: AsyncSession, since: Optional[str], limi
     if since:
         try:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00")).replace(tzinfo=None)
-            query = query.where(Announcement.updated_at > since_dt)
+            query = query.where(
+                or_(
+                    Announcement.updated_at > since_dt,
+                    Announcement.created_at > since_dt,
+                    Announcement.publish_at > since_dt,
+                )
+            )
         except ValueError:
             raise HTTPException(status_code=400, detail="since 时间格式无效")
 
     query = query.order_by(
-        Announcement.pinned.desc(),
-        Announcement.publish_at.desc(),
-        Announcement.created_at.desc(),
+        Announcement.updated_at.asc(),
+        Announcement.publish_at.asc(),
+        Announcement.created_at.asc(),
     ).limit(limit)
 
     result = await db.execute(query)
     items = result.scalars().all()
-    latest_updated_at = max((item.updated_at or item.created_at for item in items if item.updated_at or item.created_at), default=None)
 
     return {
         "success": True,
@@ -162,7 +223,8 @@ async def _sync_announcements_local(db: AsyncSession, since: Optional[str], limi
             "page": 1,
             "limit": limit,
             "items": [_announcement_to_dict(item) for item in items],
-            "latest_updated_at": latest_updated_at.isoformat() if latest_updated_at else None,
+            "active_ids": await _get_active_announcement_ids(db, now),
+            "latest_updated_at": now.isoformat(),
             "server_time": now.isoformat(),
         },
     }
@@ -219,6 +281,7 @@ async def sync_announcements(
 async def admin_get_announcements(
     request: Request,
     status: Optional[str] = Query(None, description="公告状态"),
+    q: Optional[str] = Query(None, description="标题、摘要或正文关键字"),
     page: int = Query(1, ge=1, description="页码"),
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
     include_expired: bool = Query(True, description="是否包含过期公告"),
@@ -233,6 +296,7 @@ async def admin_get_announcements(
         include_status=True,
         status=status,
         include_expired=include_expired,
+        q=q,
     )
 
 
@@ -245,19 +309,22 @@ async def admin_create_announcement(
     """管理员创建公告"""
     admin = await check_announcement_admin(request)
     now = datetime.utcnow()
+    publish_at = data.publish_at or now
+    expire_at = data.expire_at
+    _validate_announcement_window(publish_at, expire_at)
 
     announcement = Announcement(
         id=str(uuid.uuid4()),
-        title=data.title,
-        content=data.content,
-        summary=data.summary,
+        title=_clean_required_text(data.title, "公告标题", 120),
+        content=_clean_required_text(data.content, "公告正文"),
+        summary=_clean_optional_text(data.summary, "公告摘要", 255),
         level=data.level,
         status=data.status,
         pinned=data.pinned,
         author_id=admin.user_id,
         author_name=getattr(admin, "display_name", None) or getattr(admin, "username", None) or "管理员",
-        publish_at=data.publish_at or now,
-        expire_at=data.expire_at,
+        publish_at=publish_at,
+        expire_at=expire_at,
     )
     db.add(announcement)
     await db.commit()
@@ -282,8 +349,20 @@ async def admin_update_announcement(
         raise HTTPException(status_code=404, detail="公告不存在")
 
     update_data = data.model_dump(exclude_unset=True)
+    if "title" in update_data:
+        update_data["title"] = _clean_required_text(update_data.get("title"), "公告标题", 120)
+    if "content" in update_data:
+        update_data["content"] = _clean_required_text(update_data.get("content"), "公告正文")
+    if "summary" in update_data:
+        update_data["summary"] = _clean_optional_text(update_data.get("summary"), "公告摘要", 255)
+
+    next_publish_at = update_data.get("publish_at", announcement.publish_at)
+    next_expire_at = update_data.get("expire_at", announcement.expire_at)
+    _validate_announcement_window(next_publish_at, next_expire_at)
+
     for key, value in update_data.items():
         setattr(announcement, key, value)
+    announcement.updated_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(announcement)
@@ -328,6 +407,8 @@ async def admin_publish_announcement(
     announcement.status = "published"
     if not announcement.publish_at:
         announcement.publish_at = datetime.utcnow()
+    _validate_announcement_window(announcement.publish_at, announcement.expire_at)
+    announcement.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(announcement)
 
@@ -349,6 +430,7 @@ async def admin_hide_announcement(
         raise HTTPException(status_code=404, detail="公告不存在")
 
     announcement.status = "hidden"
+    announcement.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(announcement)
 
