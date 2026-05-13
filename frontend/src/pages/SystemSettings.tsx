@@ -497,6 +497,7 @@ export default function SystemSettingsPage() {
         paddingBottom: footerSafeOffset,
       }}
     >
+      <div style={{ maxWidth: 1400, margin: '0 auto', width: '100%' }}>
       <Card
         bordered={false}
         style={{
@@ -732,6 +733,7 @@ export default function SystemSettingsPage() {
           },
         ]}
       />
+      </div>
 
       <Modal
         title={editingAnnouncement ? '编辑公告' : '新建公告'}

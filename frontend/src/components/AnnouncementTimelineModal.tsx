@@ -77,9 +77,6 @@ export default function AnnouncementTimelineModal({
       open={visible}
       onCancel={handleClose}
       footer={[
-        <Button key="read" icon={<CheckCircleOutlined />} onClick={onMarkAllRead}>
-          全部标为已读
-        </Button>,
         <Button key="close" type="primary" onClick={handleClose}>
           关闭
         </Button>,
@@ -94,6 +91,13 @@ export default function AnnouncementTimelineModal({
         },
       }}
     >
+      <style>
+        {`
+          .announcement-timeline .ant-timeline-item-head-custom {
+            background: transparent !important;
+          }
+        `}
+      </style>
       {loading && announcements.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <Spin size="large" tip="加载公告中..." />
@@ -101,7 +105,7 @@ export default function AnnouncementTimelineModal({
       ) : announcements.length === 0 ? (
         <Empty description="暂无公告" />
       ) : (
-        <Timeline>
+        <Timeline className="announcement-timeline">
           {announcements.map(item => {
             const config = levelConfig[item.level] || levelConfig.info;
             return (
@@ -112,7 +116,7 @@ export default function AnnouncementTimelineModal({
                     width: 26,
                     height: 26,
                     borderRadius: '50%',
-                    background: token.colorBgContainer,
+                    background: 'transparent',
                     border: `2px solid ${token.colorPrimary}`,
                     display: 'flex',
                     alignItems: 'center',
