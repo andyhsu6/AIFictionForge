@@ -38,6 +38,10 @@ import type {
   PromptWorkshopItem,
   PromptSubmission,
   PromptSubmissionCreate,
+  Announcement,
+  AnnouncementCreate,
+  AnnouncementListResponse,
+  AnnouncementUpdate,
   MCPPlugin,
   MCPPluginCreate,
   MCPPluginUpdate,
@@ -915,6 +919,35 @@ export const promptWorkshopApi = {
         total_likes: number;
       };
     }>('/prompt-workshop/admin/stats'),
+};
+
+export const announcementApi = {
+  getStatus: () =>
+    api.get<unknown, { mode: string; instance_id: string; cloud_url?: string; cloud_connected?: boolean }>('/announcements/status'),
+
+  list: (params?: { page?: number; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements', { params }),
+
+  sync: (params?: { since?: string; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/sync', { params }),
+
+  adminList: (params?: { status?: string; page?: number; limit?: number; include_expired?: boolean }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/admin/items', { params }),
+
+  adminCreate: (data: AnnouncementCreate) =>
+    api.post<unknown, { success: boolean; item: Announcement }>('/announcements/admin/items', data),
+
+  adminUpdate: (id: string, data: AnnouncementUpdate) =>
+    api.put<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}`, data),
+
+  adminDelete: (id: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/announcements/admin/items/${id}`),
+
+  adminPublish: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/publish`),
+
+  adminHide: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/hide`),
 };
 
 export const polishApi = {
