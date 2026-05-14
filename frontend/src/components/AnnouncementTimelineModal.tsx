@@ -11,6 +11,7 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons';
 import type { Announcement, AnnouncementLevel } from '../types';
+import MarkdownRenderer from './MarkdownRenderer';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -147,16 +148,7 @@ export default function AnnouncementTimelineModal({
                     </Paragraph>
                   )}
 
-                  <Paragraph
-                    style={{
-                      whiteSpace: 'pre-wrap',
-                      marginBottom: 8,
-                      color: token.colorText,
-                      lineHeight: 1.7,
-                    }}
-                  >
-                    {item.content}
-                  </Paragraph>
+                  <MarkdownRenderer content={item.content} compact />
 
                   {item.author_name && (
                     <Text type="secondary" style={{ fontSize: 12 }}>

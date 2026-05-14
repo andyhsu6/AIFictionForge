@@ -5,6 +5,7 @@ import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { BellOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, EyeInvisibleOutlined, MailOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SendOutlined, SettingOutlined } from '@ant-design/icons';
 import { announcementApi, authApi, settingsApi } from '../services/api';
 import type { Announcement, AnnouncementCreate, AnnouncementLevel, AnnouncementStatus, AnnouncementStatusResponse, AnnouncementUpdate, SystemSMTPSettings, SystemSMTPSettingsUpdate, User } from '../types';
+import MarkdownRenderer from '../components/MarkdownRenderer';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -90,6 +91,8 @@ export default function SystemSettingsPage() {
   const [announcementStatusFilter, setAnnouncementStatusFilter] = useState<AnnouncementStatusFilter>('all');
   const [announcementSearchKeyword, setAnnouncementSearchKeyword] = useState('');
   const [announcementPagination, setAnnouncementPagination] = useState({ current: 1, pageSize: 10, total: 0 });
+
+  const announcementContent = Form.useWatch('content', announcementForm) || '';
 
   const pageBackground = `linear-gradient(180deg, ${token.colorBgLayout} 0%, ${token.colorFillSecondary} 100%)`;
   const headerBackground = `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`;
@@ -278,6 +281,12 @@ export default function SystemSettingsPage() {
       return false;
     }
     return true;
+  };
+
+  const appendMarkdownSnippet = (snippet: string) => {
+    const currentContent = announcementForm.getFieldValue('content') || '';
+    const separator = currentContent && !currentContent.endsWith('\n') ? '\n\n' : '';
+    announcementForm.setFieldsValue({ content: `${currentContent}${separator}${snippet}` });
   };
 
   const buildAnnouncementCreatePayload = (values: AnnouncementFormValues): AnnouncementCreate => {
@@ -777,16 +786,66 @@ export default function SystemSettingsPage() {
             <Input placeholder="可选，用于列表和时间轴的简短说明" maxLength={255} showCount />
           </Form.Item>
 
-          <Form.Item
-            name="content"
-            label="公告正文"
-            rules={[
-              { required: true, message: '请输入公告正文' },
-              { whitespace: true, message: '公告正文不能为空白字符' },
-            ]}
+          <Card
+            size="small"
+            title="公告正文（Markdown）"
+            style={{ marginBottom: 24, borderRadius: 12 }}
+            extra={<Text type="secondary">支持标题、列表、引用、代码块、链接、粗体等 Markdown 语法</Text>}
           >
-            <TextArea rows={7} placeholder="请输入公告内容，客户端将以竖直时间轴展示" />
-          </Form.Item>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap>
+                <Button size="small" onClick={() => appendMarkdownSnippet('## 小标题')}>标题</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('**重点内容**')}>粗体</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('- 列表项\n- 列表项')}>列表</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('> 引用说明')}>引用</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('[链接文字](https://example.com)')}>链接</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('```\n代码内容\n```')}>代码块</Button>
+              </Space>
+
+              <Row gutter={16}>
+                <Col xs={24} lg={12}>
+                  <Form.Item
+                    name="content"
+                    label="编辑"
+                    rules={[
+                      { required: true, message: '请输入公告正文' },
+                      { whitespace: true, message: '公告正文不能为空白字符' },
+                    ]}
+                    style={{ marginBottom: 0 }}
+                  >
+                    <TextArea
+                      rows={14}
+                      placeholder={[
+                        '请输入 Markdown 公告内容，例如：',
+                        '## 更新说明',
+                        '- 支持列表',
+                        '- 支持 **重点内容**',
+                        '> 支持引用说明',
+                        '[查看详情](https://example.com)',
+                      ].join('\n')}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} lg={12}>
+                  <Text strong>预览</Text>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      minHeight: 336,
+                      maxHeight: 420,
+                      overflow: 'auto',
+                      padding: 16,
+                      borderRadius: 10,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      background: token.colorFillQuaternary,
+                    }}
+                  >
+                    <MarkdownRenderer content={announcementContent} />
+                  </div>
+                </Col>
+              </Row>
+            </Space>
+          </Card>
 
           <Row gutter={16}>
             <Col xs={24} md={8}>
