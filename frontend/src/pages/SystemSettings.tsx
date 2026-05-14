@@ -752,7 +752,7 @@ export default function SystemSettingsPage() {
         confirmLoading={announcementSaving}
         okText={editingAnnouncement ? '保存修改' : '创建公告'}
         cancelText="取消"
-        width={760}
+        width={1200}
         destroyOnClose
       >
         <Form form={announcementForm} layout="vertical" onFinish={handleSaveAnnouncement} preserve={false}>
@@ -814,7 +814,7 @@ export default function SystemSettingsPage() {
                     style={{ marginBottom: 0 }}
                   >
                     <TextArea
-                      rows={14}
+                      style={{ height: 420, resize: 'vertical' }}
                       placeholder={[
                         '请输入 Markdown 公告内容，例如：',
                         '## 更新说明',
