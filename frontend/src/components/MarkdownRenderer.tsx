@@ -1,175 +1,91 @@
-import React from 'react';
 import { Typography, theme } from 'antd';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkGfm from 'remark-gfm';
 
-const { Paragraph, Title, Text } = Typography;
+const { Text } = Typography;
 
 interface MarkdownRendererProps {
   content?: string | null;
   compact?: boolean;
 }
 
-const isSafeUrl = (url: string) => {
+const isSafeUrl = (url?: string | null) => {
+  if (!url) {
+    return false;
+  }
+
   const trimmed = url.trim();
-  return trimmed.startsWith('http://')
-    || trimmed.startsWith('https://')
-    || trimmed.startsWith('mailto:')
+  const lower = trimmed.toLowerCase();
+
+  return lower.startsWith('http://')
+    || lower.startsWith('https://')
+    || lower.startsWith('mailto:')
     || trimmed.startsWith('/')
     || trimmed.startsWith('#');
 };
 
-const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
-  const nodes: React.ReactNode[] = [];
-  const pattern = /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let index = 0;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-
-    const [, , linkText, linkUrl, codeText, boldText, italicText] = match;
-    const key = `${keyPrefix}-inline-${index}`;
-
-    if (linkText && linkUrl) {
-      const href = isSafeUrl(linkUrl) ? linkUrl.trim() : '#';
-      nodes.push(
-        <a key={key} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel={href.startsWith('http') ? 'noreferrer' : undefined}>
-          {linkText}
-        </a>,
-      );
-    } else if (codeText) {
-      nodes.push(<Text key={key} code>{codeText}</Text>);
-    } else if (boldText) {
-      nodes.push(<strong key={key}>{parseInlineMarkdown(boldText, `${key}-bold`)}</strong>);
-    } else if (italicText) {
-      nodes.push(<em key={key}>{parseInlineMarkdown(italicText, `${key}-italic`)}</em>);
-    }
-
-    lastIndex = pattern.lastIndex;
-    index += 1;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes;
-};
-
-const isBlockStart = (line: string) => {
-  return /^#{1,6}\s+/.test(line)
-    || /^\s*([-*+])\s+/.test(line)
-    || /^\s*\d+\.\s+/.test(line)
-    || /^>\s?/.test(line)
-    || /^```/.test(line);
-};
-
 export default function MarkdownRenderer({ content, compact = false }: MarkdownRendererProps) {
   const { token } = theme.useToken();
-  const lines = (content || '').replace(/\r\n/g, '\n').split('\n');
-  const blocks: React.ReactNode[] = [];
+  const markdown = (content || '').trim();
 
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
+  const components: Components = {
+    a: ({ href, children, ...props }) => {
+      const safeHref = isSafeUrl(href) ? href : undefined;
+      const isExternal = Boolean(safeHref && /^https?:\/\//i.test(safeHref));
 
-    if (!trimmed) {
-      i += 1;
-      continue;
-    }
-
-    const codeFenceMatch = trimmed.match(/^```\s*([\w-]*)\s*$/);
-    if (codeFenceMatch) {
-      const language = codeFenceMatch[1];
-      const codeLines: string[] = [];
-      i += 1;
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        codeLines.push(lines[i]);
-        i += 1;
-      }
-      if (i < lines.length) {
-        i += 1;
-      }
-      blocks.push(
-        <pre key={`code-${i}`} className="announcement-markdown-code">
-          {language && <div className="announcement-markdown-code-lang">{language}</div>}
-          <code>{codeLines.join('\n')}</code>
-        </pre>,
+      return (
+        <a
+          {...props}
+          href={safeHref}
+          target={isExternal ? '_blank' : undefined}
+          rel={isExternal ? 'noreferrer noopener' : undefined}
+        >
+          {children}
+        </a>
       );
-      continue;
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      const level = Math.min(5, Math.max(2, headingMatch[1].length + 1)) as 2 | 3 | 4 | 5;
-      blocks.push(
-        <Title key={`heading-${i}`} level={level} className="announcement-markdown-heading">
-          {parseInlineMarkdown(headingMatch[2], `heading-${i}`)}
-        </Title>,
-      );
-      i += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(trimmed)) {
-      const quoteLines: string[] = [];
-      while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
-        quoteLines.push(lines[i].trim().replace(/^>\s?/, ''));
-        i += 1;
+    },
+    img: ({ src, alt, ...props }) => {
+      const safeSrc = isSafeUrl(src) ? src : undefined;
+      if (!safeSrc) {
+        return null;
       }
-      blocks.push(
-        <blockquote key={`quote-${i}`} className="announcement-markdown-quote">
-          {quoteLines.map((item, index) => (
-            <div key={`quote-line-${i}-${index}`}>{parseInlineMarkdown(item, `quote-${i}-${index}`)}</div>
-          ))}
-        </blockquote>,
-      );
-      continue;
-    }
 
-    if (/^\s*([-*+])\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*([-*+])\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*([-*+])\s+/, ''));
-        i += 1;
+      return (
+        <img
+          {...props}
+          src={safeSrc}
+          alt={alt || '公告图片'}
+          loading="lazy"
+        />
+      );
+    },
+    code: ({ className, children, ...props }) => {
+      const languageMatch = /language-([\w-]+)/.exec(className || '');
+      const text = String(children).replace(/\n$/, '');
+      const isBlock = Boolean(languageMatch) || text.includes('\n');
+
+      if (!isBlock) {
+        return <Text code>{children}</Text>;
       }
-      blocks.push(
-        <ul key={`ul-${i}`} className="announcement-markdown-list">
-          {items.map((item, index) => <li key={`ul-${i}-${index}`}>{parseInlineMarkdown(item, `ul-${i}-${index}`)}</li>)}
-        </ul>,
-      );
-      continue;
-    }
 
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
-        i += 1;
-      }
-      blocks.push(
-        <ol key={`ol-${i}`} className="announcement-markdown-list">
-          {items.map((item, index) => <li key={`ol-${i}-${index}`}>{parseInlineMarkdown(item, `ol-${i}-${index}`)}</li>)}
-        </ol>,
+      return (
+        <pre className="announcement-markdown-code">
+          {languageMatch && (
+            <div className="announcement-markdown-code-lang">
+              {languageMatch[1]}
+            </div>
+          )}
+          <code {...props} className={className}>{text}</code>
+        </pre>
       );
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
-      paragraphLines.push(lines[i]);
-      i += 1;
-    }
-    const paragraphText = paragraphLines.join('\n');
-    blocks.push(
-      <Paragraph key={`p-${i}`} className="announcement-markdown-paragraph">
-        {parseInlineMarkdown(paragraphText, `p-${i}`)}
-      </Paragraph>,
-    );
-  }
+    },
+    table: ({ children, ...props }) => (
+      <div className="announcement-markdown-table-wrap">
+        <table {...props}>{children}</table>
+      </div>
+    ),
+  };
 
   return (
     <div className={`announcement-markdown ${compact ? 'announcement-markdown-compact' : ''}`}>
@@ -180,29 +96,69 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
             line-height: 1.75;
             word-break: break-word;
           }
-          .announcement-markdown p,
-          .announcement-markdown .announcement-markdown-paragraph {
-            margin-bottom: ${compact ? 8 : 12}px;
+          .announcement-markdown > :first-child {
+            margin-top: 0 !important;
+          }
+          .announcement-markdown > :last-child {
+            margin-bottom: 0 !important;
+          }
+          .announcement-markdown p {
+            margin: 0 0 ${compact ? 8 : 12}px;
             white-space: pre-wrap;
           }
-          .announcement-markdown-heading {
-            margin-top: ${compact ? 8 : 14}px !important;
-            margin-bottom: ${compact ? 6 : 10}px !important;
+          .announcement-markdown h1,
+          .announcement-markdown h2,
+          .announcement-markdown h3,
+          .announcement-markdown h4,
+          .announcement-markdown h5,
+          .announcement-markdown h6 {
+            margin: ${compact ? 12 : 18}px 0 ${compact ? 6 : 10}px;
+            color: ${token.colorTextHeading};
+            font-weight: 600;
+            line-height: 1.35;
           }
-          .announcement-markdown-list {
-            padding-left: 1.6em;
+          .announcement-markdown h1 {
+            font-size: ${compact ? 20 : 26}px;
+            padding-bottom: 0.3em;
+            border-bottom: 1px solid ${token.colorBorderSecondary};
+          }
+          .announcement-markdown h2 {
+            font-size: ${compact ? 18 : 22}px;
+            padding-bottom: 0.25em;
+            border-bottom: 1px solid ${token.colorBorderSecondary};
+          }
+          .announcement-markdown h3 {
+            font-size: ${compact ? 16 : 18}px;
+          }
+          .announcement-markdown h4,
+          .announcement-markdown h5,
+          .announcement-markdown h6 {
+            font-size: ${compact ? 14 : 16}px;
+          }
+          .announcement-markdown ul,
+          .announcement-markdown ol {
+            padding-left: 1.7em;
             margin: 0 0 ${compact ? 8 : 12}px;
           }
-          .announcement-markdown-list li {
+          .announcement-markdown li {
             margin-bottom: 4px;
           }
-          .announcement-markdown-quote {
+          .announcement-markdown li > p {
+            margin-bottom: 4px;
+          }
+          .announcement-markdown input[type='checkbox'] {
+            margin-right: 6px;
+          }
+          .announcement-markdown blockquote {
             margin: 0 0 ${compact ? 8 : 12}px;
             padding: 8px 12px;
             border-left: 4px solid ${token.colorPrimary};
             background: ${token.colorFillTertiary};
             border-radius: 8px;
             color: ${token.colorTextSecondary};
+          }
+          .announcement-markdown blockquote > :last-child {
+            margin-bottom: 0;
           }
           .announcement-markdown-code {
             position: relative;
@@ -212,6 +168,9 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
             border-radius: 10px;
             background: ${token.colorFillQuaternary};
             border: 1px solid ${token.colorBorderSecondary};
+          }
+          .announcement-markdown pre .announcement-markdown-code {
+            margin: 0;
           }
           .announcement-markdown-code code {
             font-family: Consolas, Monaco, 'Courier New', monospace;
@@ -223,12 +182,67 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
             color: ${token.colorTextTertiary};
             font-size: 12px;
           }
+          .announcement-markdown :not(pre) > code {
+            font-family: Consolas, Monaco, 'Courier New', monospace;
+          }
           .announcement-markdown a {
             color: ${token.colorPrimary};
           }
+          .announcement-markdown img {
+            display: block;
+            max-width: 100%;
+            max-height: ${compact ? 260 : 420}px;
+            margin: 8px 0 ${compact ? 8 : 12}px;
+            border-radius: 10px;
+            border: 1px solid ${token.colorBorderSecondary};
+            object-fit: contain;
+          }
+          .announcement-markdown hr {
+            margin: ${compact ? 12 : 18}px 0;
+            border: none;
+            border-top: 1px solid ${token.colorBorderSecondary};
+          }
+          .announcement-markdown del {
+            color: ${token.colorTextTertiary};
+          }
+          .announcement-markdown-table-wrap {
+            width: 100%;
+            margin: 0 0 ${compact ? 8 : 12}px;
+            overflow-x: auto;
+          }
+          .announcement-markdown table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+          }
+          .announcement-markdown th,
+          .announcement-markdown td {
+            padding: 8px 10px;
+            border: 1px solid ${token.colorBorderSecondary};
+            text-align: left;
+            vertical-align: top;
+          }
+          .announcement-markdown th {
+            background: ${token.colorFillTertiary};
+            color: ${token.colorTextHeading};
+            font-weight: 600;
+          }
+          .announcement-markdown tr:nth-child(even) td {
+            background: ${token.colorFillQuaternary};
+          }
         `}
       </style>
-      {blocks.length > 0 ? blocks : <Text type="secondary">暂无内容</Text>}
+      {markdown ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSanitize]}
+          components={components}
+        >
+          {markdown}
+        </ReactMarkdown>
+      ) : (
+        <Text type="secondary">暂无内容</Text>
+      )}
     </div>
   );
 }
