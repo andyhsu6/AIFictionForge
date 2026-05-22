@@ -13,9 +13,10 @@ export interface TaskStatus {
   status_message: string | null;
   progress_details: {
     stage: string;
-    message: string;
+    message?: string;
     current_chars?: number;
     retry_count?: number;
+    queue_size?: number;
   } | null;
   error_message: string | null;
   task_result: Record<string, unknown> | null;
@@ -29,6 +30,22 @@ export interface TaskStatus {
 
 export interface TaskListResponse {
   items: TaskStatus[];
+}
+
+/**
+ * 批量生成任务状态
+ */
+export interface BatchTaskStatus {
+  id: string;
+  project_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  total_chapters: number;
+  completed_chapters: number;
+  current_chapter_number: number | null;
+  error_message: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 /**
@@ -60,6 +77,29 @@ export async function getProjectTasks(
 }
 
 /**
+ * 获取项目活跃的批量生成任务
+ */
+export async function getActiveBatchTasks(projectId: string): Promise<BatchTaskStatus[]> {
+  const response = await fetch(`/api/chapters/project/${projectId}/batch-generate/active`);
+  if (!response.ok) {
+    throw new Error(`获取批量生成任务失败: ${response.statusText}`);
+  }
+  const data = await response.json();
+  // API 返回单个任务或空，统一转为数组
+  return data ? [data] : [];
+}
+
+/**
+ * 取消批量生成任务
+ */
+export async function cancelBatchTask(batchId: string): Promise<void> {
+  const response = await fetch(`/api/chapters/batch-generate/${batchId}/cancel`, { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`取消批量生成任务失败: ${response.statusText}`);
+  }
+}
+
+/**
  * 取消任务
  */
 export async function cancelTask(taskId: string): Promise<void> {
@@ -67,6 +107,17 @@ export async function cancelTask(taskId: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`取消任务失败: ${response.statusText}`);
   }
+}
+
+/**
+ * 清理项目已结束的任务记录
+ */
+export async function clearProjectTasks(projectId: string): Promise<{ deleted_count: number }> {
+  const response = await fetch(`${API_BASE}/project/${projectId}/clear`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`清理任务记录失败: ${response.statusText}`);
+  }
+  return response.json();
 }
 
 /**

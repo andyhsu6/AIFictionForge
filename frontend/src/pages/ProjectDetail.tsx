@@ -28,6 +28,7 @@ import { projectApi } from '../services/api';
 import ThemeSwitch from '../components/ThemeSwitch';
 import { useThemeMode } from '../theme/useThemeMode';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
+import FloatingTaskPanel from '../components/FloatingTaskPanel';
 
 const { Header, Sider, Content } = Layout;
 
@@ -680,6 +681,9 @@ export default function ProjectDetail() {
           </Content>
         </Layout>
       </Layout>
+
+      {/* 悬浮任务框 */}
+      {projectId && <FloatingTaskPanel projectId={projectId} />}
     </Layout>
   );
 }

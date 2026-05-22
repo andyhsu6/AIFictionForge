@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column('status_message', sa.String(), nullable=True),
         sa.Column('progress_details', sa.Text(), nullable=True),
         sa.Column('error_message', sa.Text(), nullable=True),
-        sa.Column('task_params', sa.Text(), nullable=True),
+        sa.Column('task_input', sa.Text(), nullable=True),
         sa.Column('task_result', sa.Text(), nullable=True),
         sa.Column('cancel_requested', sa.Boolean(), default=False),
         sa.Column('retry_count', sa.Integer(), default=0),

@@ -147,7 +147,7 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, prompt_workshop, book_import,
-    project_covers, tasks, skills
+    project_covers, tasks, skills, announcements
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -175,6 +175,7 @@ app.include_router(skills.router)  # Skill API（已包含/api前缀）
 app.include_router(prompt_workshop.router, prefix="/api")  # 提示词工坊API
 app.include_router(book_import.router, prefix="/api")  # 拆书导入API
 app.include_router(tasks.router, prefix="/api")  # 后台任务API
+app.include_router(announcements.router, prefix="/api")  # 公告API
 
 static_dir = Path(__file__).parent.parent / "static"
 generated_assets_root_dir = Path(__file__).parent.parent / "storage"

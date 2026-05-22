@@ -141,3 +141,11 @@ class PresetListResponse(BaseModel):
     presets: List[PresetResponse] = Field(..., description="预设列表")
     total: int = Field(..., description="总数")
     active_preset_id: Optional[str] = Field(None, description="当前激活的预设ID")
+    chapter_analysis_preset_id: Optional[str] = Field(None, description="章节内容分析使用的预设ID，为空则使用默认API配置")
+
+
+class ChapterAnalysisPresetSelectionRequest(BaseModel):
+    """章节内容分析预设选择请求"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    preset_id: Optional[str] = Field(None, description="章节内容分析使用的预设ID；为空则使用默认API配置")
