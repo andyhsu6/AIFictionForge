@@ -19,6 +19,8 @@ import {
   BulbOutlined,
   CloudOutlined,
   MoonOutlined,
+  ThunderboltOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync, useOutlineSync, useChapterSync } from '../store/hooks';
@@ -184,6 +186,16 @@ export default function ProjectDetail() {
           icon: <CloudOutlined />,
           label: <Link to={`/project/${projectId}/prompt-workshop`}>提示词工坊</Link>,
         },
+        {
+          key: 'skill-chat',
+          icon: <ThunderboltOutlined />,
+          label: <Link to={`/project/${projectId}/skill-chat`}>Skill 工具箱</Link>,
+        },
+        {
+          key: 'skill-manage',
+          icon: <SettingOutlined />,
+          label: <Link to={`/project/${projectId}/skill-manage`}>Skill 管理</Link>,
+        },
       ],
     },
   ];
@@ -249,6 +261,16 @@ export default function ProjectDetail() {
       icon: <CloudOutlined />,
       label: <Link to={`/project/${projectId}/prompt-workshop`}>提示词工坊</Link>,
     },
+    {
+      key: 'skill-chat',
+      icon: <ThunderboltOutlined />,
+      label: <Link to={`/project/${projectId}/skill-chat`}>Skill 工具箱</Link>,
+    },
+    {
+      key: 'skill-manage',
+      icon: <SettingOutlined />,
+      label: <Link to={`/project/${projectId}/skill-manage`}>Skill 管理</Link>,
+    },
   ];
 
   // 根据当前路径动态确定选中的菜单项
@@ -265,6 +287,8 @@ export default function ProjectDetail() {
     if (path.includes('/chapters')) return 'chapters';
     if (path.includes('/writing-styles')) return 'writing-styles';
     if (path.includes('/prompt-workshop')) return 'prompt-workshop';
+    if (path.includes('/skill-chat')) return 'skill-chat';
+    if (path.includes('/skill-manage')) return 'skill-manage';
     if (path.includes('/sponsor')) return 'sponsor';
     // if (path.includes('/polish')) return 'polish';
     return 'sponsor'; // 默认选中赞助支持
