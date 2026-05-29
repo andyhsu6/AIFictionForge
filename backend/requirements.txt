@@ -37,6 +37,7 @@ sentence-transformers==5.1.2
 
 # 宽松JSON解析
 json5==0.12.0
+PyYAML==6.0.2
 
 # PyTorch 版本锁定（用于打包环境）
 torch==2.8.0
