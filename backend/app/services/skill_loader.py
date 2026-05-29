@@ -13,7 +13,8 @@
 
 import os
 import re
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
+import yaml
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,44 +23,108 @@ logger = get_logger(__name__)
 SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills")
 
 
-def _parse_yaml_frontmatter(content: str) -> Dict[str, str]:
+class _SkillYamlDumper(yaml.SafeDumper):
+    pass
+
+
+class _LiteralString(str):
+    pass
+
+
+def _literal_string_representer(dumper: yaml.SafeDumper, data: _LiteralString):
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+
+
+_SkillYamlDumper.add_representer(_LiteralString, _literal_string_representer)
+
+
+def _parse_yaml_frontmatter(content: str) -> Dict[str, Any]:
     """解析 SKILL.md 开头的 YAML frontmatter"""
     match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
     if not match:
         return {}
-    
+
     yaml_text = match.group(1)
-    result = {}
-    
-    # 简单解析 YAML（不引入 pyyaml 依赖）
-    name_match = re.search(r'^name:\s*(.+)$', yaml_text, re.MULTILINE)
-    if name_match:
-        result['name'] = name_match.group(1).strip()
-    
-    desc_match = re.search(r'description:\s*\|(.*?)^(?=\S)', yaml_text, re.MULTILINE | re.DOTALL)
-    if desc_match:
-        desc = desc_match.group(1).strip()
-        # 清理缩进
-        lines = desc.split('\n')
-        min_indent = float('inf')
-        for line in lines:
-            if line.strip():
-                indent = len(line) - len(line.lstrip())
-                min_indent = min(min_indent, indent)
-        if min_indent == float('inf'):
-            min_indent = 0
-        desc = '\n'.join(line[min_indent:] if line.strip() else '' for line in lines)
-        result['description'] = desc.strip()
-    else:
-        desc_single = re.search(r'description:\s*"(.+?)"', yaml_text, re.DOTALL)
-        if desc_single:
-            result['description'] = desc_single.group(1).strip()
-        else:
-            desc_single2 = re.search(r'description:\s*(.+?)$', yaml_text, re.MULTILINE)
-            if desc_single2:
-                result['description'] = desc_single2.group(1).strip()
-    
+
+    try:
+        metadata = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError as e:
+        logger.warning(f"解析 Skill YAML frontmatter 失败: {e}")
+        return {}
+
+    if not isinstance(metadata, dict):
+        return {}
+
+    result: Dict[str, Any] = {}
+    for key in ("name", "display_name", "category", "description", "triggers"):
+        value = metadata.get(key)
+        if key == "triggers" and isinstance(value, list):
+            result[key] = [str(item).strip() for item in value if str(item).strip()]
+        elif value is not None:
+            result[key] = str(value).strip()
+
     return result
+
+
+def _template_key(name: str) -> str:
+    return f"SKILL_{name.upper().replace('-', '_')}"
+
+
+def _display_name_from_description(description: str, fallback: str) -> str:
+    first_line = description.strip().splitlines()[0].strip() if description.strip() else ""
+    if "。" in first_line:
+        return first_line.split("。")[0].strip() or fallback
+    return first_line or fallback
+
+
+def _infer_category(name: str) -> str:
+    if "long" in name:
+        return "Skill·长篇"
+    if "short" in name:
+        return "Skill·短篇"
+    if "deslop" in name:
+        return "Skill·润色"
+    if "browser" in name:
+        return "Skill·工具"
+    return "Skill"
+
+
+def _extract_triggers(name: str, description: str, explicit_triggers: Any = None) -> List[str]:
+    """获取触发词，优先使用结构化 triggers，旧文件则从描述中兼容提取。"""
+    triggers: List[str] = []
+
+    if isinstance(explicit_triggers, list):
+        triggers.extend(str(item).strip() for item in explicit_triggers if str(item).strip())
+    elif isinstance(explicit_triggers, str) and explicit_triggers.strip():
+        triggers.extend(item.strip() for item in re.split(r'[\n,，、]+', explicit_triggers) if item.strip())
+
+    if not triggers:
+        triggers.append(f"/{name}")
+        triggers.extend(re.findall(r'「(.+?)」', description))
+        triggers.extend(match.group(1) for match in re.finditer(r'(?:^|[\s、，,。；;：:])(/[^\s、，,。；;：:「」]+)', description))
+
+    if f"/{name}" not in triggers:
+        triggers.insert(0, f"/{name}")
+
+    return list(dict.fromkeys(triggers))
+
+
+def _format_skill_frontmatter(metadata: Dict[str, Any]) -> str:
+    data = {
+        "name": metadata.get("name", ""),
+        "display_name": metadata.get("display_name", ""),
+        "category": metadata.get("category", "Skill"),
+        "description": _LiteralString(metadata.get("description", "")),
+        "triggers": metadata.get("triggers", []),
+    }
+    yaml_text = yaml.dump(
+        data,
+        Dumper=_SkillYamlDumper,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).strip()
+    return f"---\n{yaml_text}\n---"
 
 
 def _get_skill_body(content: str) -> str:
@@ -135,15 +200,11 @@ def load_skills() -> List[Dict]:
             # 读取参考知识库
             references = _get_references(skill_dir)
             
-            # 构建触发词
-            triggers = []
             name = metadata.get('name', skill_name)
-            triggers.append(f"/{name}")
-            
-            # 从描述中提取中文触发词
             desc = metadata.get('description', '')
-            trigger_match = re.findall(r'[「](.+?)[」]', desc)
-            triggers.extend(trigger_match)
+            display_name = metadata.get('display_name') or _display_name_from_description(desc, name)
+            category = metadata.get('category') or _infer_category(name)
+            triggers = _extract_triggers(name, desc, metadata.get('triggers'))
             
             # 拼接参考知识库到内容（作为按需加载的附录）
             if references:
@@ -155,21 +216,12 @@ def load_skills() -> List[Dict]:
             else:
                 full_content = body
             
-            # 确定 Skill 子分类
-            sub_category = "Skill"
-            if "long" in name:
-                sub_category = "Skill·长篇"
-            elif "short" in name:
-                sub_category = "Skill·短篇"
-            elif "deslop" in name:
-                sub_category = "Skill·润色"
-            elif "browser" in name:
-                sub_category = "Skill·工具"
-            
             skill_template = {
-                "template_key": f"SKILL_{name.upper().replace('-', '_')}",
-                "template_name": metadata.get('description', '').split('。')[0] if '。' in metadata.get('description', '') else name,
-                "category": sub_category,
+                "template_key": _template_key(name),
+                "name": name,
+                "template_name": display_name,
+                "display_name": display_name,
+                "category": category,
                 "description": desc,
                 "parameters": ["user_input"],
                 "content": full_content,
@@ -179,7 +231,7 @@ def load_skills() -> List[Dict]:
             }
             
             skills.append(skill_template)
-            logger.info(f"加载 Skill: {name} (分类: {sub_category}, 参考: {len(references)} 个)")
+            logger.info(f"加载 Skill: {name} (分类: {category}, 参考: {len(references)} 个)")
             
         except Exception as e:
             logger.error(f"加载 Skill 失败: {skill_name}, 错误: {e}")
@@ -316,11 +368,42 @@ def get_skill_detail(skill_key: str) -> Optional[Dict]:
     return None
 
 
-def create_skill_files(name: str, description: str, body: str, references: Optional[Dict[str, str]] = None) -> Dict:
+def _validate_skill_metadata(name: str, display_name: str, category: str, description: str, triggers: List[str], body: str):
+    if not name.strip():
+        raise ValueError("Skill 内部标识不能为空")
+    if not re.fullmatch(r'[a-z0-9][a-z0-9\-]*', name.strip()):
+        raise ValueError("Skill 内部标识只能包含小写字母、数字和短横线，且必须以字母或数字开头")
+    if not display_name.strip():
+        raise ValueError("显示名称不能为空")
+    if not category.strip():
+        raise ValueError("分类不能为空")
+    if not description.strip():
+        raise ValueError("描述不能为空")
+    if not body.strip():
+        raise ValueError("工作流指令不能为空")
+    if not triggers:
+        raise ValueError("至少需要一个触发词")
+
+
+def create_skill_files(
+    name: str,
+    description: str,
+    body: str,
+    references: Optional[Dict[str, str]] = None,
+    display_name: Optional[str] = None,
+    category: Optional[str] = None,
+    triggers: Optional[List[str]] = None,
+) -> Dict:
     """创建新的 Skill 文件"""
     import re
+    name = name.strip().lower().replace("_", "-").replace(" ", "-")
+    display_name = (display_name or _display_name_from_description(description, name)).strip()
+    category = (category or _infer_category(name)).strip()
+    triggers = _extract_triggers(name, description, triggers)
+    _validate_skill_metadata(name, display_name, category, description, triggers, body)
+
     # 目录名：小写+短横线
-    dir_name = name.lower().replace("_", "-").replace(" ", "-")
+    dir_name = name
     dir_name = re.sub(r'[^a-z0-9\-]', '', dir_name)
     if not dir_name:
         dir_name = "new-skill"
@@ -331,14 +414,14 @@ def create_skill_files(name: str, description: str, body: str, references: Optio
     
     os.makedirs(skill_dir, exist_ok=True)
     
-    # 创建 SKILL.md
-    skill_md_content = f"""---
-name: {name}
-description: |
-  {description}
----
-
-{body}"""
+    frontmatter = _format_skill_frontmatter({
+        "name": name,
+        "display_name": display_name,
+        "category": category,
+        "description": description.strip(),
+        "triggers": triggers,
+    })
+    skill_md_content = f"{frontmatter}\n\n{body.strip()}"
     
     skill_md_path = os.path.join(skill_dir, "SKILL.md")
     with open(skill_md_path, 'w', encoding='utf-8') as f:
@@ -359,12 +442,20 @@ description: |
     # 返回新建的 skill
     skills = get_all_skills_cached()
     for s in skills:
-        if s["template_key"] == f"SKILL_{name.upper().replace('-', '_')}":
+        if s["template_key"] == _template_key(name):
             return s
-    return {"template_key": f"SKILL_{name.upper().replace('-', '_')}", "template_name": description.split('。')[0], "category": "Skill"}
+    return {"template_key": _template_key(name), "template_name": display_name, "category": category}
 
 
-def update_skill_files(skill_key: str, description: Optional[str] = None, body: Optional[str] = None, references: Optional[Dict[str, str]] = None) -> Dict:
+def update_skill_files(
+    skill_key: str,
+    description: Optional[str] = None,
+    body: Optional[str] = None,
+    references: Optional[Dict[str, str]] = None,
+    display_name: Optional[str] = None,
+    category: Optional[str] = None,
+    triggers: Optional[List[str]] = None,
+) -> Dict:
     """更新已有 Skill 文件"""
     detail = get_skill_detail(skill_key)
     if not detail:
@@ -387,14 +478,19 @@ def update_skill_files(skill_key: str, description: Optional[str] = None, body: 
     # 更新 SKILL.md
     final_desc = description if description is not None else metadata.get('description', '')
     final_body = body if body is not None else _get_skill_body(raw)
-    
-    new_content = f"""---
-name: {name}
-description: |
-  {final_desc}
----
+    final_display_name = display_name if display_name is not None else metadata.get('display_name') or _display_name_from_description(final_desc, name)
+    final_category = category if category is not None else metadata.get('category') or _infer_category(name)
+    final_triggers = _extract_triggers(name, final_desc, triggers if triggers is not None else metadata.get('triggers'))
+    _validate_skill_metadata(name, final_display_name, final_category, final_desc, final_triggers, final_body)
 
-{final_body}"""
+    frontmatter = _format_skill_frontmatter({
+        "name": name,
+        "display_name": final_display_name.strip(),
+        "category": final_category.strip(),
+        "description": final_desc.strip(),
+        "triggers": final_triggers,
+    })
+    new_content = f"{frontmatter}\n\n{final_body.strip()}"
     
     with open(skill_md_path, 'w', encoding='utf-8') as f:
         f.write(new_content)

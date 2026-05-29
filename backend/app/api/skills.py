@@ -11,7 +11,7 @@ from typing import Optional, List, Dict
 from app.database import get_db
 from app.user_manager import User
 from app.api.settings import require_login
-from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger, get_skill_detail, create_skill_files, update_skill_files, delete_skill_files, refresh_skills_cache
+from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger, get_skill_detail, create_skill_files, update_skill_files, delete_skill_files, refresh_skills_cache, _get_skill_body
 from app.services.ai_service import AIService, create_user_ai_service
 from app.utils.sse_response import SSEResponse, create_sse_response, wrap_stream_with_heartbeat, HEARTBEAT
 from app.logger import get_logger
@@ -30,14 +30,20 @@ class SkillChatRequest(BaseModel):
 class SkillCreateRequest(BaseModel):
     """创建 Skill 请求"""
     name: str           # Skill 名称（英文，如 my-new-skill）
+    display_name: str   # UI 显示名称
+    category: str       # Skill 分类
     description: str    # Skill 描述
+    triggers: List[str] # 触发词列表
     body: str           # 工作流指令（Markdown 正文）
     references: Optional[Dict[str, str]] = None  # 参考知识库 {"文件名": "内容"}
 
 
 class SkillUpdateRequest(BaseModel):
     """更新 Skill 请求"""
+    display_name: Optional[str] = None
+    category: Optional[str] = None
     description: Optional[str] = None
+    triggers: Optional[List[str]] = None
     body: Optional[str] = None
     references: Optional[Dict[str, str]] = None
 
@@ -49,7 +55,9 @@ async def list_skills(user: User = Depends(require_login)):
     return [
         {
             "template_key": s["template_key"],
+            "name": s.get("name", ""),
             "template_name": s["template_name"],
+            "display_name": s.get("display_name", s["template_name"]),
             "category": s["category"],
             "description": s["description"],
             "triggers": s.get("triggers", []),
@@ -171,10 +179,13 @@ async def get_skill_detail_api(skill_key: str, user: User = Depends(require_logi
     
     return {
         "template_key": detail["template_key"],
+        "name": detail.get("name", ""),
         "template_name": detail["template_name"],
+        "display_name": detail.get("display_name", detail["template_name"]),
         "category": detail["category"],
         "description": detail["description"],
         "triggers": detail.get("triggers", []),
+        "body": _get_skill_body(detail.get("raw_content", "")),
         "raw_content": detail.get("raw_content", ""),
         "standalone_references": detail.get("standalone_references", {}),
     }
@@ -186,7 +197,10 @@ async def create_skill(request: SkillCreateRequest, user: User = Depends(require
     try:
         result = create_skill_files(
             name=request.name,
+            display_name=request.display_name,
+            category=request.category,
             description=request.description,
+            triggers=request.triggers,
             body=request.body,
             references=request.references,
         )
@@ -206,7 +220,10 @@ async def update_skill(skill_key: str, request: SkillUpdateRequest, user: User =
     try:
         result = update_skill_files(
             skill_key=skill_key,
+            display_name=request.display_name,
+            category=request.category,
             description=request.description,
+            triggers=request.triggers,
             body=request.body,
             references=request.references,
         )
