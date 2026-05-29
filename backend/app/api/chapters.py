@@ -3365,6 +3365,22 @@ async def trigger_chapter_analysis(
     
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 避免重复点击或状态轮询误判后创建并发分析任务。
+    existing_task_result = await db.execute(
+        select(AnalysisTask)
+        .where(AnalysisTask.chapter_id == chapter_id)
+        .order_by(AnalysisTask.created_at.desc())
+        .limit(1)
+    )
+    existing_task = existing_task_result.scalar_one_or_none()
+    if existing_task and existing_task.status in ("pending", "running"):
+        return {
+            "task_id": existing_task.id,
+            "chapter_id": chapter_id,
+            "status": existing_task.status,
+            "message": "已有分析任务正在执行"
+        }
     
     # 创建分析任务
     analysis_task = AnalysisTask(
@@ -3764,83 +3780,52 @@ async def execute_batch_generation_in_order(
                     # 如果启用同步分析
                     if task.enable_analysis:
                         logger.info(f"🔍 开始同步分析章节: 第{chapter.chapter_number}章")
-                        
-                        # 分析重试机制（最多3次）
-                        analysis_retry_count = 0
-                        analysis_success = False
-                        last_analysis_error = None
-                        
-                        while analysis_retry_count < 3 and not analysis_success:
-                            try:
-                                if analysis_retry_count > 0:
-                                    logger.info(f"🔄 重试分析章节 (第{analysis_retry_count}次): 第{chapter.chapter_number}章")
-                                
-                                async with write_lock:
-                                    analysis_task = AnalysisTask(
-                                        chapter_id=chapter_id,
-                                        user_id=user_id,
-                                        project_id=task.project_id,
-                                        status='pending',
-                                        progress=0
-                                    )
-                                    db_session.add(analysis_task)
-                                    await db_session.commit()
-                                    await db_session.refresh(analysis_task)
-                                
-                                # 同步执行分析，直接使用返回值判断成功/失败
-                                analysis_result = await analyze_chapter_background(
-                                    chapter_id=chapter_id,
-                                    user_id=user_id,
-                                    project_id=task.project_id,
-                                    task_id=analysis_task.id
-                                )
-                                
-                                # 直接根据返回值判断
-                                if not analysis_result:
-                                    last_analysis_error = "分析函数返回失败"
-                                    logger.error(f"❌ 章节分析失败: 第{chapter.chapter_number}章")
-                                    raise Exception(f"章节分析失败")
-                                
-                                # 分析成功
-                                analysis_success = True
-                                logger.info(f"✅ 章节分析成功: 第{chapter.chapter_number}章")
-                                
-                            except Exception as analysis_error:
-                                last_analysis_error = str(analysis_error)
-                                analysis_retry_count += 1
-                                
-                                if analysis_retry_count < 3:
-                                    # 还有重试机会，等待后重试
-                                    wait_time = min(2 ** analysis_retry_count, 10)
-                                    logger.warning(f"⏳ 分析失败，等待 {wait_time} 秒后重试...")
-                                    await asyncio.sleep(wait_time)
-                                else:
-                                    # 达到最大重试次数，必须终止整个批量任务
-                                    logger.error(f"❌ 章节分析失败，已达最大重试次数(3次): 第{chapter.chapter_number}章")
-                                    
-                                    # 记录失败信息
-                                    failed_info = {
-                                        'chapter_id': chapter_id,
-                                        'chapter_number': chapter.chapter_number,
-                                        'title': chapter.title,
-                                        'error': f"分析失败(重试3次): {last_analysis_error}",
-                                        'retry_count': 3
-                                    }
-                                    
-                                    async with write_lock:
-                                        if task.failed_chapters is None:
-                                            task.failed_chapters = []
-                                        task.failed_chapters.append(failed_info)
-                                        
-                                        # 标记任务失败并终止
-                                        task.status = 'failed'
-                                        task.error_message = f"第{chapter.chapter_number}章分析失败(重试3次): {last_analysis_error}"[:500]
-                                        task.completed_at = datetime.now()
-                                        task.current_retry_count = 0
-                                        await db_session.commit()
-                                    
-                                    logger.error(f"🛑 批量生成中断: 第{chapter.chapter_number}章分析失败")
-                                    return  # 立即终止整个批量生成任务
+
+                        async with write_lock:
+                            analysis_task = AnalysisTask(
+                                chapter_id=chapter_id,
+                                user_id=user_id,
+                                project_id=task.project_id,
+                                status='pending',
+                                progress=0
+                            )
+                            db_session.add(analysis_task)
+                            await db_session.commit()
+                            await db_session.refresh(analysis_task)
+
+                        analysis_result = await analyze_chapter_background(
+                            chapter_id=chapter_id,
+                            user_id=user_id,
+                            project_id=task.project_id,
+                            task_id=analysis_task.id
+                        )
+
+                        if not analysis_result:
+                            error_message = "分析函数返回失败"
+                            logger.error(f"❌ 章节分析失败，批量生成中断: 第{chapter.chapter_number}章")
+
+                            failed_info = {
+                                'chapter_id': chapter_id,
+                                'chapter_number': chapter.chapter_number,
+                                'title': chapter.title,
+                                'error': f"分析失败: {error_message}",
+                                'retry_count': 1
+                            }
+
+                            async with write_lock:
+                                if task.failed_chapters is None:
+                                    task.failed_chapters = []
+                                task.failed_chapters.append(failed_info)
+
+                                task.status = 'failed'
+                                task.error_message = f"第{chapter.chapter_number}章分析失败: {error_message}"[:500]
+                                task.completed_at = datetime.now()
+                                task.current_retry_count = 0
+                                await db_session.commit()
+
+                            return
+
+                        logger.info(f"✅ 章节分析成功: 第{chapter.chapter_number}章")
                     
                     # 标记成功
                     chapter_success = True
