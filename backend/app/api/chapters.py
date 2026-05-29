@@ -2335,8 +2335,8 @@ def _build_analysis_task_status_payload(
     }
 
 
-@router.get("/{chapter_id}/analysis/status", summary="查询章节分析任务状态", response_model=AnalysisTaskStatusResponse)
-async def get_analysis_task_status(
+@router.post("/{chapter_id}/generate-background-legacy", summary="AI创作章节内容（后台任务，遗留重复实现）")
+async def generate_chapter_content_background_legacy(
     chapter_id: str,
     request: Request,
     generate_request: ChapterGenerateRequest = ChapterGenerateRequest(),
