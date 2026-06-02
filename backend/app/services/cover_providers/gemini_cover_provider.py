@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 from app.services.cover_providers.base_cover_provider import BaseCoverProvider, CoverGenerationResult
 
 logger = get_logger(__name__)
@@ -58,7 +58,7 @@ class GeminiCoverProvider(BaseCoverProvider):
             logger.error(
                 "Gemini 封面生成 HTTP 错误: status=%s response=%s",
                 exc.response.status_code if exc.response else None,
-                exc.response.text[:2000] if exc.response is not None else None,
+                safe_preview(exc.response.text, 500) if exc.response is not None else None,
             )
             raise
         except Exception:

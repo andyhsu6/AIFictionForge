@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 import json
 import re
 import asyncio
@@ -91,7 +91,7 @@ class PlotAnalyzer:
         )
         
         last_error = None
-        logger.debug(f"章节分析提示词{prompt}")
+        logger.debug(f"章节分析提示词完成: chapter_number={chapter_number}, prompt_length={len(prompt)}")
         for attempt in range(1, max_retries + 1):
             try:
                 # 调用AI进行分析
@@ -292,7 +292,7 @@ class PlotAnalyzer:
             
         except json.JSONDecodeError as e:
             logger.error(f"❌ JSON解析失败: {str(e)}")
-            logger.error(f"  原始响应(前500字): {response[:500]}")
+            logger.error(f"  原始响应预览: {safe_preview(response, 200)}")
             return None
         except Exception as e:
             logger.error(f"❌ 解析异常: {str(e)}")

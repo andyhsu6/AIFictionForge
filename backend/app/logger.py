@@ -1,9 +1,104 @@
 """统一日志配置模块 - Uvicorn风格"""
+import json
 import logging
 import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Any, Optional
+
+
+DEFAULT_LOG_MESSAGE_MAX_CHARS = 2000
+DEFAULT_LOG_PREVIEW_MAX_CHARS = 300
+SENSITIVE_LOG_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+    "bearer",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+}
+
+
+def _truncate_text(text: str, max_chars: Optional[int] = DEFAULT_LOG_PREVIEW_MAX_CHARS) -> str:
+    """截断长文本，保留原始长度便于排查。"""
+    if max_chars is None or max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... [truncated, length={len(text)}]"
+
+
+def safe_preview(value: Any, max_chars: int = DEFAULT_LOG_PREVIEW_MAX_CHARS) -> str:
+    """生成安全预览，避免长文本直接进入日志。"""
+    if value is None:
+        return "None"
+    return _truncate_text(str(value), max_chars)
+
+
+def _sanitize_for_log(value: Any, depth: int = 0) -> Any:
+    """递归清理日志对象，避免敏感字段和正文全文输出。"""
+    if depth > 4:
+        return f"<{type(value).__name__}>"
+
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            key_str = str(key)
+            lower_key = key_str.lower()
+            if any(sensitive_key in lower_key for sensitive_key in SENSITIVE_LOG_KEYS):
+                sanitized[key_str] = "***REDACTED***"
+            elif lower_key in {"content", "prompt", "system_prompt", "chapter_content", "messages", "arguments"}:
+                sanitized[key_str] = summarize_log_value(item)
+            else:
+                sanitized[key_str] = _sanitize_for_log(item, depth + 1)
+        return sanitized
+
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_log(item, depth + 1) for item in value[:10]] + (
+            [f"... {len(value) - 10} more items"] if len(value) > 10 else []
+        )
+
+    if isinstance(value, str):
+        return safe_preview(value)
+
+    return value
+
+
+def safe_json_preview(value: Any, max_chars: int = 500) -> str:
+    """生成可读 JSON 安全预览，无法序列化时退回字符串预览。"""
+    try:
+        text = json.dumps(_sanitize_for_log(value), ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    return _truncate_text(text, max_chars)
+
+
+def summarize_log_value(value: Any) -> str:
+    """返回值的结构摘要，不输出正文内容。"""
+    if value is None:
+        return "None"
+    if isinstance(value, str):
+        return f"str(length={len(value)})"
+    if isinstance(value, dict):
+        fields = []
+        for key, item in list(value.items())[:20]:
+            if isinstance(item, str):
+                fields.append(f"{key}:str(length={len(item)})")
+            elif isinstance(item, (list, tuple, set)):
+                fields.append(f"{key}:{type(item).__name__}(length={len(item)})")
+            elif isinstance(item, dict):
+                fields.append(f"{key}:dict(keys={len(item)})")
+            else:
+                fields.append(f"{key}:{type(item).__name__}")
+        suffix = f", +{len(value) - 20} keys" if len(value) > 20 else ""
+        return f"dict(keys={len(value)}, fields=[{', '.join(fields)}{suffix}])"
+    if isinstance(value, (list, tuple, set)):
+        item_types = sorted({type(item).__name__ for item in value})
+        return f"{type(value).__name__}(length={len(value)}, item_types={item_types})"
+    return type(value).__name__
 
 
 class UvicornFormatter(logging.Formatter):
@@ -19,7 +114,7 @@ class UvicornFormatter(logging.Formatter):
     }
     RESET = '\033[0m'
     
-    def __init__(self, use_colors: bool = True):
+    def __init__(self, use_colors: bool = True, max_message_chars: int = DEFAULT_LOG_MESSAGE_MAX_CHARS):
         """
         初始化格式化器
         
@@ -28,6 +123,7 @@ class UvicornFormatter(logging.Formatter):
         """
         super().__init__()
         self.use_colors = use_colors
+        self.max_message_chars = max_message_chars
     
     def format(self, record):
         """格式化日志记录为 Uvicorn 风格"""
@@ -47,9 +143,10 @@ class UvicornFormatter(logging.Formatter):
         # 格式化时间戳 (YYYY-MM-DD HH:MM:SS)
         timestamp = self.formatTime(record, self.datefmt)
         
+        message = _truncate_text(record.getMessage(), self.max_message_chars)
         # Uvicorn风格格式: INFO:     [2024-01-01 12:00:00] module_name - message [request_id]
         # 注意：INFO后面有5个空格，保持对齐
-        return f"{colored_level}:     [{timestamp}] {record.name}{request_id_str} - {record.getMessage()}"
+        return f"{colored_level}:     [{timestamp}] {record.name}{request_id_str} - {message}"
 
 
 # 全局标志，防止重复初始化
@@ -60,7 +157,8 @@ def setup_logging(
     log_to_file: bool = False,
     log_file_path: Optional[str] = None,
     max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 30
+    backup_count: int = 30,
+    message_max_chars: int = DEFAULT_LOG_MESSAGE_MAX_CHARS,
 ):
     """
     配置统一的 Uvicorn 风格日志系统
@@ -71,6 +169,7 @@ def setup_logging(
         log_file_path: 日志文件路径
         max_bytes: 单个日志文件最大字节数（默认10MB）
         backup_count: 保留的备份文件数量（默认30个）
+        message_max_chars: 单条日志消息最大字符数（默认2000）
     """
     global _logging_configured
     
@@ -85,10 +184,13 @@ def setup_logging(
     # 清除已有的处理器，避免重复
     root_logger.handlers.clear()
     
+    if message_max_chars <= 0:
+        message_max_chars = DEFAULT_LOG_MESSAGE_MAX_CHARS
+
     # 1. 创建控制台处理器（带颜色）
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(getattr(logging, level.upper()))
-    console_formatter = UvicornFormatter(use_colors=True)
+    console_formatter = UvicornFormatter(use_colors=True, max_message_chars=message_max_chars)
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
     
@@ -108,13 +210,14 @@ def setup_logging(
         file_handler.setLevel(getattr(logging, level.upper()))
         
         # 文件日志不使用颜色
-        file_formatter = UvicornFormatter(use_colors=False)
+        file_formatter = UvicornFormatter(use_colors=False, max_message_chars=message_max_chars)
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
         
         # 记录日志配置信息
         root_logger.info(f"日志文件输出已启用: {log_file_path}")
         root_logger.info(f"日志轮转配置: 单文件最大{max_bytes / 1024 / 1024:.1f}MB, 保留{backup_count}个备份")
+        root_logger.info(f"单条日志消息最大长度: {message_max_chars}字符")
     
     # 配置第三方库的日志级别
     _configure_third_party_loggers()

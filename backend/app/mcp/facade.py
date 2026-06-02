@@ -41,7 +41,7 @@ from mcp.client.sse import sse_client
 from anyio import ClosedResourceError
 
 from app.mcp.config import mcp_config
-from app.logger import get_logger
+from app.logger import get_logger, summarize_log_value
 
 logger = get_logger(__name__)
 
@@ -663,7 +663,7 @@ class MCPClientFacade:
                 session = await self._get_session(user_id, plugin_name)
                 
                 logger.info(f"调用工具: {tool_key}")
-                logger.debug(f"  参数: {arguments}")
+                logger.debug(f"  参数摘要: {summarize_log_value(arguments)}")
                 
                 # 带超时调用
                 result = await asyncio.wait_for(

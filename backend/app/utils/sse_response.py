@@ -5,7 +5,7 @@ from enum import Enum
 from typing import AsyncGenerator, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from fastapi.responses import StreamingResponse
-from app.logger import get_logger
+from app.logger import get_logger, summarize_log_value
 
 logger = get_logger(__name__)
 
@@ -250,7 +250,7 @@ class SSEResponse:
         except Exception as e:
             logger.error(f"❌ SSE格式化失败: {type(e).__name__}: {e}")
             logger.error(f"   data类型: {type(data)}")
-            logger.error(f"   data内容: {str(data)[:500]}")
+            logger.error(f"   data摘要: {summarize_log_value(data)}")
             # 返回错误消息而不是崩溃
             error_message = ""
             if event:

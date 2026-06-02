@@ -19,7 +19,7 @@ from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
 from app.api.settings import get_user_ai_service
 
@@ -163,12 +163,12 @@ async def world_building_generator(
                 
                 try:
                     logger.info(f"🔍 开始清洗JSON，原始长度: {len(accumulated_text)}")
-                    logger.info(f"   原始内容预览: {accumulated_text[:300]}...")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 300)}")
                     
                     # ✅ 使用 AIService 的统一清洗方法
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
-                    logger.info(f"   清洗后预览: {cleaned_text[:300]}...")
+                    logger.debug(f"   清洗后预览: {safe_preview(cleaned_text, 300)}")
                     
                     world_data = loads_json(cleaned_text)
                     logger.info(f"✅ 世界观JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
@@ -177,7 +177,7 @@ async def world_building_generator(
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ 世界构建JSON解析失败（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {e}")
                     logger.error(f"   原始内容长度: {len(accumulated_text)}")
-                    logger.error(f"   原始内容预览: {accumulated_text[:200]}")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
                         yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")
@@ -1676,7 +1676,7 @@ async def world_building_regenerate_generator(
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ 世界构建JSON解析失败（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {e}")
                     logger.error(f"   原始内容长度: {len(accumulated_text)}")
-                    logger.error(f"   原始内容预览: {accumulated_text[:200]}")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
                         yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")

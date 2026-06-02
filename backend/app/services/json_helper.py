@@ -2,7 +2,7 @@
 import json
 import re
 from typing import Any, Dict, List, Union
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 
 try:
     import json5
@@ -401,7 +401,7 @@ def clean_json_response(text: str) -> str:
         
         if start == -1:
             logger.warning(f"⚠️ 未找到JSON起始符号 {{ 或 [")
-            logger.debug(f"   文本预览: {text[:200]}")
+            logger.debug(f"   文本预览: {safe_preview(text, 200)}")
             return text
         
         if start > 0:
@@ -519,15 +519,15 @@ def clean_json_response(text: str) -> str:
                     logger.info(f"✅ 二次修复后JSON验证成功")
                 except json.JSONDecodeError as e3:
                     logger.error(f"❌ 所有修复后JSON仍然无效: {e3}")
-                    logger.debug(f"   结果预览: {result[:500]}")
-                    logger.debug(f"   结果结尾: ...{result[-200:]}")
+                    logger.debug(f"   结果预览: {safe_preview(result, 500)}")
+                    logger.debug(f"   结果结尾长度: {min(len(result), 200)}")
         
         return result
         
     except Exception as e:
         logger.error(f"❌ clean_json_response 出错: {e}")
         logger.error(f"   文本长度: {len(text) if text else 0}")
-        logger.error(f"   文本预览: {text[:200] if text else 'None'}")
+        logger.error(f"   文本预览: {safe_preview(text, 200)}")
         raise
 
 
@@ -555,7 +555,7 @@ def parse_json(text: str) -> Union[Dict, List]:
     logger.error(f"❌ parse_json 完全失败")
     logger.error(f"   原始文本长度: {len(text) if text else 0}")
     logger.error(f"   清洗后文本长度: {len(cleaned) if cleaned else 0}")
-    logger.debug(f"   清洗后文本预览: {cleaned[:500] if cleaned else 'None'}")
+    logger.debug(f"   清洗后文本预览: {safe_preview(cleaned, 500)}")
     raise json.JSONDecodeError("JSON解析失败（标准和json5均失败）", cleaned, 0)
 
 

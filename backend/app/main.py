@@ -19,7 +19,8 @@ setup_logging(
     log_to_file=config_settings.log_to_file,
     log_file_path=config_settings.log_file_path,
     max_bytes=config_settings.log_max_bytes,
-    backup_count=config_settings.log_backup_count
+    backup_count=config_settings.log_backup_count,
+    message_max_chars=config_settings.log_message_max_chars,
 )
 logger = get_logger(__name__)
 

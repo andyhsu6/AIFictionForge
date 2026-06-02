@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview, summarize_log_value
 from app.services.cover_providers.base_cover_provider import BaseCoverProvider, CoverGenerationResult
 
 logger = get_logger(__name__)
@@ -60,13 +60,12 @@ class GrokCoverProvider(BaseCoverProvider):
         }
 
         logger.debug(
-            "Grok 封面生成请求开始: url=%s model=%s width=%s height=%s prompt_len=%s prompt_preview=%s",
+            "Grok 封面生成请求开始: url=%s model=%s width=%s height=%s prompt_len=%s",
             url,
             model,
             width,
             height,
             len(prompt or ""),
-            (prompt or "")[:300].replace("\n", " "),
         )
 
         try:
@@ -82,7 +81,7 @@ class GrokCoverProvider(BaseCoverProvider):
                     "cf-ray": response.headers.get("cf-ray"),
                     "openai-processing-ms": response.headers.get("openai-processing-ms"),
                 },
-                response.text[:1000],
+                safe_preview(response.text, 500),
             )
 
             response.raise_for_status()
@@ -91,7 +90,7 @@ class GrokCoverProvider(BaseCoverProvider):
             logger.error(
                 "Grok 封面生成 HTTP 错误: status=%s response=%s",
                 exc.response.status_code if exc.response else None,
-                exc.response.text[:2000] if exc.response is not None else None,
+                safe_preview(exc.response.text, 500) if exc.response is not None else None,
             )
             raise
         except Exception:
@@ -107,17 +106,17 @@ class GrokCoverProvider(BaseCoverProvider):
         )
 
         if not images:
-            logger.error("Grok 未返回图片结果: data=%s", data)
+            logger.error("Grok 未返回图片结果: data=%s", summarize_log_value(data))
             raise ValueError("Grok 未返回图片结果")
 
         image_item = images[0]
         revised_prompt = image_item.get("revised_prompt")
         logger.debug(
-            "Grok 首张图片结果: keys=%s has_b64=%s has_url=%s revised_prompt_preview=%s",
+            "Grok 首张图片结果: keys=%s has_b64=%s has_url=%s revised_prompt_length=%s",
             list(image_item.keys()),
             bool(image_item.get("b64_json")),
             bool(image_item.get("url")),
-            (revised_prompt or "")[:300],
+            len(revised_prompt or ""),
         )
 
         b64_json = image_item.get("b64_json")
@@ -159,7 +158,7 @@ class GrokCoverProvider(BaseCoverProvider):
                 logger.error(
                     "Grok 图片下载 HTTP 错误: status=%s response=%s",
                     exc.response.status_code if exc.response else None,
-                    exc.response.text[:2000] if exc.response is not None else None,
+                    safe_preview(exc.response.text, 500) if exc.response is not None else None,
                 )
                 raise
             except Exception:

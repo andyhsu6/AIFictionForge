@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     log_file_path: str = str(PROJECT_ROOT / "logs" / "app.log")
     log_max_bytes: int = 10 * 1024 * 1024  # 10MB
     log_backup_count: int = 30  # 保留30个备份文件
+    log_message_max_chars: int = 2000  # 单条日志消息最大字符数
     
     # CORS配置
     cors_origins: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]

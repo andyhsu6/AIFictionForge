@@ -1,13 +1,13 @@
 """
 LinuxDO OAuth2 服务
 """
-import logging
 import httpx
 import secrets
 from typing import Optional, Dict, Any
 from app.config import settings
+from app.logger import get_logger, safe_json_preview, safe_preview
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LinuxDOOAuthService:
@@ -108,11 +108,11 @@ class LinuxDOOAuthService:
                 if response.status_code == 200:
                     return response.json()
                 else:
-                    print(f"获取访问令牌失败: {response.status_code} {response.text}")
+                    logger.error("获取访问令牌失败: status=%s response=%s", response.status_code, safe_preview(response.text, 500))
                     return None
-                    
+                     
         except Exception as e:
-            print(f"获取访问令牌异常: {e}")
+            logger.error("获取访问令牌异常: %s", e)
             return None
     
     async def get_user_info(self, access_token: str) -> Optional[Dict[str, Any]]:
@@ -141,25 +141,24 @@ class LinuxDOOAuthService:
                     headers=headers
                 )
                 
-                print(f"获取用户信息响应状态: {response.status_code}")
-                print(f"响应头: {response.headers}")
+                logger.debug(
+                    "获取用户信息响应: status=%s headers=%s",
+                    response.status_code,
+                    safe_json_preview(dict(response.headers), 500),
+                )
                 
                 if response.status_code == 200:
                     try:
                         user_data = response.json()
-                        print(f"用户信息: {user_data}")
+                        logger.debug("用户信息获取成功: %s", safe_json_preview(user_data, 500))
                         return user_data
                     except Exception as json_error:
-                        print(f"解析 JSON 失败: {json_error}")
-                        print(f"响应内容前100字符: {response.text[:100]}")
+                        logger.error("解析用户信息 JSON 失败: %s, response=%s", json_error, safe_preview(response.text, 300))
                         return None
                 else:
-                    print(f"获取用户信息失败: {response.status_code}")
-                    print(f"响应内容: {response.text[:200]}")
+                    logger.error("获取用户信息失败: status=%s response=%s", response.status_code, safe_preview(response.text, 300))
                     return None
-                    
+                     
         except Exception as e:
-            print(f"获取用户信息异常: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error("获取用户信息异常: %s: %s", type(e).__name__, e, exc_info=True)
             return None

@@ -2,7 +2,7 @@
 import httpx
 from typing import Optional, Dict, Any
 from app.config import settings, INSTANCE_ID
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 
 logger = get_logger(__name__)
 
@@ -51,7 +51,7 @@ class AnnouncementClient:
             logger.error(f"云端公告服务请求超时: {url}")
             raise AnnouncementClientError("云端公告服务请求超时，请稍后重试")
         except httpx.HTTPStatusError as e:
-            logger.error(f"云端公告服务返回错误: {e.response.status_code}, {e.response.text}")
+            logger.error(f"云端公告服务返回错误: {e.response.status_code}, response={safe_preview(e.response.text, 500)}")
             raise AnnouncementClientError(f"云端公告服务错误: {e.response.status_code}")
         except Exception as e:
             logger.error(f"请求云端公告服务异常: {e}")

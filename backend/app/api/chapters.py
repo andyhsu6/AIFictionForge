@@ -1545,7 +1545,7 @@ async def generate_chapter_content_stream(
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
                         )
-                        logger.debug(f"创建第{current_chapter.chapter_number}章提示词: {base_prompt}")
+                        logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
                         # 第一章
                         template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", current_user_id, db_session)
@@ -1563,7 +1563,7 @@ async def generate_chapter_content_stream(
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
                         )
-                        logger.debug(f"创建第一章提示词: {base_prompt}")
+                        logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 else:
                     # ========== 1-n模式：使用完整模板 ==========
                     if chapter_context.continuation_point:
@@ -1593,7 +1593,7 @@ async def generate_chapter_content_stream(
                             recent_chapters_context=chapter_context.recent_chapters_context or '',
                             relevant_memories=chapter_context.relevant_memories or ''
                         )
-                        logger.debug(f"创建第{current_chapter.chapter_number}章提示词: {base_prompt}")
+                        logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
                         # 第1章，使用无前置内容模板
                         logger.info(f"📝 [1-n模式] 使用第一章模板")
@@ -1612,7 +1612,7 @@ async def generate_chapter_content_stream(
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
                         )
-                        logger.debug(f"创建第一章提示词: {base_prompt}")
+                        logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 
                 # 应用写作风格
                 if style_content:

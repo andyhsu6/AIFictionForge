@@ -23,7 +23,7 @@ from app.schemas.settings import (
     SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
 )
 from app.user_manager import User
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 from app.config import settings as app_settings, PROJECT_ROOT
 from app.services.ai_service import AIService, create_user_ai_service, create_user_ai_service_with_mcp, normalize_provider
 from app.services.email_service import email_service
@@ -716,7 +716,7 @@ async def get_available_models(
                 raise HTTPException(status_code=400, detail=f"不支持的提供商: {provider}")
             
     except httpx.HTTPStatusError as e:
-        logger.error(f"获取模型列表失败 (HTTP {e.response.status_code}): {e.response.text}")
+        logger.error(f"获取模型列表失败 (HTTP {e.response.status_code}): {safe_preview(e.response.text, 500)}")
         if e.response.status_code == 404:
             raise HTTPException(
                 status_code=400,
@@ -1037,7 +1037,7 @@ async def test_api_connection(data: ApiTestRequest):
         
         # 安全地处理响应内容（确保是字符串）
         response_str = str(response) if response else 'N/A'
-        logger.info(f"  - 响应内容: {response_str[:100]}")
+        logger.info(f"  - 响应内容长度: {len(response_str)}")
         
         return {
             "success": True,

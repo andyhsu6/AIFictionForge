@@ -1043,7 +1043,7 @@ async def new_outline_generator(
             requirements=data.get("requirements") or "",
             mcp_references=""
         )
-        logger.debug(f"NEW提示词: {prompt}")
+        logger.debug(f"大纲生成提示词完成: prompt_length={len(prompt)}")
         # 添加调试日志
         model_param = data.get("model")
         provider_param = data.get("provider")
@@ -1501,7 +1501,7 @@ async def continue_outline_generator(
                 requirements=data.get("requirements", ""),
                 mcp_references=""
             )
-            logger.debug(f" 续写提示词: {prompt}")
+            logger.debug(f"续写提示词完成: batch={batch_num + 1}, prompt_length={len(prompt)}")
             # 调用AI生成当前批次
             model_param = data.get("model")
             provider_param = data.get("provider")
