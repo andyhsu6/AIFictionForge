@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
+from datetime import datetime
 
 from app.database import get_db
 from app.models.background_task import BackgroundTask
@@ -139,10 +140,23 @@ async def cancel_task(
         raise HTTPException(status_code=401, detail="未登录")
 
     success = await background_task_service.cancel_task(task_id, user_id, db)
-    if not success:
-        raise HTTPException(status_code=400, detail="无法取消任务（不存在或已完成）")
+    if success:
+        return {"message": "任务已取消", "task_id": task_id}
 
-    return {"message": "任务已取消", "task_id": task_id}
+    result = await db.execute(
+        select(BatchGenerationTask).where(
+            BatchGenerationTask.id == task_id,
+            BatchGenerationTask.user_id == user_id
+        )
+    )
+    batch_task = result.scalar_one_or_none()
+    if batch_task and batch_task.status in ("pending", "running"):
+        batch_task.status = "cancelled"
+        batch_task.completed_at = datetime.now()
+        await db.commit()
+        return {"message": "任务已取消", "task_id": task_id}
+
+    raise HTTPException(status_code=400, detail="无法取消任务（不存在或已完成）")
 
 
 @router.delete("/{task_id}", summary="删除任务记录")

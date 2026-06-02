@@ -36,16 +36,19 @@ export interface TaskListResponse {
  * 批量生成任务状态
  */
 export interface BatchTaskStatus {
-  id: string;
-  project_id: string;
+  batch_id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-  total_chapters: number;
-  completed_chapters: number;
+  total: number;
+  completed: number;
+  current_chapter_id: string | null;
   current_chapter_number: number | null;
-  error_message: string | null;
   created_at: string | null;
   started_at: string | null;
-  completed_at: string | null;
+}
+
+interface ActiveBatchTaskResponse {
+  has_active_task: boolean;
+  task: BatchTaskStatus | null;
 }
 
 /**
@@ -84,9 +87,8 @@ export async function getActiveBatchTasks(projectId: string): Promise<BatchTaskS
   if (!response.ok) {
     throw new Error(`获取批量生成任务失败: ${response.statusText}`);
   }
-  const data = await response.json();
-  // API 返回单个任务或空，统一转为数组
-  return data ? [data] : [];
+  const data: ActiveBatchTaskResponse = await response.json();
+  return data.has_active_task && data.task ? [data.task] : [];
 }
 
 /**
@@ -95,7 +97,8 @@ export async function getActiveBatchTasks(projectId: string): Promise<BatchTaskS
 export async function cancelBatchTask(batchId: string): Promise<void> {
   const response = await fetch(`/api/chapters/batch-generate/${batchId}/cancel`, { method: 'POST' });
   if (!response.ok) {
-    throw new Error(`取消批量生成任务失败: ${response.statusText}`);
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(`取消批量生成任务失败: ${err.detail || response.statusText}`);
   }
 }
 
@@ -230,7 +233,7 @@ export async function generateOutlineBackground(
   const { task_id } = await response.json();
 
   // 2. 开始轮询
-  let cancelPolling = pollTaskUntilComplete(task_id, onProgress, onComplete, onError);
+  const cancelPolling = pollTaskUntilComplete(task_id, onProgress, onComplete, onError);
 
   // 3. 返回统一的取消函数（取消轮询 + 取消后台任务）
   return () => {

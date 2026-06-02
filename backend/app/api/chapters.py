@@ -1975,6 +1975,7 @@ async def _run_chapter_generation_bg(
     target_word_count = task_input.get("target_word_count", 3000)
     custom_model = task_input.get("model")
     temp_narrative_perspective = task_input.get("narrative_perspective")
+    enable_mcp = task_input.get("enable_mcp", True)
     write_lock = await get_db_write_lock(user_id)
 
     # === 加载阶段 ===
@@ -2161,7 +2162,8 @@ async def _run_chapter_generation_bg(
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
-        "max_tokens": calculated_max_tokens
+        "max_tokens": calculated_max_tokens,
+        "auto_mcp": bool(enable_mcp)
     }
     if custom_model:
         generate_kwargs["model"] = custom_model
@@ -2195,6 +2197,10 @@ async def _run_chapter_generation_bg(
         await asyncio.sleep(0)
 
     # === 保存阶段 ===
+    if await tracker.check_cancelled():
+        logger.info(f"🚫 后台章节生成保存前被取消: {chapter_id}")
+        return
+
     await tracker.saving("正在保存章节...", 0.3)
 
     async with write_lock:
@@ -3555,11 +3561,19 @@ async def batch_generate_chapters_in_order(
 @router.get("/batch-generate/{batch_id}/status", response_model=BatchGenerateStatusResponse, summary="查询批量生成任务状态")
 async def get_batch_generation_status(
     batch_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """查询批量生成任务的状态和进度"""
+    user_id = getattr(request.state, 'user_id', None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+
     result = await db.execute(
-        select(BatchGenerationTask).where(BatchGenerationTask.id == batch_id)
+        select(BatchGenerationTask).where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.user_id == user_id
+        )
     )
     task = result.scalar_one_or_none()
     
@@ -3595,11 +3609,14 @@ async def get_active_batch_generation(
     """
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
     await verify_project_access(project_id, user_id, db)
     
     result = await db.execute(
         select(BatchGenerationTask)
         .where(BatchGenerationTask.project_id == project_id)
+        .where(BatchGenerationTask.user_id == user_id)
         .where(BatchGenerationTask.status.in_(['pending', 'running']))
         .order_by(BatchGenerationTask.created_at.desc())
         .limit(1)
@@ -3630,11 +3647,19 @@ async def get_active_batch_generation(
 @router.post("/batch-generate/{batch_id}/cancel", summary="取消批量生成任务")
 async def cancel_batch_generation(
     batch_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """取消正在进行的批量生成任务"""
+    user_id = getattr(request.state, 'user_id', None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+
     result = await db.execute(
-        select(BatchGenerationTask).where(BatchGenerationTask.id == batch_id)
+        select(BatchGenerationTask).where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.user_id == user_id
+        )
     )
     task = result.scalar_one_or_none()
     
@@ -3672,6 +3697,7 @@ async def execute_batch_generation_in_order(
     - 可选同步分析
     """
     db_session = None
+    task = None
     write_lock = await get_db_write_lock(user_id)
     
     try:
@@ -3698,9 +3724,17 @@ async def execute_batch_generation_in_order(
         if not task:
             logger.error(f"❌ 批量生成任务不存在: {batch_id}")
             return
+
+        if task.status == 'cancelled':
+            logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+            return
         
         # 更新任务状态为运行中
         async with write_lock:
+            await db_session.refresh(task)
+            if task.status == 'cancelled':
+                logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+                return
             task.status = 'running'
             task.started_at = datetime.now()
             await db_session.commit()
@@ -3730,6 +3764,11 @@ async def execute_batch_generation_in_order(
             
             while retry_count <= task.max_retries and not chapter_success:
                 try:
+                    await db_session.refresh(task)
+                    if task.status == 'cancelled':
+                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                        return
+
                     # 获取章节信息
                     chapter_result = await db_session.execute(
                         select(Chapter).where(Chapter.id == chapter_id)
@@ -3767,8 +3806,14 @@ async def execute_batch_generation_in_order(
                         write_lock=write_lock,
                         custom_model=custom_model,
                         previous_summary_context=last_generated_summary,
-                        skill_key=skill_key
+                        skill_key=skill_key,
+                        batch_id=batch_id
                     )
+
+                    await db_session.refresh(task)
+                    if task.status == 'cancelled':
+                        logger.info(f"🛑 批量生成任务已被取消，跳过后续处理: {batch_id}")
+                        return
                     
                     # 更新上一章摘要，供下一章使用
                     if generated_summary:
@@ -3779,6 +3824,10 @@ async def execute_batch_generation_in_order(
                     
                     # 如果启用同步分析
                     if task.enable_analysis:
+                        await db_session.refresh(task)
+                        if task.status == 'cancelled':
+                            logger.info(f"🛑 批量生成任务已被取消，跳过同步分析: {batch_id}")
+                            return
                         logger.info(f"🔍 开始同步分析章节: 第{chapter.chapter_number}章")
 
                         async with write_lock:
@@ -3840,6 +3889,10 @@ async def execute_batch_generation_in_order(
                     
                 except Exception as e:
                     last_error = str(e)
+                    await db_session.refresh(task)
+                    if task.status == 'cancelled':
+                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                        return
                     error_msg = f"第{chapter.chapter_number if chapter else '?'}章出错: {last_error}"
                     logger.error(f"❌ {error_msg}")
                     
@@ -3885,6 +3938,10 @@ async def execute_batch_generation_in_order(
         
         # 全部完成
         async with write_lock:
+            await db_session.refresh(task)
+            if task.status == 'cancelled':
+                logger.info(f"🛑 批量生成任务已被取消，跳过完成状态覆盖: {batch_id}")
+                return
             task.status = 'completed'
             task.completed_at = datetime.now()
             task.current_chapter_id = None
@@ -3898,10 +3955,12 @@ async def execute_batch_generation_in_order(
         if db_session and task:
             try:
                 async with write_lock:
-                    task.status = 'failed'
-                    task.error_message = str(e)[:500]
-                    task.completed_at = datetime.now()
-                    await db_session.commit()
+                    await db_session.refresh(task)
+                    if task.status != 'cancelled':
+                        task.status = 'failed'
+                        task.error_message = str(e)[:500]
+                        task.completed_at = datetime.now()
+                        await db_session.commit()
             except Exception as commit_error:
                 logger.error(f"❌ 更新任务失败状态失败: {str(commit_error)}")
     finally:
@@ -3919,7 +3978,8 @@ async def generate_single_chapter_for_batch(
     write_lock: Lock,
     custom_model: Optional[str] = None,
     previous_summary_context: Optional[str] = None,
-    skill_key: Optional[str] = None
+    skill_key: Optional[str] = None,
+    batch_id: Optional[str] = None
 ) -> Optional[str]:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4158,9 +4218,26 @@ async def generate_single_chapter_for_batch(
         generate_kwargs["model"] = custom_model
         logger.info(f"  批量生成使用自定义模型: {custom_model}")
     
+    async def _is_batch_cancelled() -> bool:
+        if not batch_id:
+            return False
+        result = await db_session.execute(
+            select(BatchGenerationTask.status).where(BatchGenerationTask.id == batch_id)
+        )
+        return result.scalar_one_or_none() == 'cancelled'
+
     # 批量生成中的流式生成（非SSE，不需要修改进度显示）
+    chunk_count = 0
     async for chunk in ai_service.generate_text_stream(**generate_kwargs):
+        if chunk_count % 10 == 0 and await _is_batch_cancelled():
+            logger.info(f"🛑 批量生成单章流式生成被取消: batch={batch_id}, chapter={chapter.id}")
+            raise Exception("批量生成任务已取消")
         full_content += chunk
+        chunk_count += 1
+
+    if await _is_batch_cancelled():
+        logger.info(f"🛑 批量生成保存前被取消: batch={batch_id}, chapter={chapter.id}")
+        raise Exception("批量生成任务已取消")
     
     # 更新章节内容到数据库（使用锁保护）
     async with write_lock:

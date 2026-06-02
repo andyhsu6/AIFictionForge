@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import datetime
 
 from app.config import settings as config_settings
 from app.database import close_db, _session_stats
@@ -35,11 +36,34 @@ async def lifespan(app: FastAPI):
     try:
         from app.database import get_engine
         from app.models.background_task import BackgroundTask
+        from app.models.batch_generation_task import BatchGenerationTask
+        from sqlalchemy import update as sql_update
         _startup_engine = await get_engine("system")
         async with _startup_engine.begin() as conn:
             # 仅创建 background_tasks 表（如果不存在），不影响其他表
             await conn.run_sync(
                 lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
+            )
+            interrupted_at = datetime.now()
+            await conn.execute(
+                sql_update(BackgroundTask)
+                .where(BackgroundTask.status.in_(["pending", "running"]))
+                .values(
+                    status="failed",
+                    error_message="服务重启，后台任务已中断",
+                    status_message="服务重启，任务已中断，请重新发起",
+                    completed_at=interrupted_at,
+                    updated_at=interrupted_at,
+                )
+            )
+            await conn.execute(
+                sql_update(BatchGenerationTask)
+                .where(BatchGenerationTask.status.in_(["pending", "running"]))
+                .values(
+                    status="failed",
+                    error_message="服务重启，批量生成任务已中断",
+                    completed_at=interrupted_at,
+                )
             )
         logger.info("后台任务表检查完成")
     except Exception as e:

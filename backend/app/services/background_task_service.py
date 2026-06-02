@@ -34,6 +34,9 @@ class TaskProgressTracker:
                 )
                 task = result.scalar_one_or_none()
                 if task:
+                    if task.status == "cancelled" or task.cancel_requested:
+                        logger.debug(f"跳过已取消任务的进度更新: {self.task_id[:8]}")
+                        return
                     for key, value in kwargs.items():
                         setattr(task, key, value)
                     task.updated_at = datetime.now()
@@ -188,6 +191,9 @@ class BackgroundTaskService:
                     logger.info(f"🔄 [用户{user_id[:8]}] 队列开始执行任务: {task_id[:8]} (队列剩余: {queue.qsize()})")
 
                     try:
+                        if await self._is_task_cancelled(task_id, user_id):
+                            logger.info(f"🚫 [用户{user_id[:8]}] 跳过已取消的排队任务: {task_id[:8]}")
+                            continue
                         await task_func(task_id, args["user_id"], *args["extra_args"], **kwargs)
                     except Exception as e:
                         logger.error(f"❌ 后台任务 {task_id[:8]} 异常: {e}", exc_info=True)
@@ -202,7 +208,7 @@ class BackgroundTaskService:
                                     select(BackgroundTask).where(BackgroundTask.id == task_id)
                                 )
                                 task = result.scalar_one_or_none()
-                                if task and task.status == "running":
+                                if task and task.status == "running" and not task.cancel_requested:
                                     task.status = "failed"
                                     task.error_message = str(e)
                                     task.status_message = f"任务失败: {str(e)}"
@@ -220,6 +226,28 @@ class BackgroundTaskService:
             # 工作协程退出时清理标记
             self._user_workers.pop(user_id, None)
             logger.info(f"📋 用户 {user_id[:8]} 的工作协程已退出")
+
+    @staticmethod
+    async def _is_task_cancelled(task_id: str, user_id: str) -> bool:
+        """检查任务是否已在执行前被取消。"""
+        try:
+            engine = await get_engine(user_id)
+            AsyncSessionLocal = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(BackgroundTask.status, BackgroundTask.cancel_requested)
+                    .where(BackgroundTask.id == task_id)
+                )
+                row = result.first()
+                if not row:
+                    return True
+                status, cancel_requested = row
+                return status == "cancelled" or bool(cancel_requested)
+        except Exception as e:
+            logger.warning(f"检查任务取消状态失败: {task_id[:8]} {e}")
+            return False
 
     @staticmethod
     async def create_task(
@@ -344,6 +372,7 @@ class BackgroundTaskService:
             "kwargs": kwargs,
         })
         queue_size = queue.qsize()
+        tasks_ahead = max(queue_size - 1, 0)
         logger.info(f"📥 任务已加入用户 {user_id[:8]} 的队列: {task_id[:8]} (当前队列长度: {queue_size})")
 
         # 更新任务状态，显示排队位置
@@ -358,11 +387,11 @@ class BackgroundTaskService:
                 )
                 task = result.scalar_one_or_none()
                 if task and task.status == "pending":
-                    if queue_size > 0:
-                        task.status_message = f"排队中，前方还有 {queue_size} 个任务等待..."
+                    if tasks_ahead > 0:
+                        task.status_message = f"排队中，前方还有 {tasks_ahead} 个任务等待..."
                     else:
                         task.status_message = "即将开始执行..."
-                    task.progress_details = {"stage": "queued", "queue_size": queue_size}
+                    task.progress_details = {"stage": "queued", "queue_size": tasks_ahead}
                     task.updated_at = datetime.now()
                     await session.commit()
         except Exception as e:
