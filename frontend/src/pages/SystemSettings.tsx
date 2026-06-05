@@ -788,9 +788,9 @@ export default function SystemSettingsPage() {
 
           <Card
             size="small"
-            title="公告正文（Markdown）"
+            title="公告正文（Markdown / 安全 HTML）"
             style={{ marginBottom: 24, borderRadius: 12 }}
-            extra={<Text type="secondary">支持标题、列表、引用、代码块、链接、粗体等 Markdown 语法</Text>}
+            extra={<Text type="secondary">支持 Markdown，以及居中图片、换行、强调等安全 HTML</Text>}
           >
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Space wrap>
@@ -799,6 +799,7 @@ export default function SystemSettingsPage() {
                 <Button size="small" onClick={() => appendMarkdownSnippet('- 列表项\n- 列表项')}>列表</Button>
                 <Button size="small" onClick={() => appendMarkdownSnippet('> 引用说明')}>引用</Button>
                 <Button size="small" onClick={() => appendMarkdownSnippet('[链接文字](https://example.com)')}>链接</Button>
+                <Button size="small" onClick={() => appendMarkdownSnippet('<p align="center">\n  <img src="https://avatars.githubusercontent.com/u/283105808?s=48&v=4" alt="DolOffer Logo" width="200"/>\n  <br>\n  <em>专注于优质数字产品推荐与超值优惠分享的领先平台</em>\n</p>')}>居中图片</Button>
                 <Button size="small" onClick={() => appendMarkdownSnippet('```\n代码内容\n```')}>代码块</Button>
               </Space>
 
@@ -816,12 +817,18 @@ export default function SystemSettingsPage() {
                     <TextArea
                       style={{ height: 420, resize: 'vertical' }}
                       placeholder={[
-                        '请输入 Markdown 公告内容，例如：',
+                        '请输入 Markdown 或安全 HTML 公告内容，例如：',
                         '## 更新说明',
                         '- 支持列表',
                         '- 支持 **重点内容**',
                         '> 支持引用说明',
                         '[查看详情](https://example.com)',
+                        '',
+                        '<p align="center">',
+                        '  <img src="https://avatars.githubusercontent.com/u/283105808?s=48&v=4" alt="DolOffer Logo" width="200"/>',
+                        '  <br>',
+                        '  <em>专注于优质数字产品推荐与超值优惠分享的领先平台</em>',
+                        '</p>',
                       ].join('\n')}
                     />
                   </Form.Item>

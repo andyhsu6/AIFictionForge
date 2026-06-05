@@ -1,9 +1,26 @@
 import { Typography, theme } from 'antd';
 import ReactMarkdown, { type Components } from 'react-markdown';
-import rehypeSanitize from 'rehype-sanitize';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 
 const { Text } = Typography;
+
+const announcementSanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    p: [
+      ...(defaultSchema.attributes?.p || []),
+      ['align', 'left', 'center', 'right', 'justify'],
+    ],
+    img: [
+      ...(defaultSchema.attributes?.img || []),
+      ['width', /^\d{1,4}$/],
+      ['height', /^\d{1,4}$/],
+    ],
+  },
+};
 
 interface MarkdownRendererProps {
   content?: string | null;
@@ -21,8 +38,21 @@ const isSafeUrl = (url?: string | null) => {
   return lower.startsWith('http://')
     || lower.startsWith('https://')
     || lower.startsWith('mailto:')
-    || trimmed.startsWith('/')
+    || (trimmed.startsWith('/') && !trimmed.startsWith('//'))
     || trimmed.startsWith('#');
+};
+
+const isSafeImageUrl = (url?: string | null) => {
+  if (!url) {
+    return false;
+  }
+
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+
+  return lower.startsWith('http://')
+    || lower.startsWith('https://')
+    || (trimmed.startsWith('/') && !trimmed.startsWith('//'));
 };
 
 export default function MarkdownRenderer({ content, compact = false }: MarkdownRendererProps) {
@@ -46,7 +76,7 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
       );
     },
     img: ({ src, alt, ...props }) => {
-      const safeSrc = isSafeUrl(src) ? src : undefined;
+      const safeSrc = isSafeImageUrl(src) ? src : undefined;
       if (!safeSrc) {
         return null;
       }
@@ -105,6 +135,21 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
           .announcement-markdown p {
             margin: 0 0 ${compact ? 8 : 12}px;
             white-space: pre-wrap;
+          }
+          .announcement-markdown p[align='left'] {
+            text-align: left;
+          }
+          .announcement-markdown p[align] {
+            white-space: normal;
+          }
+          .announcement-markdown p[align='center'] {
+            text-align: center;
+          }
+          .announcement-markdown p[align='right'] {
+            text-align: right;
+          }
+          .announcement-markdown p[align='justify'] {
+            text-align: justify;
           }
           .announcement-markdown h1,
           .announcement-markdown h2,
@@ -197,6 +242,14 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
             border: 1px solid ${token.colorBorderSecondary};
             object-fit: contain;
           }
+          .announcement-markdown p[align='center'] img {
+            margin-left: auto;
+            margin-right: auto;
+          }
+          .announcement-markdown p[align='right'] img {
+            margin-left: auto;
+            margin-right: 0;
+          }
           .announcement-markdown hr {
             margin: ${compact ? 12 : 18}px 0;
             border: none;
@@ -235,7 +288,7 @@ export default function MarkdownRenderer({ content, compact = false }: MarkdownR
       {markdown ? (
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, announcementSanitizeSchema]]}
           components={components}
         >
           {markdown}
