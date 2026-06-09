@@ -80,7 +80,7 @@ async def create_outline(
             summary=db_outline.content,
             chapter_number=db_outline.order_index,
             sub_index=1,
-            outline_id=None,  # one-to-one模式不关联outline_id
+            outline_id=db_outline.id,
             status='pending',
             content=""
         )
@@ -831,6 +831,77 @@ class JSONParseError(Exception):
         self.original_content = original_content
 
 
+def _normalize_character_entries(raw_characters: Any) -> list:
+    """标准化大纲 characters 字段，兼容旧字符串格式。"""
+    if not isinstance(raw_characters, list):
+        return []
+
+    normalized = []
+    seen = set()
+    org_keywords = ("宗", "门", "派", "阁", "会", "帮", "盟", "国", "军", "司", "院", "族", "府", "殿", "教", "堂", "队", "集团", "组织", "势力")
+
+    for item in raw_characters:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            item_type = str(item.get("type") or "character").strip().lower()
+        else:
+            name = str(item or "").strip()
+            item_type = "organization" if any(keyword in name for keyword in org_keywords) else "character"
+
+        if not name:
+            continue
+        if item_type not in {"character", "organization"}:
+            item_type = "character"
+
+        key = (name, item_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"name": name, "type": item_type})
+
+    return normalized
+
+
+def _normalize_outline_data(outline_data: list, expected_count: int, start_index: int) -> list:
+    """校验并标准化 AI 返回的大纲数据。"""
+    if not isinstance(outline_data, list):
+        raise JSONParseError("大纲数据必须是数组", json.dumps(outline_data, ensure_ascii=False, default=str))
+
+    if expected_count is not None and len(outline_data) != expected_count:
+        raise JSONParseError(f"大纲数量不匹配：期望{expected_count}章，实际{len(outline_data)}章", json.dumps(outline_data, ensure_ascii=False, default=str))
+
+    normalized = []
+    for idx, chapter_data in enumerate(outline_data):
+        if not isinstance(chapter_data, dict):
+            raise JSONParseError(f"第{idx + 1}项不是有效对象", json.dumps(outline_data, ensure_ascii=False, default=str))
+
+        chapter_number = start_index + idx
+        title = str(chapter_data.get("title") or f"第{chapter_number}章").strip()
+        summary = str(chapter_data.get("summary") or chapter_data.get("content") or "").strip()
+        if not summary:
+            raise JSONParseError(f"第{chapter_number}章缺少 summary/content", json.dumps(chapter_data, ensure_ascii=False, default=str))
+
+        scenes = chapter_data.get("scenes")
+        if not isinstance(scenes, list):
+            scenes = []
+        key_points = chapter_data.get("key_points")
+        if not isinstance(key_points, list):
+            key_points = []
+
+        normalized_chapter = dict(chapter_data)
+        normalized_chapter["chapter_number"] = chapter_number
+        normalized_chapter["title"] = title
+        normalized_chapter["summary"] = summary
+        normalized_chapter["scenes"] = [str(scene).strip() for scene in scenes if str(scene).strip()]
+        normalized_chapter["characters"] = _normalize_character_entries(chapter_data.get("characters", []))
+        normalized_chapter["key_points"] = [str(point).strip() for point in key_points if str(point).strip()]
+        normalized_chapter["emotion"] = str(chapter_data.get("emotion") or chapter_data.get("emotional_tone") or "未设定").strip()
+        normalized_chapter["goal"] = str(chapter_data.get("goal") or chapter_data.get("narrative_goal") or "未设定").strip()
+        normalized.append(normalized_chapter)
+
+    return normalized
+
+
 def _parse_ai_response(ai_response: str, raise_on_error: bool = False) -> list:
     """
     解析AI响应为章节数据列表（使用统一的JSON清洗方法）
@@ -929,6 +1000,7 @@ async def _save_outlines(
     project = project_result.scalar_one_or_none()
     
     outlines = []
+    outline_data = _normalize_outline_data(outline_data, expected_count=len(outline_data), start_index=start_index)
     
     for idx, chapter_data in enumerate(outline_data):
         order_idx = chapter_data.get("chapter_number", start_index + idx)
@@ -971,7 +1043,7 @@ async def _save_outlines(
                 summary=chapter_summary,
                 chapter_number=outline.order_index,
                 sub_index=1,
-                outline_id=None,  # one-to-one模式不关联outline_id
+                outline_id=outline.id,
                 status='pending',
                 content=""
             )
@@ -1061,7 +1133,8 @@ async def new_outline_generator(
         async for chunk in user_ai_service.generate_text_stream(
             prompt=prompt,
             provider=provider_param,
-            model=model_param
+            model=model_param,
+            auto_mcp=enable_mcp
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -1093,17 +1166,18 @@ async def new_outline_generator(
         while retry_count <= max_retries:
             try:
                 # 使用 raise_on_error=True，解析失败时抛出异常
-                outline_data = _parse_ai_response(ai_content, raise_on_error=True)
+                outline_data = _normalize_outline_data(
+                    _parse_ai_response(ai_content, raise_on_error=True),
+                    expected_count=chapter_count,
+                    start_index=1
+                )
                 break  # 解析成功，跳出循环
                 
             except JSONParseError as e:
                 retry_count += 1
                 if retry_count > max_retries:
-                    # 超过最大重试次数，使用fallback数据
-                    logger.error(f"❌ 大纲解析失败，已达最大重试次数({max_retries})，使用fallback数据")
-                    yield await tracker.warning("解析失败，使用备用数据")
-                    outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                    break
+                    logger.error(f"❌ 大纲解析失败，已达最大重试次数({max_retries})")
+                    raise e
                 
                 logger.warning(f"⚠️ JSON解析失败（第{retry_count}次），正在重试...")
                 yield await tracker.retry(retry_count, max_retries, "JSON解析失败")
@@ -1121,7 +1195,8 @@ async def new_outline_generator(
                 async for chunk in user_ai_service.generate_text_stream(
                     prompt=retry_prompt,
                     provider=provider_param,
-                    model=model_param
+                    model=model_param,
+                    auto_mcp=enable_mcp
                 ):
                     chunk_count += 1
                     accumulated_text += chunk
@@ -1516,7 +1591,8 @@ async def continue_outline_generator(
             async for chunk in user_ai_service.generate_text_stream(
                 prompt=prompt,
                 provider=provider_param,
-                model=model_param
+                model=model_param,
+                auto_mcp=data.get("enable_mcp", True)
             ):
                 chunk_count += 1
                 accumulated_text += chunk
@@ -1550,17 +1626,18 @@ async def continue_outline_generator(
             while retry_count <= max_retries:
                 try:
                     # 使用 raise_on_error=True，解析失败时抛出异常
-                    outline_data = _parse_ai_response(ai_content, raise_on_error=True)
+                    outline_data = _normalize_outline_data(
+                        _parse_ai_response(ai_content, raise_on_error=True),
+                        expected_count=current_batch_size,
+                        start_index=current_start_chapter
+                    )
                     break  # 解析成功，跳出循环
                     
                 except JSONParseError as e:
                     retry_count += 1
                     if retry_count > max_retries:
-                        # 超过最大重试次数，使用fallback数据
-                        logger.error(f"❌ 第{batch_num + 1}批解析失败，已达最大重试次数({max_retries})，使用fallback数据")
-                        yield await tracker.warning(f"第{str(batch_num + 1)}批解析失败，使用备用数据")
-                        outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                        break
+                        logger.error(f"❌ 第{batch_num + 1}批解析失败，已达最大重试次数({max_retries})")
+                        raise e
                     
                     logger.warning(f"⚠️ 第{batch_num + 1}批JSON解析失败（第{retry_count}次），正在重试...")
                     yield await tracker.retry(retry_count, max_retries, f"第{str(batch_num + 1)}批解析失败")
@@ -1578,7 +1655,8 @@ async def continue_outline_generator(
                     async for chunk in user_ai_service.generate_text_stream(
                         prompt=retry_prompt,
                         provider=provider_param,
-                        model=model_param
+                        model=model_param,
+                        auto_mcp=data.get("enable_mcp", True)
                     ):
                         chunk_count += 1
                         accumulated_text += chunk
@@ -1860,7 +1938,7 @@ async def _run_new_outline_bg(
     await tracker.generating(current_chars=0, estimated_total=estimated_total)
 
     async for chunk in user_ai_service.generate_text_stream(
-        prompt=prompt, provider=provider_param, model=model_param
+        prompt=prompt, provider=provider_param, model=model_param, auto_mcp=data.get("enable_mcp", True)
     ):
         chunk_count += 1
         accumulated_text += chunk
@@ -1883,133 +1961,59 @@ async def _run_new_outline_bg(
 
     while retry_count <= max_retries:
         try:
-            outline_data = _parse_ai_response(ai_content, raise_on_error=True)
+            outline_data = _normalize_outline_data(
+                _parse_ai_response(ai_content, raise_on_error=True),
+                expected_count=chapter_count,
+                start_index=1
+            )
             break
         except JSONParseError:
             retry_count += 1
             if retry_count > max_retries:
-                outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                break
+                raise
             await tracker.retry(retry_count, max_retries, "JSON解析失败")
             tracker.reset_generating_progress()
             accumulated_text = ""
             retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
             async for chunk in user_ai_service.generate_text_stream(
-                prompt=retry_prompt, provider=provider_param, model=model_param
+                prompt=retry_prompt, provider=provider_param, model=model_param, auto_mcp=data.get("enable_mcp", True)
             ):
                 accumulated_text += chunk
             ai_content = accumulated_text
 
-    # ✅ P0修复：先保存新数据，再删除旧数据
-    await tracker.saving("保存新大纲到数据库...", 0.2)
-    outlines = await _save_outlines(project_id, outline_data, db, start_index=1)
-    await db.commit()  # 先提交新数据！
-    logger.info(f"✅ 新大纲已保存: {len(outlines)} 章")
+    await tracker.saving("清理旧数据...", 0.2)
+    from sqlalchemy import delete as sql_delete
+    from app.models.memory import PlotAnalysis, StoryMemory
 
-    # 新数据安全后，再清理旧数据
-    await tracker.saving("清理旧数据...", 0.6)
+    old_chapters_result = await db.execute(select(Chapter).where(Chapter.project_id == project_id))
+    old_chapters = old_chapters_result.scalars().all()
+    old_chapter_ids = [ch.id for ch in old_chapters]
+    deleted_word_count = sum(ch.word_count or 0 for ch in old_chapters)
+
+    for ch in old_chapters:
+        try:
+            await memory_service.delete_chapter_memories(
+                user_id=user_id_for_mcp, project_id=project_id, chapter_id=ch.id
+            )
+        except Exception as mem_err:
+            logger.debug(f"清理章节 {ch.id[:8]} 向量记忆失败: {mem_err}")
+
     try:
-        from sqlalchemy import delete as sql_delete
+        await foreshadow_service.clear_project_foreshadows_for_reset(db, project_id)
+    except Exception as fs_err:
+        logger.warning(f"⚠️ 清理伏笔失败（继续重建大纲）: {fs_err}")
 
-        # 获取旧大纲（不包括刚保存的）
-        new_outline_ids = [o.id for o in outlines]
-        old_outlines_result = await db.execute(
-            select(Outline).where(
-                Outline.project_id == project_id,
-                ~Outline.id.in_(new_outline_ids)
-            )
-        )
-        old_outlines = old_outlines_result.scalars().all()
+    await db.execute(sql_delete(PlotAnalysis).where(PlotAnalysis.project_id == project_id))
+    await db.execute(sql_delete(StoryMemory).where(StoryMemory.project_id == project_id))
+    await db.execute(sql_delete(Chapter).where(Chapter.project_id == project_id))
+    await db.execute(sql_delete(Outline).where(Outline.project_id == project_id))
+    if deleted_word_count > 0:
+        project.current_words = max(0, (project.current_words or 0) - deleted_word_count)
+    logger.info(f"✅ 旧数据清理完成: 删除 {len(old_chapter_ids)} 个旧章节")
 
-        if old_outlines:
-            old_outline_ids = [o.id for o in old_outlines]
-
-            # 清理旧章节
-            old_chapters_result = await db.execute(
-                select(Chapter).where(
-                    Chapter.project_id == project_id,
-                    ~Chapter.id.in_([ch.id for ch in await db.execute(
-                        select(Chapter).where(Chapter.outline_id.in_(new_outline_ids) if new_outline_ids else False)
-                    ).scalars().all()] if new_outline_ids else [])
-                )
-            )
-            # 简化：删除不属于新大纲的旧章节
-            # 先获取新大纲对应的章节（one-to-one模式下通过chapter_number匹配）
-            new_order_indexes = [o.order_index for o in outlines]
-
-            if project.outline_mode == 'one-to-one':
-                old_chapters_result = await db.execute(
-                    select(Chapter).where(
-                        Chapter.project_id == project_id,
-                        ~Chapter.chapter_number.in_(new_order_indexes)
-                    )
-                )
-            else:
-                old_chapters_result = await db.execute(
-                    select(Chapter).where(
-                        Chapter.project_id == project_id,
-                        Chapter.outline_id.in_(old_outline_ids)
-                    )
-                )
-
-            old_chapters = old_chapters_result.scalars().all()
-            deleted_word_count = sum(ch.word_count or 0 for ch in old_chapters)
-
-            # 清理伏笔和记忆
-            for ch in old_chapters:
-                try:
-                    await memory_service.delete_chapter_memories(
-                        user_id=user_id_for_mcp, project_id=project_id, chapter_id=ch.id
-                    )
-                except Exception:
-                    pass
-                try:
-                    await foreshadow_service.delete_chapter_foreshadows(
-                        db=db, project_id=project_id, chapter_id=ch.id, only_analysis_source=True
-                    )
-                except Exception:
-                    pass
-
-            # 删除旧章节
-            if project.outline_mode == 'one-to-one':
-                await db.execute(
-                    sql_delete(Chapter).where(
-                        Chapter.project_id == project_id,
-                        ~Chapter.chapter_number.in_(new_order_indexes)
-                    )
-                )
-            else:
-                await db.execute(
-                    sql_delete(Chapter).where(Chapter.outline_id.in_(old_outline_ids))
-                )
-
-            if deleted_word_count > 0:
-                project.current_words = max(0, project.current_words - deleted_word_count)
-
-            # 清理伏笔
-            try:
-                await foreshadow_service.clear_project_foreshadows_for_reset(db, project_id)
-            except Exception:
-                pass
-
-            # 清理分析
-            try:
-                from app.models.memory import PlotAnalysis
-                await db.execute(sql_delete(PlotAnalysis).where(PlotAnalysis.project_id == project_id))
-            except Exception:
-                pass
-
-            # 删除旧大纲
-            await db.execute(
-                sql_delete(Outline).where(Outline.id.in_(old_outline_ids))
-            )
-
-            await db.commit()
-            logger.info(f"✅ 旧数据清理完成: 删除 {len(old_outlines)} 个旧大纲, {len(old_chapters)} 个旧章节")
-
-    except Exception as e:
-        logger.error(f"❌ 清理旧数据失败（新数据已安全保存）: {e}")
-        # 新数据已保存，旧数据清理失败不影响
+    await tracker.saving("保存新大纲到数据库...", 0.6)
+    outlines = await _save_outlines(project_id, outline_data, db, start_index=1)
+    logger.info(f"✅ 新大纲已保存: {len(outlines)} 章")
 
     # 角色校验
     await tracker.saving("🎭 校验角色信息...", 0.7)
@@ -2163,7 +2167,10 @@ async def _run_continue_outline_bg(
         estimated_chars = current_batch_size * 1000
 
         async for chunk in user_ai_service.generate_text_stream(
-            prompt=prompt, provider=data.get("provider"), model=data.get("model")
+            prompt=prompt,
+            provider=data.get("provider"),
+            model=data.get("model"),
+            auto_mcp=data.get("enable_mcp", True)
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -2181,19 +2188,25 @@ async def _run_continue_outline_bg(
         outline_data = None
         while retry_count <= max_retries:
             try:
-                outline_data = _parse_ai_response(accumulated_text, raise_on_error=True)
+                outline_data = _normalize_outline_data(
+                    _parse_ai_response(accumulated_text, raise_on_error=True),
+                    expected_count=current_batch_size,
+                    start_index=current_start_chapter
+                )
                 break
             except JSONParseError:
                 retry_count += 1
                 if retry_count > max_retries:
-                    outline_data = _parse_ai_response(accumulated_text, raise_on_error=False)
-                    break
+                    raise
                 await tracker.retry(retry_count, max_retries, "JSON解析失败")
                 tracker.reset_generating_progress()
                 accumulated_text = ""
                 retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
                 async for chunk in user_ai_service.generate_text_stream(
-                    prompt=retry_prompt, provider=data.get("provider"), model=data.get("model")
+                    prompt=retry_prompt,
+                    provider=data.get("provider"),
+                    model=data.get("model"),
+                    auto_mcp=data.get("enable_mcp", True)
                 ):
                     accumulated_text += chunk
 
@@ -2206,16 +2219,24 @@ async def _run_continue_outline_bg(
         all_new_outlines.extend(batch_outlines)
         current_start_chapter += current_batch_size
 
-        # 角色校验
+        # 角色/组织校验，并刷新下一批上下文
         try:
-            await _check_and_create_missing_characters_from_outlines(
+            char_check_result = await _check_and_create_missing_characters_from_outlines(
                 outline_data=outline_data, project_id=project_id, db=db,
                 user_ai_service=user_ai_service, user_id=user_id,
                 enable_mcp=data.get("enable_mcp", True), tracker=tracker
             )
+            org_check_result = await _check_and_create_missing_organizations_from_outlines(
+                outline_data=outline_data, project_id=project_id, db=db,
+                user_ai_service=user_ai_service, user_id=user_id,
+                enable_mcp=data.get("enable_mcp", True), tracker=tracker
+            )
+            if char_check_result.get("created_count", 0) or org_check_result.get("created_count", 0):
+                characters_result = await db.execute(select(Character).where(Character.project_id == project_id))
+                characters = characters_result.scalars().all()
             await db.commit()
         except Exception:
-            pass
+            logger.warning("后台大纲续写角色/组织校验失败", exc_info=True)
 
     # 保存结果
     result_data = {

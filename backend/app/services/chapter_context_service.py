@@ -11,12 +11,94 @@ from app.models.project import Project
 from app.models.outline import Outline
 from app.models.character import Character
 from app.models.career import Career, CharacterCareer
-from app.models.memory import StoryMemory
+from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.foreshadow import Foreshadow
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
 from app.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+STATUS_LABELS = {
+    "active": "活跃",
+    "deceased": "死亡",
+    "missing": "失踪",
+    "retired": "退场",
+    "destroyed": "覆灭",
+}
+
+
+def _append_current_state_lines(info_lines: List[str], character: Character) -> None:
+    """向角色上下文注入分析系统维护的最新状态。"""
+    status = character.status or "active"
+    status_label = STATUS_LABELS.get(status, status)
+    status_line = f"  当前状态: {status_label}"
+    if character.status_changed_chapter:
+        status_line += f"（第{character.status_changed_chapter}章变更）"
+    info_lines.append(status_line)
+
+    if character.current_state:
+        current_state = character.current_state[:150] if len(character.current_state) > 150 else character.current_state
+        state_line = f"  当前心理/处境: {current_state}"
+        if character.state_updated_chapter:
+            state_line += f"（第{character.state_updated_chapter}章更新）"
+        info_lines.append(state_line)
+
+
+def _stringify_list_items(value: Any, limit: int = 5) -> List[str]:
+    """将结构化字段中的列表项压缩为适合语义检索的短文本。"""
+    if not value:
+        return []
+    items = value if isinstance(value, list) else [value]
+    result = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            text = item.get("name") or item.get("content") or item.get("title") or ""
+        else:
+            text = str(item)
+        text = text.strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _format_memory_query_section(label: str, values: List[str]) -> Optional[str]:
+    """格式化结构化记忆检索片段。"""
+    values = [value.strip() for value in values if value and value.strip()]
+    if not values:
+        return None
+    return f"{label}：{'；'.join(values)}"
+
+
+def _select_memories_with_fallback(
+    memories: List[Dict[str, Any]],
+    threshold: float,
+    fallback_count: int,
+    log_prefix: str
+) -> List[Dict[str, Any]]:
+    """按相似度筛选记忆；无高分命中时保留少量top结果作为兜底。"""
+    if not memories:
+        return []
+
+    for index, mem in enumerate(memories[:5], start=1):
+        logger.info(
+            f"  🔎 {log_prefix}候选记忆#{index}: "
+            f"similarity={mem.get('similarity', 0):.4f}, "
+            f"distance={mem.get('distance', 0):.4f}, "
+            f"chapter={mem.get('metadata', {}).get('chapter_number', '未知')}, "
+            f"content={str(mem.get('content', ''))[:60]}"
+        )
+
+    filtered = [mem for mem in memories if mem.get('similarity', 0) > threshold]
+    if filtered:
+        return filtered
+
+    fallback = memories[:fallback_count]
+    logger.info(
+        f"  ℹ️ {log_prefix}无记忆超过相似度阈值{threshold:.2f}，"
+        f"降级保留top {len(fallback)}条"
+    )
+    return fallback
 
 
 @dataclass
@@ -25,7 +107,7 @@ class OneToManyContext:
     1-N模式章节上下文数据结构
     
     采用RTCO框架的分层设计：
-    - P0-核心：大纲（含最近10章规划）、衔接锚点（500字+摘要）、字数要求
+    - P0-核心：大纲（含最近10章规划）、衔接锚点（上一章完整正文+摘要）、字数要求
     - P1-重要：角色（完整版含关系/组织/职业）、职业详情、情感基调
     - P2-参考：记忆（始终启用，相关度>0.6）、伏笔提醒
     """
@@ -33,7 +115,7 @@ class OneToManyContext:
     # === P0-核心信息 ===
     chapter_outline: str = ""           # 本章大纲（从expansion_plan构建）
     recent_chapters_context: Optional[str] = None  # 最近10章expansion_plan摘要
-    continuation_point: Optional[str] = None  # 衔接锚点（统一500字）
+    continuation_point: Optional[str] = None  # 衔接锚点（上一章完整正文）
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     previous_chapter_events: Optional[List[str]] = None  # 上一章关键事件
     target_word_count: int = 3000
@@ -82,7 +164,7 @@ class OneToOneContext:
     
     采用RTCO框架的分层设计：
     - P0-核心：从outline.structure提取的大纲、字数要求
-    - P1-重要：上一章最后500字、从structure.characters获取的角色、本章职业体系
+    - P1-重要：最近章节摘要、上一章完整正文、从structure.characters获取的角色、本章职业体系
     - P2-参考：伏笔提醒、相关记忆（相关度>0.6）
     """
     
@@ -103,7 +185,8 @@ class OneToOneContext:
     theme: str = ""
     
     # === P1-重要信息 ===
-    continuation_point: Optional[str] = None  # 上一章最后500字
+    recent_chapters_context: Optional[str] = None  # 最近N章剧情摘要
+    continuation_point: Optional[str] = None  # 上一章完整正文
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     chapter_characters: str = ""        # 从structure.characters获取
     chapter_careers: Optional[str] = None  # 本章涉及的职业完整信息
@@ -118,7 +201,7 @@ class OneToOneContext:
     def get_total_context_length(self) -> int:
         """计算总上下文长度"""
         total = 0
-        for field_name in ['chapter_outline', 'continuation_point', 'previous_chapter_summary',
+        for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point', 'previous_chapter_summary',
                           'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
                           'relevant_memories']:
             value = getattr(self, field_name, None)
@@ -135,7 +218,7 @@ class OneToManyContextBuilder:
     
     上下文构建策略：
     - 章节大纲：本章expansion_plan + 最近10章expansion_plan摘要
-    - 衔接锚点：统一上一章末尾500字 + 摘要
+    - 衔接锚点：上一章完整正文 + 摘要
     - 角色信息：完整版（含年龄、外貌、背景、关系、组织、职业）
     - 职业详情：独立的chapter_careers字段，含完整阶段体系
     - 相关记忆：始终启用（相关度>0.6）
@@ -143,8 +226,11 @@ class OneToManyContextBuilder:
     """
     
     # 配置常量
-    ENDING_LENGTH = 500          # 统一衔接长度500字
-    MEMORY_COUNT = 10            # 记忆条数
+    ENDING_LENGTH = None         # None 表示使用上一章完整正文
+    MEMORY_CANDIDATE_LIMIT = 50  # 向量检索候选池大小
+    MEMORY_CONTEXT_LIMIT = 10    # 最终注入提示词的记忆条数
+    MEMORY_FALLBACK_COUNT = 5    # 无高分命中时保留的候选数量
+    MEMORY_COUNT = MEMORY_CONTEXT_LIMIT  # 兼容旧统计/引用
     MEMORY_SIMILARITY_THRESHOLD = 0.6  # 记忆相关度阈值
     RECENT_CHAPTERS_COUNT = 10   # 最近章节规划数量
     
@@ -219,7 +305,7 @@ class OneToManyContextBuilder:
             )
             logger.info(f"  ✅ 最近章节规划: {len(context.recent_chapters_context or '')}字符")
         
-        # === 衔接锚点（统一500字 + 摘要）===
+        # === 衔接锚点（上一章完整正文 + 摘要）===
         if chapter_number == 1:
             context.continuation_point = None
             context.previous_chapter_summary = None
@@ -248,7 +334,7 @@ class OneToManyContextBuilder:
         # === P2-参考信息（始终启用）===
         if self.memory_service:
             context.relevant_memories = await self._get_relevant_memories_enhanced(
-                user_id, project.id, chapter_number,
+                user_id, project.id, chapter,
                 context.chapter_outline, db
             )
             logger.info(f"  ✅ 相关记忆: {len(context.relevant_memories or '')}字符")
@@ -471,6 +557,7 @@ class OneToManyContextBuilder:
             if c.background:
                 background_preview = c.background[:150] if len(c.background) > 150 else c.background
                 info_lines.append(f"  背景: {background_preview}")
+            _append_current_state_lines(info_lines, c)
             
             # 职业信息
             if c.id in char_career_relations:
@@ -587,7 +674,7 @@ class OneToManyContextBuilder:
         """构建最近10章的expansion_plan摘要"""
         try:
             result = await db.execute(
-                select(Chapter.chapter_number, Chapter.title, Chapter.expansion_plan, Chapter.summary)
+                select(Chapter.id, Chapter.chapter_number, Chapter.title, Chapter.expansion_plan, Chapter.summary)
                 .where(Chapter.project_id == project_id)
                 .where(Chapter.chapter_number < chapter.chapter_number)
                 .order_by(Chapter.chapter_number.desc())
@@ -599,11 +686,46 @@ class OneToManyContextBuilder:
                 return None
             
             # 按章节号正序排列
-            recent_chapters = sorted(recent_chapters, key=lambda x: x[0])
+            recent_chapters = sorted(recent_chapters, key=lambda x: x[1])
+
+            chapter_ids = [row[0] for row in recent_chapters]
+            summary_map: Dict[str, str] = {}
+            analysis_map: Dict[str, Any] = {}
+            if chapter_ids:
+                summary_result = await db.execute(
+                    select(StoryMemory.chapter_id, StoryMemory.content)
+                    .where(StoryMemory.chapter_id.in_(chapter_ids))
+                    .where(StoryMemory.memory_type == 'chapter_summary')
+                )
+                summary_map = {chapter_id: content for chapter_id, content in summary_result.all()}
+
+                analysis_result = await db.execute(
+                    select(PlotAnalysis.chapter_id, PlotAnalysis.plot_points, PlotAnalysis.character_states)
+                    .where(PlotAnalysis.chapter_id.in_(chapter_ids))
+                )
+                analysis_map = {
+                    chapter_id: {"plot_points": plot_points or [], "character_states": character_states or []}
+                    for chapter_id, plot_points, character_states in analysis_result.all()
+                }
             
             lines = ["【最近章节规划】"]
-            for ch_num, ch_title, expansion_plan, summary in recent_chapters:
-                if expansion_plan:
+            for ch_id, ch_num, ch_title, expansion_plan, summary in recent_chapters:
+                real_summary = summary_map.get(ch_id)
+                analysis = analysis_map.get(ch_id)
+                if real_summary:
+                    line = f"第{ch_num}章《{ch_title}》：{real_summary[:180]}"
+                    if analysis and analysis.get("plot_points"):
+                        points = []
+                        for point in analysis["plot_points"][:3]:
+                            if isinstance(point, dict):
+                                points.append(str(point.get("content") or ""))
+                            else:
+                                points.append(str(point))
+                        points = [p for p in points if p]
+                        if points:
+                            line += f"（真实情节点：{'；'.join(points)}）"
+                    lines.append(line)
+                elif expansion_plan:
                     try:
                         plan = json.loads(expansion_plan)
                         plot_summary = plan.get('plot_summary', '')
@@ -631,36 +753,40 @@ class OneToManyContextBuilder:
         self,
         user_id: str,
         project_id: str,
-        chapter_number: int,
+        chapter: Chapter,
         chapter_outline: str,
         db: AsyncSession
     ) -> Optional[str]:
-        """获取相关记忆（始终启用，相关度>0.6）"""
+        """获取相关记忆（优先使用1-N expansion_plan中的人物、事件、目标和冲突）。"""
         if not self.memory_service:
             return None
         
         try:
-            query_text = chapter_outline[:500].replace('\n', ' ')
+            chapter_number = chapter.chapter_number
+            query_text = self._build_memory_query_from_expansion_plan(chapter, chapter_outline)
+            logger.info(f"  🔍 [1-N] 结构化记忆查询: {query_text[:180]}...")
             
             relevant_memories = await self.memory_service.search_memories(
                 user_id=user_id,
                 project_id=project_id,
                 query=query_text,
-                limit=15,
-                min_importance=0.0
+                limit=self.MEMORY_CANDIDATE_LIMIT,
+                min_importance=0.0,
+                chapter_range=(1, max(0, chapter_number - 1))
             )
             
-            # 过滤相关度>0.6
-            filtered_memories = [
-                mem for mem in relevant_memories
-                if mem.get('similarity', 0) > self.MEMORY_SIMILARITY_THRESHOLD
-            ]
+            filtered_memories = _select_memories_with_fallback(
+                memories=relevant_memories,
+                threshold=self.MEMORY_SIMILARITY_THRESHOLD,
+                fallback_count=self.MEMORY_FALLBACK_COUNT,
+                log_prefix="[1-N] "
+            )
             
             if not filtered_memories:
                 return None
             
             memory_lines = ["【相关记忆】"]
-            for mem in filtered_memories[:self.MEMORY_COUNT]:
+            for mem in filtered_memories[:self.MEMORY_CONTEXT_LIMIT]:
                 similarity = mem.get('similarity', 0)
                 content = mem.get('content', '')[:100]
                 memory_lines.append(f"- (相关度:{similarity:.2f}) {content}")
@@ -671,13 +797,38 @@ class OneToManyContextBuilder:
             logger.error(f"❌ 获取相关记忆失败: {str(e)}")
             return None
     
+    def _build_memory_query_from_expansion_plan(
+        self,
+        chapter: Chapter,
+        chapter_outline: str
+    ) -> str:
+        """从1-N章节扩展计划构建高信号记忆检索query。"""
+        sections = []
+        if chapter.expansion_plan:
+            try:
+                plan = json.loads(chapter.expansion_plan)
+                sections.extend(filter(None, [
+                    _format_memory_query_section("人物", _stringify_list_items(plan.get("character_focus"), limit=8)),
+                    _format_memory_query_section("关键事件", _stringify_list_items(plan.get("key_events"), limit=6)),
+                    _format_memory_query_section("叙事目标", _stringify_list_items(plan.get("narrative_goal"), limit=1)),
+                    _format_memory_query_section("冲突", _stringify_list_items(plan.get("conflict_type"), limit=1)),
+                    _format_memory_query_section("情绪", _stringify_list_items(plan.get("emotional_tone"), limit=1)),
+                ]))
+            except json.JSONDecodeError:
+                logger.warning(f"  ⚠️ [1-N] expansion_plan解析失败，使用章节大纲兜底: chapter={chapter.id}")
+
+        if sections:
+            return "\n".join(sections)[:800]
+
+        return chapter_outline[:500].replace('\n', ' ')
+    
     async def _get_last_ending_enhanced(
         self,
         chapter: Chapter,
         db: AsyncSession,
-        max_length: int
+        max_length: Optional[int]
     ) -> Dict[str, Any]:
-        """获取增强版衔接锚点（含上一章摘要和关键事件）"""
+        """获取增强版衔接锚点（含上一章完整正文、摘要和关键事件）"""
         result_info = {
             'ending_text': None,
             'summary': None,
@@ -700,10 +851,10 @@ class OneToManyContextBuilder:
         if not prev_chapter:
             return result_info
         
-        # 1. 提取结尾内容
+        # 1. 提取上一章完整正文；max_length 仅作为兼容兜底
         if prev_chapter.content:
             content = prev_chapter.content.strip()
-            if len(content) <= max_length:
+            if max_length is None or len(content) <= max_length:
                 result_info['ending_text'] = content
             else:
                 result_info['ending_text'] = content[-max_length:]
@@ -969,14 +1120,20 @@ class OneToOneContextBuilder:
     2. target_word_count
     
     P1重要信息：
-    1. 上一章完整内容的最后500字作为参考
-    2. 根据structure中的characters获取角色信息（含职业）
+    1. 最近N章剧情摘要作为连续性参考
+    2. 上一章完整正文作为参考
+    3. 根据structure中的characters获取角色信息（含职业）
     
     P2参考信息：
     1. 伏笔提醒
     2. 根据角色名检索相关记忆（相关度>0.6）
     """
     
+    RECENT_CHAPTERS_COUNT = 10   # 最近章节摘要数量
+    MEMORY_CANDIDATE_LIMIT = 50  # 向量检索候选池大小
+    MEMORY_CONTEXT_LIMIT = 10    # 最终注入提示词的记忆条数
+    MEMORY_FALLBACK_COUNT = 5    # 无高分命中时保留的候选数量
+
     def __init__(self, memory_service=None, foreshadow_service=None):
         """
         初始化构建器
@@ -1032,7 +1189,14 @@ class OneToOneContextBuilder:
         logger.info(f"  ✅ P0-大纲信息: {len(context.chapter_outline)}字符")
         
         # === P1-重要信息 ===
-        # 1. 获取上一章内容的最后500字和上一章摘要
+        # 0. 最近N章剧情摘要窗口
+        if chapter_number > 1:
+            context.recent_chapters_context = await self._build_recent_chapters_context(
+                chapter, project.id, db
+            )
+            logger.info(f"  ✅ P1-最近章节摘要: {len(context.recent_chapters_context or '')}字符")
+
+        # 1. 获取上一章完整正文和上一章摘要
         if chapter_number > 1:
             # 查找前一章：不假设序号连续，取 chapter_number < 当前章 中最大的
             prev_chapter_result = await db.execute(
@@ -1046,11 +1210,8 @@ class OneToOneContextBuilder:
             
             if prev_chapter and prev_chapter.content:
                 content = prev_chapter.content.strip()
-                if len(content) <= 500:
-                    context.continuation_point = content
-                else:
-                    context.continuation_point = content[-500:]
-                logger.info(f"  ✅ P1-上一章内容(最后500字): {len(context.continuation_point)}字符")
+                context.continuation_point = content
+                logger.info(f"  ✅ P1-上一章完整正文: {len(context.continuation_point)}字符")
                 
                 # 获取上一章摘要（优先从记忆系统获取，其次使用章节摘要）
                 summary_result = await db.execute(
@@ -1139,27 +1300,28 @@ class OneToOneContextBuilder:
         # 2. 根据大纲内容检索相关记忆（相关度>0.4）
         if self.memory_service and context.chapter_outline:
             try:
-                # 使用大纲内容作为查询（截取前500字符以避免过长）
-                query_text = context.chapter_outline[:500].replace('\n', ' ')
-                logger.info(f"  🔍 记忆查询关键词: {query_text[:100]}...")
+                query_text = self._build_memory_query_from_outline_structure(outline, context.chapter_outline)
+                logger.info(f"  🔍 [1-1] 结构化记忆查询: {query_text[:180]}...")
                 
                 relevant_memories = await self.memory_service.search_memories(
                     user_id=user_id,
                     project_id=project.id,
                     query=query_text,
-                    limit=15,
-                    min_importance=0.0
+                    limit=self.MEMORY_CANDIDATE_LIMIT,
+                    min_importance=0.0,
+                    chapter_range=(1, max(0, chapter_number - 1))
                 )
                 
-                # 过滤相关度阈值为0.6
-                filtered_memories = [
-                    mem for mem in relevant_memories
-                    if mem.get('similarity', 0) > 0.6
-                ]
+                filtered_memories = _select_memories_with_fallback(
+                    memories=relevant_memories,
+                    threshold=0.6,
+                    fallback_count=self.MEMORY_FALLBACK_COUNT,
+                    log_prefix="[1-1] "
+                )
                 
                 if filtered_memories:
                     memory_lines = ["【相关记忆】"]
-                    for mem in filtered_memories[:10]:  # 最多显示10条
+                    for mem in filtered_memories[:self.MEMORY_CONTEXT_LIMIT]:
                         similarity = mem.get('similarity', 0)
                         content = mem.get('content', '')[:100]
                         memory_lines.append(f"- (相关度:{similarity:.2f}) {content}")
@@ -1182,6 +1344,7 @@ class OneToOneContextBuilder:
             "mode": "one-to-one",
             "chapter_number": chapter_number,
             "has_previous_content": context.continuation_point is not None,
+            "recent_context_length": len(context.recent_chapters_context or ""),
             "previous_content_length": len(context.continuation_point or ""),
             "previous_summary_length": len(context.previous_chapter_summary or ""),
             "outline_length": len(context.chapter_outline),
@@ -1195,6 +1358,117 @@ class OneToOneContextBuilder:
         logger.info(f"📊 [1-1模式] 上下文构建完成: 总长度 {context.context_stats['total_length']} 字符")
         
         return context
+    
+    async def _build_recent_chapters_context(
+        self,
+        chapter: Chapter,
+        project_id: str,
+        db: AsyncSession
+    ) -> Optional[str]:
+        """构建最近N章剧情摘要窗口（1-1模式）。"""
+        try:
+            result = await db.execute(
+                select(Chapter.id, Chapter.chapter_number, Chapter.title, Chapter.summary)
+                .where(Chapter.project_id == project_id)
+                .where(Chapter.chapter_number < chapter.chapter_number)
+                .order_by(Chapter.chapter_number.desc())
+                .limit(self.RECENT_CHAPTERS_COUNT)
+            )
+            recent_chapters = result.all()
+
+            if not recent_chapters:
+                return None
+
+            recent_chapters = sorted(recent_chapters, key=lambda x: x[1])
+            chapter_ids = [row[0] for row in recent_chapters]
+            summary_map: Dict[str, str] = {}
+            analysis_map: Dict[str, Any] = {}
+
+            if chapter_ids:
+                summary_result = await db.execute(
+                    select(StoryMemory.chapter_id, StoryMemory.content)
+                    .where(StoryMemory.chapter_id.in_(chapter_ids))
+                    .where(StoryMemory.memory_type == 'chapter_summary')
+                )
+                summary_map = {chapter_id: content for chapter_id, content in summary_result.all()}
+
+                analysis_result = await db.execute(
+                    select(PlotAnalysis.chapter_id, PlotAnalysis.plot_points)
+                    .where(PlotAnalysis.chapter_id.in_(chapter_ids))
+                )
+                analysis_map = {
+                    chapter_id: plot_points or []
+                    for chapter_id, plot_points in analysis_result.all()
+                }
+
+            lines = [f"【最近{len(recent_chapters)}章剧情摘要】"]
+            for ch_id, ch_num, ch_title, summary in recent_chapters:
+                real_summary = summary_map.get(ch_id) or summary
+                if real_summary:
+                    line = f"第{ch_num}章《{ch_title}》：{real_summary[:180]}"
+                else:
+                    line = f"第{ch_num}章《{ch_title}》"
+
+                plot_points = analysis_map.get(ch_id) or []
+                points = []
+                for point in plot_points[:3]:
+                    if isinstance(point, dict):
+                        points.append(str(point.get("content") or ""))
+                    else:
+                        points.append(str(point))
+                points = [p for p in points if p]
+                if points:
+                    line += f"（关键情节点：{'；'.join(points)}）"
+                lines.append(line)
+
+            return "\n".join(lines) if len(lines) > 1 else None
+        except Exception as e:
+            logger.error(f"❌ 构建1-1最近章节上下文失败: {str(e)}")
+            return None
+    
+    def _build_memory_query_from_outline_structure(
+        self,
+        outline: Optional[Outline],
+        chapter_outline: str
+    ) -> str:
+        """从1-1大纲structure构建高信号记忆检索query。"""
+        sections = []
+        if outline and outline.structure:
+            try:
+                structure = json.loads(outline.structure)
+                raw_characters = structure.get("characters", [])
+                character_names = []
+                organization_names = []
+                for item in raw_characters:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                        if not name:
+                            continue
+                        if item.get("type") == "organization":
+                            organization_names.append(name)
+                        else:
+                            character_names.append(name)
+                    elif isinstance(item, str) and item.strip():
+                        character_names.append(item.strip())
+
+                sections.extend(filter(None, [
+                    _format_memory_query_section("人物", character_names[:8]),
+                    _format_memory_query_section("组织", organization_names[:5]),
+                    _format_memory_query_section("关键事件", _stringify_list_items(structure.get("key_points"), limit=6)),
+                    _format_memory_query_section("叙事目标", _stringify_list_items(structure.get("goal"), limit=1)),
+                    _format_memory_query_section("场景", _stringify_list_items(structure.get("scenes"), limit=2)),
+                    _format_memory_query_section("情绪", _stringify_list_items(structure.get("emotion"), limit=1)),
+                ]))
+
+                if not sections and structure.get("summary"):
+                    sections.append(f"概要：{str(structure['summary'])[:200]}")
+            except json.JSONDecodeError:
+                logger.warning(f"  ⚠️ [1-1] outline.structure解析失败，使用章节大纲兜底: outline={outline.id}")
+
+        if sections:
+            return "\n".join(sections)[:900]
+
+        return chapter_outline[:500].replace('\n', ' ')
     
     def _build_outline_from_structure(
         self,

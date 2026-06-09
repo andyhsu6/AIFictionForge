@@ -135,7 +135,7 @@ class BatchGenerateRequest(BaseModel):
         ge=500,
         le=10000
     )
-    enable_analysis: bool = Field(False, description="是否启用同步分析")
+    enable_analysis: bool = Field(True, description="是否启用同步分析")
     enable_mcp: bool = Field(True, description="是否启用MCP工具增强（搜索参考资料）")
     max_retries: int = Field(3, description="每个章节的最大重试次数", ge=0, le=5)
     model: Optional[str] = Field(None, description="指定使用的AI模型，不提供则使用用户默认模型")

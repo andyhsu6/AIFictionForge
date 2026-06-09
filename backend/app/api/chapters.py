@@ -67,6 +67,14 @@ logger = get_logger(__name__)
 db_write_locks: dict[str, Lock] = {}
 
 
+def _build_lightweight_chapter_summary(content: str, max_length: int = 300) -> str:
+    """生成可立即用于下一章衔接的轻量摘要兜底。"""
+    if not content:
+        return ""
+    normalized = " ".join(content.split())
+    return normalized[:max_length]
+
+
 async def get_db_write_lock(user_id: str) -> Lock:
     """获取或创建用户的数据库写入锁"""
     if user_id not in db_write_locks:
@@ -481,6 +489,36 @@ async def check_prerequisites(db: AsyncSession, chapter: Chapter) -> tuple[bool,
         return False, error_msg, previous_chapters
     
     return True, "", previous_chapters
+
+
+async def check_previous_analysis_ready(db: AsyncSession, chapter: Chapter) -> tuple[bool, str]:
+    """检查上一章分析是否完成，避免下一章使用滞后的记忆和角色状态。"""
+    if chapter.chapter_number <= 1:
+        return True, ""
+
+    prev_result = await db.execute(
+        select(Chapter)
+        .where(Chapter.project_id == chapter.project_id)
+        .where(Chapter.chapter_number < chapter.chapter_number)
+        .order_by(Chapter.chapter_number.desc())
+        .limit(1)
+    )
+    prev_chapter = prev_result.scalar_one_or_none()
+    if not prev_chapter or not prev_chapter.content:
+        return True, ""
+
+    # 只查询标量字段，避免复用当前 Session identity map 中的旧 ORM 实例。
+    analysis_result = await db.execute(
+        select(AnalysisTask.id, AnalysisTask.status)
+        .where(AnalysisTask.chapter_id == prev_chapter.id)
+        .order_by(AnalysisTask.created_at.desc())
+        .limit(1)
+    )
+    analysis_task = analysis_result.first()
+    if analysis_task and analysis_task.status == 'completed':
+        return True, ""
+
+    return False, f"上一章（第{prev_chapter.chapter_number}章）内容分析尚未完成，请等待分析完成后再生成下一章，以保证角色状态、记忆和伏笔连贯"
 
 
 async def build_characters_info_with_careers(
@@ -1363,6 +1401,9 @@ async def generate_chapter_content_stream(
             can_generate, error_msg, previous_chapters = await check_prerequisites(temp_db, chapter)
             if not can_generate:
                 raise HTTPException(status_code=400, detail=error_msg)
+            analysis_ready, analysis_msg = await check_previous_analysis_ready(temp_db, chapter)
+            if not analysis_ready:
+                raise HTTPException(status_code=409, detail=analysis_msg)
             
             # 保存前置章节数据供生成器使用
             previous_chapters_data = [
@@ -1540,6 +1581,7 @@ async def generate_chapter_content_stream(
                             narrative_perspective=chapter_perspective,
                             previous_chapter_content=chapter_context.continuation_point,
                             previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
+                            recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -1682,7 +1724,8 @@ async def generate_chapter_content_stream(
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
                     "tool_choice": "required",
-                    "max_tokens": calculated_max_tokens  # 添加 max_tokens 限制
+                    "max_tokens": calculated_max_tokens,
+                    "auto_mcp": bool(generate_request.enable_mcp)
                 }
                 if custom_model:
                     logger.info(f"  使用自定义模型: {custom_model}")
@@ -1729,6 +1772,7 @@ async def generate_chapter_content_stream(
                 new_word_count = len(full_content)
                 current_chapter.word_count = new_word_count
                 current_chapter.status = "completed"
+                current_chapter.summary = _build_lightweight_chapter_summary(full_content)
                 
                 # 更新项目字数
                 project.current_words = project.current_words - old_word_count + new_word_count
@@ -1889,6 +1933,9 @@ async def generate_chapter_content_background(
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
     if not can_generate:
         raise HTTPException(status_code=400, detail=error_msg)
+    analysis_ready, analysis_msg = await check_previous_analysis_ready(db, chapter)
+    if not analysis_ready:
+        raise HTTPException(status_code=409, detail=analysis_msg)
 
     # 创建后台任务
     from app.services.background_task_service import background_task_service, TaskProgressTracker
@@ -1903,6 +1950,7 @@ async def generate_chapter_content_background(
             "enable_mcp": generate_request.enable_mcp,
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
+            "skill_key": generate_request.skill_key,
         },
         db=db
     )
@@ -1932,6 +1980,7 @@ async def generate_chapter_content_background(
                         "enable_mcp": generate_request.enable_mcp,
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
+                        "skill_key": generate_request.skill_key,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2078,6 +2127,7 @@ async def _run_chapter_generation_bg(
                 narrative_perspective=chapter_perspective,
                 previous_chapter_content=chapter_context.continuation_point,
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
+                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -2218,6 +2268,7 @@ async def _run_chapter_generation_bg(
         new_word_count = len(full_content)
         current_chapter.word_count = new_word_count
         current_chapter.status = "completed"
+        current_chapter.summary = _build_lightweight_chapter_summary(full_content)
 
         # 更新项目字数
         project_result = await db.execute(
@@ -2458,6 +2509,8 @@ async def _run_chapter_generation_bg(
     target_word_count = task_input.get("target_word_count", 3000)
     custom_model = task_input.get("model")
     temp_narrative_perspective = task_input.get("narrative_perspective")
+    enable_mcp = task_input.get("enable_mcp", True)
+    skill_key = task_input.get("skill_key")
     write_lock = await get_db_write_lock(user_id)
 
     # === 加载阶段 ===
@@ -2560,6 +2613,7 @@ async def _run_chapter_generation_bg(
                 narrative_perspective=chapter_perspective,
                 previous_chapter_content=chapter_context.continuation_point,
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
+                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -2629,7 +2683,32 @@ async def _run_chapter_generation_bg(
     await tracker.preparing("准备AI提示词...")
 
     system_prompt_with_style = None
-    if style_content:
+    if skill_key:
+        try:
+            from app.services.skill_loader import get_all_skills_cached
+            skills = get_all_skills_cached()
+            skill = next((s for s in skills if s["template_key"] == skill_key), None)
+            if skill:
+                skill_content = skill["content"]
+                skill_name = skill["template_name"]
+                system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
+
+{skill_content}
+
+⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
+                if style_content:
+                    system_prompt_with_style += f"""
+
+【🎨 写作风格要求 - 补充】
+
+{style_content}"""
+                logger.info(f"⚡ 后台生成 - 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
+            else:
+                logger.warning(f"⚠️ 后台生成 - 未找到 Skill: {skill_key}")
+        except Exception as skill_err:
+            logger.warning(f"⚠️ 后台生成 - 加载 Skill 失败: {skill_err}")
+
+    if not system_prompt_with_style and style_content:
         system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
 
 {style_content}
@@ -2644,7 +2723,8 @@ async def _run_chapter_generation_bg(
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
-        "max_tokens": calculated_max_tokens
+        "max_tokens": calculated_max_tokens,
+        "auto_mcp": bool(enable_mcp)
     }
     if custom_model:
         generate_kwargs["model"] = custom_model
@@ -2695,6 +2775,7 @@ async def _run_chapter_generation_bg(
         new_word_count = len(full_content)
         current_chapter.word_count = new_word_count
         current_chapter.status = "completed"
+        current_chapter.summary = _build_lightweight_chapter_summary(full_content)
 
         # 更新项目字数
         project_result = await db.execute(
@@ -3500,6 +3581,9 @@ async def batch_generate_chapters_in_order(
     can_generate, error_msg, _ = await check_prerequisites(db, first_chapter)
     if not can_generate:
         raise HTTPException(status_code=400, detail=f"起始章节无法生成：{error_msg}")
+
+    # 批量生成必须同步分析，否则下一章无法获得最新角色状态、记忆和伏笔上下文。
+    enable_analysis = True
     
     # 创建批量生成任务
     batch_task = BatchGenerationTask(
@@ -3510,7 +3594,7 @@ async def batch_generate_chapters_in_order(
         chapter_ids=[ch.id for ch in chapters_to_generate],
         style_id=batch_request.style_id,
         target_word_count=batch_request.target_word_count,
-        enable_analysis=batch_request.enable_analysis,
+        enable_analysis=enable_analysis,
         max_retries=batch_request.max_retries,
         status='pending',
         total_chapters=len(chapters_to_generate),
@@ -3528,7 +3612,7 @@ async def batch_generate_chapters_in_order(
     estimated_time = calculate_estimated_time(
         chapter_count=len(chapters_to_generate),
         target_word_count=batch_request.target_word_count,
-        enable_analysis=batch_request.enable_analysis
+        enable_analysis=enable_analysis
     )
     
     logger.info(f"📦 创建批量生成任务: {batch_id}, 章节: 第{start_number}-{end_number}章, 预估耗时: {estimated_time}分钟")
@@ -3540,7 +3624,9 @@ async def batch_generate_chapters_in_order(
         user_id=user_id,
         ai_service=user_ai_service,
         custom_model=batch_request.model,
-        skill_key=batch_request.skill_key
+        skill_key=batch_request.skill_key,
+        enable_mcp=batch_request.enable_mcp,
+        narrative_perspective=batch_request.narrative_perspective
     )
     
     return BatchGenerateResponse(
@@ -3688,7 +3774,9 @@ async def execute_batch_generation_in_order(
     user_id: str,
     ai_service: AIService,
     custom_model: Optional[str] = None,
-    skill_key: Optional[str] = None
+    skill_key: Optional[str] = None,
+    enable_mcp: bool = True,
+    narrative_perspective: Optional[str] = None
 ):
     """
     按顺序执行批量生成任务（后台任务）
@@ -3793,6 +3881,9 @@ async def execute_batch_generation_in_order(
                     can_generate, error_msg, _ = await check_prerequisites(db_session, chapter)
                     if not can_generate:
                         raise Exception(f"前置条件不满足: {error_msg}")
+                    analysis_ready, analysis_msg = await check_previous_analysis_ready(db_session, chapter)
+                    if not analysis_ready:
+                        raise Exception(analysis_msg)
                     
                     # 生成章节内容（复用现有流式生成逻辑的核心部分），传递model参数
                     # 并获取生成后的摘要（如果生成函数支持返回）
@@ -3807,7 +3898,9 @@ async def execute_batch_generation_in_order(
                         custom_model=custom_model,
                         previous_summary_context=last_generated_summary,
                         skill_key=skill_key,
-                        batch_id=batch_id
+                        batch_id=batch_id,
+                        enable_mcp=enable_mcp,
+                        temp_narrative_perspective=narrative_perspective
                     )
 
                     await db_session.refresh(task)
@@ -3979,7 +4072,9 @@ async def generate_single_chapter_for_batch(
     custom_model: Optional[str] = None,
     previous_summary_context: Optional[str] = None,
     skill_key: Optional[str] = None,
-    batch_id: Optional[str] = None
+    batch_id: Optional[str] = None,
+    enable_mcp: bool = True,
+    temp_narrative_perspective: Optional[str] = None
 ) -> Optional[str]:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4055,7 +4150,8 @@ async def generate_single_chapter_for_batch(
             user_id=user_id,
             db=db_session,
             style_content=style_content,
-            target_word_count=target_word_count
+            target_word_count=target_word_count,
+            temp_narrative_perspective=temp_narrative_perspective
         )
     
     # 日志输出统计信息
@@ -4080,13 +4176,14 @@ async def generate_single_chapter_for_batch(
                 chapter_outline=chapter_context.chapter_outline,
                 target_word_count=target_word_count,
                 genre=project.genre or '未设定',
-                narrative_perspective=project.narrative_perspective or '第三人称',
+                narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 previous_chapter_content=chapter_context.continuation_point,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                previous_chapter_summary=chapter_context.previous_chapter_summary or ''
+                previous_chapter_summary=chapter_context.previous_chapter_summary or '',
+                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要'
             )
         else:
             # 第一章
@@ -4099,7 +4196,7 @@ async def generate_single_chapter_for_batch(
                 chapter_outline=chapter_context.chapter_outline,
                 target_word_count=target_word_count,
                 genre=project.genre or '未设定',
-                narrative_perspective=project.narrative_perspective or '第三人称',
+                narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -4127,7 +4224,7 @@ async def generate_single_chapter_for_batch(
                 target_word_count=target_word_count,
                 continuation_point=chapter_context.continuation_point,
                 genre=project.genre or '未设定',
-                narrative_perspective=project.narrative_perspective or '第三人称',
+                narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -4146,7 +4243,7 @@ async def generate_single_chapter_for_batch(
                 chapter_outline=chapter_context.chapter_outline,
                 target_word_count=target_word_count,
                 genre=project.genre or '未设定',
-                narrative_perspective=project.narrative_perspective or '第三人称',
+                narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
@@ -4211,7 +4308,8 @@ async def generate_single_chapter_for_batch(
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
-        "max_tokens": calculated_max_tokens  # 添加 max_tokens 限制
+        "max_tokens": calculated_max_tokens,
+        "auto_mcp": bool(enable_mcp)
     }
     # 如果传入了自定义模型，使用指定的模型
     if custom_model:
@@ -4246,6 +4344,7 @@ async def generate_single_chapter_for_batch(
         new_word_count = len(full_content)
         chapter.word_count = new_word_count
         chapter.status = "completed"
+        chapter.summary = _build_lightweight_chapter_summary(full_content)
         
         # 更新项目字数
         project.current_words = project.current_words - old_word_count + new_word_count
@@ -4266,7 +4365,7 @@ async def generate_single_chapter_for_batch(
     logger.info(f"✅ 单章节生成完成: 第{chapter.chapter_number}章，共 {new_word_count} 字")
     
     # 生成简短摘要返回
-    summary_preview = full_content[:300].replace('\n', ' ') if full_content else ""
+    summary_preview = _build_lightweight_chapter_summary(full_content)
     
     # 🔮 批量生成后自动标记计划在本章埋入的伏笔
     try:

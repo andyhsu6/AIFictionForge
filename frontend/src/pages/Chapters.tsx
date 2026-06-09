@@ -1163,7 +1163,7 @@ export default function Chapters() {
       } = {
         start_chapter_number: values.startChapterNumber,
         count: values.count,
-        enable_analysis: true,
+        enable_analysis: values.enableAnalysis,
         style_id: styleId,
         target_word_count: wordCount,
       };
@@ -1383,7 +1383,7 @@ export default function Chapters() {
     batchForm.setFieldsValue({
       startChapterNumber: firstIncompleteChapter.chapter_number,
       count: 5,
-      enableAnalysis: false,
+      enableAnalysis: true,
       styleId: selectedStyleId,
       targetWordCount: getCachedWordCount(),
     });

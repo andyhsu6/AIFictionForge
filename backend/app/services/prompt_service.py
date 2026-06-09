@@ -710,8 +710,13 @@ class PromptService:
 {previous_chapter_summary}
 </previous_chapter_summary>
 
+<recent_context priority="P1">
+【最近章节摘要 - 故事脉络参考】
+{recent_chapters_context}
+</recent_context>
+
 <previous_chapter priority="P1">
-【上一章末尾500字内容】
+【上一章完整正文】
 {previous_chapter_content}
 </previous_chapter>
 
@@ -786,7 +791,7 @@ class PromptService:
 
 <continuation priority="P0">
 【衔接锚点 - 必须承接】
-上一章结尾：
+上一章完整正文：
 「{continuation_point}」
 
 【🔴 上一章已完成剧情（禁止重复！）】
@@ -795,8 +800,8 @@ class PromptService:
 ⚠️ 严重警告：
 1. 上述"已完成剧情"和"衔接锚点"是**已经写过的**内容
 2. 本章必须推进到**新的情节点**，绝对不能重新叙述已经发生的事件
-3. 如果锚点是对话结束，请描写对话后的动作或场景转换，不要重复对话
-4. 如果锚点是场景描写，请直接开始人物行动，不要重复描写环境
+3. 本章应承接上一章最后的情境继续推进，不要复述上一章完整正文
+4. 如果上一章以对话或场景结束，请从结束后的动作、反应或场景转换开始
 </continuation>
 
 <characters priority="P1">
