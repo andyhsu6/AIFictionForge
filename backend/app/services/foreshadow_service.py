@@ -9,6 +9,8 @@ import hashlib
 from app.models.foreshadow import Foreshadow
 from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis, StoryMemory
+from app.models.project import Project
+from app.services.memory_service import memory_service
 from app.schemas.foreshadow import (
     ForeshadowCreate, ForeshadowUpdate,
     PlantForeshadowRequest, ResolveForeshadowRequest,
@@ -232,18 +234,136 @@ class ForeshadowService:
         db: AsyncSession,
         foreshadow_id: str
     ) -> bool:
-        """删除伏笔"""
+        """删除伏笔，并同步清理关联记忆数据和历史分析引用"""
         try:
             foreshadow = await self.get_foreshadow(db, foreshadow_id)
             if not foreshadow:
                 return False
-            
+
+            project_result = await db.execute(
+                select(Project).where(Project.id == foreshadow.project_id)
+            )
+            project = project_result.scalar_one_or_none()
+
+            deleted_memory_rows = 0
+            deleted_vector_memories = 0
+            cleaned_analysis_refs = 0
+            cleaned_analysis_rows = 0
+            foreshadow_keywords = []
+            content_snippet = (foreshadow.content or "")[:50].strip()
+
+            if foreshadow.title and foreshadow.title.strip():
+                foreshadow_keywords.append(foreshadow.title.strip())
+
+            if content_snippet:
+                foreshadow_keywords.append(content_snippet)
+
+            memory_conditions = [
+                StoryMemory.project_id == foreshadow.project_id,
+                StoryMemory.memory_type == "foreshadow"
+            ]
+            keyword_conditions = []
+            for keyword in foreshadow_keywords:
+                keyword_conditions.append(StoryMemory.content.contains(keyword))
+                keyword_conditions.append(StoryMemory.title.contains(keyword))
+
+            if keyword_conditions:
+                delete_memory_query = delete(StoryMemory).where(
+                    and_(*memory_conditions, or_(*keyword_conditions))
+                )
+                delete_memory_result = await db.execute(delete_memory_query)
+                deleted_memory_rows = delete_memory_result.rowcount or 0
+
+            if project and project.user_id and foreshadow_keywords:
+                deleted_vector_memories = await memory_service.delete_foreshadow_memories(
+                    user_id=project.user_id,
+                    project_id=foreshadow.project_id,
+                    foreshadow_keywords=foreshadow_keywords
+                )
+
+            analysis_result = await db.execute(
+                select(PlotAnalysis).where(PlotAnalysis.project_id == foreshadow.project_id)
+            )
+            project_analyses = analysis_result.scalars().all()
+
+            for analysis in project_analyses:
+                analysis_foreshadows = analysis.foreshadows or []
+                if not analysis_foreshadows:
+                    continue
+
+                original_count = len(analysis_foreshadows)
+                filtered_foreshadows = []
+                removed_count = 0
+
+                for item in analysis_foreshadows:
+                    if not isinstance(item, dict):
+                        filtered_foreshadows.append(item)
+                        continue
+
+                    should_remove = False
+
+                    # 1. 清理历史回收引用
+                    if item.get("reference_foreshadow_id") == foreshadow_id:
+                        should_remove = True
+
+                    # 2. 清理历史埋入记录，避免“手动同步分析伏笔”再次从 PlotAnalysis 重建已删除伏笔
+                    if not should_remove and foreshadow.source_type == "analysis":
+                        item_type = item.get("type")
+                        item_content = (item.get("content") or "").strip()
+                        item_title = (item.get("title") or "").strip()
+                        item_source_memory_id = None
+
+                        if item_type == "planted" and item_content and analysis.chapter_id == foreshadow.plant_chapter_id:
+                            item_source_memory_id = generate_stable_foreshadow_id(
+                                analysis.chapter_id,
+                                item_content,
+                                item_type
+                            )
+
+                            if foreshadow.source_memory_id and item_source_memory_id == foreshadow.source_memory_id:
+                                should_remove = True
+                            elif (
+                                item_title
+                                and foreshadow.title
+                                and item_title == foreshadow.title.strip()
+                                and content_snippet
+                                and content_snippet in item_content
+                            ):
+                                should_remove = True
+
+                    if should_remove:
+                        removed_count += 1
+                        continue
+
+                    filtered_foreshadows.append(item)
+
+                if removed_count > 0:
+                    analysis.foreshadows = filtered_foreshadows
+                    analysis.foreshadows_planted = sum(
+                        1 for f in filtered_foreshadows
+                        if isinstance(f, dict) and f.get('type') == 'planted'
+                    )
+                    analysis.foreshadows_resolved = sum(
+                        1 for f in filtered_foreshadows
+                        if isinstance(f, dict) and f.get('type') == 'resolved'
+                    )
+                    cleaned_analysis_refs += removed_count
+                    cleaned_analysis_rows += 1
+                    logger.info(
+                        f"🧹 已清理章节分析 {analysis.chapter_id[:8]} 中 {removed_count} 条已删除伏笔历史记录 "
+                        f"(原数量: {original_count}, 现数量: {len(filtered_foreshadows)})"
+                    )
+
             await db.delete(foreshadow)
             await db.commit()
-            
-            logger.info(f"✅ 删除伏笔成功: {foreshadow.title}")
+
+            logger.info(
+                f"✅ 删除伏笔成功: {foreshadow.title} "
+                f"(关系记忆清理: {deleted_memory_rows}条, 向量记忆清理: {deleted_vector_memories}条, "
+                f"历史分析引用清理: {cleaned_analysis_refs}条/{cleaned_analysis_rows}个分析)"
+            )
             return True
-            
+
         except Exception as e:
             await db.rollback()
             logger.error(f"❌ 删除伏笔失败: {str(e)}")
@@ -1163,6 +1283,10 @@ class ForeshadowService:
             # 预先获取所有已埋入的伏笔，用于内容匹配
             planted_foreshadows = await self.get_planted_foreshadows_for_analysis(db, project_id)
             
+            # 每章最多创建的新伏笔数量
+            MAX_NEW_FORESHADOWS_PER_CHAPTER = 5
+            new_foreshadow_count = 0
+
             for fs_data in analysis_foreshadows:
                 try:
                     fs_type = fs_data.get("type", "planted")
@@ -1173,16 +1297,22 @@ class ForeshadowService:
                         matched_by_content = False
                         
                         # 策略1: 优先使用 reference_id 精确匹配
+                        # 重要：如果分析结果里已经给出了 reference_foreshadow_id，
+                        # 但该伏笔已被用户删除或已不属于当前项目，则直接跳过，
+                        # 不再退回内容匹配，避免把“已删除伏笔”的旧分析结果错误同步到其他同名/近似伏笔上。
                         if reference_id:
                             existing = await self.get_foreshadow(db, reference_id)
                             if existing and existing.project_id == project_id:
                                 logger.info(f"🎯 通过ID精确匹配伏笔: {existing.title}")
                             else:
                                 existing = None
-                                logger.warning(f"⚠️ 伏笔ID不存在或不属于该项目: {reference_id}")
+                                logger.warning(f"⚠️ 伏笔ID不存在或不属于该项目，跳过本次回收同步: {reference_id}")
+                                stats["skipped_resolve_count"] = stats.get("skipped_resolve_count", 0) + 1
+                                stats["errors"].append(f"reference_foreshadow_id 无效或已删除: {reference_id}")
+                                continue
                         
-                        # 策略2: 内容匹配备用机制（当没有reference_id或ID匹配失败时）
-                        if not existing and planted_foreshadows:
+                        # 策略2: 内容匹配备用机制（仅在 analysis 未提供 reference_id 时启用）
+                        if not reference_id and not existing and planted_foreshadows:
                             matched = self._match_foreshadow_by_content(
                                 fs_data, planted_foreshadows
                             )
@@ -1290,6 +1420,11 @@ class ForeshadowService:
                             logger.info(f"📝 更新已存在伏笔（避免重复）: {fs_title} (ID: {existing_fs.id})")
                         else:
                             # 创建新伏笔
+                            # 检查每章新伏笔数量上限
+                            if new_foreshadow_count >= MAX_NEW_FORESHADOWS_PER_CHAPTER:
+                                logger.info(f"🚫 已达每章新伏笔上限({MAX_NEW_FORESHADOWS_PER_CHAPTER}个)，跳过: {fs_title}")
+                                continue
+                            
                             # 不再为 estimated_resolve_chapter 设置默认值，避免误报"超期"
                             estimated_resolve = fs_data.get("estimated_resolve_chapter")
                             if estimated_resolve is None:
@@ -1322,10 +1457,11 @@ class ForeshadowService:
                             db.add(new_foreshadow)
                             await db.flush()
                             
+                            new_foreshadow_count += 1
                             stats["planted_count"] += 1
                             stats["created_count"] += 1
                             stats["created_ids"].append(new_foreshadow.id)
-                            logger.info(f"✅ 自动创建伏笔: {fs_title} (ID: {new_foreshadow.id})")
+                            logger.info(f"✅ 自动创建伏笔: {fs_title} (ID: {new_foreshadow.id}) [{new_foreshadow_count}/{MAX_NEW_FORESHADOWS_PER_CHAPTER}]")
                     
                 except Exception as item_error:
                     error_msg = f"处理伏笔时出错: {str(item_error)}"

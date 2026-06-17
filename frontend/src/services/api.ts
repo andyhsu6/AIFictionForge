@@ -38,6 +38,11 @@ import type {
   PromptWorkshopItem,
   PromptSubmission,
   PromptSubmissionCreate,
+  Announcement,
+  AnnouncementCreate,
+  AnnouncementListResponse,
+  AnnouncementStatusResponse,
+  AnnouncementUpdate,
   MCPPlugin,
   MCPPluginCreate,
   MCPPluginUpdate,
@@ -53,6 +58,7 @@ import type {
   BookImportTask,
   BookImportPreview,
   BookImportApplyPayload,
+  BookImportCreateTaskPayload,
   BookImportResult,
   BookImportRetryResult,
   BatchAnalysisStatusResponse,
@@ -98,14 +104,25 @@ api.interceptors.response.use(
         case 400:
           errorMessage = data?.detail || '请求参数错误';
           break;
-        case 401:
-          errorMessage = '未授权，请先登录';
-          if (window.location.pathname !== '/login') {
+        case 401: {
+          const backendDetail = data?.detail || data?.message;
+          const unauthenticatedDetails = [
+            '未登录',
+            '需要登录',
+            '未登录或用户ID缺失',
+            '未登录，无法刷新会话',
+          ];
+          const isUnauthenticated = unauthenticatedDetails.includes(backendDetail);
+
+          errorMessage = backendDetail || '登录状态已失效，请重新登录';
+
+          if (isUnauthenticated && window.location.pathname !== '/login') {
             window.location.href = '/login';
           }
           break;
+        }
         case 403:
-          errorMessage = '没有权限访问';
+          errorMessage = data?.detail || '没有权限访问';
           break;
         case 404:
           errorMessage = data?.detail || '请求的资源不存在';
@@ -139,13 +156,30 @@ api.interceptors.response.use(
 );
 
 export const authApi = {
-  getAuthConfig: () => api.get<unknown, { local_auth_enabled: boolean; linuxdo_enabled: boolean }>('/auth/config'),
+  getAuthConfig: () => api.get<unknown, {
+    local_auth_enabled: boolean;
+    linuxdo_enabled: boolean;
+    email_auth_enabled: boolean;
+    email_register_enabled: boolean;
+  }>('/auth/config'),
 
   localLogin: (username: string, password: string) =>
     api.post<unknown, { success: boolean; message: string; user: User }>('/auth/local/login', { username, password }),
 
   bindAccountLogin: (username: string, password: string) =>
     api.post<unknown, { success: boolean; message: string; user: User }>('/auth/bind/login', { username, password }),
+
+  emailLogin: (payload: import('../types').EmailLoginPayload) =>
+    api.post<unknown, { success: boolean; message: string; user: User }>('/auth/email/login', payload),
+
+  sendEmailCode: (payload: import('../types').EmailSendCodePayload) =>
+    api.post<unknown, { success: boolean; message: string; expire_in_seconds: number; resend_interval_seconds: number }>('/auth/email/send-code', payload),
+
+  emailRegister: (payload: import('../types').EmailRegisterPayload) =>
+    api.post<unknown, { success: boolean; message: string; user: User }>('/auth/email/register', payload),
+
+  resetEmailPassword: (payload: import('../types').EmailResetPasswordPayload) =>
+    api.post<unknown, { success: boolean; message: string }>('/auth/email/reset-password', payload),
 
   getLinuxDOAuthUrl: () => api.get<unknown, AuthUrlResponse>('/auth/linuxdo/url'),
 
@@ -201,10 +235,10 @@ export const settingsApi = {
 
   deleteSettings: () => api.delete<unknown, { message: string; user_id: string }>('/settings'),
 
-  getAvailableModels: (params: { api_key: string; api_base_url: string; provider: string }) =>
+  getAvailableModels: (params: { api_key?: string; api_base_url?: string; provider: string }) =>
     api.get<unknown, { provider: string; models: Array<{ value: string; label: string; description: string }>; count?: number }>('/settings/models', { params }),
 
-  testApiConnection: (params: { api_key: string; api_base_url: string; provider: string; llm_model: string; temperature?: number; max_tokens?: number }) =>
+  testApiConnection: (params: { api_key?: string; api_base_url?: string; provider: string; llm_model: string; temperature?: number; max_tokens?: number }) =>
     api.post<unknown, {
       success: boolean;
       message: string;
@@ -218,7 +252,15 @@ export const settingsApi = {
       suggestions?: string[];
     }>('/settings/test', params),
 
-  checkFunctionCalling: (params: { api_key: string; api_base_url: string; provider: string; llm_model: string }) =>
+  testCoverConnection: (params: { cover_api_provider: string; cover_api_key: string; cover_api_base_url?: string; cover_image_model: string }) =>
+    api.post<unknown, {
+      success: boolean;
+      message: string;
+      provider?: string;
+      model?: string;
+    }>('/settings/cover/test', params),
+
+  checkFunctionCalling: (params: { api_key?: string; api_base_url?: string; provider: string; llm_model: string }) =>
     api.post<unknown, {
       success: boolean;
       supported: boolean;
@@ -278,10 +320,24 @@ export const settingsApi = {
       suggestions?: string[];
     }>(`/settings/presets/${presetId}/test`),
 
+  setChapterAnalysisPresetSelection: (presetId?: string) =>
+    api.put<unknown, { message: string; chapter_analysis_preset_id?: string; preset_name?: string }>('/settings/presets/usage/chapter-analysis', {
+      preset_id: presetId || null,
+    }),
+
   createPresetFromCurrent: (name: string, description?: string) =>
     api.post<unknown, APIKeyPreset>('/settings/presets/from-current', null, {
       params: { name, description }
     }),
+
+  getSystemSMTPSettings: () =>
+    api.get<unknown, import('../types').SystemSMTPSettings>('/settings/system/smtp'),
+
+  updateSystemSMTPSettings: (data: import('../types').SystemSMTPSettingsUpdate) =>
+    api.put<unknown, import('../types').SystemSMTPSettings>('/settings/system/smtp', data),
+
+  testSystemSMTPSettings: (data: { to_email: string }) =>
+    api.post<unknown, { success: boolean; message: string }>('/settings/system/smtp/test', data),
 };
 
 export const projectApi = {
@@ -295,6 +351,43 @@ export const projectApi = {
     api.put<unknown, Project>(`/projects/${id}`, data),
 
   deleteProject: (id: string) => api.delete(`/projects/${id}`),
+
+  generateCover: (id: string, overwrite: boolean = true) =>
+    api.post<unknown, {
+      project_id: string;
+      cover_status: string;
+      cover_image_url?: string;
+      cover_prompt?: string;
+      provider?: string;
+      model?: string;
+      message: string;
+    }>(`/projects/${id}/cover/generate`, { overwrite }),
+
+  downloadCover: async (id: string, filename?: string) => {
+    const response = await axios.get(`/api/projects/${id}/cover/download`, {
+      responseType: 'blob',
+      withCredentials: true,
+    });
+    const contentDisposition = response.headers['content-disposition'];
+    let finalFilename = filename || 'novel-cover.png';
+    if (contentDisposition) {
+      const utf8Match = /filename\*=UTF-8''(.+)/.exec(contentDisposition);
+      const basicMatch = /filename="?([^";]+)"?/.exec(contentDisposition);
+      if (utf8Match?.[1]) {
+        finalFilename = decodeURIComponent(utf8Match[1]);
+      } else if (basicMatch?.[1]) {
+        finalFilename = basicMatch[1];
+      }
+    }
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', finalFilename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
 
   exportProject: (id: string) => {
     window.open(`/api/projects/${id}/export`, '_blank');
@@ -373,11 +466,12 @@ export const projectApi = {
 };
 
 export const bookImportApi = {
-  createTask: (params: {
-    file: File;
-  }) => {
+  createTask: (params: BookImportCreateTaskPayload) => {
     const formData = new FormData();
     formData.append('file', params.file);
+    const tailChapterCount = params.tail_chapter_count ?? 10;
+    formData.append('extract_mode', params.extract_mode ?? 'tail');
+    formData.append('tail_chapter_count', String(tailChapterCount));
 
     return api.post<unknown, { task_id: string; status: BookImportTask['status'] }>(
       '/book-import/tasks',
@@ -826,6 +920,35 @@ export const promptWorkshopApi = {
         total_likes: number;
       };
     }>('/prompt-workshop/admin/stats'),
+};
+
+export const announcementApi = {
+  getStatus: () =>
+    api.get<unknown, AnnouncementStatusResponse>('/announcements/status'),
+
+  list: (params?: { page?: number; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements', { params }),
+
+  sync: (params?: { since?: string; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/sync', { params }),
+
+  adminList: (params?: { status?: string; q?: string; page?: number; limit?: number; include_expired?: boolean }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/admin/items', { params }),
+
+  adminCreate: (data: AnnouncementCreate) =>
+    api.post<unknown, { success: boolean; item: Announcement }>('/announcements/admin/items', data),
+
+  adminUpdate: (id: string, data: AnnouncementUpdate) =>
+    api.put<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}`, data),
+
+  adminDelete: (id: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/announcements/admin/items/${id}`),
+
+  adminPublish: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/publish`),
+
+  adminHide: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/hide`),
 };
 
 export const polishApi = {

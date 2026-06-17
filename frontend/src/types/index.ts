@@ -11,6 +11,65 @@ export interface User {
   last_login: string;
 }
 
+export interface EmailLoginPayload {
+  email: string;
+  code: string;
+}
+
+export interface EmailRegisterPayload {
+  email: string;
+  code: string;
+  password: string;
+  display_name?: string;
+}
+
+export interface EmailSendCodePayload {
+  email: string;
+  scene: 'register' | 'login' | 'reset_password';
+}
+
+export interface EmailResetPasswordPayload {
+  email: string;
+  code: string;
+  new_password: string;
+}
+
+export interface SystemSMTPSettings {
+  id: string;
+  user_id: string;
+  smtp_provider: string;
+  smtp_host?: string;
+  smtp_port: number;
+  smtp_username?: string;
+  smtp_password?: string;
+  smtp_use_tls: boolean;
+  smtp_use_ssl: boolean;
+  smtp_from_email?: string;
+  smtp_from_name: string;
+  email_auth_enabled: boolean;
+  email_register_enabled: boolean;
+  verification_code_ttl_minutes: number;
+  verification_resend_interval_seconds: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SystemSMTPSettingsUpdate {
+  smtp_provider?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_username?: string;
+  smtp_password?: string;
+  smtp_use_tls?: boolean;
+  smtp_use_ssl?: boolean;
+  smtp_from_email?: string;
+  smtp_from_name?: string;
+  email_auth_enabled?: boolean;
+  email_register_enabled?: boolean;
+  verification_code_ttl_minutes?: number;
+  verification_resend_interval_seconds?: number;
+}
+
 // 设置类型定义
 export interface Settings {
   id: string;
@@ -22,6 +81,11 @@ export interface Settings {
   temperature: number;
   max_tokens: number;
   system_prompt?: string;
+  cover_api_provider?: string;
+  cover_api_key?: string;
+  cover_api_base_url?: string;
+  cover_image_model?: string;
+  cover_enabled?: boolean;
   preferences?: string;
   created_at: string;
   updated_at: string;
@@ -35,6 +99,11 @@ export interface SettingsUpdate {
   temperature?: number;
   max_tokens?: number;
   system_prompt?: string;
+  cover_api_provider?: string;
+  cover_api_key?: string;
+  cover_api_base_url?: string;
+  cover_image_model?: string;
+  cover_enabled?: boolean;
   preferences?: string;
 }
 
@@ -74,6 +143,7 @@ export interface PresetListResponse {
   presets: APIKeyPreset[];
   total: number;
   active_preset_id?: string;
+  chapter_analysis_preset_id?: string;
 }
 
 // LinuxDO 授权 URL 响应
@@ -102,6 +172,11 @@ export interface Project {
   chapter_count?: number;
   narrative_perspective?: string;
   character_count?: number;
+  cover_image_url?: string;
+  cover_prompt?: string;
+  cover_status?: 'none' | 'generating' | 'ready' | 'failed';
+  cover_error?: string;
+  cover_updated_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -670,12 +745,26 @@ export interface StoryMemory {
   is_foreshadow: 0 | 1 | 2; // 0=普通, 1=已埋下, 2=已回收
 }
 
+export interface EntityChangesSummaryItem {
+  updated_count?: number;
+  state_updated_count?: number;
+  relationship_created_count?: number;
+  relationship_updated_count?: number;
+  org_updated_count?: number;
+  changes: string[];
+}
+
 // 章节分析结果响应 - 匹配后端API返回
 export interface ChapterAnalysisResponse {
   chapter_id: string;
   analysis: AnalysisData;  // 注意：后端返回的是analysis而不是analysis_data
   memories: StoryMemory[];
   created_at: string;
+  entity_changes?: {
+    careers: EntityChangesSummaryItem;
+    character_states: EntityChangesSummaryItem;
+    organization_states: EntityChangesSummaryItem;
+  };
 }
 
 // 手动触发分析响应
@@ -911,6 +1000,7 @@ export interface ForeshadowContextResponse {
 
 export type BookImportTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type BookImportWarningLevel = 'info' | 'warning' | 'error';
+export type BookImportExtractMode = 'tail' | 'full';
 
 export interface BookImportWarning {
   code: string;
@@ -965,6 +1055,12 @@ export interface BookImportApplyPayload {
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
   import_mode?: 'append' | 'overwrite';
+}
+
+export interface BookImportCreateTaskPayload {
+  file: File;
+  extract_mode?: BookImportExtractMode;
+  tail_chapter_count?: number;
 }
 
 export interface BookImportResult {
@@ -1069,6 +1165,69 @@ export interface PromptWorkshopAdminStats {
   total_pending: number;
   total_downloads: number;
   total_likes: number;
+}
+
+// ==================== 公告类型定义 ====================
+
+export type AnnouncementLevel = 'info' | 'success' | 'warning' | 'error';
+export type AnnouncementStatus = 'draft' | 'published' | 'hidden';
+
+export interface Announcement {
+  id: string;
+  title: string;
+  content: string;
+  summary?: string | null;
+  level: AnnouncementLevel;
+  status?: AnnouncementStatus;
+  pinned: boolean;
+  author_id?: string | null;
+  author_name?: string | null;
+  publish_at?: string | null;
+  expire_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AnnouncementCreate {
+  title: string;
+  content: string;
+  summary?: string;
+  level?: AnnouncementLevel;
+  status?: AnnouncementStatus;
+  pinned?: boolean;
+  publish_at?: string;
+  expire_at?: string;
+}
+
+export interface AnnouncementUpdate {
+  title?: string;
+  content?: string;
+  summary?: string;
+  level?: AnnouncementLevel;
+  status?: AnnouncementStatus;
+  pinned?: boolean;
+  publish_at?: string | null;
+  expire_at?: string | null;
+}
+
+export interface AnnouncementListResponse {
+  success: boolean;
+  data: {
+    total: number;
+    page: number;
+    limit: number;
+    items: Announcement[];
+    active_ids?: string[];
+    latest_updated_at?: string | null;
+    server_time?: string;
+  };
+}
+
+export interface AnnouncementStatusResponse {
+  mode: 'client' | 'server' | string;
+  instance_id: string;
+  cloud_url?: string;
+  cloud_connected?: boolean;
 }
 
 // 提示词工坊分类常量

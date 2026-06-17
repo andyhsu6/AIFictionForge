@@ -7,7 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
-from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
+from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.character import Character
 from app.models.project import Project
 from app.models.generation_history import GenerationHistory
@@ -20,10 +20,11 @@ from app.schemas.character import (
     CharacterGenerateRequest
 )
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
 from app.api.common import verify_project_access
 
@@ -463,7 +464,7 @@ async def update_character(
         # 解析副职业JSON
         try:
             sub_careers_data = json.loads(sub_careers_json) if isinstance(sub_careers_json, str) else sub_careers_json
-        except:
+        except Exception:
             sub_careers_data = []
         
         # 删除现有的所有副职业关联
@@ -883,7 +884,7 @@ async def generate_character_stream(
                             stage_info = " → ".join(stage_names)
                             if len(stages) > 3:
                                 stage_info += " → ..."
-                        except:
+                        except Exception:
                             stage_info = f"共{career.max_stage}个阶段"
                         
                         careers_info += f"- 名称: {career.name}"
@@ -947,10 +948,18 @@ async def generate_character_stream(
                 logger.info(f"🎯 开始生成角色（流式模式）...")
                 yield await tracker.generating(0, estimated_total, "开始生成角色...")
                 
-                async for chunk in user_ai_service.generate_text_stream(
-                    prompt=prompt,
-                    tool_choice="required",
+                async for chunk in wrap_stream_with_heartbeat(
+                    user_ai_service.generate_text_stream(
+                        prompt=prompt,
+                        tool_choice="required",
+                    ),
+                    heartbeat_interval=15.0
                 ):
+                    # 心跳哨兵：发送心跳保活，不混入AI响应
+                    if chunk is HEARTBEAT:
+                        yield await tracker.heartbeat()
+                        continue
+
                     # chunk 现在可能是 dict 或 str，提取 content 字段
                     if isinstance(chunk, dict):
                         content = chunk.get("content", "")
@@ -987,11 +996,11 @@ async def generate_character_stream(
             # ✅ 使用统一的 JSON 清洗方法
             try:
                 cleaned_response = user_ai_service._clean_json_response(ai_response)
-                character_data = json.loads(cleaned_response)
+                character_data = loads_json(cleaned_response)
                 logger.info(f"✅ 角色JSON解析成功")
             except json.JSONDecodeError as e:
                 logger.error(f"❌ 角色JSON解析失败: {e}")
-                logger.error(f"   原始响应预览: {ai_response[:200]}")
+                logger.debug(f"   原始响应预览: {safe_preview(ai_response, 200)}")
                 yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}")
                 return
             

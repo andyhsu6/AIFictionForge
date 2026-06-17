@@ -9,6 +9,7 @@ TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 ImportMode = Literal["append", "overwrite"]
 ExtractLevel = Literal["basic", "standard", "deep"]
 WarningLevel = Literal["info", "warning", "error"]
+BookImportExtractMode = Literal["tail", "full"]
 
 
 class BookImportWarning(BaseModel):
@@ -43,6 +44,12 @@ class BookImportOutline(BaseModel):
     content: Optional[str] = Field(None, description="大纲内容")
     order_index: int = Field(..., ge=1, description="排序序号")
     structure: Optional[dict[str, Any]] = Field(None, description="结构化大纲（与系统大纲生成结构一致）")
+
+
+class BookImportTaskCreateRequest(BaseModel):
+    """创建拆书任务请求"""
+    extract_mode: BookImportExtractMode = Field(default="tail", description="提取范围：tail=截取末章，full=整本")
+    tail_chapter_count: int = Field(default=10, ge=5, le=9999, description="当 extract_mode=tail 时，截取末尾章节数；需为5的倍数，超过50将按整本处理")
 
 
 class BookImportTaskCreateResponse(BaseModel):

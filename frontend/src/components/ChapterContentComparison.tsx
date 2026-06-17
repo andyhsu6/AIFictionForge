@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Modal, Button, Card, Statistic, Row, Col, message, theme } from 'antd';
 import { CheckOutlined, CloseOutlined, SwapOutlined } from '@ant-design/icons';
 import ReactDiffViewer from 'react-diff-viewer-continued';
+import { useThemeMode } from '../theme/useThemeMode';
 
 interface ChapterContentComparisonProps {
   visible: boolean;
@@ -27,6 +28,7 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
   onDiscard
 }) => {
   const { token } = theme.useToken();
+  const { resolvedMode } = useThemeMode();
   const [applying, setApplying] = useState(false);
   const [viewMode, setViewMode] = useState<'split' | 'unified'>('split');
   const [modal, contextHolder] = Modal.useModal();
@@ -34,6 +36,54 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
   const originalWordCount = originalContent.length;
   const wordCountDiff = wordCount - originalWordCount;
   const wordCountDiffPercent = ((wordCountDiff / originalWordCount) * 100).toFixed(1);
+  const isDarkMode = resolvedMode === 'dark';
+  const diffViewerStyles = useMemo(() => ({
+    variables: {
+      light: {
+        diffViewerBackground: token.colorBgContainer,
+        diffViewerColor: token.colorText,
+        diffViewerTitleBackground: token.colorBgElevated,
+        diffViewerTitleColor: token.colorTextHeading,
+        addedBackground: token.colorSuccessBg,
+        addedColor: token.colorText,
+        removedBackground: token.colorErrorBg,
+        removedColor: token.colorText,
+        wordAddedBackground: token.colorSuccessBorder,
+        wordRemovedBackground: token.colorErrorBorder,
+        addedGutterBackground: token.colorSuccessBg,
+        removedGutterBackground: token.colorErrorBg,
+        gutterBackground: token.colorFillQuaternary,
+        gutterBackgroundDark: token.colorFillTertiary,
+        highlightBackground: token.colorWarningBg,
+        highlightGutterBackground: token.colorWarningBorder,
+      },
+      dark: {
+        diffViewerBackground: token.colorBgContainer,
+        diffViewerColor: token.colorText,
+        diffViewerTitleBackground: token.colorBgElevated,
+        diffViewerTitleColor: token.colorTextHeading,
+        addedBackground: 'rgba(82, 196, 26, 0.16)',
+        addedColor: token.colorText,
+        removedBackground: 'rgba(255, 77, 79, 0.16)',
+        removedColor: token.colorText,
+        wordAddedBackground: 'rgba(82, 196, 26, 0.3)',
+        wordRemovedBackground: 'rgba(255, 77, 79, 0.3)',
+        addedGutterBackground: 'rgba(82, 196, 26, 0.12)',
+        removedGutterBackground: 'rgba(255, 77, 79, 0.12)',
+        gutterBackground: token.colorFillQuaternary,
+        gutterBackgroundDark: token.colorFillSecondary,
+        highlightBackground: 'rgba(250, 173, 20, 0.18)',
+        highlightGutterBackground: 'rgba(250, 173, 20, 0.28)',
+      },
+    },
+    line: {
+      padding: '10px 2px',
+      fontSize: '14px',
+      lineHeight: '20px',
+      whiteSpace: 'pre-wrap' as const,
+      wordBreak: 'break-word' as const,
+    },
+  }), [token]);
 
   const handleApply = async () => {
     setApplying(true);
@@ -182,8 +232,9 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
       <div style={{
         maxHeight: 'calc(90vh - 300px)',
         overflow: 'auto',
-        border: '1px solid var(--color-border)',
-        borderRadius: 4
+        border: `1px solid ${token.colorBorder}`,
+        borderRadius: 8,
+        background: token.colorBgContainer
       }}>
         <ReactDiffViewer
           oldValue={originalContent}
@@ -192,33 +243,8 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
           leftTitle="原内容"
           rightTitle="新内容"
           showDiffOnly={false}
-          useDarkTheme={false}
-          styles={{
-            variables: {
-              light: {
-                diffViewerBackground: token.colorBgContainer,
-                addedBackground: 'var(--color-success-bg)',
-                addedColor: 'var(--color-text-primary)',
-                removedBackground: 'var(--color-error-bg)',
-                removedColor: 'var(--color-text-primary)',
-                wordAddedBackground: 'var(--color-success-border)',
-                wordRemovedBackground: 'var(--color-error-border)',
-                addedGutterBackground: 'var(--color-success-bg)',
-                removedGutterBackground: 'var(--color-error-bg)',
-                gutterBackground: 'var(--color-bg-layout)',
-                gutterBackgroundDark: 'var(--color-bg-container)',
-                highlightBackground: 'var(--color-warning-bg)',
-                highlightGutterBackground: 'var(--color-warning-border)',
-              },
-            },
-            line: {
-              padding: '10px 2px',
-              fontSize: '14px',
-              lineHeight: '20px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word'
-            }
-          }}
+          useDarkTheme={isDarkMode}
+          styles={diffViewerStyles}
         />
       </div>
       </Modal>

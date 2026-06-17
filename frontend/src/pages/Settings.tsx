@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, theme } from 'antd';
-import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined } from '@ant-design/icons';
+import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
@@ -35,12 +35,21 @@ export default function SettingsPage() {
     suggestions?: string[];
   } | null>(null);
   const [showTestResult, setShowTestResult] = useState(false);
+  const [testingCoverApi, setTestingCoverApi] = useState(false);
+  const [coverTestResult, setCoverTestResult] = useState<{
+    success: boolean;
+    message: string;
+    provider?: string;
+    model?: string;
+  } | null>(null);
 
   // 预设相关状态
   const [activeTab, setActiveTab] = useState('current');
   const [presets, setPresets] = useState<APIKeyPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(false);
   const [activePresetId, setActivePresetId] = useState<string | undefined>();
+  const [chapterAnalysisPresetId, setChapterAnalysisPresetId] = useState<string | undefined>();
+  const [savingChapterAnalysisPreset, setSavingChapterAnalysisPreset] = useState(false);
   const [editingPreset, setEditingPreset] = useState<APIKeyPreset | null>(null);
   const [isPresetModalVisible, setIsPresetModalVisible] = useState(false);
   const [testingPresetId, setTestingPresetId] = useState<string | null>(null);
@@ -80,7 +89,15 @@ export default function SettingsPage() {
     setInitialLoading(true);
     try {
       const settings = await settingsApi.getSettings();
-      form.setFieldsValue(settings);
+      form.setFieldsValue({
+        ...defaultCoverSettings,
+        ...settings,
+        cover_api_provider: settings.cover_api_provider || defaultCoverSettings.cover_api_provider,
+        cover_api_key: settings.cover_api_key ?? defaultCoverSettings.cover_api_key,
+        cover_api_base_url: settings.cover_api_base_url || defaultCoverSettings.cover_api_base_url,
+        cover_image_model: settings.cover_image_model || defaultCoverSettings.cover_image_model,
+        cover_enabled: settings.cover_enabled ?? defaultCoverSettings.cover_enabled,
+      });
 
       // 判断是否为默认设置（id='0'表示来自.env的默认配置）
       if (settings.id === '0' || !settings.id) {
@@ -102,6 +119,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          ...defaultCoverSettings,
         });
       } else {
         message.error('加载设置失败');
@@ -114,6 +132,10 @@ export default function SettingsPage() {
   const handleSave = async (values: SettingsUpdate) => {
     setLoading(true);
     try {
+      const normalizedValues: SettingsUpdate = {
+        ...values,
+        api_key: builtInKeyProviders.includes(values.api_provider || '') ? '' : values.api_key,
+      };
       // 检查是否与 MCP 缓存的配置不一致
       const verifiedConfigStr = localStorage.getItem('mcp_verified_config');
       let configChanged = false;
@@ -122,15 +144,15 @@ export default function SettingsPage() {
         try {
           const verifiedConfig = JSON.parse(verifiedConfigStr);
           configChanged =
-            verifiedConfig.provider !== values.api_provider ||
-            verifiedConfig.baseUrl !== values.api_base_url ||
-            verifiedConfig.model !== values.llm_model;
+            verifiedConfig.provider !== normalizedValues.api_provider ||
+            verifiedConfig.baseUrl !== normalizedValues.api_base_url ||
+            verifiedConfig.model !== normalizedValues.llm_model;
         } catch (e) {
           console.error('Failed to parse verified config:', e);
         }
       }
       
-      await settingsApi.saveSettings(values);
+      await settingsApi.saveSettings(normalizedValues);
       message.success('设置已保存');
       setHasSettings(true);
       setIsDefaultSettings(false);
@@ -139,29 +161,18 @@ export default function SettingsPage() {
       setTestResult(null);
       setShowTestResult(false);
       
-      // 手动保存配置后，需要同步更新预设激活状态
-      // 因为用户手动修改的配置可能与之前激活的预设不一致了
-      // 重新加载预设列表以确保状态正确（后端在save时会自动取消激活状态）
-      if (activePresetId) {
-        // 检查当前保存的配置是否与激活预设一致
-        const activePreset = presets.find(p => p.id === activePresetId);
-        if (activePreset) {
-          const presetConfig = activePreset.config;
-          const configMismatch =
-            presetConfig.api_provider !== values.api_provider ||
-            presetConfig.api_key !== values.api_key ||
-            presetConfig.api_base_url !== values.api_base_url ||
-            presetConfig.llm_model !== values.llm_model ||
-            presetConfig.temperature !== values.temperature ||
-            presetConfig.max_tokens !== values.max_tokens;
-          
-          if (configMismatch) {
-            // 配置已变更，清除前端的激活状态标记
-            setActivePresetId(undefined);
-            message.info('配置已更改，预设激活状态已取消');
-            // 刷新预设列表以同步后端取消激活的状态
-            loadPresets();
-          }
+      // 手动保存配置后，同步刷新预设激活状态。
+      // 后端会在配置与激活预设不一致时自动取消激活，这里统一拉取最新状态，
+      // 确保设置界面与预设列表联动一致。
+      const previousActivePresetId = activePresetId;
+      await loadPresets();
+      
+      if (previousActivePresetId) {
+        const latestPresets = await settingsApi.getPresets();
+        const stillActive = latestPresets.active_preset_id === previousActivePresetId;
+        if (!stillActive) {
+          setActivePresetId(undefined);
+          message.info('配置已更改，预设激活状态已取消');
         }
       }
       
@@ -246,6 +257,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          ...defaultCoverSettings,
         });
         message.info('已重置为默认值，请点击保存');
       },
@@ -276,20 +288,145 @@ export default function SettingsPage() {
     });
   };
 
+  const mumuTextDefaultUrl = 'https://api.mumuverse.space/v1';
+  const mumuRegisterUrl = 'https://api.mumuverse.space/register?aff=4NN8';
+  const xiaomiMimoDefaultUrl = 'https://token-plan-cn.xiaomimimo.com/v1';
+  const builtInKeyProviders = ['xiaomi_mimo'];
+  const xiaomiMimoDefaultModels = [
+    { value: 'mimo-v2.5', label: 'mimo-v2.5', description: 'Xiaomi MiMo 官方内置推荐模型' },
+  ];
+  const mumuCoverBaseUrlOptions = [
+    { value: 'https://api.mumuverse.space/v1beta', label: 'https://api.mumuverse.space/v1beta', defaultModel: 'gemini-3.1-flash-image-preview' },
+    { value: 'https://api.mumuverse.space/v1', label: 'https://api.mumuverse.space/v1', defaultModel: 'gpt-image-1.5' },
+  ];
+  const defaultCoverSettings = {
+    cover_enabled: false,
+    cover_api_provider: 'mumu',
+    cover_api_key: '',
+    cover_api_base_url: mumuCoverBaseUrlOptions[0].value,
+    cover_image_model: mumuCoverBaseUrlOptions[0].defaultModel,
+  };
+
   const apiProviders = [
+    {
+      value: 'mumu',
+      label: 'MuMuのAPI',
+      defaultUrl: mumuTextDefaultUrl,
+      defaultModel: 'gemini-3-flash-preview'
+    },
+    {
+      value: 'xiaomi_mimo',
+      label: 'Xiaomi MiMo（内置）',
+      defaultUrl: xiaomiMimoDefaultUrl,
+      defaultModel: xiaomiMimoDefaultModels[0].value,
+      builtInKey: true,
+    },
     { value: 'openai', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
     // { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
     { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   ];
 
+  const selectedProvider = Form.useWatch('api_provider', form);
+  const selectedCoverProvider = Form.useWatch('cover_api_provider', form);
+  const selectedPresetProvider = Form.useWatch('api_provider', presetForm);
+
   const handleProviderChange = (value: string) => {
     const provider = apiProviders.find(p => p.value === value);
-    if (provider && provider.defaultUrl) {
-      form.setFieldValue('api_base_url', provider.defaultUrl);
+    if (provider) {
+      const nextValues: Record<string, string> = {};
+      if (provider.defaultUrl) {
+        nextValues.api_base_url = provider.defaultUrl;
+      }
+      if (provider.value === 'mumu') {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
+      }
+      if (builtInKeyProviders.includes(provider.value)) {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || xiaomiMimoDefaultModels[0].value;
+      }
+      form.setFieldsValue(nextValues);
     }
     // 清空模型列表，需要重新获取
     setModelOptions([]);
     setModelsFetched(false);
+  };
+
+  const coverApiProviders = [
+    {
+      value: 'mumu',
+      label: 'MuMuのAPI',
+      defaultUrl: mumuCoverBaseUrlOptions[0].value,
+      defaultModel: mumuCoverBaseUrlOptions[0].defaultModel,
+    },
+    { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+    { value: 'grok', label: 'Grok', defaultUrl: 'https://api.x.ai/v1' },
+  ];
+
+  const handleCoverProviderChange = (value: string) => {
+    const provider = coverApiProviders.find(p => p.value === value);
+    if (!provider) {
+      setCoverTestResult(null);
+      return;
+    }
+
+    const nextValues: Record<string, string> = {};
+    if (provider.defaultUrl) {
+      nextValues.cover_api_base_url = provider.defaultUrl;
+    }
+    if (provider.value === 'mumu') {
+      nextValues.cover_api_key = '';
+      nextValues.cover_image_model = provider.defaultModel || mumuCoverBaseUrlOptions[0].defaultModel;
+    }
+
+    form.setFieldsValue(nextValues);
+    setCoverTestResult(null);
+  };
+
+  const handleMumuCoverBaseUrlChange = (value: string) => {
+    const option = mumuCoverBaseUrlOptions.find(item => item.value === value);
+    form.setFieldsValue({
+      cover_api_base_url: value,
+      cover_image_model: option?.defaultModel || mumuCoverBaseUrlOptions[0].defaultModel,
+    });
+    setCoverTestResult(null);
+  };
+
+  const handleCoverTestConnection = async () => {
+    const coverApiProvider = form.getFieldValue('cover_api_provider');
+    const coverApiKey = form.getFieldValue('cover_api_key');
+    const coverApiBaseUrl = form.getFieldValue('cover_api_base_url');
+    const coverImageModel = form.getFieldValue('cover_image_model');
+
+    if (!coverApiProvider || !coverApiKey || !coverImageModel) {
+      message.warning('请先填写完整的封面图片配置信息');
+      return;
+    }
+
+    setTestingCoverApi(true);
+    setCoverTestResult(null);
+    try {
+      const result = await settingsApi.testCoverConnection({
+        cover_api_provider: coverApiProvider,
+        cover_api_key: coverApiKey,
+        cover_api_base_url: coverApiBaseUrl,
+        cover_image_model: coverImageModel,
+      });
+      setCoverTestResult(result);
+      if (result.success) {
+        message.success('封面图片接口测试成功');
+      } else {
+        message.error(result.message || '封面图片接口测试失败');
+      }
+    } catch (error) {
+      console.error('封面图片接口测试失败:', error);
+      setCoverTestResult({
+        success: false,
+        message: '封面图片接口测试失败',
+      });
+    } finally {
+      setTestingCoverApi(false);
+    }
   };
 
   const handleFetchModels = async (silent: boolean = false) => {
@@ -297,7 +434,9 @@ export default function SettingsPage() {
     const apiBaseUrl = form.getFieldValue('api_base_url');
     const provider = form.getFieldValue('api_provider');
 
-    if (!apiKey || !apiBaseUrl) {
+    const isBuiltInKeyProvider = builtInKeyProviders.includes(provider);
+
+    if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl) {
       if (!silent) {
         message.warning('请先填写 API 密钥和 API 地址');
       }
@@ -307,7 +446,7 @@ export default function SettingsPage() {
     setFetchingModels(true);
     try {
       const response = await settingsApi.getAvailableModels({
-        api_key: apiKey,
+        api_key: isBuiltInKeyProvider ? '' : apiKey,
         api_base_url: apiBaseUrl,
         provider: provider || 'openai'
       });
@@ -345,7 +484,9 @@ export default function SettingsPage() {
     const temperature = form.getFieldValue('temperature');
     const maxTokens = form.getFieldValue('max_tokens');
 
-    if (!apiKey || !apiBaseUrl || !provider || !modelName) {
+    const isBuiltInKeyProvider = builtInKeyProviders.includes(provider);
+
+    if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl || !provider || !modelName) {
       message.warning('请先填写完整的配置信息');
       return;
     }
@@ -355,7 +496,7 @@ export default function SettingsPage() {
 
     try {
       const result = await settingsApi.testApiConnection({
-        api_key: apiKey,
+        api_key: isBuiltInKeyProvider ? '' : apiKey,
         api_base_url: apiBaseUrl,
         provider: provider,
         llm_model: modelName,
@@ -396,6 +537,7 @@ export default function SettingsPage() {
       const response = await settingsApi.getPresets();
       setPresets(response.presets);
       setActivePresetId(response.active_preset_id);
+      setChapterAnalysisPresetId(response.chapter_analysis_preset_id);
     } catch (error) {
       message.error('加载预设失败');
       console.error(error);
@@ -445,7 +587,9 @@ export default function SettingsPage() {
     const apiBaseUrl = presetForm.getFieldValue('api_base_url');
     const provider = presetForm.getFieldValue('api_provider');
 
-    if (!apiKey || !apiBaseUrl) {
+    const isBuiltInKeyProvider = builtInKeyProviders.includes(provider);
+
+    if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl) {
       if (!silent) {
         message.warning('请先填写 API 密钥和 API 地址');
       }
@@ -455,7 +599,7 @@ export default function SettingsPage() {
     setFetchingPresetModels(true);
     try {
       const response = await settingsApi.getAvailableModels({
-        api_key: apiKey,
+        api_key: isBuiltInKeyProvider ? '' : apiKey,
         api_base_url: apiBaseUrl,
         provider: provider || 'openai'
       });
@@ -488,8 +632,20 @@ export default function SettingsPage() {
   // 预设编辑窗口：提供商变更时更新默认URL并清空模型列表
   const handlePresetProviderChange = (value: string) => {
     const provider = apiProviders.find(p => p.value === value);
-    if (provider && provider.defaultUrl) {
-      presetForm.setFieldValue('api_base_url', provider.defaultUrl);
+    if (provider) {
+      const nextValues: Record<string, string> = {};
+      if (provider.defaultUrl) {
+        nextValues.api_base_url = provider.defaultUrl;
+      }
+      if (provider.value === 'mumu') {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
+      }
+      if (builtInKeyProviders.includes(provider.value)) {
+        nextValues.api_key = '';
+        nextValues.llm_model = provider.defaultModel || xiaomiMimoDefaultModels[0].value;
+      }
+      presetForm.setFieldsValue(nextValues);
     }
     // 清空模型列表，需要重新获取
     setPresetModelOptions([]);
@@ -499,9 +655,10 @@ export default function SettingsPage() {
   const handlePresetSave = async () => {
     try {
       const values = await presetForm.validateFields();
+      const isBuiltInKeyProvider = builtInKeyProviders.includes(values.api_provider);
       const config: APIKeyPresetConfig = {
         api_provider: values.api_provider,
-        api_key: values.api_key,
+        api_key: isBuiltInKeyProvider ? '' : values.api_key,
         api_base_url: values.api_base_url,
         llm_model: values.llm_model,
         temperature: values.temperature,
@@ -530,6 +687,23 @@ export default function SettingsPage() {
       loadPresets();
     } catch (error) {
       console.error('保存失败:', error);
+    }
+  };
+
+  const handleChapterAnalysisPresetChange = async (presetId?: string) => {
+    setSavingChapterAnalysisPreset(true);
+    try {
+      const normalizedPresetId = presetId || undefined;
+      await settingsApi.setChapterAnalysisPresetSelection(normalizedPresetId);
+      setChapterAnalysisPresetId(normalizedPresetId);
+      message.success(normalizedPresetId ? '已设置章节内容分析专用API配置' : '章节内容分析已恢复使用默认API配置');
+      loadPresets();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '设置章节内容分析API配置失败');
+      console.error(error);
+    } finally {
+      setSavingChapterAnalysisPreset(false);
     }
   };
 
@@ -780,6 +954,8 @@ export default function SettingsPage() {
       //   return 'purple';
       case 'gemini':
         return 'green';
+      case 'mumu':
+        return 'magenta';
       default:
         return 'default';
     }
@@ -801,6 +977,38 @@ export default function SettingsPage() {
             </Button>
           </Space>
         </div>
+
+        <Card size="small" style={{ background: token.colorFillAlter, borderColor: token.colorBorderSecondary }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space direction="vertical" size={2}>
+                <Text strong>章节内容分析 API 配置</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  指定章节内容分析使用的预设；未选择时使用默认的文本模型配置。
+                </Text>
+              </Space>
+              <Select
+                allowClear
+                placeholder="默认API配置"
+                value={chapterAnalysisPresetId}
+                loading={savingChapterAnalysisPreset}
+                disabled={presetsLoading || savingChapterAnalysisPreset}
+                style={{ minWidth: isMobile ? '100%' : 280 }}
+                onChange={(value) => handleChapterAnalysisPresetChange(value)}
+                options={presets.map((preset) => ({
+                  value: preset.id,
+                  label: `${preset.name} (${preset.config.llm_model})`,
+                }))}
+              />
+            </Space>
+            <Alert
+              showIcon
+              type="info"
+              message={chapterAnalysisPresetId ? '章节内容分析将优先使用所选预设。' : '当前未指定章节内容分析预设，将使用默认API配置。'}
+              style={{ padding: '6px 10px' }}
+            />
+          </Space>
+        </Card>
 
         {presets.length === 0 ? (
           <Empty
@@ -882,6 +1090,7 @@ export default function SettingsPage() {
                       <Space>
                         <span style={{ fontWeight: 'bold' }}>{preset.name}</span>
                         {isActive && <Tag color="success">激活中</Tag>}
+                        {preset.id === chapterAnalysisPresetId && <Tag color="processing">章节分析</Tag>}
                       </Space>
                     }
                     description={
@@ -986,7 +1195,7 @@ export default function SettingsPage() {
               items={[
                 {
                   key: 'current',
-                  label: '当前配置',
+                  label: <Space size={6}><ThunderboltOutlined />文本模型配置</Space>,
                   children: (
                     <Space direction="vertical" size={isMobile ? 'middle' : 'large'} style={{ width: '100%' }}>
 
@@ -1050,6 +1259,40 @@ export default function SettingsPage() {
                             </Select>
                           </Form.Item>
 
+                          {selectedProvider === 'mumu' && (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="MuMuのAPI 专属供应商"
+                              description={
+                                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                                  <Text>
+                                    已自动填入专属地址，API Key 保持留空。免费注册后即可获取可用 Key。
+                                  </Text>
+                                  <div>
+                                    <Button
+                                      type="primary"
+                                      onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                                    >
+                                      打开 MuMuのAPI 站点免费注册
+                                    </Button>
+                                  </div>
+                                </Space>
+                              }
+                              style={{ marginBottom: 16 }}
+                            />
+                          )}
+
+                          {selectedProvider === 'xiaomi_mimo' && (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="Xiaomi MiMo 内置适配器"
+                              description="使用 OpenAI 兼容格式与内置服务地址。真实 Key 仅由后端环境变量提供，前端和数据库不会保存该 Key。"
+                              style={{ marginBottom: 16 }}
+                            />
+                          )}
+
                           <Form.Item
                             label={
                               <Space size={4}>
@@ -1061,12 +1304,13 @@ export default function SettingsPage() {
                               </Space>
                             }
                             name="api_key"
-                            rules={[{ required: true, message: '请输入API密钥' }]}
+                            rules={builtInKeyProviders.includes(selectedProvider) ? [] : [{ required: true, message: '请输入API密钥' }]}
                           >
                             <Input.Password
                               size={isMobile ? 'middle' : 'large'}
-                              placeholder="sk-..."
+                              placeholder={builtInKeyProviders.includes(selectedProvider) ? '使用后端内置密钥' : 'sk-...'}
                               autoComplete="new-password"
+                              disabled={builtInKeyProviders.includes(selectedProvider)}
                             />
                           </Form.Item>
 
@@ -1181,7 +1425,12 @@ export default function SettingsPage() {
                                 ) : undefined
                               }
                               options={(() => {
-                                const opts = modelOptions.map(model => ({
+                                const providerDefaultModels = selectedProvider === 'xiaomi_mimo' ? xiaomiMimoDefaultModels : [];
+                                const combinedModels = [
+                                  ...providerDefaultModels,
+                                  ...modelOptions.filter(model => !providerDefaultModels.some(item => item.value === model.value)),
+                                ];
+                                const opts = combinedModels.map(model => ({
                                   value: model.value,
                                   label: model.label,
                                   description: model.description
@@ -1513,8 +1762,118 @@ export default function SettingsPage() {
                   ),
                 },
                 {
+                  key: 'cover',
+                  label: <Space size={6}><PictureOutlined />图片模型配置</Space>,
+                  children: (
+                    <Spin spinning={initialLoading}>
+                      <Form form={form} layout="vertical" onFinish={handleSave} autoComplete="off">
+
+                        <Form.Item label="封面图片生成功能" name="cover_enabled" style={{ marginBottom: 16 }}>
+                          <Select
+                            size={isMobile ? 'middle' : 'large'}
+                            onChange={() => setCoverTestResult(null)}
+                            options={[
+                              { value: true, label: '启用封面图片生成' },
+                              { value: false, label: '停用封面图片生成' },
+                            ]}
+                          />
+                        </Form.Item>
+
+                        <Form.Item label="封面图片 Provider" name="cover_api_provider" rules={[{ required: true, message: '请选择封面图片 Provider' }]}>
+                          <Select size={isMobile ? 'middle' : 'large'} onChange={handleCoverProviderChange}>
+                            {coverApiProviders.map(provider => (
+                              <Option key={provider.value} value={provider.value}>{provider.label}</Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+
+                        {selectedCoverProvider === 'mumu' && (
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="MuMuのAPI 专属适配器"
+                            description={
+                              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                                <Text>
+                                  已固定提供 MuMuのAPI 图片接口地址选项，切换地址时会自动带出推荐模型。API Key 需前往 MuMuのAPI 站点注册获取。
+                                </Text>
+                                <div>
+                                  <Button
+                                    type="primary"
+                                    onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                                  >
+                                    打开 MuMuのAPI 站点免费注册
+                                  </Button>
+                                </div>
+                              </Space>
+                            }
+                            style={{ marginBottom: 16 }}
+                          />
+                        )}
+
+                        <Form.Item label="封面图片 API Key" name="cover_api_key" rules={[{ required: true, message: '请输入封面图片 API Key' }]}>
+                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'mumu' ? '请输入 MuMuのAPI Key' : '输入封面图片 API Key'} autoComplete="new-password" />
+                        </Form.Item>
+
+                        <Form.Item label="封面图片 API 地址" name="cover_api_base_url" rules={[{ type: 'url', message: '请输入有效的URL' }]}>
+                          {selectedCoverProvider === 'mumu' ? (
+                            <Select
+                              size={isMobile ? 'middle' : 'large'}
+                              onChange={handleMumuCoverBaseUrlChange}
+                              options={mumuCoverBaseUrlOptions.map(option => ({
+                                value: option.value,
+                                label: option.label,
+                              }))}
+                            />
+                          ) : (
+                            <Input size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'grok' ? 'https://api.x.ai/v1' : 'https://generativelanguage.googleapis.com/v1beta'} />
+                          )}
+                        </Form.Item>
+
+                        <Form.Item label="封面图片模型" name="cover_image_model" rules={[{ required: true, message: '请输入封面图片模型名称' }]}>
+                          <Input
+                            size={isMobile ? 'middle' : 'large'}
+                            placeholder={selectedCoverProvider === 'mumu'
+                              ? '选择地址后自动填入推荐模型'
+                              : selectedCoverProvider === 'grok'
+                                ? 'grok-2-image'
+                                : 'gemini-2.0-flash-exp-image-generation'}
+                          />
+                        </Form.Item>
+
+                        {coverTestResult && (
+                          <Alert
+                            type={coverTestResult.success ? 'success' : 'error'}
+                            showIcon
+                            message={coverTestResult.message}
+                            description={coverTestResult.success ? `Provider: ${coverTestResult.provider || '-'} / Model: ${coverTestResult.model || '-'}` : undefined}
+                            style={{ marginBottom: 16 }}
+                          />
+                        )}
+
+                        <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
+                          <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+                            <Space wrap>
+                              <Button
+                                icon={<ThunderboltOutlined />}
+                                onClick={handleCoverTestConnection}
+                                loading={testingCoverApi}
+                                style={{ borderColor: token.colorSuccess, color: token.colorSuccess, fontWeight: 500 }}
+                              >
+                                {testingCoverApi ? '测试中...' : '测试封面接口'}
+                              </Button>
+                              <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>
+                            </Space>
+                            <Button type="primary" icon={<SaveOutlined />} htmlType="submit" loading={loading}>保存封面配置</Button>
+                          </Space>
+                        </Form.Item>
+                      </Form>
+                    </Spin>
+                  ),
+                },
+                {
                   key: 'presets',
-                  label: '配置预设',
+                  label: <Space size={6}><CopyOutlined />配置预设</Space>,
                   children: renderPresetsList(),
                 },
               ]}
@@ -1566,10 +1925,46 @@ export default function SettingsPage() {
                   style={{ marginBottom: 16 }}
                 >
                   <Select placeholder="选择提供商" onChange={handlePresetProviderChange}>
+                    <Select.Option value="mumu">MuMuのAPI</Select.Option>
+                    <Select.Option value="xiaomi_mimo">Xiaomi MiMo（内置）</Select.Option>
                     <Select.Option value="openai">OpenAI</Select.Option>
                     <Select.Option value="gemini">Google Gemini</Select.Option>
                   </Select>
                 </Form.Item>
+
+                {selectedPresetProvider === 'mumu' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="MuMuのAPI 专属供应商"
+                    description={
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Text>
+                          已自动填入专属地址，API Key 保持留空。免费注册后即可获取可用 Key。
+                        </Text>
+                        <div>
+                          <Button
+                            type="primary"
+                            onClick={() => window.open(mumuRegisterUrl, '_blank', 'noopener,noreferrer')}
+                          >
+                            打开 MuMuのAPI 站点免费注册
+                          </Button>
+                        </div>
+                      </Space>
+                    }
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
+
+                {selectedPresetProvider === 'xiaomi_mimo' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Xiaomi MiMo 内置适配器"
+                    description="使用后端内置 Key 和 OpenAI 兼容接口地址，预设中不会保存真实 Key。"
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
               </Col>
             </Row>
 
@@ -1588,10 +1983,13 @@ export default function SettingsPage() {
                 <Form.Item
                   name="api_key"
                   label="API Key"
-                  rules={[{ required: true, message: '请输入API Key' }]}
+                  rules={builtInKeyProviders.includes(selectedPresetProvider) ? [] : [{ required: true, message: '请输入API Key' }]}
                   style={{ marginBottom: 16 }}
                 >
-                  <Input.Password placeholder="sk-..." />
+                  <Input.Password
+                    placeholder={builtInKeyProviders.includes(selectedPresetProvider) ? '使用后端内置密钥（不会暴露）' : 'sk-...'}
+                    disabled={builtInKeyProviders.includes(selectedPresetProvider)}
+                  />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
@@ -1695,7 +2093,12 @@ export default function SettingsPage() {
                       </div>
                     }
                     options={(() => {
-                      const opts = presetModelOptions.map(model => ({
+                      const providerDefaultModels = selectedPresetProvider === 'xiaomi_mimo' ? xiaomiMimoDefaultModels : [];
+                      const combinedModels = [
+                        ...providerDefaultModels,
+                        ...presetModelOptions.filter(model => !providerDefaultModels.some(item => item.value === model.value)),
+                      ];
+                      const opts = combinedModels.map(model => ({
                         value: model.value,
                         label: model.label,
                         description: model.description

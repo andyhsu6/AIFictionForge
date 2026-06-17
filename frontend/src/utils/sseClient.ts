@@ -151,6 +151,7 @@ export class SSEPostClient {
           headers: {
             'Content-Type': 'application/json',
           },
+          credentials: 'include',
           body: JSON.stringify(this.data),
           signal: this.abortController.signal,
         });

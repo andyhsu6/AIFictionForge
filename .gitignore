@@ -79,6 +79,7 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/users.json
 backend/data/admins.json
+backend/storage/
 
 # Temporary files
 *.bak
@@ -113,7 +114,7 @@ logo.ico
 dist_embed/
 embed_build.py
 
-
+.roo/
 data/
 docs/
 data_old/
@@ -124,3 +125,4 @@ backend/embedding/
 
 # 提示词工坊实例标识（每个部署实例必须唯一）
 backend/.instance_id
+test.json

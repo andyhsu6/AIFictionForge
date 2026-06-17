@@ -5,7 +5,7 @@ from enum import Enum
 from typing import AsyncGenerator, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from fastapi.responses import StreamingResponse
-from app.logger import get_logger
+from app.logger import get_logger, summarize_log_value
 
 logger = get_logger(__name__)
 
@@ -250,7 +250,7 @@ class SSEResponse:
         except Exception as e:
             logger.error(f"❌ SSE格式化失败: {type(e).__name__}: {e}")
             logger.error(f"   data类型: {type(data)}")
-            logger.error(f"   data内容: {str(data)[:500]}")
+            logger.error(f"   data摘要: {summarize_log_value(data)}")
             # 返回错误消息而不是崩溃
             error_message = ""
             if event:
@@ -386,6 +386,42 @@ async def create_sse_generator(
     except Exception as e:
         logger.error(f"SSE生成器错误: {str(e)}")
         yield await SSEResponse.send_error(str(e))
+
+
+class _HeartbeatSentinel:
+    """心跳哨兵对象，用于标识心跳事件（非AI内容）"""
+    pass
+
+HEARTBEAT = _HeartbeatSentinel()
+
+
+async def wrap_stream_with_heartbeat(
+    async_gen: AsyncGenerator,
+    heartbeat_interval: float = 15.0
+) -> AsyncGenerator:
+    """
+    包装异步生成器，在等待数据时产生心跳哨兵，防止连接超时断开。
+    
+    用法：
+        async for chunk in wrap_stream_with_heartbeat(
+            ai_service.generate_text_stream(prompt), 
+            heartbeat_interval=15
+        ):
+            if chunk is HEARTBEAT:
+                yield await tracker.heartbeat()
+                continue
+            # chunk 是原始AI数据
+    """
+    ait = async_gen.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(ait.__anext__(), timeout=heartbeat_interval)
+            yield item
+        except asyncio.TimeoutError:
+            # 等待超时，产生心跳哨兵
+            yield HEARTBEAT
+        except StopAsyncIteration:
+            return
 
 
 def create_sse_response(generator: AsyncGenerator[str, None]) -> StreamingResponse:

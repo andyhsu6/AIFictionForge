@@ -114,6 +114,7 @@ class AutoCharacterService:
             character_data = await self.ai_service.call_with_json_retry(
                 prompt=prompt,
                 max_retries=2,  # 减少重试次数以加快速度
+                auto_mcp=enable_mcp,
             )
             
             char_name = character_data.get('name', '未知')
@@ -545,13 +546,6 @@ class AutoCharacterService:
         }
 
 
-# 全局实例缓存
-_auto_character_service_instance: Optional[AutoCharacterService] = None
-
-
 def get_auto_character_service(ai_service: AIService) -> AutoCharacterService:
-    """获取自动角色服务实例（单例模式）"""
-    global _auto_character_service_instance
-    if _auto_character_service_instance is None:
-        _auto_character_service_instance = AutoCharacterService(ai_service)
-    return _auto_character_service_instance
+    """获取自动角色服务实例。AIService 绑定当前用户配置，不能全局复用。"""
+    return AutoCharacterService(ai_service)

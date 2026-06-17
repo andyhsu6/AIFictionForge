@@ -55,6 +55,11 @@ class ProjectResponse(ProjectBase):
     chapter_count: Optional[int] = None
     narrative_perspective: Optional[str] = None
     character_count: Optional[int] = None
+    cover_image_url: Optional[str] = None
+    cover_prompt: Optional[str] = None
+    cover_status: Optional[str] = None
+    cover_error: Optional[str] = None
+    cover_updated_at: Optional[datetime] = None
     outline_mode: str  # 显式声明以确保响应中包含
     created_at: datetime
     updated_at: datetime

@@ -351,7 +351,7 @@ async def export_project_chapters(
 ):
     """
     导出项目的所有章节内容为TXT文本文件
-    按章节顺序组织，包含项目基本信息
+    按章节顺序组织，使用便于再次拆书导入的纯章节格式
     """
     try:
         # 从认证中间件获取用户ID
@@ -388,46 +388,32 @@ async def export_project_chapters(
         
         txt_content = []
         
-        txt_content.append("=" * 80)
-        txt_content.append(f"项目标题: {project.title}")
-        txt_content.append("=" * 80)
-        
-        if project.description:
-            txt_content.append(f"\n简介: {project.description}\n")
-        
-        if project.theme:
-            txt_content.append(f"主题: {project.theme}")
-        
-        if project.genre:
-            txt_content.append(f"类型: {project.genre}")
-        
-        txt_content.append(f"总章节数: {len(chapters)}")
-        txt_content.append(f"总字数: {project.current_words}")
-        txt_content.append("\n" + "=" * 80 + "\n\n")
-        
-        for chapter in chapters:
-            # 只显示主章节号，不显示子索引
-            txt_content.append(f"第 {chapter.chapter_number} 章  {chapter.title}")
-            txt_content.append("-" * 80)
-            txt_content.append("")  # 空行
-            
-            if chapter.content:
-                txt_content.append(chapter.content)
+        for idx, chapter in enumerate(chapters):
+            chapter_title = (chapter.title or "").strip() or f"未命名章节{chapter.chapter_number}"
+            raw_content = (chapter.content or "").strip()
+            if raw_content:
+                formatted_lines = []
+                for line in raw_content.splitlines():
+                    stripped_line = line.strip()
+                    if stripped_line:
+                        formatted_lines.append(f"　　{stripped_line}")
+                    else:
+                        formatted_lines.append("")
+                chapter_content = "\n".join(formatted_lines)
             else:
-                txt_content.append("（本章暂无内容）")
+                chapter_content = "　　（本章暂无内容）"
             
-            txt_content.append("\n\n" + "=" * 80 + "\n\n")
-        
-        txt_content.append(f"--- 全文完 ---")
-        
-        # 获取当前时间
-        from datetime import datetime
-        export_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        txt_content.append(f"\n导出时间: {export_time}")
+            # 使用拆书强匹配可稳定识别的章节标题格式：第X章 标题
+            txt_content.append(f"第{chapter.chapter_number}章 {chapter_title}")
+            txt_content.append(chapter_content)
+            
+            # 章节之间只保留一个空行，避免装饰性分割线干扰拆书识别
+            if idx < len(chapters) - 1:
+                txt_content.append("")
         
         final_content = "\n".join(txt_content)
         
-        safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
+        safe_title = "".join(c for c in (project.title or "未命名项目") if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
         filename = f"{safe_title}.txt"
         
         from urllib.parse import quote

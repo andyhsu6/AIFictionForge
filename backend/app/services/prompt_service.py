@@ -1,6 +1,7 @@
 """提示词管理服务"""
 from typing import Dict, Any, Optional
 import json
+from app.services.skill_loader import get_all_skills_cached
 
 
 class WritingStyleManager:
@@ -11,19 +12,69 @@ class WritingStyleManager:
         """
         将写作风格应用到基础提示词中
         
+        注意：写作风格已通过 system_prompt 注入（system_prompt_with_style），
+        此方法仅追加输出指令，不再重复注入 style_content，避免风格信息被注入两次。
+        
         Args:
             base_prompt: 基础提示词
-            style_content: 风格要求内容
+            style_content: 风格要求内容（已通过 system_prompt 注入，此处不使用）
             
         Returns:
-            组合后的提示词
+            追加输出指令后的提示词
         """
-        # 在基础提示词末尾添加风格要求
-        return f"{base_prompt}\n\n{style_content}\n\n请直接输出章节正文内容，不要包含章节标题和其他说明文字。"
+        # 写作风格已在 system_prompt 中注入，此处只追加输出格式指令
+        return f"{base_prompt}\n\n请直接输出章节正文内容，不要包含章节标题和其他说明文字。"
 
 
 class PromptService:
     """提示词模板管理"""
+
+    NOVEL_COVER_PROMPT_TEMPLATE = """创作一幅高质量小说封面插图，适用于竖版书籍封面。
+
+小说标题是：“{title}”。
+类型为 {genre}。核心主题是 {theme}。故事摘要如下：{description}
+
+画面应具有电影感、精致、富有氛围和情感表现力，并具备清晰的视觉焦点和强烈的象征性意象。请优先展现符合小说类型的视觉叙事和情绪，而不是死板地描绘具体场景。
+
+这必须看起来像一幅专业的网络小说或实体出版物风格的封面。
+
+硬性要求：
+- 必须在画面醒目位置包含小说标题文字：“{title}”，文字排版需极具艺术感，并与小说的 {genre} 类型风格完美融合。
+- 适用于标准小说封面的竖版构图（2:3 比例）。
+- 画面中只能出现标题文字，绝不能出现作者名字、副标题或其他无关的随机字母。
+- 无标志 (Logo)。
+- 无水印。
+- 无边框。
+- 无 UI 元素。
+- 无样机展示效果 (Mockup)。
+
+最终图像必须是一张完整、专业的书籍封面艺术作品，背景插画与标题排版需相得益彰。"""
+
+    @classmethod
+    async def build_novel_cover_prompt(
+        cls,
+        project: Any,
+        user_id: str = None,
+        db = None,
+    ) -> str:
+        """基于项目基础信息构建小说封面提示词，支持用户自定义模板"""
+        title = (getattr(project, "title", "") or "未命名小说").strip()
+        genre = (getattr(project, "genre", "") or "未指定类型").strip()
+        theme = (getattr(project, "theme", "") or "未指定主题").strip()
+        description = (getattr(project, "description", "") or "无额外简介").strip()
+
+        compact_description = description[:300]
+        template = await cls.get_template_with_fallback(
+            "NOVEL_COVER_PROMPT_TEMPLATE",
+            user_id=user_id,
+            db=db,
+        )
+        return template.format(
+            title=title,
+            genre=genre,
+            theme=theme,
+            description=compact_description,
+        )
     
     # ========== V2版本提示词模板（RTCO框架）==========
     
@@ -659,8 +710,13 @@ class PromptService:
 {previous_chapter_summary}
 </previous_chapter_summary>
 
+<recent_context priority="P1">
+【最近章节摘要 - 故事脉络参考】
+{recent_chapters_context}
+</recent_context>
+
 <previous_chapter priority="P1">
-【上一章末尾500字内容】
+【上一章完整正文】
 {previous_chapter_content}
 </previous_chapter>
 
@@ -735,7 +791,7 @@ class PromptService:
 
 <continuation priority="P0">
 【衔接锚点 - 必须承接】
-上一章结尾：
+上一章完整正文：
 「{continuation_point}」
 
 【🔴 上一章已完成剧情（禁止重复！）】
@@ -744,8 +800,8 @@ class PromptService:
 ⚠️ 严重警告：
 1. 上述"已完成剧情"和"衔接锚点"是**已经写过的**内容
 2. 本章必须推进到**新的情节点**，绝对不能重新叙述已经发生的事件
-3. 如果锚点是对话结束，请描写对话后的动作或场景转换，不要重复对话
-4. 如果锚点是场景描写，请直接开始人物行动，不要重复描写环境
+3. 本章应承接上一章最后的情境继续推进，不要复述上一章完整正文
+4. 如果上一章以对话或场景结束，请从结束后的动作、反应或场景转换开始
 </continuation>
 
 <characters priority="P1">
@@ -1308,6 +1364,10 @@ class PromptService:
 ✅ 存活状态谨慎：survival_status仅当章节有明确死亡/失踪/退场描写时填写，默认null
 ✅ 组织覆灭谨慎：is_destroyed仅当组织被彻底消灭时设true，组织受损不算覆灭
 ✅ 【伏笔ID追踪】回收伏笔时，必须从【已埋入伏笔列表】中查找匹配的ID填入 reference_foreshadow_id
+✅ 【suggestions严格格式】suggestions 必须是“字符串数组”，每个元素都必须是纯字符串
+✅ suggestions 的正确格式示例："suggestions": ["【节奏问题】...", "【描写不足】..."]
+✅ suggestions 中禁止返回对象、字典、键值对或嵌套结构，例如禁止 {{"suggestion": "..."}}、{{"content": "..."}}
+✅ 如果没有改进建议，必须返回空数组 []，不要返回 null，不要省略字段
 
 【评分约束 - 严格执行】
 ✅ 严格按评分标准打分，支持小数（如6.5、7.2、8.3）
@@ -1319,6 +1379,7 @@ class PromptService:
    - overall 6.0-8.0 → 1-2条建议
    - overall≥8.0 → 0-1条建议
 ✅ 每条建议必须标注问题类型（如【节奏问题】【描写不足】等）
+✅ 每条建议必须直接输出完整文本，不能包裹为对象字段
 
 【禁止事项】
 ❌ keyword使用概括或改写的文字
@@ -1329,6 +1390,8 @@ class PromptService:
 ❌ 无确切剧情依据地标记角色死亡或组织覆灭
 ❌ 所有章节都打7-8分的"安全分"
 ❌ 高分章节给大量建议，或低分章节不给建议
+❌ suggestions 返回 {{"suggestion": "建议内容"}} 这类对象数组
+❌ suggestions 返回带编号对象、content对象、explanation对象等任何非字符串元素
 </constraints>"""
 
     # 大纲单批次展开提示词 V2（RTCO框架）
@@ -2246,8 +2309,8 @@ class PromptService:
 职业体系必须与项目简介中的故事背景和角色设定高度契合。
 
 【数量要求】
-- 主职业：精确生成3个
-- 副职业：精确生成2个
+- 主职业：精确生成1个
+- 副职业：精确生成1个
 </task>
 
 <worldview priority="P0">
@@ -2267,16 +2330,14 @@ class PromptService:
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）- 必须精确生成3个**
+**1. 主职业（main_careers）- 必须精确生成1个**
 - 主职业是角色的核心发展方向
 - 必须严格符合世界观规则和简介中的故事背景
-- 3个主职业应该覆盖不同的发展路线（如：战斗型、智慧型、特殊型）
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
 - 职业设计要能支撑简介中描述的故事情节
 
-**2. 副职业（sub_careers）- 必须精确生成2个**
+**2. 副职业（sub_careers）- 必须精确生成1个**
 - 副职业包含生产、辅助、特殊技能类
-- 2个副职业应该具有互补性，丰富角色的多样性
 - 每个副职业的阶段数量可以不同
 - 不要让所有副职业都是相同的阶段数
 - 副职业要能为主职业提供辅助或增益
@@ -2334,9 +2395,8 @@ class PromptService:
 
 <constraints>
 【必须遵守】
-✅ 主职业数量：必须精确生成3个，不多不少
-✅ 副职业数量：必须精确生成2个，不多不少
-✅ 不同职业的max_stage必须不同
+✅ 主职业数量：必须精确生成1个，不多不少
+✅ 副职业数量：必须精确生成1个，不多不少
 ✅ 主职业阶段数建议：8-12个
 ✅ 副职业阶段数建议：5-8个
 ✅ stages数组长度必须等于max_stage
@@ -2344,8 +2404,6 @@ class PromptService:
 ✅ 职业设计必须支撑项目简介中的故事情节
 
 【禁止事项】
-❌ 生成超过3个主职业或少于3个主职业
-❌ 生成超过2个副职业或少于2个副职业
 ❌ 所有职业使用相同的阶段数
 ❌ 输出markdown标记
 ❌ 职业设计与世界观或简介脱节
@@ -2813,6 +2871,12 @@ class PromptService:
         
         # 定义所有模板及其元信息
         template_definitions = {
+            "NOVEL_COVER_PROMPT_TEMPLATE": {
+                "name": "小说封面生成",
+                "category": "封面生成",
+                "description": "根据项目基础信息生成小说封面绘制提示词，适用于竖版书籍封面",
+                "parameters": ["title", "genre", "theme", "description"]
+            },
             "WORLD_BUILDING": {
                 "name": "世界构建",
                 "category": "世界构建",
@@ -3062,6 +3126,14 @@ class PromptService:
                     "parameters": info["parameters"],
                     "content": template_content
                 })
+        
+        # 加载 Skill 提示词模板
+        try:
+            skill_templates = get_all_skills_cached()
+            templates.extend(skill_templates)
+        except Exception as e:
+            from app.logger import get_logger
+            get_logger(__name__).warning(f"加载 Skill 模板失败: {e}")
         
         return templates
     

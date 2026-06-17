@@ -22,6 +22,7 @@ anthropic==0.72.0
 httpx==0.28.1
 python-dotenv==1.1.0
 psutil==6.1.1
+aiosmtplib==4.0.2
 # MCP官方库（Model Context Protocol Python SDK）
 mcp==1.22.0
 
@@ -33,3 +34,10 @@ transformers==4.57.1
 
 # Sentence Transformers（更新到最新稳定版本以修复 FutureWarning）
 sentence-transformers==5.1.2
+
+# 宽松JSON解析
+json5==0.12.0
+PyYAML==6.0.2
+
+# PyTorch 版本锁定（用于打包环境）
+torch==2.8.0

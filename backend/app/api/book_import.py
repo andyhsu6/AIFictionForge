@@ -15,9 +15,11 @@ from app.schemas.book_import import (
     BookImportPreviewResponse,
     BookImportRetryRequest,
     BookImportTaskCreateResponse,
+    BookImportTaskCreateRequest,
     BookImportTaskStatusResponse,
 )
 from app.services.book_import_service import book_import_service
+from app.api.settings import get_user_ai_service_from_db
 from app.utils.sse_response import SSEResponse, create_sse_response
 
 router = APIRouter(prefix="/book-import", tags=["拆书导入"])
@@ -33,6 +35,8 @@ async def create_book_import_task(
     project_id: str | None = Form(default=None, description="兼容参数：当前版本固定新建项目，不支持传入"),
     create_new_project: bool = Form(default=True, description="兼容参数：当前版本仅支持 true"),
     import_mode: str = Form(default="append", description="导入模式：append/overwrite"),
+    extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
+    tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -44,10 +48,25 @@ async def create_book_import_task(
     if import_mode not in {"append", "overwrite"}:
         raise HTTPException(status_code=400, detail="import_mode 仅支持 append 或 overwrite")
 
+    if extract_mode not in {"tail", "full"}:
+        raise HTTPException(status_code=400, detail="extract_mode 仅支持 tail 或 full")
+    if tail_chapter_count < 5:
+        raise HTTPException(status_code=400, detail="tail_chapter_count 不能小于 5")
+    if tail_chapter_count % 5 != 0:
+        raise HTTPException(status_code=400, detail="tail_chapter_count 必须是 5 的倍数")
+
+    if tail_chapter_count > 50:
+        extract_mode = "full"
+
     if project_id:
         raise HTTPException(status_code=400, detail="当前仅支持新建项目导入，不支持指定 project_id")
     if not create_new_project:
         raise HTTPException(status_code=400, detail="当前仅支持新建项目导入")
+
+    create_payload = BookImportTaskCreateRequest(
+        extract_mode=extract_mode,
+        tail_chapter_count=tail_chapter_count,
+    )
 
     content = await file.read()
     if len(content) > MAX_TXT_SIZE:
@@ -60,6 +79,8 @@ async def create_book_import_task(
         project_id=None,
         create_new_project=True,
         import_mode=import_mode,
+        extract_mode=create_payload.extract_mode,
+        tail_chapter_count=create_payload.tail_chapter_count,
     )
     return task
 
@@ -141,12 +162,14 @@ async def apply_book_import_stream(
     async def _run_import() -> None:
         """在后台任务中执行导入并通过队列推送进度"""
         try:
+            ai_service = await get_user_ai_service_from_db(user_id, db)
             result = await book_import_service.apply_import_stream(
                 task_id=task_id,
                 user_id=user_id,
                 payload=payload,
                 db=db,
                 progress_callback=_progress_callback,
+                ai_service=ai_service,
             )
 
             # 发送结果
@@ -214,12 +237,14 @@ async def retry_failed_steps_stream(
 
     async def _run_retry() -> None:
         try:
+            ai_service = await get_user_ai_service_from_db(user_id, db)
             result = await book_import_service.retry_failed_steps_stream(
                 task_id=task_id,
                 user_id=user_id,
                 steps_to_retry=payload.steps,
                 db=db,
                 progress_callback=_progress_callback,
+                ai_service=ai_service,
             )
 
             await progress_queue.put(await SSEResponse.send_result(result))

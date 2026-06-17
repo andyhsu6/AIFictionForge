@@ -6,6 +6,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.user_manager import user_manager
 from app.logger import get_logger
+from app.security import verify_session_token
 
 logger = get_logger(__name__)
 
@@ -46,8 +47,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.is_proxy_request = False
             request.state.proxy_instance_id = None
             
-            # 从 Cookie 中获取用户 ID
-            user_id = request.cookies.get("user_id")
+            # 优先验证签名会话 Cookie；不再信任客户端可伪造的明文 user_id。
+            user_id = verify_session_token(request.cookies.get("session_token"))
             
             if user_id:
                 user = await user_manager.get_user(user_id)

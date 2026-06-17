@@ -372,7 +372,7 @@ export default function ProjectWizardNew() {
       <div style={{
         maxWidth: 800,
         margin: '0 auto',
-        padding: isMobile ? '16px 12px' : '24px 24px',
+        padding: isMobile ? '8px 12px 12px' : '12px 20px 16px',
       }}>
         {currentStep === 'form' && renderForm()}
         {currentStep === 'generating' && generationConfig && (

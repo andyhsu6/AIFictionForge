@@ -1,5 +1,6 @@
-import { Card, Button, Spin, Space, Tag, Typography, Alert, Tooltip, theme } from 'antd';
-import { BookOutlined, RocketOutlined, BulbOutlined, UploadOutlined, DownloadOutlined, LoadingOutlined, CalendarOutlined, DeleteOutlined, CheckCircleOutlined, EditOutlined, PauseCircleOutlined } from '@ant-design/icons';
+import { Card, Button, Spin, Space, Tag, Typography, Alert, theme } from 'antd';
+import { BookOutlined, RocketOutlined, BulbOutlined, UploadOutlined, DownloadOutlined, LoadingOutlined, CalendarOutlined, DeleteOutlined, CheckCircleOutlined, EditOutlined, PauseCircleOutlined, PictureOutlined, SwapOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Project } from '../types';
 import { bookshelfCardStyles, bookshelfCardHoverHandlers } from '../components/CardStyles';
@@ -21,6 +22,8 @@ interface BookshelfPageProps {
   onOpenInspiration: () => void;
   onEnterProject: (project: Project) => void;
   onDeleteProject: (projectId: string) => void;
+  onGenerateCover: (project: Project, overwrite?: boolean) => void | Promise<void>;
+  onDownloadCover: (project: Project) => void;
   formatWordCount: (count: number) => string;
   getProgress: (current: number, target: number) => number;
   getProgressColor: (progress: number) => string;
@@ -43,6 +46,8 @@ export default function BookshelfPage({
   onOpenInspiration,
   onEnterProject,
   onDeleteProject,
+  onGenerateCover,
+  onDownloadCover,
   formatWordCount,
   getProgress,
   getProgressColor,
@@ -53,8 +58,19 @@ export default function BookshelfPage({
   const { resolvedMode } = useThemeMode();
   const isDark = resolvedMode === 'dark';
   const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
-  const mobileBookHeight = 460;
-  const desktopBookHeight = 430;
+  const coverButtonStyle = {
+    color: isDark ? token.colorWhite : token.colorPrimaryText,
+    background: isDark
+      ? 'rgba(255,255,255,0.14)'
+      : `linear-gradient(135deg, ${alphaColor(token.colorWhite, 0.92)} 0%, ${alphaColor(token.colorBgContainer, 0.84)} 100%)`,
+    borderColor: isDark ? 'rgba(255,255,255,0.22)' : alphaColor(token.colorPrimary, 0.35),
+    boxShadow: isDark ? 'none' : `0 6px 16px ${alphaColor(token.colorPrimary, 0.18)}`,
+    backdropFilter: 'blur(8px)',
+  };
+  const [flippedProjectIds, setFlippedProjectIds] = useState<Record<string, boolean>>({});
+  const [coverGeneratingIds, setCoverGeneratingIds] = useState<Record<string, boolean>>({});
+  const mobileBookHeight = 520;
+  const desktopBookHeight = 520;
   const mobileSpineWidth = 32;
 
   const serialBookPalettes = [
@@ -103,6 +119,26 @@ export default function BookshelfPage({
     }
 
     return <EditOutlined style={commonStyle} />;
+  };
+
+  const toggleProjectFace = (projectId: string) => {
+    setFlippedProjectIds((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  };
+
+  const handleGenerateCoverClick = async (event: React.MouseEvent<HTMLElement>, project: Project, overwrite: boolean = true) => {
+    event.stopPropagation();
+
+    if (coverGeneratingIds[project.id]) {
+      return;
+    }
+
+    setCoverGeneratingIds((prev) => ({ ...prev, [project.id]: true }));
+
+    try {
+      await onGenerateCover(project, overwrite);
+    } finally {
+      setCoverGeneratingIds((prev) => ({ ...prev, [project.id]: false }));
+    }
   };
 
   return (
@@ -333,14 +369,21 @@ export default function BookshelfPage({
 
             const ribbonStatusIcon = getRibbonStatusIcon(displayStatus, isWizardIncomplete, isCompleted);
 
+            const isFlipped = !!flippedProjectIds[project.id];
+            const coverActionLoading = !!coverGeneratingIds[project.id];
+            const coverReady = project.cover_status === 'ready' && !!project.cover_image_url;
+            const coverGenerating = project.cover_status === 'generating' || coverActionLoading;
+            const coverFailed = project.cover_status === 'failed' && !coverActionLoading;
+            const showCoverFace = coverReady && !isFlipped;
+
             return (
-              <div key={project.id} style={{ position: 'relative', width: '100%', minWidth: 0, minHeight: isMobile ? mobileBookHeight : desktopBookHeight }}>
+              <div key={project.id} style={{ position: 'relative', width: '100%', minWidth: 0, height: isMobile ? mobileBookHeight : desktopBookHeight }}>
                 <Card
                   hoverable
-                  style={{ ...bookshelfCardStyles.projectCard, minHeight: isMobile ? mobileBookHeight : desktopBookHeight }}
-                  styles={{ body: { padding: 0, flex: 1, display: 'flex', flexDirection: 'column' } }}
+                  style={{ ...bookshelfCardStyles.projectCard, height: isMobile ? mobileBookHeight : desktopBookHeight }}
+                  styles={{ body: { padding: 0, height: '100%', flex: 1, display: 'flex', flexDirection: 'column' } }}
                   {...bookshelfCardHoverHandlers}
-                  onClick={() => onEnterProject(project)}
+                  onClick={() => !isFlipped && onEnterProject(project)}
                   data-card-style="bookshelf-book"
                   data-book-kind="project"
                 >
@@ -381,28 +424,73 @@ export default function BookshelfPage({
                     zIndex: 2,
                     display: 'flex',
                     flexDirection: 'column',
-                    minHeight: isMobile ? mobileBookHeight : desktopBookHeight,
-                    padding: isMobile ? '18px 16px 14px 38px' : '26px 24px 18px 42px',
+                    flex: 1,
+                    height: '100%',
+                    padding: isMobile ? '16px 16px 14px 38px' : '20px 20px 18px 42px',
+                    overflow: 'hidden',
+                    width: '100%',
+                    boxSizing: 'border-box',
                   }}>
-                    <div style={{ marginBottom: isMobile ? 10 : 12, paddingRight: isMobile ? 18 : 30 }}>
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: 8,
-                        marginBottom: isMobile ? 8 : 10,
-                        minHeight: isMobile ? 50 : 58,
-                      }}>
-                        <BookOutlined style={{
-                          fontSize: isMobile ? 14 : 16,
-                          color: alphaColor(token.colorText, 0.4),
-                          marginTop: 2,
-                          flexShrink: 0,
+                    {showCoverFace && (
+                      <>
+                        <div style={{
+                          position: 'absolute',
+                          inset: 0,
+                          backgroundImage: `url(${project.cover_image_url})`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          backgroundRepeat: 'no-repeat',
                         }} />
-                        <Tooltip title={project.title}>
+                        <div style={{
+                          position: 'absolute',
+                          inset: 0,
+                          background: isDark
+                            ? 'linear-gradient(180deg, rgba(7,10,18,0.18) 0%, rgba(7,10,18,0.38) 24%, rgba(7,10,18,0.72) 62%, rgba(7,10,18,0.88) 100%)'
+                            : 'linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(16,24,40,0.22) 24%, rgba(16,24,40,0.62) 62%, rgba(16,24,40,0.82) 100%)',
+                        }} />
+                      </>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8, position: 'relative', zIndex: 2 }}>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={showCoverFace ? <BookOutlined /> : <SwapOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleProjectFace(project.id);
+                        }}
+                        style={showCoverFace ? {
+                          color: token.colorWhite,
+                          borderRadius: 999,
+                          background: 'rgba(255,255,255,0.18)',
+                          backdropFilter: 'blur(10px)',
+                          border: '1px solid rgba(255,255,255,0.22)',
+                        } : undefined}
+                      >
+                        {showCoverFace ? '切换回详情' : (coverReady ? '查看封面' : '封面操作')}
+                      </Button>
+                    </div>
+
+                    {showCoverFace ? (
+                      <div style={{
+                        position: 'relative',
+                        zIndex: 2,
+                        flex: 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        minHeight: 0,
+                        width: '100%',
+                      }}>
+                        <div style={{
+                          minHeight: isMobile ? 82 : 90,
+                          width: '100%',
+                          marginBottom: isMobile ? 10 : 12,
+                        }}>
                           <div style={{
                             fontSize: isMobile ? 18 : 22,
                             fontWeight: 700,
-                            color: token.colorText,
+                            color: token.colorWhite,
                             lineHeight: 1.3,
                             display: '-webkit-box',
                             WebkitLineClamp: 2,
@@ -410,174 +498,443 @@ export default function BookshelfPage({
                             overflow: 'hidden',
                             wordBreak: 'break-word',
                             fontFamily: 'Georgia, "Times New Roman", "Noto Serif SC", serif',
+                            textShadow: '0 2px 12px rgba(0,0,0,0.35)',
                           }}>
                             {project.title}
                           </div>
-                        </Tooltip>
-                      </div>
+                          <div style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: 6,
+                            marginTop: 10,
+                            minHeight: isMobile ? 20 : 22,
+                            alignItems: 'flex-start',
+                          }}>
+                            {tags.length > 0 ? tags.slice(0, 3).map((tag: string, idx: number) => (
+                              <Tag key={idx} style={{
+                                margin: 0,
+                                padding: isMobile ? '0 7px' : '0 8px',
+                                borderRadius: 999,
+                                border: '1px solid rgba(255,255,255,0.24)',
+                                background: 'rgba(255,255,255,0.14)',
+                                color: token.colorWhite,
+                                fontSize: isMobile ? 10 : 11,
+                                lineHeight: isMobile ? '18px' : '20px',
+                                fontWeight: 500,
+                                backdropFilter: 'blur(8px)',
+                              }}>
+                                {tag}
+                              </Tag>
+                            )) : (
+                              <Tag style={{
+                                margin: 0,
+                                padding: isMobile ? '0 7px' : '0 8px',
+                                borderRadius: 999,
+                                border: '1px solid rgba(255,255,255,0.24)',
+                                background: 'rgba(255,255,255,0.14)',
+                                color: token.colorWhite,
+                                fontSize: isMobile ? 10 : 11,
+                                lineHeight: isMobile ? '18px' : '20px',
+                                fontWeight: 500,
+                                backdropFilter: 'blur(8px)',
+                              }}>
+                                未分类
+                              </Tag>
+                            )}
+                          </div>
+                        </div>
 
-                      <div style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 6,
-                        minHeight: isMobile ? 20 : 22,
-                        alignItems: 'flex-start',
-                      }}>
-                        {tags.length > 0 ? tags.slice(0, 3).map((tag: string, idx: number) => (
-                          <Tag key={idx} style={{
-                            margin: 0,
-                            padding: isMobile ? '0 7px' : '0 8px',
-                            borderRadius: 4,
-                            border: `1px solid ${alphaColor(token.colorSuccess, 0.18)}`,
-                            background: alphaColor(token.colorSuccess, 0.08),
-                            color: token.colorSuccess,
-                            fontSize: isMobile ? 10 : 11,
-                            lineHeight: isMobile ? '18px' : '20px',
-                            fontWeight: 500,
+                        <div style={{ flex: 1, minHeight: isMobile ? 54 : 72 }} />
+
+                        <div style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 10,
+                          width: '100%',
+                        }}>
+                          <div style={{
+                            padding: isMobile ? '12px 10px' : '14px 12px',
+                            borderRadius: 10,
+                            background: 'rgba(10,18,32,0.34)',
+                            border: '1px solid rgba(255,255,255,0.16)',
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+                            backdropFilter: 'blur(12px)',
+                            minHeight: isMobile ? 74 : 82,
                           }}>
-                            {tag}
-                          </Tag>
-                        )) : (
-                          <Tag style={{
-                            margin: 0,
-                            padding: isMobile ? '0 7px' : '0 8px',
-                            borderRadius: 4,
-                            border: `1px solid ${alphaColor(token.colorSuccess, 0.18)}`,
-                            background: alphaColor(token.colorSuccess, 0.08),
-                            color: token.colorSuccess,
-                            fontSize: isMobile ? 10 : 11,
-                            lineHeight: isMobile ? '18px' : '20px',
-                            fontWeight: 500,
+                            <div style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              marginBottom: 6,
+                              fontSize: isMobile ? 11 : 12,
+                              color: 'rgba(255,255,255,0.82)',
+                            }}>
+                              <span>完成进度</span>
+                              <span style={{ color: token.colorWhite, fontWeight: 700 }}>{progress}%</span>
+                            </div>
+                            <div style={{
+                              height: 6,
+                              width: '100%',
+                              borderRadius: 999,
+                              overflow: 'hidden',
+                              background: 'rgba(255,255,255,0.18)',
+                              marginBottom: 12,
+                            }}>
+                              <div style={{
+                                width: `${progress}%`,
+                                height: '100%',
+                                borderRadius: 999,
+                                background: progressColor,
+                                transition: 'width 0.3s ease',
+                              }} />
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'stretch', textAlign: 'center' }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{
+                                  fontSize: isMobile ? 22 : 26,
+                                  fontWeight: 700,
+                                  color: token.colorWhite,
+                                  lineHeight: 1.1,
+                                  fontFamily: 'Georgia, "Times New Roman", serif',
+                                }}>
+                                  {formatWordCount(project.current_words || 0)}
+                                </div>
+                                <div style={{
+                                  fontSize: isMobile ? 10 : 11,
+                                  color: 'rgba(255,255,255,0.72)',
+                                  marginTop: 4,
+                                }}>
+                                  已写字数
+                                </div>
+                              </div>
+                              <div style={{
+                                width: 1,
+                                margin: '0 12px',
+                                background: 'rgba(255,255,255,0.16)',
+                              }} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{
+                                  fontSize: isMobile ? 22 : 26,
+                                  fontWeight: 700,
+                                  color: progress >= 100 ? '#7CFFB2' : token.colorWhite,
+                                  lineHeight: 1.1,
+                                  fontFamily: 'Georgia, "Times New Roman", serif',
+                                }}>
+                                  {formatWordCount(project.target_words || 0)}
+                                </div>
+                                <div style={{
+                                  fontSize: isMobile ? 10 : 11,
+                                  color: 'rgba(255,255,255,0.72)',
+                                  marginTop: 4,
+                                }}>
+                                  目标字数
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: 10,
+                            flexWrap: 'wrap',
+                            paddingTop: isMobile ? 10 : 12,
+                            borderTop: '1px solid rgba(255,255,255,0.18)',
+                            minHeight: isMobile ? 42 : 46,
                           }}>
-                            未分类
-                          </Tag>
+                            <Space size={4} style={{ fontSize: isMobile ? 11 : 12, color: 'rgba(255,255,255,0.76)' }}>
+                              <CalendarOutlined style={{ fontSize: isMobile ? 10 : 12 }} />
+                              {formatDate(project.updated_at)}
+                            </Space>
+
+                            <Space wrap>
+                              <Button
+                                size="small"
+                                icon={<DownloadOutlined />}
+                                onClick={(e) => { e.stopPropagation(); onDownloadCover(project); }}
+                                disabled={coverActionLoading}
+                                style={{
+                                  color: token.colorWhite,
+                                  background: 'rgba(255,255,255,0.14)',
+                                  borderColor: 'rgba(255,255,255,0.22)',
+                                  backdropFilter: 'blur(8px)',
+                                }}
+                              >
+                                下载封面
+                              </Button>
+                              <Button
+                                size="small"
+                                icon={<ReloadOutlined />}
+                                loading={coverActionLoading}
+                                onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                                style={{
+                                  color: token.colorWhite,
+                                  background: 'rgba(255,255,255,0.14)',
+                                  borderColor: 'rgba(255,255,255,0.22)',
+                                  backdropFilter: 'blur(8px)',
+                                }}
+                              >
+                                {coverActionLoading ? '重新生成中...' : '重新生成'}
+                              </Button>
+                            </Space>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, justifyContent: 'space-between', minHeight: 0, width: '100%' }}>
+                        {isFlipped && coverGenerating ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 0, width: '100%' }}>
+                            <LoadingOutlined spin style={{ fontSize: 28, color: token.colorPrimary }} />
+                            <div style={{ color: token.colorTextSecondary }}>封面生成中，请稍候...</div>
+                          </div>
+                        ) : isFlipped && coverFailed ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, textAlign: 'center', minHeight: 0 }}>
+                            <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
+                            <div style={{ color: token.colorError }}>封面生成失败</div>
+                            <div style={{ color: token.colorTextSecondary, fontSize: 12 }}>{project.cover_error || '请稍后重试'}</div>
+                            <Button
+                              type="primary"
+                              icon={<ReloadOutlined />}
+                              loading={coverActionLoading}
+                              onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                              style={coverButtonStyle}
+                            >
+                              {coverActionLoading ? '重新生成中...' : '重新生成'}
+                            </Button>
+                          </div>
+                        ) : isFlipped && !coverReady ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, textAlign: 'center', minHeight: 0 }}>
+                            <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
+                            <div style={{ color: token.colorTextSecondary }}>当前暂无可用封面</div>
+                            <Button
+                              type="primary"
+                              icon={<PictureOutlined />}
+                              loading={coverActionLoading}
+                              onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                              style={coverButtonStyle}
+                            >
+                              {coverActionLoading ? '生成中...' : '生成封面'}
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ marginBottom: isMobile ? 10 : 12, paddingRight: isMobile ? 18 : 30 }}>
+                              <div style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 8,
+                                marginBottom: isMobile ? 8 : 10,
+                                minHeight: isMobile ? 50 : 58,
+                              }}>
+                                <BookOutlined style={{
+                                  fontSize: isMobile ? 14 : 16,
+                                  color: alphaColor(token.colorText, 0.4),
+                                  marginTop: 2,
+                                  flexShrink: 0,
+                                }} />
+                                <div style={{
+                                  fontSize: isMobile ? 18 : 22,
+                                  fontWeight: 700,
+                                  color: token.colorText,
+                                  lineHeight: 1.3,
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  wordBreak: 'break-word',
+                                  fontFamily: 'Georgia, "Times New Roman", "Noto Serif SC", serif',
+                                }}>
+                                  {project.title}
+                                </div>
+                              </div>
+
+                              <div style={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 6,
+                                minHeight: isMobile ? 20 : 22,
+                                alignItems: 'flex-start',
+                              }}>
+                                {tags.length > 0 ? tags.slice(0, 3).map((tag: string, idx: number) => (
+                                  <Tag key={idx} style={{
+                                    margin: 0,
+                                    padding: isMobile ? '0 7px' : '0 8px',
+                                    borderRadius: 4,
+                                    border: `1px solid ${alphaColor(token.colorSuccess, 0.18)}`,
+                                    background: alphaColor(token.colorSuccess, 0.08),
+                                    color: token.colorSuccess,
+                                    fontSize: isMobile ? 10 : 11,
+                                    lineHeight: isMobile ? '18px' : '20px',
+                                    fontWeight: 500,
+                                  }}>
+                                    {tag}
+                                  </Tag>
+                                )) : (
+                                  <Tag style={{
+                                    margin: 0,
+                                    padding: isMobile ? '0 7px' : '0 8px',
+                                    borderRadius: 4,
+                                    border: `1px solid ${alphaColor(token.colorSuccess, 0.18)}`,
+                                    background: alphaColor(token.colorSuccess, 0.08),
+                                    color: token.colorSuccess,
+                                    fontSize: isMobile ? 10 : 11,
+                                    lineHeight: isMobile ? '18px' : '20px',
+                                    fontWeight: 500,
+                                  }}>
+                                    未分类
+                                  </Tag>
+                                )}
+                              </div>
+                            </div>
+
+                            <Paragraph
+                              ellipsis={{ rows: isMobile ? 3 : 3 }}
+                              style={{
+                                fontSize: isMobile ? 12 : 13,
+                                color: token.colorTextSecondary,
+                                marginBottom: isMobile ? 12 : 16,
+                                lineHeight: 1.7,
+                                flexGrow: 1,
+                              }}
+                            >
+                              {project.description || '暂无描述...'}
+                            </Paragraph>
+
+                            <div style={{ marginBottom: isMobile ? 14 : 18 }}>
+                              <div style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                marginBottom: 6,
+                                fontSize: isMobile ? 11 : 12,
+                              }}>
+                                <span style={{ color: token.colorTextTertiary }}>完成进度</span>
+                                <span style={{ color: progressColor, fontWeight: 700 }}>{progress}%</span>
+                              </div>
+                              <div style={{
+                                height: 6,
+                                width: '100%',
+                                borderRadius: 999,
+                                overflow: 'hidden',
+                                background: alphaColor(token.colorText, 0.06),
+                              }}>
+                                <div style={{
+                                  width: `${progress}%`,
+                                  height: '100%',
+                                  borderRadius: 999,
+                                  background: progressColor,
+                                  transition: 'width 0.3s ease',
+                                }} />
+                              </div>
+                            </div>
+
+                            <div style={{
+                              marginBottom: isMobile ? 12 : 16,
+                              padding: isMobile ? '12px 10px' : '14px 12px',
+                              background: `linear-gradient(180deg, ${alphaColor(token.colorBgContainer, 0.94)} 0%, ${alphaColor(token.colorFillSecondary, 0.78)} 100%)`,
+                              borderRadius: 10,
+                              border: `1px solid ${alphaColor(token.colorText, 0.06)}`,
+                              boxShadow: `inset 0 1px 2px ${alphaColor(token.colorText, 0.08)}`,
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'stretch', textAlign: 'center' }}>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{
+                                    fontSize: isMobile ? 22 : 26,
+                                    fontWeight: 700,
+                                    color: token.colorText,
+                                    lineHeight: 1.1,
+                                    fontFamily: 'Georgia, "Times New Roman", serif',
+                                  }}>
+                                    {formatWordCount(project.current_words || 0)}
+                                  </div>
+                                  <div style={{
+                                    fontSize: isMobile ? 10 : 11,
+                                    color: token.colorTextTertiary,
+                                    marginTop: 4,
+                                  }}>
+                                    已写字数
+                                  </div>
+                                </div>
+                                <div style={{
+                                  width: 1,
+                                  margin: '0 12px',
+                                  background: alphaColor(token.colorText, 0.1),
+                                }} />
+                                <div style={{ flex: 1 }}>
+                                  <div style={{
+                                    fontSize: isMobile ? 22 : 26,
+                                    fontWeight: 700,
+                                    color: progress >= 100 ? token.colorSuccess : progressColor,
+                                    lineHeight: 1.1,
+                                    fontFamily: 'Georgia, "Times New Roman", serif',
+                                  }}>
+                                    {formatWordCount(project.target_words || 0)}
+                                  </div>
+                                  <div style={{
+                                    fontSize: isMobile ? 10 : 11,
+                                    color: token.colorTextTertiary,
+                                    marginTop: 4,
+                                  }}>
+                                    目标字数
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: '1fr auto 1fr',
+                              alignItems: 'center',
+                              gap: 10,
+                              paddingTop: isMobile ? 10 : 12,
+                              borderTop: `1px solid ${alphaColor(token.colorText, 0.06)}`,
+                              color: token.colorTextTertiary,
+                              marginTop: 'auto',
+                            }}>
+                              <Space size={4} style={{ fontSize: isMobile ? 11 : 12, color: token.colorTextTertiary, justifySelf: 'start' }}>
+                                <CalendarOutlined style={{ fontSize: isMobile ? 10 : 12 }} />
+                                {formatDate(project.updated_at)}
+                              </Space>
+
+                              <div style={{ justifySelf: 'center' }}>
+                                {!coverReady && (
+                                  <Button
+                                    size="small"
+                                    icon={<PictureOutlined />}
+                                    loading={coverActionLoading}
+                                    onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                                    style={{
+                                      ...coverButtonStyle,
+                                      minWidth: isMobile ? 112 : 124,
+                                    }}
+                                  >
+                                    {coverActionLoading ? '生成中...' : '生成封面'}
+                                  </Button>
+                                )}
+                              </div>
+
+                              <div style={{ justifySelf: 'end' }}>
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  danger
+                                  icon={<DeleteOutlined style={{ fontSize: isMobile ? 12 : 14 }} />}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteProject(project.id);
+                                  }}
+                                  style={{
+                                    padding: isMobile ? '2px 4px' : '4px 8px',
+                                    borderRadius: 8,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </>
                         )}
                       </div>
-                    </div>
-
-                    <Paragraph
-                      ellipsis={{ rows: isMobile ? 3 : 3 }}
-                      style={{
-                        fontSize: isMobile ? 12 : 13,
-                        color: token.colorTextSecondary,
-                        marginBottom: isMobile ? 12 : 16,
-                        lineHeight: 1.7,
-                        flexGrow: 1,
-                      }}
-                    >
-                      {project.description || '暂无描述...'}
-                    </Paragraph>
-
-                    <div style={{ marginBottom: isMobile ? 14 : 18 }}>
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: 6,
-                        fontSize: isMobile ? 11 : 12,
-                      }}>
-                        <span style={{ color: token.colorTextTertiary }}>完成进度</span>
-                        <span style={{ color: progressColor, fontWeight: 700 }}>{progress}%</span>
-                      </div>
-                      <div style={{
-                        height: 6,
-                        width: '100%',
-                        borderRadius: 999,
-                        overflow: 'hidden',
-                        background: alphaColor(token.colorText, 0.06),
-                      }}>
-                        <div style={{
-                          width: `${progress}%`,
-                          height: '100%',
-                          borderRadius: 999,
-                          background: progressColor,
-                          transition: 'width 0.3s ease',
-                        }} />
-                      </div>
-                    </div>
-
-                    <div style={{
-                      marginBottom: isMobile ? 12 : 16,
-                      padding: isMobile ? '12px 10px' : '14px 12px',
-                      background: `linear-gradient(180deg, ${alphaColor(token.colorBgContainer, 0.94)} 0%, ${alphaColor(token.colorFillSecondary, 0.78)} 100%)`,
-                      borderRadius: 10,
-                      border: `1px solid ${alphaColor(token.colorText, 0.06)}`,
-                      boxShadow: `inset 0 1px 2px ${alphaColor(token.colorText, 0.08)}`,
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'stretch', textAlign: 'center' }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{
-                            fontSize: isMobile ? 22 : 26,
-                            fontWeight: 700,
-                            color: token.colorText,
-                            lineHeight: 1.1,
-                            fontFamily: 'Georgia, "Times New Roman", serif',
-                          }}>
-                            {formatWordCount(project.current_words || 0)}
-                          </div>
-                          <div style={{
-                            fontSize: isMobile ? 10 : 11,
-                            color: token.colorTextTertiary,
-                            marginTop: 4,
-                          }}>
-                            已写字数
-                          </div>
-                        </div>
-                        <div style={{
-                          width: 1,
-                          margin: '0 12px',
-                          background: alphaColor(token.colorText, 0.1),
-                        }} />
-                        <div style={{ flex: 1 }}>
-                          <div style={{
-                            fontSize: isMobile ? 22 : 26,
-                            fontWeight: 700,
-                            color: progress >= 100 ? token.colorSuccess : progressColor,
-                            lineHeight: 1.1,
-                            fontFamily: 'Georgia, "Times New Roman", serif',
-                          }}>
-                            {formatWordCount(project.target_words || 0)}
-                          </div>
-                          <div style={{
-                            fontSize: isMobile ? 10 : 11,
-                            color: token.colorTextTertiary,
-                            marginTop: 4,
-                          }}>
-                            目标字数
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      paddingTop: isMobile ? 10 : 12,
-                      borderTop: `1px solid ${alphaColor(token.colorText, 0.06)}`,
-                      color: token.colorTextTertiary,
-                      marginTop: 'auto',
-                    }}>
-                      <Space size={4} style={{ fontSize: isMobile ? 11 : 12, color: token.colorTextTertiary }}>
-                        <CalendarOutlined style={{ fontSize: isMobile ? 10 : 12 }} />
-                        {formatDate(project.updated_at)}
-                      </Space>
-
-                      <Button
-                        type="text"
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined style={{ fontSize: isMobile ? 12 : 14 }} />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteProject(project.id);
-                        }}
-                        style={{
-                          padding: isMobile ? '2px 4px' : '4px 8px',
-                          borderRadius: 8,
-                        }}
-                      />
-                    </div>
+                    )}
                   </div>
                 </Card>
               </div>

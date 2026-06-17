@@ -34,6 +34,7 @@ from app.schemas.book_import import (
     BookImportApplyRequest,
     BookImportApplyResponse,
     BookImportChapter,
+    BookImportExtractMode,
     BookImportOutline,
     BookImportPreviewResponse,
     BookImportTaskCreateResponse,
@@ -65,6 +66,8 @@ class _BookImportTask:
     project_id: Optional[str]
     create_new_project: bool
     import_mode: str
+    extract_mode: BookImportExtractMode = "tail"
+    tail_chapter_count: int = 10
     status: str = "pending"
     progress: int = 0
     message: Optional[str] = "任务已创建"
@@ -95,7 +98,16 @@ class BookImportService:
         project_id: Optional[str],
         create_new_project: bool,
         import_mode: str,
+        extract_mode: BookImportExtractMode = "tail",
+        tail_chapter_count: int = 10,
     ) -> BookImportTaskCreateResponse:
+        normalized_tail_count = max(5, int(tail_chapter_count))
+        normalized_extract_mode = extract_mode
+        if normalized_tail_count % 5 != 0:
+            normalized_tail_count = ((normalized_tail_count + 4) // 5) * 5
+        if normalized_tail_count > 50:
+            normalized_extract_mode = "full"
+
         task_id = str(uuid.uuid4())
         task = _BookImportTask(
             task_id=task_id,
@@ -104,6 +116,8 @@ class BookImportService:
             project_id=project_id,
             create_new_project=create_new_project,
             import_mode=import_mode,
+            extract_mode=normalized_extract_mode,
+            tail_chapter_count=normalized_tail_count,
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
@@ -150,15 +164,17 @@ class BookImportService:
         }
 
         warnings = list(task.preview.warnings) if task.preview else []
-        chapters_to_import, outlines_to_import, was_trimmed = self._trim_last_ten_for_apply(
+        chapters_to_import, outlines_to_import, was_trimmed = self._select_chapters_for_import(
             chapters=payload.chapters,
             outlines=payload.outlines,
+            extract_mode=task.extract_mode,
+            tail_chapter_count=task.tail_chapter_count,
         )
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="apply_trimmed_to_last_ten",
-                    message=f"导入阶段已强制仅保留最后 {len(chapters_to_import)} 章",
+                    code="apply_trimmed_for_extract_mode",
+                    message=f"导入阶段已按解析配置仅保留 {len(chapters_to_import)} 章",
                     level="info",
                 )
             )
@@ -233,6 +249,7 @@ class BookImportService:
         payload: BookImportApplyRequest,
         db: AsyncSession,
         progress_callback: Any = None,
+        ai_service: Optional[AIService] = None,
     ) -> BookImportApplyResponse:
         """
         与 apply_import 相同的落库逻辑，但通过 progress_callback 推送细粒度进度。
@@ -248,15 +265,17 @@ class BookImportService:
         }
 
         warnings = list(task.preview.warnings) if task.preview else []
-        chapters_to_import, outlines_to_import, was_trimmed = self._trim_last_ten_for_apply(
+        chapters_to_import, outlines_to_import, was_trimmed = self._select_chapters_for_import(
             chapters=payload.chapters,
             outlines=payload.outlines,
+            extract_mode=task.extract_mode,
+            tail_chapter_count=task.tail_chapter_count,
         )
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="apply_trimmed_to_last_ten",
-                    message=f"导入阶段已强制仅保留最后 {len(chapters_to_import)} 章",
+                    code="apply_trimmed_for_extract_mode",
+                    message=f"导入阶段已按解析配置仅保留 {len(chapters_to_import)} 章",
                     level="info",
                 )
             )
@@ -315,6 +334,7 @@ class BookImportService:
                     db=db,
                     user_id=user_id,
                     project=project,
+                    ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(22, 40),
                     raise_on_error=True,
@@ -337,6 +357,7 @@ class BookImportService:
                     db=db,
                     user_id=user_id,
                     project=project,
+                    ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(42, 65),
                 )
@@ -360,6 +381,7 @@ class BookImportService:
                     user_id=user_id,
                     project=project,
                     count=character_count_target,
+                    ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(67, 92),
                 )
@@ -429,6 +451,7 @@ class BookImportService:
         steps_to_retry: list[str],
         db: AsyncSession,
         progress_callback: Any = None,
+        ai_service: Optional[AIService] = None,
     ) -> dict:
         """
         仅重试之前导入时失败的AI生成步骤。
@@ -475,6 +498,7 @@ class BookImportService:
                             db=db,
                             user_id=user_id,
                             project=project,
+                            ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                             raise_on_error=True,
@@ -498,6 +522,7 @@ class BookImportService:
                             db=db,
                             user_id=user_id,
                             project=project,
+                            ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                         )
@@ -522,6 +547,7 @@ class BookImportService:
                             user_id=user_id,
                             project=project,
                             count=character_count_target,
+                            ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                         )
@@ -580,7 +606,7 @@ class BookImportService:
             return
 
         try:
-            # 进度分配：编码识别 5%，文本清洗 10%，章节切分 15%，截取末10章 18%，AI反向生成 20%-95%，完成 100%
+            # 进度分配：编码识别 5%，文本清洗 10%，章节切分 15%，按配置筛选章节 18%，AI反向生成 20%-95%，完成 100%
             self._set_task_state(task, status="running", progress=5, message="正在识别编码并读取文本...")
             self._check_cancelled(task)
 
@@ -600,7 +626,7 @@ class BookImportService:
             )
             self._check_cancelled(task)
 
-            self._set_task_state(task, status="running", progress=18, message="仅保留末10章并重建预览结构...")
+            self._set_task_state(task, status="running", progress=18, message="正在按解析配置筛选章节并构建预览...")
             preview = await self._build_preview(
                 task=task,
                 filename=task.filename,
@@ -798,18 +824,26 @@ class BookImportService:
 
         return count, total_words
 
-    def _trim_last_ten_for_apply(
+    def _select_chapters_for_import(
         self,
         *,
         chapters: list[BookImportChapter],
         outlines: list[BookImportOutline],
+        extract_mode: BookImportExtractMode,
+        tail_chapter_count: int,
     ) -> tuple[list[BookImportChapter], list[BookImportOutline], bool]:
         if not chapters:
             return [], [], False
 
         sorted_chapters = sorted(chapters, key=lambda x: x.chapter_number)
-        selected = sorted_chapters[-10:]
-        was_trimmed = len(sorted_chapters) > len(selected) or len(outlines) > 10
+        normalized_tail_count = max(5, int(tail_chapter_count))
+        if normalized_tail_count > 50 or extract_mode == "full":
+            selected = sorted_chapters
+        else:
+            normalized_tail_count = min(normalized_tail_count, len(sorted_chapters))
+            selected = sorted_chapters[-normalized_tail_count:]
+
+        was_trimmed = len(sorted_chapters) > len(selected)
 
         normalized_chapters: list[BookImportChapter] = []
         for idx, item in enumerate(selected, start=1):
@@ -826,7 +860,10 @@ class BookImportService:
         normalized_outlines: list[BookImportOutline] = []
         sorted_outlines = sorted(outlines, key=lambda x: x.order_index) if outlines else []
         if sorted_outlines:
-            selected_outlines = sorted_outlines[-len(normalized_chapters):]
+            if extract_mode == "full":
+                selected_outlines = sorted_outlines[:len(normalized_chapters)]
+            else:
+                selected_outlines = sorted_outlines[-len(normalized_chapters):]
             for idx, item in enumerate(selected_outlines, start=1):
                 normalized_outlines.append(
                     BookImportOutline(
@@ -852,6 +889,30 @@ class BookImportService:
             normalized_chapters[idx].outline_title = normalized_outlines[idx].title
 
         return normalized_chapters, normalized_outlines, was_trimmed
+
+    def _select_raw_chapters_for_preview(
+        self,
+        *,
+        chapters_data: list[dict],
+        extract_mode: BookImportExtractMode,
+        tail_chapter_count: int,
+    ) -> tuple[list[dict], bool]:
+        if not chapters_data:
+            return [], False
+
+        normalized_tail_count = max(5, int(tail_chapter_count))
+        if normalized_tail_count > 50 or extract_mode == "full":
+            return chapters_data, False
+
+        normalized_tail_count = min(normalized_tail_count, len(chapters_data))
+
+        selected = chapters_data[-normalized_tail_count:]
+        return selected, len(selected) < len(chapters_data)
+
+    def _get_extract_mode_label(self, extract_mode: BookImportExtractMode, selected_total: int) -> str:
+        if extract_mode == "full" or selected_total > 50:
+            return "整本"
+        return f"末{selected_total}章"
 
     def _derive_world_settings(
         self,
@@ -974,9 +1035,13 @@ class BookImportService:
         chapters: list[BookImportChapter] = []
         warnings: list[BookImportWarning] = []
 
-        # 仅保留最后10章用于最终导入，重建章节序号为 1..N
-        selected_chapters_raw = chapters_data[-10:] if len(chapters_data) > 10 else chapters_data
+        selected_chapters_raw, was_trimmed = self._select_raw_chapters_for_preview(
+            chapters_data=chapters_data,
+            extract_mode=task.extract_mode,
+            tail_chapter_count=task.tail_chapter_count,
+        )
         selected_total = len(selected_chapters_raw)
+        selection_label = self._get_extract_mode_label(task.extract_mode, selected_total)
 
         title_counter: Counter[str] = Counter()
         for idx, chapter in enumerate(selected_chapters_raw, start=1):
@@ -1020,7 +1085,7 @@ class BookImportService:
                     task,
                     status="running",
                     progress=chapter_progress,
-                    message=f"已处理末章 {idx}/{selected_total} 个章节结构...",
+                    message=f"已处理{selection_label} {idx}/{selected_total} 个章节结构...",
                 )
 
         for title, count in title_counter.items():
@@ -1033,11 +1098,11 @@ class BookImportService:
                     )
                 )
 
-        if len(chapters_data) > selected_total:
+        if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="trimmed_to_last_ten_chapters",
-                    message=f"已按规则仅保留最后 {selected_total} 章用于导入（原始识别 {len(chapters_data)} 章）",
+                    code="trimmed_for_extract_mode",
+                    message=f"已按解析配置仅保留{selection_label} {selected_total} 章用于导入（原始识别 {len(chapters_data)} 章）",
                     level="info",
                 )
             )
@@ -1617,6 +1682,7 @@ class BookImportService:
         db: AsyncSession,
         user_id: str,
         project: Project,
+        ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
         raise_on_error: bool = False,
@@ -1630,7 +1696,7 @@ class BookImportService:
 
         try:
             await _notify("🌍 正在初始化AI服务...", 0.1)
-            ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
+            ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
             await _notify("🌍 正在准备世界观提示词...", 0.2)
             template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
@@ -1685,6 +1751,7 @@ class BookImportService:
         db: AsyncSession,
         user_id: str,
         project: Project,
+        ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
     ) -> int:
@@ -1696,7 +1763,7 @@ class BookImportService:
                 await progress_callback(msg, p)
 
         await _notify("💼 正在初始化AI服务...", 0.1)
-        ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
+        ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
         await _notify("💼 正在准备职业体系提示词...", 0.2)
         template = await PromptService.get_template("CAREER_SYSTEM_GENERATION", user_id, db)
@@ -1784,6 +1851,7 @@ class BookImportService:
         user_id: str,
         project: Project,
         count: int,
+        ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
     ) -> int:
@@ -1801,7 +1869,7 @@ class BookImportService:
                 return default
 
         await _notify("👥 正在初始化AI服务...", 0.05)
-        ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
+        ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
         # 控制数量区间，避免过多生成
         target_count = max(5, min(count, 20))

@@ -6,6 +6,7 @@ import json
 
 from app.database import get_db
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.api.settings import get_user_ai_service
 from app.services.prompt_service import PromptService
 from app.logger import get_logger
@@ -166,7 +167,7 @@ async def generate_options(
                 # 使用统一的JSON清洗方法
                 cleaned_content = ai_service._clean_json_response(content)
                 
-                result = json.loads(cleaned_content)
+                result = loads_json(cleaned_content)
                 
                 # 校验返回格式
                 is_valid, error_msg = validate_options_response(result, step)
@@ -343,7 +344,7 @@ async def refine_options(
             # 解析JSON
             try:
                 cleaned_content = ai_service._clean_json_response(content)
-                result = json.loads(cleaned_content)
+                result = loads_json(cleaned_content)
                 
                 # 校验返回格式
                 is_valid, error_msg = validate_options_response(result, step)
@@ -466,7 +467,7 @@ async def quick_generate(
             # 使用统一的JSON清洗方法
             cleaned_content = ai_service._clean_json_response(content)
             
-            result = json.loads(cleaned_content)
+            result = loads_json(cleaned_content)
             
             # 合并用户已提供的信息（用户输入优先）
             final_result = {

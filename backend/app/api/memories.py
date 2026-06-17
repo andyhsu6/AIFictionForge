@@ -12,6 +12,7 @@ from app.services.plot_analyzer import get_plot_analyzer
 from app.services.foreshadow_service import foreshadow_service
 from app.services.ai_service import create_user_ai_service
 from app.models.settings import Settings
+from app.api.settings import resolve_runtime_ai_config
 from app.logger import get_logger
 from app.api.common import verify_project_access
 import uuid
@@ -56,17 +57,19 @@ async def analyze_chapter(
             raise HTTPException(status_code=400, detail="章节内容为空,无法分析")
         
         # 获取用户AI设置
-        settings_result = await db.execute(select(Settings))
+        settings_result = await db.execute(select(Settings).where(Settings.user_id == user_id))
         settings = settings_result.scalar_one_or_none()
         
         if not settings:
             raise HTTPException(status_code=400, detail="请先配置AI设置")
         
+        runtime_config = resolve_runtime_ai_config(settings.api_provider, settings.api_key, settings.api_base_url)
+
         # 创建AI服务
         ai_service = create_user_ai_service(
-            api_provider=settings.api_provider,
-            api_key=settings.api_key,
-            api_base_url=settings.api_base_url,
+            api_provider=runtime_config["api_provider"],
+            api_key=runtime_config["api_key"],
+            api_base_url=runtime_config["api_base_url"],
             model_name=settings.llm_model,
             temperature=settings.temperature,
             max_tokens=settings.max_tokens
@@ -145,12 +148,31 @@ async def analyze_chapter(
             chapter_id,
             chapter.chapter_number
         )
-        
+
+        # 重新分析前，先清理该章节旧记忆（关系库 + 向量库）
+        old_memories_result = await db.execute(
+            select(StoryMemory).where(StoryMemory.chapter_id == chapter_id)
+        )
+        old_memories = old_memories_result.scalars().all()
+        for old_mem in old_memories:
+            await db.delete(old_mem)
+        await db.flush()
+
+        if user_id:
+            try:
+                await memory_service.delete_chapter_memories(
+                    user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id
+                )
+            except Exception as vector_delete_error:
+                logger.warning(f"⚠️ 清理章节向量记忆失败（继续分析）: {str(vector_delete_error)}")
+
         # 保存记忆到数据库和向量库
         saved_count = 0
         for mem_data in memories_data:
             memory_id = str(uuid.uuid4())
-            
+
             # 保存到关系数据库
             memory = StoryMemory(
                 id=memory_id,
@@ -164,7 +186,7 @@ async def analyze_chapter(
                 **mem_data['metadata']
             )
             db.add(memory)
-            
+
             # 保存到向量库
             await memory_service.add_memory(
                 user_id=user_id,
@@ -175,13 +197,66 @@ async def analyze_chapter(
                 metadata=mem_data['metadata']
             )
             saved_count += 1
-        
+
         await db.commit()
-        
+
+        entity_changes = {
+            "careers": {"updated_count": 0, "changes": []},
+            "character_states": {
+                "state_updated_count": 0,
+                "relationship_created_count": 0,
+                "relationship_updated_count": 0,
+                "org_updated_count": 0,
+                "changes": []
+            },
+            "organization_states": {"updated_count": 0, "changes": []}
+        }
+
+        # 更新角色职业 / 角色状态关系 / 组织状态
+        if analysis_result.get('character_states'):
+            try:
+                from app.services.career_update_service import CareerUpdateService
+                career_update_result = await CareerUpdateService.update_careers_from_analysis(
+                    db=db,
+                    project_id=project_id,
+                    character_states=analysis_result.get('character_states', []),
+                    chapter_id=chapter_id,
+                    chapter_number=chapter.chapter_number
+                )
+                entity_changes["careers"] = career_update_result
+            except Exception as career_error:
+                logger.error(f"⚠️ 更新角色职业失败（不影响分析结果）: {str(career_error)}", exc_info=True)
+
+            try:
+                from app.services.character_state_update_service import CharacterStateUpdateService
+                state_update_result = await CharacterStateUpdateService.update_from_analysis(
+                    db=db,
+                    project_id=project_id,
+                    character_states=analysis_result.get('character_states', []),
+                    chapter_id=chapter_id,
+                    chapter_number=chapter.chapter_number
+                )
+                entity_changes["character_states"] = state_update_result
+            except Exception as state_error:
+                logger.error(f"⚠️ 更新角色状态、关系和组织成员失败（不影响分析结果）: {str(state_error)}", exc_info=True)
+
+        if analysis_result.get('organization_states'):
+            try:
+                from app.services.character_state_update_service import CharacterStateUpdateService
+                org_state_result = await CharacterStateUpdateService.update_organization_states(
+                    db=db,
+                    project_id=project_id,
+                    organization_states=analysis_result.get('organization_states', []),
+                    chapter_number=chapter.chapter_number
+                )
+                entity_changes["organization_states"] = org_state_result
+            except Exception as org_state_error:
+                logger.error(f"⚠️ 更新组织自身状态失败（不影响分析结果）: {str(org_state_error)}", exc_info=True)
+
         # 【新增】自动更新伏笔状态
         foreshadow_stats = {"planted_count": 0, "resolved_count": 0, "created_count": 0}
         analysis_foreshadows = analysis_result.get('foreshadows', [])
-        
+
         if analysis_foreshadows:
             try:
                 foreshadow_stats = await foreshadow_service.auto_update_from_analysis(
@@ -194,15 +269,16 @@ async def analyze_chapter(
                 logger.info(f"📊 伏笔自动更新: 埋入{foreshadow_stats['planted_count']}个, 回收{foreshadow_stats['resolved_count']}个")
             except Exception as fs_error:
                 logger.error(f"⚠️ 伏笔自动更新失败（不影响分析结果）: {str(fs_error)}")
-        
+
         logger.info(f"✅ 章节分析完成: 保存{saved_count}条记忆")
-        
+
         return {
             "success": True,
             "message": f"分析完成,提取了{saved_count}条记忆",
             "analysis": plot_analysis.to_dict(),
             "memories_count": saved_count,
-            "foreshadow_stats": foreshadow_stats
+            "foreshadow_stats": foreshadow_stats,
+            "entity_changes": entity_changes
         }
         
     except HTTPException:

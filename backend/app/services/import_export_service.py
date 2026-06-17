@@ -210,7 +210,7 @@ class ImportExportService:
             if ch.expansion_plan:
                 try:
                     expansion_plan = json.loads(ch.expansion_plan) if isinstance(ch.expansion_plan, str) else ch.expansion_plan
-                except:
+                except Exception:
                     expansion_plan = None
             
             exported_chapters.append(ChapterExportData(
@@ -243,7 +243,7 @@ class ImportExportService:
             if char.traits:
                 try:
                     traits = json.loads(char.traits) if isinstance(char.traits, str) else char.traits
-                except:
+                except Exception:
                     traits = None
             
             exported.append(CharacterExportData(
@@ -1420,7 +1420,7 @@ class ImportExportService:
             if char.traits:
                 try:
                     traits = json.loads(char.traits) if isinstance(char.traits, str) else char.traits
-                except:
+                except Exception:
                     traits = None
             
             # 基础角色数据

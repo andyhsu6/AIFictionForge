@@ -78,6 +78,7 @@ class CareerGenerateRequest(BaseModel):
     project_id: str = Field(..., description="项目ID")
     main_career_count: int = Field(5, description="主职业数量", ge=1, le=20)
     sub_career_count: int = Field(8, description="副职业数量", ge=0, le=30)
+    user_requirements: str = Field("", description="用户额外要求")
     enable_mcp: bool = Field(False, description="是否启用MCP工具增强")
 
 

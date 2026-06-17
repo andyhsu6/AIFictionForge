@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
-    debug: bool = True
+    debug: bool = False
     
     # 日志配置
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     log_file_path: str = str(PROJECT_ROOT / "logs" / "app.log")
     log_max_bytes: int = 10 * 1024 * 1024  # 10MB
     log_backup_count: int = 30  # 保留30个备份文件
+    log_message_max_chars: int = 2000  # 单条日志消息最大字符数
     
     # CORS配置
     cors_origins: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
@@ -69,6 +70,8 @@ class Settings(BaseSettings):
     # AI服务配置
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
+    xiaomi_mimo_api_key: Optional[str] = None
+    xiaomi_mimo_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
     gemini_api_key: Optional[str] = None
     gemini_base_url: Optional[str] = None
     anthropic_api_key: Optional[str] = None
@@ -88,6 +91,9 @@ class Settings(BaseSettings):
     # 本地开发: http://localhost:8000/api/auth/callback
     # 生产环境: https://your-domain.com/api/auth/callback 或 http://your-ip:8000/api/auth/callback
     LINUXDO_REDIRECT_URI: Optional[str] = None
+    # LinuxDO 专用代理配置（仅用于 OAuth token 与用户信息请求，不影响 AI/SMTP/其他请求）
+    # 示例: http://127.0.0.1:7890
+    LINUXDO_PROXY_URL: Optional[str] = None
     
     # 前端URL配置（用于OAuth回调后重定向）
     # 本地开发: http://localhost:8000
@@ -106,6 +112,23 @@ class Settings(BaseSettings):
     # 会话配置
     SESSION_EXPIRE_MINUTES: int = 120  # 会话过期时间（分钟），默认2小时
     SESSION_REFRESH_THRESHOLD_MINUTES: int = 30  # 会话刷新阈值（分钟），剩余时间少于此值时可刷新
+    SESSION_SECRET_KEY: Optional[str] = None  # 会话签名密钥，生产环境必须配置为高强度随机值
+    SESSION_COOKIE_SECURE: Optional[bool] = None  # 是否强制 Cookie Secure；None 时按 DEBUG 自动判断
+
+    # 系统 SMTP 默认配置（可被管理员系统设置覆盖）
+    SMTP_PROVIDER: str = "qq"
+    SMTP_HOST: Optional[str] = "smtp.qq.com"
+    SMTP_PORT: int = 465
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_USE_TLS: bool = False
+    SMTP_USE_SSL: bool = True
+    SMTP_FROM_EMAIL: Optional[str] = None
+    SMTP_FROM_NAME: str = "MuMuAINovel"
+    EMAIL_AUTH_ENABLED: bool = True
+    EMAIL_REGISTER_ENABLED: bool = True
+    EMAIL_VERIFICATION_CODE_TTL_MINUTES: int = 10
+    EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS: int = 60
     
     # 提示词工坊配置
     WORKSHOP_MODE: str = "client"  # client: 本地部署实例, server: 云端中央服务器

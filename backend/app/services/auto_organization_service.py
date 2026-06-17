@@ -93,6 +93,7 @@ class AutoOrganizationService:
             organization_data = await self.ai_service.call_with_json_retry(
                 prompt=prompt,
                 max_retries=3,
+                auto_mcp=enable_mcp,
             )
             
             org_name = organization_data.get('name', '未知')
@@ -453,13 +454,6 @@ class AutoOrganizationService:
         }
 
 
-# 全局实例缓存
-_auto_organization_service_instance: Optional[AutoOrganizationService] = None
-
-
 def get_auto_organization_service(ai_service: AIService) -> AutoOrganizationService:
-    """获取自动组织服务实例（单例模式）"""
-    global _auto_organization_service_instance
-    if _auto_organization_service_instance is None:
-        _auto_organization_service_instance = AutoOrganizationService(ai_service)
-    return _auto_organization_service_instance
+    """获取自动组织服务实例。AIService 绑定当前用户配置，不能全局复用。"""
+    return AutoOrganizationService(ai_service)

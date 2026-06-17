@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.3.8-blue.svg)
+![Version](https://img.shields.io/badge/version-1.5.1-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109.0-green.svg)
 ![React](https://img.shields.io/badge/react-18.3.1-blue.svg)
@@ -36,22 +36,26 @@
 
 **[☕ 请我喝杯咖啡](https://mumuverse.space:1588/)**
 
+**[🌐 MuMuのAPI站点](https://api.mumuverse.space/register?aff=4NN8)**
+
+> 在 MuMu の API 站点充值满 50 元及以上，也可以获得下方赞助专属权益。
+
 ### 🎁 赞助专属权益
 
 | 权益 | 说明 |
 |------|------|
 | 📋 **优先需求响应** | 您的功能需求和问题反馈将获得优先处理 |
-| 🚀 **Windows一键启动** | 获取免安装EXE程序，双击即可使用 |
+| 🚀 **Windows一键启动** | 获取免安装 EXE 程序，双击即可使用 |
 | 💬 **专属技术支持** | 加入赞助者内部群，获得远程协助和配置指导 |
 
-### ☕ 赞助金额
+### ☕ 赞助 / API 站点充值档位
 
 | 金额 | 描述 |
 |------|------|
 | ¥5 | 🌶️ 一包辣条 |
 | ¥10 | 🍱 一顿拼好饭 |
-| ¥20 | 🧋 一杯咖啡 |
-| ¥50 | 🍖 一次烧烤 |
+| ¥20 | ☕ 一杯咖啡 |
+| ¥50 | 🍖 一次烧烤  |
 | ¥99 | 🍲 一顿海底捞 |
 
 您的支持是我持续开发的动力！🙏
@@ -222,7 +226,7 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
       - ./backend/scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -273,6 +277,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      - ./storage/generated_covers:/app/backend/storage/generated_covers
     environment:
       # 应用配置
       - APP_NAME=${APP_NAME:-MuMuAINovel}
@@ -292,7 +297,7 @@ services:
       - DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE:-1800}
       - DATABASE_POOL_PRE_PING=${DATABASE_POOL_PRE_PING:-True}
       - DATABASE_POOL_USE_LIFO=${DATABASE_POOL_USE_LIFO:-True}
-      # 代理配置（可选）
+      # 全局代理配置（可选）
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
       - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
@@ -311,6 +316,7 @@ services:
       - LINUXDO_CLIENT_ID=${LINUXDO_CLIENT_ID:-11111}
       - LINUXDO_CLIENT_SECRET=${LINUXDO_CLIENT_SECRET:-11111}
       - LINUXDO_REDIRECT_URI=${LINUXDO_REDIRECT_URI:-http://localhost:8000/api/auth/linuxdo/callback}
+      - LINUXDO_PROXY_URL=${LINUXDO_PROXY_URL:-}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8000}
       # 本地账户登录配置
       - LOCAL_AUTH_ENABLED=${LOCAL_AUTH_ENABLED:-true}
@@ -320,6 +326,7 @@ services:
       # 会话配置
       - SESSION_EXPIRE_MINUTES=${SESSION_EXPIRE_MINUTES:-120}
       - SESSION_REFRESH_THRESHOLD_MINUTES=${SESSION_REFRESH_THRESHOLD_MINUTES:-30}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -432,11 +439,30 @@ LOCAL_AUTH_PASSWORD=your_password
 LINUXDO_CLIENT_ID=your_client_id
 LINUXDO_CLIENT_SECRET=your_client_secret
 LINUXDO_REDIRECT_URI=http://localhost:8000/api/auth/callback
+# LinuxDO 登录专用代理（可选，仅影响 OAuth token 与用户信息请求）
+LINUXDO_PROXY_URL=http://127.0.0.1:7890
 
 # PostgreSQL 连接池（高并发优化）
 DATABASE_POOL_SIZE=30
 DATABASE_MAX_OVERFLOW=20
+
+# 会话 Cookie Secure 标记
+# 默认 true，适合 HTTPS 部署；如果使用 HTTP 访问并且浏览器不保存登录 Cookie，可设为 false
+SESSION_COOKIE_SECURE=true
 ```
+
+> **🔐 Cookie Secure 说明**
+>
+> - HTTPS 部署：建议保持 `SESSION_COOKIE_SECURE=true`，浏览器只会通过 HTTPS 发送登录 Cookie。
+> - HTTP 部署：如果登录后浏览器没有保存 Cookie，请在 `.env` 中设置 `SESSION_COOKIE_SECURE=false`，然后重启后端或 Docker 容器。
+> - Docker Compose 示例默认使用 `SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}`，如需关闭必须在 `.env` 中显式配置。
+>
+> **🌐 LinuxDO 专用代理说明**
+>
+> - 如果只有 LinuxDO 授权登录在当前网络不可达，优先配置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`。
+> - `LINUXDO_PROXY_URL` 只会用于 LinuxDO OAuth 的 token 交换和用户信息请求，不影响 AI 服务、SMTP、数据库等其他网络调用。
+> - 常见示例：`LINUXDO_PROXY_URL=http://127.0.0.1:7890`；Docker 容器内访问宿主机代理时通常需要使用宿主机在 Docker 网络中的地址，而不是容器内的 `127.0.0.1`。
+> - 当前示例按 HTTP 代理配置；如果需要 SOCKS 代理，请先确保运行环境安装了 httpx 的 SOCKS 支持依赖。
 
 ### 中转 API 配置
 

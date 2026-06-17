@@ -9,8 +9,9 @@ from app.models.project import Project
 from app.models.character import Character
 from app.models.chapter import Chapter
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 
 logger = get_logger(__name__)
 
@@ -531,7 +532,7 @@ class PlotExpansionService:
             cleaned_text = self.ai_service._clean_json_response(ai_response)
             
             # 解析JSON
-            chapter_plans = json.loads(cleaned_text)
+            chapter_plans = loads_json(cleaned_text)
             
             # 确保是列表
             if not isinstance(chapter_plans, list):
@@ -564,7 +565,7 @@ class PlotExpansionService:
             return chapter_plans
             
         except json.JSONDecodeError as e:
-            logger.error(f"❌ 解析AI响应失败: {e}, 响应内容: {ai_response[:500]}")
+            logger.error(f"❌ 解析AI响应失败: {e}, 响应预览: {safe_preview(ai_response, 300)}")
             # 返回一个基础规划
             return [{
                 "outline_id": outline_id,

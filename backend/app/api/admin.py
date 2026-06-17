@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 import hashlib
+import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -46,7 +47,7 @@ class ToggleStatusRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     """重置密码请求"""
-    new_password: Optional[str] = Field(None, min_length=6, description="新密码，留空则重置为默认密码")
+    new_password: Optional[str] = Field(None, min_length=6, description="新密码，留空则生成临时密码")
 
 
 class UserResponse(BaseModel):
@@ -308,10 +309,14 @@ async def reset_password(
             raise HTTPException(status_code=404, detail="用户不存在")
         
         # 重置密码
-        actual_password = await password_manager.set_password(
+        generated_password = data.new_password
+        if not generated_password:
+            generated_password = secrets.token_urlsafe(12)
+
+        await password_manager.set_password(
             user_id=user_id,
             username=target_user.username,
-            password=data.new_password
+            password=generated_password
         )
         
         logger.info(f"管理员 {admin.user_id} 重置了用户 {user_id} 的密码")
@@ -319,7 +324,7 @@ async def reset_password(
         return {
             "success": True,
             "message": "密码重置成功",
-            "new_password": actual_password
+            "temporary_password": generated_password if not data.new_password else None
         }
         
     except HTTPException:

@@ -29,7 +29,7 @@ const promptTemplateBaseShadow = `
 export const bookshelfCardStyles = {
   container: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
     gap: '20px 18px',
     padding: '8px 0 16px',
     alignItems: 'stretch',

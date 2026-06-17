@@ -3,6 +3,8 @@
 """
 import asyncio
 import hashlib
+import hmac
+import secrets
 from typing import Optional
 from datetime import datetime
 from sqlalchemy import select
@@ -34,7 +36,28 @@ class UserPasswordManager:
     
     def _hash_password(self, password: str) -> str:
         """密码哈希"""
-        return hashlib.sha256(password.encode()).hexdigest()
+        salt = secrets.token_hex(16)
+        iterations = 260000
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations).hex()
+        return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+    def _verify_hash(self, password: str, stored_hash: str) -> bool:
+        if stored_hash.startswith("pbkdf2_sha256$"):
+            try:
+                _, iterations, salt, digest = stored_hash.split("$", 3)
+                candidate = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode(),
+                    salt.encode(),
+                    int(iterations),
+                ).hex()
+                return hmac.compare_digest(candidate, digest)
+            except Exception:
+                return False
+
+        # Legacy unsalted SHA-256 hash support for existing deployments.
+        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+        return hmac.compare_digest(legacy_hash, stored_hash)
     
     async def set_password(self, user_id: str, username: str, password: Optional[str] = None) -> str:
         """
@@ -104,8 +127,12 @@ class UserPasswordManager:
             if not pwd_record:
                 return False
             
-            password_hash = self._hash_password(password)
-            return pwd_record.password_hash == password_hash
+            verified = self._verify_hash(password, pwd_record.password_hash)
+            if verified and not pwd_record.password_hash.startswith("pbkdf2_sha256$"):
+                pwd_record.password_hash = self._hash_password(password)
+                pwd_record.updated_at = datetime.now()
+                await session.commit()
+            return verified
     
     async def has_password(self, user_id: str) -> bool:
         """

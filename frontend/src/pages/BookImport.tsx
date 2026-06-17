@@ -28,6 +28,7 @@ import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, Warnin
 import { bookImportApi } from '../services/api';
 import type {
   BookImportApplyPayload,
+  BookImportExtractMode,
   BookImportPreview,
   BookImportStepFailure,
   BookImportTask,
@@ -47,6 +48,8 @@ type BookImportPageCache = {
   applyMessage: string;
   applyError: string | null;
   isApplyComplete: boolean;
+  extractMode: BookImportExtractMode;
+  tailChapterCount: number;
   cachedAt: number;
 };
 
@@ -111,6 +114,8 @@ export default function BookImport() {
   const { token } = theme.useToken();
   const isMobile = window.innerWidth <= 768;
   const [file, setFile] = useState<File | null>(null);
+  const [extractMode, setExtractMode] = useState<BookImportExtractMode>('tail');
+  const [tailChapterCount, setTailChapterCount] = useState(10);
 
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<BookImportTask | null>(null);
@@ -170,6 +175,16 @@ export default function BookImport() {
     retrying,
   ]);
 
+  const normalizedTailChapterCount = useMemo(
+    () => Math.max(5, Math.ceil(tailChapterCount / 5) * 5),
+    [tailChapterCount]
+  );
+  const effectiveExtractMode = useMemo<BookImportExtractMode>(
+    () => (normalizedTailChapterCount > 50 ? 'full' : extractMode),
+    [extractMode, normalizedTailChapterCount]
+  );
+  const rangeLocked = Boolean(taskId || taskStatus || preview || creatingTask || applying || retrying);
+
   const stepItems = [
     { title: '上传文件' },
     { title: '解析中' },
@@ -195,6 +210,8 @@ export default function BookImport() {
         setApplyProgress(cache.applyProgress);
         setApplyError(cache.applyError);
         setIsApplyComplete(cache.isApplyComplete);
+        setExtractMode(cache.extractMode ?? 'tail');
+        setTailChapterCount(cache.tailChapterCount ?? 10);
         setApplyMessage(
           cache.applyMessage || (cache.applyProgress > 0 && !cache.isApplyComplete
             ? '已恢复页面缓存，请重新点击“确认导入”继续。'
@@ -239,6 +256,8 @@ export default function BookImport() {
       applyMessage,
       applyError,
       isApplyComplete,
+      extractMode,
+      tailChapterCount,
       cachedAt: Date.now(),
     });
   }, [
@@ -250,6 +269,8 @@ export default function BookImport() {
     applyMessage,
     applyError,
     isApplyComplete,
+    extractMode,
+    tailChapterCount,
   ]);
 
   useEffect(() => {
@@ -322,8 +343,13 @@ export default function BookImport() {
       setPreview(null);
       setTaskStatus(null);
 
+      setExtractMode(effectiveExtractMode);
+      setTailChapterCount(normalizedTailChapterCount);
+
       const response = await bookImportApi.createTask({
         file,
+        extract_mode: effectiveExtractMode,
+        tail_chapter_count: normalizedTailChapterCount,
       });
 
       setTaskId(response.task_id);
@@ -546,6 +572,8 @@ export default function BookImport() {
     setRetrying(false);
     setRetryProgress(0);
     setRetryMessage('');
+    setExtractMode('tail');
+    setTailChapterCount(10);
 
     message.success('已重新开始，请重新上传 TXT 并解析');
   }, []);
@@ -688,7 +716,73 @@ export default function BookImport() {
             <p className="ant-upload-hint">首版仅支持 .txt，建议不超过 50MB</p>
           </Dragger>
 
-          <Space>
+          <Card size="small" title="解析范围设置">
+            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              {rangeLocked && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="当前任务的解析范围已锁定"
+                  description="拆书任务会按创建任务时的解析范围执行。若需修改范围，请点击上方“重新开始”后重新上传并解析。"
+                />
+              )}
+              <Select
+                value={extractMode}
+                onChange={(value) => setExtractMode(value)}
+                options={[
+                  { label: '截取末 x 章反向生成', value: 'tail' },
+                  { label: '整本反向生成', value: 'full' },
+                ]}
+                style={{ width: '100%' }}
+                disabled={rangeLocked}
+              />
+              <InputNumber
+                min={5}
+                max={55}
+                step={5}
+                precision={0}
+                value={tailChapterCount}
+                disabled={rangeLocked || extractMode !== 'tail'}
+                onChange={(value) => setTailChapterCount(typeof value === 'number' ? value : 10)}
+                addonBefore="末尾章节数"
+                style={{ width: '100%' }}
+              />
+              <Text type="secondary">
+                {effectiveExtractMode === 'tail'
+                  ? `当前将截取末 ${normalizedTailChapterCount} 章进行反向生成；章节数必须为 5 的倍数，最多 50 章。`
+                  : extractMode === 'tail' && tailChapterCount > 50
+                    ? '当前输入已超过 50 章，将自动按整本拆处理。'
+                    : '当前将基于整本内容进行反向生成，适合完整拆书但耗时可能更长。'}
+              </Text>
+            </Space>
+          </Card>
+
+          <Alert
+            type="info"
+            showIcon
+            message="支持的拆书 TXT 格式要求"
+            description={
+              <div style={{ lineHeight: 1.8 }}>
+                <div>1. 仅支持 <strong>.txt</strong> 文件，建议每章使用单独的章节标题行。</div>
+                <div>2. 推荐格式：<strong>第1章 标题</strong>，下一行开始写正文内容。</div>
+                <div>3. 正文建议按自然段换行，首行可缩进两个字符。</div>
+                <div>4. 章节之间保留空行即可，不要添加多余的分割线、全文完、导出时间等干扰内容。</div>
+                <div style={{ marginTop: 8 }}>
+                  示例：
+                  <pre style={{ margin: '8px 0 0', padding: 12, borderRadius: 8, background: token.colorFillAlter, whiteSpace: 'pre-wrap' }}>
+{`第1章 初入江湖
+这里是第1章正文第一段。
+这里是第1章正文第二段。
+
+第2章 雨夜追踪
+这里是第2章正文内容。`}
+                  </pre>
+                </div>
+              </div>
+            }
+          />
+          
+          <Space wrap>
             <Button
               type="primary"
               icon={<PlayCircleOutlined />}

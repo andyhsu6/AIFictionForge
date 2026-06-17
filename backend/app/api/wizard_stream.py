@@ -16,14 +16,27 @@ from app.models.relationship import CharacterRelationship, Organization, Organiz
 from app.models.writing_style import WritingStyle
 from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
+from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
-from app.logger import get_logger
+from app.logger import get_logger, safe_preview
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
 from app.api.settings import get_user_ai_service
 
 router = APIRouter(prefix="/wizard-stream", tags=["项目创建向导(流式)"])
 logger = get_logger(__name__)
+
+
+async def get_owned_project(db: AsyncSession, project_id: str, user_id: str | None) -> Project | None:
+    if not project_id or not user_id:
+        return None
+    result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def world_building_generator(
@@ -150,21 +163,21 @@ async def world_building_generator(
                 
                 try:
                     logger.info(f"🔍 开始清洗JSON，原始长度: {len(accumulated_text)}")
-                    logger.info(f"   原始内容预览: {accumulated_text[:300]}...")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 300)}")
                     
                     # ✅ 使用 AIService 的统一清洗方法
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
-                    logger.info(f"   清洗后预览: {cleaned_text[:300]}...")
+                    logger.debug(f"   清洗后预览: {safe_preview(cleaned_text, 300)}")
                     
-                    world_data = json.loads(cleaned_text)
+                    world_data = loads_json(cleaned_text)
                     logger.info(f"✅ 世界观JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_generation_success = True  # 解析成功，标记完成
                             
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ 世界构建JSON解析失败（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {e}")
                     logger.error(f"   原始内容长度: {len(accumulated_text)}")
-                    logger.error(f"   原始内容预览: {accumulated_text[:200]}")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
                         yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")
@@ -326,12 +339,9 @@ async def career_system_generator(
         
         # 获取项目信息
         yield await tracker.loading("加载项目信息...")
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
         
         # 设置用户信息以启用MCP
@@ -424,7 +434,7 @@ async def career_system_generator(
                 # 清洗并解析JSON
                 try:
                     cleaned_response = user_ai_service._clean_json_response(career_response)
-                    career_data = json.loads(cleaned_response)
+                    career_data = loads_json(cleaned_response)
                     logger.info(f"✅ 职业体系JSON解析成功（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）")
                     
                     yield await tracker.saving("保存职业数据...")
@@ -599,12 +609,9 @@ async def characters_generator(
         
         # 验证项目
         yield await tracker.loading("验证项目...", 0.3)
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
         
         project.wizard_step = 2
@@ -765,7 +772,7 @@ async def characters_generator(
                     
                     # 解析批次结果 - 使用统一的JSON清洗方法
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
-                    characters_data = json.loads(cleaned_text)
+                    characters_data = loads_json(cleaned_text)
                     if not isinstance(characters_data, list):
                         characters_data = [characters_data]
                     
@@ -1270,13 +1277,15 @@ async def outline_generator(
         
         # 获取项目信息
         yield await tracker.loading("加载项目信息...", 0.3)
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
+        project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在或无权访问", 404)
             return
+
+        # 设置用户信息以启用MCP，并确保后续自动角色/组织补全使用当前请求的AI服务上下文
+        if user_id:
+            user_ai_service.user_id = user_id
+            user_ai_service.db_session = db
         
         # 获取角色信息
         yield await tracker.loading("加载角色信息...", 0.8)
@@ -1354,7 +1363,7 @@ async def outline_generator(
         
         try:
             cleaned_text = user_ai_service._clean_json_response(accumulated_text)
-            outline_data = json.loads(cleaned_text)
+            outline_data = loads_json(cleaned_text)
             if not isinstance(outline_data, list):
                 outline_data = [outline_data]
         except json.JSONDecodeError as e:
@@ -1525,6 +1534,7 @@ async def outline_generator(
 
 @router.post("/outline", summary="流式生成完整大纲")
 async def generate_outline_stream(
+    request: Request,
     data: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
     user_ai_service: AIService = Depends(get_user_ai_service)
@@ -1532,6 +1542,10 @@ async def generate_outline_stream(
     """
     使用SSE流式生成完整大纲，避免超时
     """
+    # 从中间件注入user_id到data中，供outline_generator进行项目归属校验
+    if hasattr(request.state, 'user_id'):
+        data['user_id'] = request.state.user_id
+
     return create_sse_response(outline_generator(data, db, user_ai_service))
 
 
@@ -1549,21 +1563,18 @@ async def world_building_regenerate_generator(
     try:
         yield await tracker.start("开始重新生成世界观...")
         
-        # 获取项目信息
-        yield await tracker.loading("加载项目信息...")
-        result = await db.execute(
-            select(Project).where(Project.id == project_id)
-        )
-        project = result.scalar_one_or_none()
-        if not project:
-            yield await tracker.error("项目不存在", 404)
-            return
-        
         # 提取参数
         provider = data.get("provider")
         model = data.get("model")
         enable_mcp = data.get("enable_mcp", True)
         user_id = data.get("user_id")
+
+        # 获取项目信息
+        yield await tracker.loading("加载项目信息...")
+        project = await get_owned_project(db, project_id, user_id)
+        if not project:
+            yield await tracker.error("项目不存在或无权访问", 404)
+            return
         
         # 获取基础提示词（支持自定义）
         yield await tracker.preparing("准备AI提示词...")
@@ -1658,14 +1669,14 @@ async def world_building_regenerate_generator(
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
                     
-                    world_data = json.loads(cleaned_text)
+                    world_data = loads_json(cleaned_text)
                     logger.info(f"✅ 世界观重新生成JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_generation_success = True
                             
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ 世界构建JSON解析失败（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {e}")
                     logger.error(f"   原始内容长度: {len(accumulated_text)}")
-                    logger.error(f"   原始内容预览: {accumulated_text[:200]}")
+                    logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
                         yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")

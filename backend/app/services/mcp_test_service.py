@@ -17,7 +17,7 @@ from app.mcp import mcp_client, MCPPluginConfig  # 使用新的统一门面
 from app.services.ai_service import create_user_ai_service
 from app.schemas.mcp_plugin import MCPTestResult
 from app.services.prompt_service import prompt_service
-from app.logger import get_logger
+from app.logger import get_logger, summarize_log_value
 from app.user_manager import User
 
 logger = get_logger(__name__)
@@ -255,7 +255,7 @@ class MCPTestService:
                 tool_name = tool_name_with_prefix
             
             logger.info(f"🤖 AI选择的工具: {tool_name}")
-            logger.info(f"📝 AI生成的参数: {test_arguments}")
+            logger.info(f"📝 AI生成的参数摘要: {summarize_log_value(test_arguments)}")
             
             # 7. 使用统一门面调用MCP工具
             call_start = time.time()

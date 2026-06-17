@@ -5,6 +5,9 @@ import httpx
 import secrets
 from typing import Optional, Dict, Any
 from app.config import settings
+from app.logger import get_logger, safe_json_preview, safe_preview
+
+logger = get_logger(__name__)
 
 
 class LinuxDOOAuthService:
@@ -19,12 +22,11 @@ class LinuxDOOAuthService:
         self.client_id = settings.LINUXDO_CLIENT_ID
         self.client_secret = settings.LINUXDO_CLIENT_SECRET
         self.redirect_uri = settings.LINUXDO_REDIRECT_URI
+        self.proxy_url = settings.LINUXDO_PROXY_URL
         
         # 如果未配置，使用默认值（本地开发）
         if not self.redirect_uri:
             self.redirect_uri = "http://localhost:8000/api/auth/callback"
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(
                 "⚠️  LINUXDO_REDIRECT_URI 未配置，使用默认值: http://localhost:8000/api/auth/callback\n"
                 "如需使用 OAuth 登录，请在 .env 文件中配置：\n"
@@ -34,12 +36,23 @@ class LinuxDOOAuthService:
         
         # 警告：检查是否使用了localhost（在非开发环境）
         if not settings.debug and "localhost" in self.redirect_uri.lower():
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(
                 f"⚠️  生产环境检测到使用 localhost 作为回调地址: {self.redirect_uri}\n"
                 "这可能导致OAuth回调失败！请使用实际的域名或服务器IP。"
             )
+
+        if self.proxy_url:
+            logger.info("LinuxDO OAuth 已启用专用代理: %s", self.proxy_url)
+
+    def _client_options(self, **overrides) -> Dict[str, Any]:
+        """构建 LinuxDO 专用 HTTP 客户端参数。"""
+        options: Dict[str, Any] = {
+            "trust_env": False,
+        }
+        if self.proxy_url:
+            options["proxy"] = self.proxy_url
+        options.update(overrides)
+        return options
         
     def generate_state(self) -> str:
         """生成随机 state 参数"""
@@ -85,7 +98,7 @@ class LinuxDOOAuthService:
         }
         
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(**self._client_options(timeout=30.0)) as client:
                 response = await client.post(
                     self.TOKEN_URL,
                     data=data,
@@ -95,11 +108,11 @@ class LinuxDOOAuthService:
                 if response.status_code == 200:
                     return response.json()
                 else:
-                    print(f"获取访问令牌失败: {response.status_code} {response.text}")
+                    logger.error("获取访问令牌失败: status=%s response=%s", response.status_code, safe_preview(response.text, 500))
                     return None
-                    
+                     
         except Exception as e:
-            print(f"获取访问令牌异常: {e}")
+            logger.error("获取访问令牌异常: %s", e)
             return None
     
     async def get_user_info(self, access_token: str) -> Optional[Dict[str, Any]]:
@@ -122,31 +135,30 @@ class LinuxDOOAuthService:
             }
             
             # 不自动处理编码，让 httpx 自动解压
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            async with httpx.AsyncClient(**self._client_options(follow_redirects=True, timeout=30.0)) as client:
                 response = await client.get(
                     self.USERINFO_URL,
                     headers=headers
                 )
                 
-                print(f"获取用户信息响应状态: {response.status_code}")
-                print(f"响应头: {response.headers}")
+                logger.debug(
+                    "获取用户信息响应: status=%s headers=%s",
+                    response.status_code,
+                    safe_json_preview(dict(response.headers), 500),
+                )
                 
                 if response.status_code == 200:
                     try:
                         user_data = response.json()
-                        print(f"用户信息: {user_data}")
+                        logger.debug("用户信息获取成功: %s", safe_json_preview(user_data, 500))
                         return user_data
                     except Exception as json_error:
-                        print(f"解析 JSON 失败: {json_error}")
-                        print(f"响应内容前100字符: {response.text[:100]}")
+                        logger.error("解析用户信息 JSON 失败: %s, response=%s", json_error, safe_preview(response.text, 300))
                         return None
                 else:
-                    print(f"获取用户信息失败: {response.status_code}")
-                    print(f"响应内容: {response.text[:200]}")
+                    logger.error("获取用户信息失败: status=%s response=%s", response.status_code, safe_preview(response.text, 300))
                     return None
-                    
+                     
         except Exception as e:
-            print(f"获取用户信息异常: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error("获取用户信息异常: %s: %s", type(e).__name__, e, exc_info=True)
             return None

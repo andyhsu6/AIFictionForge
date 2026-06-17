@@ -403,11 +403,12 @@ export default function PromptWorkshop() {
 
   // 渲染工坊列表（只有卡片部分，用于滚动区域）
   const renderWorkshopList = () => (
-    <Spin spinning={loading}>
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
+        <Spin spinning={loading}>
           {items.length === 0 ? (
             <Empty description="暂无提示词" />
           ) : (
-            <>
               <Row
                 gutter={[0, gridConfig.gutter]}
                 style={{ marginLeft: 0, marginRight: 0 }}
@@ -523,22 +524,32 @@ export default function PromptWorkshop() {
                 </Col>
               ))}
               </Row>
-              
-              {total > pageSize && (
-                <div style={{ marginTop: 24, textAlign: 'center', paddingBottom: 16 }}>
-                  <Pagination
-                    current={currentPage}
-                    total={total}
-                    pageSize={pageSize}
-                    onChange={page => setCurrentPage(page)}
-                    showSizeChanger={false}
-                    showTotal={t => `共 ${t} 个提示词`}
-                  />
-                </div>
-              )}
-            </>
           )}
-    </Spin>
+        </Spin>
+      </div>
+
+      {total > 0 && (
+        <div
+          style={{
+            flexShrink: 0,
+            textAlign: 'center',
+            padding: '12px 0 0',
+            marginTop: 12,
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+            background: token.colorBgContainer,
+          }}
+        >
+          <Pagination
+            current={currentPage}
+            total={total}
+            pageSize={pageSize}
+            onChange={page => setCurrentPage(page)}
+            showSizeChanger={false}
+            showTotal={t => `共 ${t} 个提示词`}
+          />
+        </div>
+      )}
+    </div>
   );
 
   // 渲染我的提交
@@ -1051,11 +1062,15 @@ export default function PromptWorkshop() {
         {activeTab === 'browse' && renderFilterBar()}
       </div>
 
-      {/* 滚动区域：只有卡片列表滚动 */}
-      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+      {/* 内容区域：浏览工坊内部固定分页，其他 Tab 保持自身滚动 */}
+      <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
         {activeTab === 'browse' && renderWorkshopList()}
-        {activeTab === 'submissions' && renderMySubmissions()}
-        {activeTab === 'admin' && renderAdminPanel()}
+        {activeTab === 'submissions' && (
+          <div style={{ height: '100%', overflowY: 'auto' }}>{renderMySubmissions()}</div>
+        )}
+        {activeTab === 'admin' && (
+          <div style={{ height: '100%', overflowY: 'auto' }}>{renderAdminPanel()}</div>
+        )}
       </div>
 
       {/* 提交弹窗 */}

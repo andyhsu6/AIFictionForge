@@ -275,14 +275,18 @@ async def get_project_styles(
 @router.get("/{style_id}", response_model=WritingStyleResponse)
 async def get_writing_style(
     style_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """获取单个写作风格详情"""
+    user_id = get_current_user_id(request)
     result = await db.execute(
         select(WritingStyle).where(WritingStyle.id == style_id)
     )
     style = result.scalar_one_or_none()
     if not style:
+        raise HTTPException(status_code=404, detail="写作风格不存在")
+    if style.user_id is not None and style.user_id != user_id:
         raise HTTPException(status_code=404, detail="写作风格不存在")
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）

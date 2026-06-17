@@ -32,6 +32,13 @@ class Project(Base):
     chapter_count = Column(Integer, comment="章节数量")
     narrative_perspective = Column(String(50), comment="叙事视角：first_person/third_person/omniscient")
     character_count = Column(Integer, default=5, comment="角色数量")
+
+    # 封面字段
+    cover_image_url = Column(String(1000), comment="封面图片访问地址")
+    cover_prompt = Column(Text, comment="最近一次生成封面使用的提示词")
+    cover_status = Column(String(20), default="none", nullable=False, comment="封面状态: none/generating/ready/failed")
+    cover_error = Column(Text, comment="最近一次封面生成失败原因")
+    cover_updated_at = Column(DateTime, comment="最近一次封面生成成功时间")
     
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
@@ -40,6 +47,10 @@ class Project(Base):
         CheckConstraint(
             "outline_mode IN ('one-to-one', 'one-to-many')",
             name='check_outline_mode'
+        ),
+        CheckConstraint(
+            "cover_status IN ('none', 'generating', 'ready', 'failed')",
+            name='check_cover_status'
         ),
     )
     

@@ -1,23 +1,26 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Card, Button, Modal, message, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme } from 'antd';
-import { EditOutlined, BookOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, SettingOutlined, UploadOutlined, ApiOutlined, FileSearchOutlined, MenuUnfoldOutlined, MenuFoldOutlined, BulbOutlined, MoonOutlined, DesktopOutlined } from '@ant-design/icons';
-import { projectApi } from '../services/api';
+import { Card, Button, Modal, message, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme, Badge } from 'antd';
+import { EditOutlined, BookOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, SettingOutlined, UploadOutlined, ApiOutlined, FileSearchOutlined, MenuUnfoldOutlined, MenuFoldOutlined, BulbOutlined, MoonOutlined, DesktopOutlined, MailOutlined, BellOutlined } from '@ant-design/icons';
+import { authApi, projectApi } from '../services/api';
 import { useStore } from '../store';
 import { useProjectSync } from '../store/hooks';
 import { eventBus, EventNames } from '../store/eventBus';
 import type { ReactNode } from 'react';
-import type { Project } from '../types';
+import type { Project, User } from '../types';
 import UserMenu from '../components/UserMenu';
 import ChangelogFloatingButton from '../components/ChangelogFloatingButton';
 import ThemeSwitch from '../components/ThemeSwitch';
 import { useThemeMode } from '../theme/useThemeMode';
 import SettingsPage from './Settings';
+import SystemSettingsPage from './SystemSettings';
 import MCPPluginsPage from './MCPPlugins';
 import PromptTemplates from './PromptTemplates';
 import BookImport from './BookImport';
 import BookshelfPage from './BookshelfPage';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
+import AnnouncementTimelineModal from '../components/AnnouncementTimelineModal';
+import { useAnnouncements } from '../hooks/useAnnouncements';
 
 const { Text } = Typography;
 
@@ -41,11 +44,11 @@ const formatWordCount = (count: number): string => {
   }
 };
 
-type ProjectListView = 'projects' | 'settings' | 'mcp' | 'prompts' | 'book-import';
+type ProjectListView = 'projects' | 'settings' | 'system-settings' | 'mcp' | 'prompts' | 'book-import';
 
 const parseViewFromSearch = (search: string): ProjectListView => {
   const view = new URLSearchParams(search).get('view');
-  if (view === 'settings' || view === 'mcp' || view === 'prompts' || view === 'book-import' || view === 'projects') {
+  if (view === 'settings' || view === 'system-settings' || view === 'mcp' || view === 'prompts' || view === 'book-import' || view === 'projects') {
     return view;
   }
   return 'projects';
@@ -56,8 +59,10 @@ export default function ProjectList() {
   const location = useLocation();
   const { projects, loading } = useStore();
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [announcementVisible, setAnnouncementVisible] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [modal, contextHolder] = Modal.useModal();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showApiTip, setShowApiTip] = useState(true);
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [exportModalVisible, setExportModalVisible] = useState(false);
@@ -78,6 +83,8 @@ export default function ProjectList() {
   const { mode, resolvedMode, setMode } = useThemeMode();
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
+
+  const { announcements, loading: announcementsLoading, hasUnread: hasUnreadAnnouncements, refresh: refreshAnnouncements, markAllRead: markAllAnnouncementsRead } = useAnnouncements();
 
   const activeView = useMemo<ProjectListView>(() => parseViewFromSearch(location.search), [location.search]);
   const cycleThemeMode = () => {
@@ -113,6 +120,7 @@ export default function ProjectList() {
 
   useEffect(() => {
     refreshProjects();
+    authApi.getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
     
     // 监听切换到 MCP 视图的事件
     eventBus.on(EventNames.SWITCH_TO_MCP_VIEW, handleSwitchToMcp);
@@ -169,6 +177,28 @@ export default function ProjectList() {
       navigate(`/wizard?project_id=${project.id}`);
     } else {
       navigate(`/project/${project.id}`);
+    }
+  };
+
+  const handleGenerateCover = async (project: Project, overwrite: boolean = true) => {
+    try {
+      message.loading({ content: `正在为《${project.title}》生成封面...`, key: `cover-${project.id}` });
+      await projectApi.generateCover(project.id, overwrite);
+      message.success({ content: `《${project.title}》封面生成成功`, key: `cover-${project.id}` });
+      await refreshProjects();
+    } catch (error) {
+      console.error('生成封面失败:', error);
+      message.error({ content: `《${project.title}》封面生成失败`, key: `cover-${project.id}` });
+    }
+  };
+
+  const handleDownloadCover = async (project: Project) => {
+    try {
+      await projectApi.downloadCover(project.id, `${project.title}-cover.png`);
+      message.success(`《${project.title}》封面已开始下载`);
+    } catch (error) {
+      console.error('下载封面失败:', error);
+      message.error('下载封面失败');
     }
   };
 
@@ -374,7 +404,11 @@ export default function ProjectList() {
         ? '拆书导入'
         : activeView === 'mcp'
           ? 'MCP 插件'
-          : 'API 设置';
+          : activeView === 'system-settings'
+            ? '系统设置'
+            : 'API 设置';
+
+  const isAdmin = !!currentUser?.is_admin;
 
   const sideMenuItems = [
     {
@@ -412,6 +446,16 @@ export default function ProjectList() {
           icon: <SettingOutlined />,
           label: 'API 设置',
         },
+        ...(isAdmin ? [{
+          key: 'system-settings',
+          icon: <MailOutlined />,
+          label: '系统设置',
+        }] : []),
+        {
+          key: 'mumu-api',
+          icon: <ApiOutlined />,
+          label: 'MuMuのAPI',
+        },
       ],
     },
   ];
@@ -441,6 +485,16 @@ export default function ProjectList() {
       key: 'settings',
       icon: <SettingOutlined />,
       label: 'API 设置',
+    },
+    ...(isAdmin ? [{
+      key: 'system-settings',
+      icon: <MailOutlined />,
+      label: '系统设置',
+    }] : []),
+    {
+      key: 'mumu-api',
+      icon: <ApiOutlined />,
+      label: 'MuMuのAPI',
     },
   ];
 
@@ -550,6 +604,10 @@ export default function ProjectList() {
               selectedKeys={[activeView]}
               style={{ borderRight: 0, paddingTop: 12, width: '100%' }}
               onClick={({ key }) => {
+                if (key === 'mumu-api') {
+                  window.open('https://api.mumuverse.space/register?aff=4NN8', '_blank', 'noopener,noreferrer');
+                  return;
+                }
                 changeView(key as ProjectListView);
               }}
               items={collapsed ? sideMenuItemsCollapsed : sideMenuItems}
@@ -642,7 +700,19 @@ export default function ProjectList() {
               {currentViewTitle}
             </h2>
 
-            <div style={{ width: 36, height: 36 }} />
+            <Badge dot={hasUnreadAnnouncements} offset={[-4, 4]}>
+              <Button
+                type="text"
+                icon={<BellOutlined />}
+                onClick={() => setAnnouncementVisible(true)}
+                style={{
+                  fontSize: 18,
+                  color: token.colorWhite,
+                  width: 36,
+                  height: 36
+                }}
+              />
+            </Badge>
           </>
         ) : (
           <>
@@ -666,6 +736,22 @@ export default function ProjectList() {
             </h2>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, zIndex: 1 }}>
+              <Badge dot={hasUnreadAnnouncements} offset={[-4, 4]}>
+                <Button
+                  type="text"
+                  icon={<BellOutlined />}
+                  onClick={() => setAnnouncementVisible(true)}
+                  style={{
+                    color: token.colorWhite,
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    background: alphaColor(token.colorWhite, 0.12),
+                    border: `1px solid ${alphaColor(token.colorWhite, 0.18)}`,
+                  }}
+                  title="系统公告"
+                />
+              </Badge>
               {activeView === 'projects' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
                   {projects.length > 0 && (
@@ -751,6 +837,11 @@ export default function ProjectList() {
               selectedKeys={[activeView]}
               style={{ borderRight: 0, paddingTop: 8 }}
               onClick={({ key }) => {
+                if (key === 'mumu-api') {
+                  window.open('https://api.mumuverse.space/register?aff=4NN8', '_blank', 'noopener,noreferrer');
+                  setDrawerVisible(false);
+                  return;
+                }
                 changeView(key as ProjectListView);
                 setDrawerVisible(false);
               }}
@@ -798,6 +889,7 @@ export default function ProjectList() {
           }}
         >
           {activeView === 'settings' && <SettingsPage />}
+          {activeView === 'system-settings' && <SystemSettingsPage />}
           {activeView === 'mcp' && <MCPPluginsPage />}
           {activeView === 'prompts' && <PromptTemplates />}
           
@@ -818,6 +910,8 @@ export default function ProjectList() {
               onOpenInspiration={() => navigate('/inspiration')}
               onEnterProject={handleEnterProject}
               onDeleteProject={handleDelete}
+              onGenerateCover={handleGenerateCover}
+              onDownloadCover={handleDownloadCover}
               formatWordCount={formatWordCount}
               getProgress={getProgress}
               getProgressColor={getProgressColor}
@@ -830,6 +924,15 @@ export default function ProjectList() {
         <ChangelogFloatingButton />
         </div>
       </div>
+
+      <AnnouncementTimelineModal
+        visible={announcementVisible}
+        announcements={announcements}
+        loading={announcementsLoading}
+        onClose={() => setAnnouncementVisible(false)}
+        onRefresh={() => void refreshAnnouncements({ full: true })}
+        onMarkAllRead={markAllAnnouncementsRead}
+      />
 
       {/* 导入项目对话框 */}
       <Modal

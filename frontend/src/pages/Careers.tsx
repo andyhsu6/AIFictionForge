@@ -159,53 +159,79 @@ export default function Careers() {
         });
     };
 
-    const handleAIGenerate = async (values: { main_career_count: number; sub_career_count: number }) => {
+    const handleAIGenerate = async (values: {
+        main_career_count: number;
+        sub_career_count: number;
+        user_requirements?: string;
+    }) => {
         setIsAIModalOpen(false);
         setAiGenerating(true);
         setAiProgress(0);
         setAiMessage('开始生成新职业...');
 
         try {
-            const eventSource = new EventSource(
-                `/api/careers/generate-system?` +
-                new URLSearchParams({
+            const userRequirements = values.user_requirements?.trim() || '';
+
+            // 使用 fetch + POST 替代 EventSource GET，避免 URL 长度限制
+            const response = await fetch('/api/careers/generate-system', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                credentials: 'include',
+                body: JSON.stringify({
                     project_id: projectId || '',
-                    main_career_count: values.main_career_count.toString(),
-                    sub_career_count: values.sub_career_count.toString(),
-                    enable_mcp: 'false'
-                }).toString(),
-                { withCredentials: true }
-            );
+                    main_career_count: values.main_career_count,
+                    sub_career_count: values.sub_career_count,
+                    user_requirements: userRequirements,
+                    enable_mcp: false
+                })
+            });
 
-            eventSource.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-
-                    if (data.type === 'progress') {
-                        setAiProgress(data.progress || 0);
-                        setAiMessage(data.message || '');
-                    } else if (data.type === 'done') {
-                        eventSource.close();
-                        setTimeout(() => {
-                            setAiGenerating(false);
-                            message.success('AI新职业生成完成！');
-                            fetchCareers();
-                        }, 1000);
-                    } else if (data.type === 'error') {
-                        eventSource.close();
-                        setAiGenerating(false);
-                        message.error(data.message || '生成失败');
-                    }
-                } catch (e) {
-                    console.error('解析SSE数据失败:', e);
-                }
-            };
-
-            eventSource.onerror = () => {
-                eventSource.close();
+            if (!response.ok || !response.body) {
                 setAiGenerating(false);
-                message.error('连接中断，生成失败');
-            };
+                message.error(`请求失败: ${response.status}`);
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+
+                            if (data.type === 'progress') {
+                                setAiProgress(data.progress || 0);
+                                setAiMessage(data.message || '');
+                            } else if (data.type === 'done') {
+                                setTimeout(() => {
+                                    setAiGenerating(false);
+                                    message.success('AI新职业生成完成！');
+                                    fetchCareers();
+                                }, 1000);
+                            } else if (data.type === 'error') {
+                                setAiGenerating(false);
+                                message.error(data.error || data.message || '生成失败');
+                            }
+                        } catch (e) {
+                            // 忽略非JSON行（如心跳注释）
+                        }
+                    }
+                }
+            }
+
+            setAiGenerating(false);
         } catch (err: unknown) {
             setAiGenerating(false);
             const error = err as Error;
@@ -421,6 +447,19 @@ export default function Careers() {
                     </Form.Item>
                     <Form.Item label="本次新增副职业数量" name="sub_career_count" initialValue={5}>
                         <InputNumber min={0} max={15} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item
+                        label="职业要求"
+                        name="user_requirements"
+                        rules={[{ max: 500, message: '额外要求最多500字' }]}
+                        extra="可选。可描述希望新增的职业方向、能力侧重、限制条件或希望避开的职业类型，AI会结合世界观与已有职业综合生成。"
+                    >
+                        <TextArea
+                            rows={4}
+                            showCount
+                            maxLength={500}
+                            placeholder="例如：希望新增一个偏情报收集与潜伏渗透的主职业；副职业偏医术、经营或制造方向；避免再出现纯正面战斗型职业。"
+                        />
                     </Form.Item>
                     <Form.Item>
                         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
