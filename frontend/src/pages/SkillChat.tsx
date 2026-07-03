@@ -50,7 +50,7 @@ const SkillChat: React.FC = () => {
       if (response.data.length > 0) {
         setActiveCategory((prev) => prev || response.data[0].category);
       }
-    } catch (error) {
+    } catch {
       message.error('加载 Skill 列表失败');
     } finally {
       setSkillsLoading(false);
@@ -121,12 +121,15 @@ const SkillChat: React.FC = () => {
               } else if (data.type === 'error') {
                 message.error(data.error || '生成失败');
               }
-            } catch {}
+            } catch {
+              // 忽略非 JSON 流片段
+            }
           }
         }
       }
-    } catch (error: any) {
-      if (error.name !== 'AbortError') {
+    } catch (error: unknown) {
+      const isAbortError = error instanceof Error && error.name === 'AbortError';
+      if (!isAbortError) {
         message.error('请求失败，请检查 AI 配置');
         setMessages(prev => {
           const updated = [...prev];

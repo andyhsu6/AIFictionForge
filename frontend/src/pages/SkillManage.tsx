@@ -71,7 +71,7 @@ export default function SkillManage() {
         const data = await response.json();
         setSkills(data);
       }
-    } catch (error) {
+    } catch {
       message.error('加载 Skill 列表失败');
     } finally {
       setLoading(false);
@@ -102,7 +102,7 @@ export default function SkillManage() {
       } else {
         message.error('获取 Skill 详情失败');
       }
-    } catch (error) {
+    } catch {
       message.error('获取 Skill 详情失败');
     }
   };
@@ -116,7 +116,7 @@ export default function SkillManage() {
         setViewingContent(detail.raw_content);
         setViewModalVisible(true);
       }
-    } catch (error) {
+    } catch {
       message.error('获取内容失败');
     }
   };
@@ -173,7 +173,7 @@ export default function SkillManage() {
         const err = await response.json();
         message.error(err.detail || '更新失败');
       }
-    } catch (error) {
+    } catch {
       message.error('保存失败');
     } finally {
       setSaving(false);
@@ -232,7 +232,7 @@ export default function SkillManage() {
         const err = await response.json();
         message.error(err.detail || '创建失败');
       }
-    } catch (error) {
+    } catch {
       message.error('创建失败');
     } finally {
       setSaving(false);
@@ -250,7 +250,7 @@ export default function SkillManage() {
         const err = await response.json();
         message.error(err.detail || '删除失败');
       }
-    } catch (error) {
+    } catch {
       message.error('删除失败');
     }
   };

@@ -91,6 +91,7 @@ export default function SystemSettingsPage() {
   const [announcementStatusFilter, setAnnouncementStatusFilter] = useState<AnnouncementStatusFilter>('all');
   const [announcementSearchKeyword, setAnnouncementSearchKeyword] = useState('');
   const [announcementPagination, setAnnouncementPagination] = useState({ current: 1, pageSize: 10, total: 0 });
+  const { current: announcementCurrentPage, pageSize: announcementPageSize } = announcementPagination;
 
   const announcementContent = Form.useWatch('content', announcementForm) || '';
 
@@ -114,7 +115,7 @@ export default function SystemSettingsPage() {
     }
   }, []);
 
-  const loadAnnouncements = useCallback(async (page = announcementPagination.current, pageSize = announcementPagination.pageSize, keyword = announcementSearchKeyword) => {
+  const loadAnnouncements = useCallback(async (page: number, pageSize: number, keyword: string) => {
     if (!announcementAdminAvailable) {
       setAnnouncements([]);
       setAnnouncementPagination(prev => ({ ...prev, total: 0 }));
@@ -142,7 +143,7 @@ export default function SystemSettingsPage() {
     } finally {
       setAnnouncementLoading(false);
     }
-  }, [announcementAdminAvailable, announcementPagination.current, announcementPagination.pageSize, announcementSearchKeyword, announcementStatusFilter]);
+  }, [announcementAdminAvailable, announcementStatusFilter]);
 
   const loadData = async () => {
     setInitialLoading(true);
@@ -170,13 +171,13 @@ export default function SystemSettingsPage() {
 
   useEffect(() => {
     if (currentUser?.is_admin && announcementAdminAvailable) {
-      void loadAnnouncements(announcementPagination.current, announcementPagination.pageSize, announcementSearchKeyword);
+      void loadAnnouncements(announcementCurrentPage, announcementPageSize, announcementSearchKeyword);
     }
     if (currentUser?.is_admin && announcementStatus && !announcementAdminAvailable) {
       setAnnouncements([]);
       setAnnouncementPagination(prev => ({ ...prev, total: 0 }));
     }
-  }, [currentUser?.is_admin, announcementAdminAvailable, announcementStatus, announcementStatusFilter, loadAnnouncements]);
+  }, [currentUser?.is_admin, announcementAdminAvailable, announcementStatus, announcementStatusFilter, loadAnnouncements, announcementCurrentPage, announcementPageSize, announcementSearchKeyword]);
 
   const handleProviderChange = (value: string) => {
     if (value === 'qq') {
@@ -682,7 +683,7 @@ export default function SystemSettingsPage() {
                         <Button type="primary" icon={<PlusOutlined />} disabled={!announcementAdminAvailable} onClick={openCreateAnnouncementModal}>
                           新建公告
                         </Button>
-                        <Button icon={<ReloadOutlined />} loading={announcementLoading || announcementStatusLoading} onClick={() => { void loadAnnouncementStatus(); void loadAnnouncements(); }}>
+                        <Button icon={<ReloadOutlined />} loading={announcementLoading || announcementStatusLoading} onClick={() => { void loadAnnouncementStatus(); void loadAnnouncements(announcementPagination.current, announcementPagination.pageSize, announcementSearchKeyword); }}>
                           刷新列表
                         </Button>
                         {announcementStatus && (
