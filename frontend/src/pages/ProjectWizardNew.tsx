@@ -143,7 +143,6 @@ export default function ProjectWizardNew() {
             rows={3}
             placeholder="用一段话介绍你的小说..."
             showCount
-            maxLength={300}
           />
         </Form.Item>
 
@@ -156,7 +155,6 @@ export default function ProjectWizardNew() {
             rows={4}
             placeholder="描述你的小说主题..."
             showCount
-            maxLength={500}
           />
         </Form.Item>
 
