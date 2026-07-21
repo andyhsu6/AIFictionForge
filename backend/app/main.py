@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
         from app.database import get_engine
         from app.models.background_task import BackgroundTask
         from app.models.batch_generation_task import BatchGenerationTask
+        from app.models.analysis_task import AnalysisTask
         from sqlalchemy import update as sql_update
         _startup_engine = await get_engine("system")
         async with _startup_engine.begin() as conn:
@@ -62,6 +63,16 @@ async def lifespan(app: FastAPI):
                 .values(
                     status="failed",
                     error_message="服务重启，批量生成任务已中断",
+                    completed_at=interrupted_at,
+                )
+            )
+            await conn.execute(
+                sql_update(AnalysisTask)
+                .where(AnalysisTask.status.in_(["pending", "running"]))
+                .values(
+                    status="failed",
+                    error_message="服务重启，章节分析任务已中断",
+                    progress=0,
                     completed_at=interrupted_at,
                 )
             )

@@ -75,6 +75,10 @@ export default function Chapters() {
   const [analysisTasksMap, setAnalysisTasksMap] = useState<Record<string, AnalysisTask>>({});
   const analysisPollingIntervalRef = useRef<number | null>(null);
   const activeAnalysisPollingIdsRef = useRef<Set<string>>(new Set());
+  const analysisPollingInFlightRef = useRef(false);
+  const analysisPollingRequestIdRef = useRef(0);
+  const currentProjectIdRef = useRef<string | undefined>(currentProject?.id);
+  currentProjectIdRef.current = currentProject?.id;
 
   // 列表查询与分页状态
   const [chapterSearchKeyword, setChapterSearchKeyword] = useState('');
@@ -342,9 +346,22 @@ export default function Chapters() {
 
   useEffect(() => {
     if (currentProject?.id) {
-      refreshChapters();
+      const projectId = currentProject.id;
+      if (analysisPollingIntervalRef.current !== null) {
+        clearInterval(analysisPollingIntervalRef.current);
+        analysisPollingIntervalRef.current = null;
+      }
+      analysisPollingRequestIdRef.current += 1;
+      analysisPollingInFlightRef.current = false;
+      activeAnalysisPollingIdsRef.current.clear();
+      setAnalysisTasksMap({});
+
+      void refreshChapters(projectId).then((latestChapters) => {
+        if (currentProjectIdRef.current === projectId) {
+          void loadAnalysisTasks(latestChapters, projectId);
+        }
+      });
       loadWritingStyles();
-      loadAnalysisTasks();
       checkAndRestoreBatchTask();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -352,14 +369,14 @@ export default function Chapters() {
 
   // 清理轮询定时器
   useEffect(() => {
-    const batchPollingInterval = batchPollingIntervalRef.current;
     return () => {
-      if (analysisPollingIntervalRef.current) {
+      if (analysisPollingIntervalRef.current !== null) {
         clearInterval(analysisPollingIntervalRef.current);
         analysisPollingIntervalRef.current = null;
       }
-      if (batchPollingInterval) {
-        clearInterval(batchPollingInterval);
+      if (batchPollingIntervalRef.current !== null) {
+        clearInterval(batchPollingIntervalRef.current);
+        batchPollingIntervalRef.current = null;
       }
     };
   }, []);
@@ -372,7 +389,8 @@ export default function Chapters() {
   }, []);
 
   const pollActiveAnalysisTasks = useCallback(async () => {
-    if (!currentProject?.id) return;
+    const projectId = currentProjectIdRef.current;
+    if (!projectId || analysisPollingInFlightRef.current) return;
 
     const activeIds = Array.from(activeAnalysisPollingIdsRef.current);
     if (activeIds.length === 0) {
@@ -380,8 +398,14 @@ export default function Chapters() {
       return;
     }
 
+    analysisPollingInFlightRef.current = true;
+    const requestId = analysisPollingRequestIdRef.current + 1;
+    analysisPollingRequestIdRef.current = requestId;
+
     try {
-      const response = await chapterApi.getBatchAnalysisStatuses(currentProject.id, activeIds);
+      const response = await chapterApi.getBatchAnalysisStatuses(projectId, activeIds);
+      if (currentProjectIdRef.current !== projectId) return;
+
       const tasksMap = response.items || {};
 
       setAnalysisTasksMap(prev => ({
@@ -405,8 +429,12 @@ export default function Chapters() {
       clearAnalysisPollingIfIdle();
     } catch (error) {
       console.error('批量轮询分析任务失败:', error);
+    } finally {
+      if (analysisPollingRequestIdRef.current === requestId) {
+        analysisPollingInFlightRef.current = false;
+      }
     }
-  }, [clearAnalysisPollingIfIdle, currentProject?.id]);
+  }, [clearAnalysisPollingIfIdle]);
 
   const ensureAnalysisPolling = useCallback(() => {
     if (analysisPollingIntervalRef.current) return;
@@ -421,9 +449,13 @@ export default function Chapters() {
 
   // 加载所有章节的分析任务状态（批量接口，避免逐章请求风暴）
   // 接受可选的 chaptersToLoad 参数，解决 React 状态更新延迟导致的问题
-  const loadAnalysisTasks = async (chaptersToLoad?: typeof chapters) => {
+  const loadAnalysisTasks = async (
+    chaptersToLoad?: typeof chapters,
+    projectId?: string,
+  ) => {
     const targetChapters = chaptersToLoad || chapters;
-    if (!targetChapters || targetChapters.length === 0 || !currentProject?.id) return;
+    const targetProjectId = projectId || currentProjectIdRef.current;
+    if (!targetChapters || targetChapters.length === 0 || !targetProjectId) return;
 
     const chapterIds = targetChapters
       .filter(chapter => chapter.content && chapter.content.trim() !== '')
@@ -437,7 +469,9 @@ export default function Chapters() {
     }
 
     try {
-      const response = await chapterApi.getBatchAnalysisStatuses(currentProject.id, chapterIds);
+      const response = await chapterApi.getBatchAnalysisStatuses(targetProjectId, chapterIds);
+      if (currentProjectIdRef.current !== targetProjectId) return;
+
       const tasksMap = response.items || {};
       setAnalysisTasksMap(tasksMap);
 

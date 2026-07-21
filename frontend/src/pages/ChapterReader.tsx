@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Spin, Alert, Button, Space, Switch, Drawer, message, Progress, theme } from 'antd';
 import {
@@ -56,6 +56,14 @@ interface NavigationData {
   } | null;
 }
 
+interface AnalysisTaskStatus {
+  status: 'none' | 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  error_message?: string | null;
+}
+
+const ANALYSIS_POLL_TIMEOUT_MS = 11 * 60 * 1000;
+
 /**
  * 章节阅读器页面
  * 展示带有记忆标注的章节内容
@@ -76,6 +84,8 @@ const ChapterReader: React.FC = () => {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [navigation, setNavigation] = useState<NavigationData | null>(null);
+  const analysisPollTimerRef = useRef<number | null>(null);
+  const analysisRunIdRef = useRef(0);
 
   const loadChapterData = useCallback(async () => {
     try {
@@ -141,6 +151,16 @@ const ChapterReader: React.FC = () => {
     }
   }, [chapterId, loadChapterData]);
 
+  useEffect(() => {
+    return () => {
+      analysisRunIdRef.current += 1;
+      if (analysisPollTimerRef.current !== null) {
+        window.clearTimeout(analysisPollTimerRef.current);
+        analysisPollTimerRef.current = null;
+      }
+    };
+  }, [chapterId]);
+
   const handleAnnotationClick = (annotation: MemoryAnnotation) => {
     setActiveAnnotationId(annotation.id);
     // 移动端显示侧边栏
@@ -168,54 +188,77 @@ const ChapterReader: React.FC = () => {
   const handleReanalyze = async () => {
     if (!chapterId) return;
 
+    const requestedChapterId = chapterId;
+    const runId = analysisRunIdRef.current + 1;
+    analysisRunIdRef.current = runId;
+    const deadline = Date.now() + ANALYSIS_POLL_TIMEOUT_MS;
+
+    if (analysisPollTimerRef.current !== null) {
+      window.clearTimeout(analysisPollTimerRef.current);
+      analysisPollTimerRef.current = null;
+    }
+
     try {
       setAnalyzing(true);
       setAnalysisProgress(0);
       message.loading({ content: '开始分析章节...', key: 'analyze', duration: 0 });
 
       // 触发分析
-      await api.post(`/chapters/${chapterId}/analyze`);
+      await api.post(`/chapters/${requestedChapterId}/analyze`);
 
-      // 轮询分析状态
-      const pollInterval = setInterval(async () => {
+      const pollStatus = async (): Promise<void> => {
+        if (analysisRunIdRef.current !== runId) return;
+
+        if (Date.now() >= deadline) {
+          setAnalyzing(false);
+          message.warning({ content: '分析超时，请稍后刷新查看结果', key: 'analyze' });
+          return;
+        }
+
         try {
-          const statusRes = await api.get(`/chapters/${chapterId}/analysis/status`);
-          const { status, progress, error_message } = statusRes.data;
+          const statusRes = await api.get<unknown, AnalysisTaskStatus>(
+            `/chapters/${requestedChapterId}/analysis/status`
+          );
+          if (analysisRunIdRef.current !== runId) return;
+
+          const { status, progress, error_message } = statusRes;
 
           setAnalysisProgress(progress || 0);
 
           if (status === 'completed') {
-            clearInterval(pollInterval);
             setAnalyzing(false);
             message.success({ content: '分析完成！', key: 'analyze' });
-            
-            // 重新加载标注数据
-            const annotationsRes = await api.get(`/chapters/${chapterId}/annotations`);
-            setAnnotationsData(annotationsRes.data);
+            const annotationsRes = await api.get<unknown, AnnotationsData>(
+              `/chapters/${requestedChapterId}/annotations`
+            );
+            if (analysisRunIdRef.current === runId) {
+              setAnnotationsData(annotationsRes);
+            }
+            return;
           } else if (status === 'failed') {
-            clearInterval(pollInterval);
             setAnalyzing(false);
             message.error({
               content: `分析失败：${error_message || '未知错误'}`,
               key: 'analyze'
             });
+            return;
           }
         } catch (err) {
           console.error('轮询分析状态失败:', err);
         }
-      }, 2000); // 每2秒轮询一次
 
-      // 30秒超时
-      setTimeout(() => {
-        clearInterval(pollInterval);
-        if (analyzing) {
-          setAnalyzing(false);
-          message.warning({ content: '分析超时，请稍后刷新查看结果', key: 'analyze' });
+        if (analysisRunIdRef.current === runId) {
+          analysisPollTimerRef.current = window.setTimeout(() => {
+            void pollStatus();
+          }, 2000);
         }
-      }, 30000);
+      };
 
+      void pollStatus();
     } catch (err: unknown) {
-      setAnalyzing(false);
+      if (analysisRunIdRef.current === runId) {
+        setAnalyzing(false);
+      }
       const error = err as { response?: { data?: { detail?: string } } };
       message.error({
         content: error.response?.data?.detail || '触发分析失败',

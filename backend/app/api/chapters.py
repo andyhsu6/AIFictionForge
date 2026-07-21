@@ -1,15 +1,15 @@
 """章节管理API"""
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 import json
 import asyncio
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from asyncio import Queue, Lock
 
-from app.database import get_db
+from app.database import get_db, get_engine
 from app.api.common import verify_project_access
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
@@ -65,6 +65,18 @@ logger = get_logger(__name__)
 
 # 全局数据库写入锁（每个用户一个锁，用于保护SQLite写入操作）
 db_write_locks: dict[str, Lock] = {}
+analysis_background_tasks: set[asyncio.Task] = set()
+
+ANALYSIS_TASK_TIMEOUT_SECONDS = 600
+ANALYSIS_TASK_STALE_SECONDS = 720
+
+
+def _schedule_analysis_background(coroutine) -> asyncio.Task:
+    """持有后台任务引用，直到任务结束。"""
+    task = asyncio.create_task(coroutine)
+    analysis_background_tasks.add(task)
+    task.add_done_callback(analysis_background_tasks.discard)
+    return task
 
 
 def _build_lightweight_chapter_summary(content: str, max_length: int = 300) -> str:
@@ -81,6 +93,47 @@ async def get_db_write_lock(user_id: str) -> Lock:
         db_write_locks[user_id] = Lock()
         logger.debug(f"🔒 为用户 {user_id} 创建数据库写入锁")
     return db_write_locks[user_id]
+
+
+async def _set_analysis_task_terminal_state(
+    user_id: str,
+    task_id: str,
+    status: str,
+    error_message: Optional[str] = None,
+) -> bool:
+    """使用独立事务写入终态，避免分析会话失败后无法更新任务。"""
+    engine = await get_engine(user_id)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    completed_at = datetime.now()
+
+    for attempt in range(1, 4):
+        async with session_factory() as terminal_db:
+            try:
+                result = await terminal_db.execute(
+                    update(AnalysisTask)
+                    .where(
+                        AnalysisTask.id == task_id,
+                        AnalysisTask.status.in_(["pending", "running"]),
+                    )
+                    .values(
+                        status=status,
+                        progress=100 if status == "completed" else 0,
+                        error_message=error_message if status == "failed" else None,
+                        completed_at=completed_at,
+                    )
+                )
+                await terminal_db.commit()
+                if result.rowcount == 0:
+                    logger.info(f"分析任务已处于终态，无需重复更新: {task_id}")
+                    return False
+                return True
+            except Exception as exc:
+                await terminal_db.rollback()
+                logger.error(f"更新分析任务终态失败({attempt}/3): {task_id}, {exc}")
+                if attempt < 3:
+                    await asyncio.sleep(0.1)
+
+    return False
 
 
 @router.post("", response_model=ChapterResponse, summary="创建章节")
@@ -837,6 +890,43 @@ async def analyze_chapter_background(
     task_id: str,
     ai_service: Optional[AIService] = None
 ) -> bool:
+    """执行有硬超时保障的章节分析，并确保中断后任务进入终态。"""
+    try:
+        return await asyncio.wait_for(
+            _analyze_chapter_background_impl(
+                chapter_id=chapter_id,
+                user_id=user_id,
+                project_id=project_id,
+                task_id=task_id,
+                ai_service=ai_service,
+            ),
+            timeout=ANALYSIS_TASK_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        error_message = f"分析任务超时（超过{ANALYSIS_TASK_TIMEOUT_SECONDS // 60}分钟）"
+        logger.error(f"❌ {error_message}: chapter_id={chapter_id}, task_id={task_id}")
+        await _set_analysis_task_terminal_state(user_id, task_id, "failed", error_message)
+        return False
+    except asyncio.CancelledError:
+        terminal_update = asyncio.create_task(
+            _set_analysis_task_terminal_state(
+                user_id,
+                task_id,
+                "failed",
+                "分析任务被取消或服务关闭",
+            )
+        )
+        await asyncio.shield(terminal_update)
+        raise
+
+
+async def _analyze_chapter_background_impl(
+    chapter_id: str,
+    user_id: str,
+    project_id: str,
+    task_id: str,
+    ai_service: Optional[AIService] = None
+) -> bool:
     """
     后台异步分析章节（支持并发，使用锁保护数据库写入）
     
@@ -876,6 +966,9 @@ async def analyze_chapter_background(
         
         if not task:
             logger.error(f"❌ 任务不存在: {task_id}")
+            return False
+        if task.status not in ("pending", "running"):
+            logger.warning(f"分析任务已结束，跳过执行: {task_id}, status={task.status}")
             return False
         
         # 更新任务状态（写操作，需要锁）
@@ -1137,8 +1230,8 @@ async def analyze_chapter_background(
             
         # 保存到关系数据库（写操作，需要锁）
         async with write_lock:
-            for mem in memories:
-                memory_id = memory_records[memories.index(mem)]['id']
+            for index, mem in enumerate(memories):
+                memory_id = memory_records[index]['id']
                 text_position = mem['metadata'].get('text_position', -1)
                 text_length = mem['metadata'].get('text_length', 0)
                 
@@ -1297,64 +1390,25 @@ async def analyze_chapter_background(
         else:
             logger.debug("📋 分析结果中无伏笔信息，跳过伏笔自动更新")
         
-        # 最终更新任务状态（写操作，需要锁）- 增加重试机制
-        update_success = False
-        for retry in range(3):
-            try:
-                async with write_lock:
-                    task.progress = 100
-                    task.status = 'completed'
-                    task.completed_at = datetime.now()
-                    await db_session.commit()
-                    update_success = True
-                    logger.info(f"✅ 章节分析完成: {chapter_id}, 提取{len(memories)}条记忆")
-                    break
-            except Exception as commit_error:
-                logger.error(f"❌ 提交任务完成状态失败(重试{retry+1}/3): {str(commit_error)}")
-                if retry < 2:
-                    await asyncio.sleep(0.1)
-                else:
-                    logger.error(f"❌ 无法更新任务为completed状态: {task_id}")
-                    # 即使失败也不抛出异常，因为分析本身已经完成
-        
-        if not update_success:
-            logger.warning(f"⚠️  章节分析完成但状态更新失败: {chapter_id}")
-        
-        # 返回成功状态
-        return True
+        update_success = await _set_analysis_task_terminal_state(
+            user_id, task_id, "completed"
+        )
+        if update_success:
+            logger.info(f"✅ 章节分析完成: {chapter_id}, 提取{len(memories)}条记忆")
+        else:
+            logger.error(f"❌ 章节分析完成但无法更新任务终态: {chapter_id}")
+        return update_success
         
     except Exception as e:
         logger.error(f"❌ 后台分析异常: {str(e)}", exc_info=True)
-        # 确保任务状态被更新为failed（写操作，需要锁）
         if db_session:
-            # 多次重试更新任务状态
-            for retry in range(3):
-                try:
-                    async with write_lock:
-                        # 重新获取任务（可能是旧会话导致的问题）
-                        task_result = await db_session.execute(
-                            select(AnalysisTask).where(AnalysisTask.id == task_id)
-                        )
-                        task = task_result.scalar_one_or_none()
-                        if task:
-                            task.status = 'failed'
-                            task.error_message = str(e)[:500]
-                            task.completed_at = datetime.now()
-                            task.progress = 0
-                            await db_session.commit()
-                            logger.info(f"✅ 任务状态已更新为failed: {task_id} (重试{retry+1}次)")
-                            break
-                        else:
-                            logger.error(f"❌ 无法找到任务进行状态更新: {task_id}")
-                            break
-                except Exception as update_error:
-                    logger.error(f"❌ 更新任务状态失败(重试{retry+1}/3): {str(update_error)}")
-                    if retry < 2:
-                        await asyncio.sleep(0.1)  # 短暂等待后重试
-                    else:
-                        logger.error(f"❌ 任务状态更新失败，已达到最大重试次数: {task_id}")
-        
-        # 返回失败状态
+            try:
+                await db_session.rollback()
+            except Exception as rollback_error:
+                logger.warning(f"回滚分析事务失败: {rollback_error}")
+        await _set_analysis_task_terminal_state(
+            user_id, task_id, "failed", str(e)[:500]
+        )
         return False
         
     finally:
@@ -2323,7 +2377,7 @@ async def _run_chapter_generation_bg(
     await asyncio.sleep(0.05)
 
     # 启动后台分析
-    asyncio.create_task(
+    _schedule_analysis_background(
         analyze_chapter_background(
             chapter_id=chapter_id,
             user_id=user_id,
@@ -2390,6 +2444,50 @@ def _build_analysis_task_status_payload(
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None
     }
+
+
+async def _recover_stale_analysis_tasks(
+    db: AsyncSession,
+    tasks: list[AnalysisTask],
+) -> set[str]:
+    """将失去执行协程的陈旧任务原子地恢复为失败状态。"""
+    now = datetime.now()
+    recovered_ids: set[str] = set()
+
+    for task in tasks:
+        error_message: Optional[str] = None
+        if task.status == "running":
+            reference_time = task.started_at or task.created_at
+            if reference_time and (now - reference_time) > timedelta(seconds=ANALYSIS_TASK_STALE_SECONDS):
+                error_message = "任务执行超时，已自动恢复"
+        if not error_message:
+            continue
+
+        result = await db.execute(
+            update(AnalysisTask)
+            .where(
+                AnalysisTask.id == task.id,
+                AnalysisTask.status == task.status,
+            )
+            .values(
+                status="failed",
+                error_message=error_message,
+                completed_at=now,
+                progress=0,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.rowcount:
+            recovered_ids.add(task.id)
+
+    if recovered_ids:
+        await db.commit()
+        for task in tasks:
+            if task.id in recovered_ids:
+                await db.refresh(task)
+        logger.warning(f"自动恢复陈旧章节分析任务: {len(recovered_ids)} 个")
+
+    return recovered_ids
 
 
 @router.post("/{chapter_id}/generate-background-legacy", summary="AI创作章节内容（后台任务，遗留重复实现）")
@@ -2830,7 +2928,7 @@ async def _run_chapter_generation_bg(
     await asyncio.sleep(0.05)
 
     # 启动后台分析
-    asyncio.create_task(
+    _schedule_analysis_background(
         analyze_chapter_background(
             chapter_id=chapter_id,
             user_id=user_id,
@@ -2953,40 +3051,8 @@ async def get_analysis_task_status(
         # 返回无任务状态，而不是抛出404错误
         return _build_analysis_task_status_payload(chapter_id, None)
     
-    auto_recovered = False
-    current_time = datetime.now()
-    
-    # 自动恢复卡住的任务
-    # 注意：后端分析有3次重试机制，每次重试会重置 started_at
-    # 所以超时时间需要足够长以支持完整的重试周期（约5分钟）
-    if task.status == 'running':
-        # 检查是否正在重试（error_message 包含"重试"信息）
-        is_retrying = task.error_message and '重试' in task.error_message
-        # 如果正在重试，给予更长的超时时间（5分钟），否则3分钟
-        timeout_minutes = 5 if is_retrying else 3
-        
-        # 如果任务在running状态超过超时时间，标记为失败
-        if task.started_at and (current_time - task.started_at) > timedelta(minutes=timeout_minutes):
-            task.status = 'failed'
-            task.error_message = f'任务超时（超过{timeout_minutes}分钟未完成，已自动恢复）'
-            task.completed_at = current_time
-            task.progress = 0
-            auto_recovered = True
-            await db.commit()
-            await db.refresh(task)
-            logger.warning(f"🔄 自动恢复卡住的任务: {task.id}, 章节: {chapter_id}")
-    
-    elif task.status == 'pending':
-        # 如果任务在pending状态超过3分钟仍未开始，标记为失败
-        if task.created_at and (current_time - task.created_at) > timedelta(minutes=3):
-            task.status = 'failed'
-            task.error_message = '任务启动超时（超过3分钟未启动，已自动恢复）'
-            task.completed_at = current_time
-            task.progress = 0
-            auto_recovered = True
-            await db.commit()
-            await db.refresh(task)
-            logger.warning(f"🔄 自动恢复未启动的任务: {task.id}, 章节: {chapter_id}")
+    recovered_ids = await _recover_stale_analysis_tasks(db, [task])
+    auto_recovered = task.id in recovered_ids
     
     return _build_analysis_task_status_payload(chapter_id, task, auto_recovered)
 
@@ -3031,10 +3097,18 @@ async def get_project_analysis_task_statuses(
         if task.chapter_id not in latest_task_map:
             latest_task_map[task.chapter_id] = task
 
+    recovered_ids = await _recover_stale_analysis_tasks(
+        db, list(latest_task_map.values())
+    )
+
     items: dict[str, dict] = {}
     for chapter_id in chapter_ids:
         task = latest_task_map.get(chapter_id)
-        items[chapter_id] = _build_analysis_task_status_payload(chapter_id, task)
+        items[chapter_id] = _build_analysis_task_status_payload(
+            chapter_id,
+            task,
+            task.id in recovered_ids if task else False,
+        )
 
     return {
         "project_id": project_id,
@@ -3186,7 +3260,7 @@ async def batch_analyze_unanalyzed_chapters(
             }
             for chapter, analysis_task in tasks_to_start
         ]
-        asyncio.create_task(
+        _schedule_analysis_background(
             _run_batch_analysis_in_sequence(
                 tasks_queue=tasks_queue,
                 user_id=user_id,

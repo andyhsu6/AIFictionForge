@@ -104,6 +104,8 @@ class PlotAnalyzer:
                         temperature=0.3  # 降低温度以获得更稳定的JSON输出
                     ):
                         accumulated_text += chunk
+                except asyncio.CancelledError:
+                    raise
                 except GeneratorExit:
                     # 流式响应被中断
                     logger.warning(f"⚠️ 流式响应被中断(GeneratorExit)，已累积 {len(accumulated_text)} 字符")
@@ -166,6 +168,8 @@ class PlotAnalyzer:
                         logger.error(f"❌ 第{chapter_number}章分析失败: JSON解析错误，已达最大重试次数")
                         return None
                     
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"❌ 章节分析异常(尝试 {attempt}/{max_retries}): {last_error}")
