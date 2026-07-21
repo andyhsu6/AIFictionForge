@@ -1,5 +1,4 @@
 import { authApi } from '../services/api';
-import { message } from 'antd';
 
 /**
  * 会话管理工具
@@ -11,12 +10,13 @@ class SessionManager {
   private lastActivityTime: number = Date.now();
   
   // 配置参数
-  private readonly CHECK_INTERVAL = 60 * 1000; // 每分钟检查一次
-  private readonly REFRESH_THRESHOLD = 30 * 60 * 1000; // 剩余30分钟时刷新
-  private readonly ACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30分钟无活动则不自动刷新
-  private readonly WARNING_THRESHOLD = 5 * 60 * 1000; // 剩余5分钟时警告
+  private readonly CHECK_INTERVAL = 60 * 1000;
+  private readonly REFRESH_THRESHOLD = 30 * 60 * 1000;
+  private readonly ACTIVITY_TIMEOUT = 30 * 60 * 1000;
+  private readonly WARNING_THRESHOLD = 5 * 60 * 1000;
   
   private warningShown = false;
+  private showWarningCallback: ((message: string) => void) | null = null;
 
   /**
    * 启动会话监控
@@ -98,10 +98,8 @@ class SessionManager {
       // 显示即将过期警告
       if (remaining <= this.WARNING_THRESHOLD && !this.warningShown) {
         this.warningShown = true;
-        message.warning({
-          content: `您的登录状态将在 ${remainingMinutes} 分钟后过期，请注意保存数据`,
-          duration: 10,
-        });
+        console.warn(`[会话] 登录状态将在 ${remainingMinutes} 分钟后过期`);
+        this.showWarningCallback?.(`您的登录状态将在 ${remainingMinutes} 分钟后过期，请注意保存数据`);
       }
       
       // 需要刷新会话
@@ -127,11 +125,6 @@ class SessionManager {
       this.warningShown = false; // 重置警告状态
       
       console.log(`🔄 [会话] 自动续期成功，延长 ${result.remaining_minutes} 分钟`);
-      
-      message.success({
-        content: '登录状态已自动延长',
-        duration: 2,
-      });
     } catch {
       // 刷新失败可能是会话已过期
       this.handleSessionExpired();
@@ -157,15 +150,8 @@ class SessionManager {
       // 即使登出失败也继续跳转
     }
     
-    message.error({
-      content: '登录已过期，请重新登录',
-      duration: 3,
-    });
-    
-    // 延迟跳转，让用户看到提示
-    setTimeout(() => {
-      window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`;
-    }, 1000);
+    // 直接跳转登录页
+    window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`;
   }
 
   /**
@@ -223,6 +209,13 @@ class SessionManager {
       // 用户已超过30分钟无活动
     }, this.ACTIVITY_TIMEOUT);
   };
+
+  /**
+   * 设置警告回调（用于在 React 组件中显示消息）
+   */
+  setWarningCallback(callback: (message: string) => void) {
+    this.showWarningCallback = callback;
+  }
 
   /**
    * 手动刷新会话（供外部调用）
