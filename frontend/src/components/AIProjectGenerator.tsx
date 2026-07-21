@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Button, Space, Typography, message, Progress, theme } from 'antd';
+import { Card, Button, Space, Typography, message, Progress, Modal, theme } from 'antd';
 import { CheckCircleOutlined, LoadingOutlined } from '@ant-design/icons';
 import { wizardStreamApi } from '../services/api';
 import type { ApiError } from '../types';
@@ -49,6 +49,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   config,
   storagePrefix,
   onComplete,
+  onBack,
   isMobile = false,
   resumeProjectId
 }) => {
@@ -100,6 +101,21 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
     localStorage.removeItem(storageKeys.projectId);
     localStorage.removeItem(storageKeys.generationData);
     localStorage.removeItem(storageKeys.currentStep);
+  };
+
+  const handleRestartGeneration = () => {
+    Modal.confirm({
+      title: '确认重新开始生成',
+      content: '当前生成进度将被放弃，并返回灵感对话重新配置。已创建的项目数据不会自动删除。',
+      okText: '重新开始',
+      cancelText: '取消',
+      centered: true,
+      okButtonProps: { danger: true },
+      onOk: () => {
+        clearStorage();
+        onBack?.();
+      },
+    });
   };
 
   // 开始自动化生成流程
@@ -1316,7 +1332,10 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
       </Paragraph>
 
       {hasError && (
-        <Space style={{ width: '100%', justifyContent: 'center' }}>
+        <Space
+          direction={isMobile ? 'vertical' : 'horizontal'}
+          style={{ width: '100%', justifyContent: 'center' }}
+        >
           <Button
             type="primary"
             size="large"
@@ -1332,6 +1351,21 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
           >
             智能重试
           </Button>
+          {onBack && (
+            <Button
+              size="large"
+              danger
+              onClick={handleRestartGeneration}
+              disabled={loading}
+              style={{
+                minWidth: isMobile ? '100%' : 160,
+                height: 44,
+                borderRadius: 12,
+              }}
+            >
+              重新开始生成
+            </Button>
+          )}
         </Space>
       )}
     </div>

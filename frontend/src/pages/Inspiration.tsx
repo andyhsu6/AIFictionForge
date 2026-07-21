@@ -10,6 +10,11 @@ const { TextArea } = Input;
 
 type Step = 'idea' | 'title' | 'description' | 'theme' | 'genre' | 'perspective' | 'outline_mode' | 'confirm' | 'generating' | 'complete';
 
+interface FailedRequest {
+  step: 'title' | 'description' | 'theme' | 'genre';
+  context: Partial<WizardData>;
+}
+
 interface Message {
   type: 'ai' | 'user';
   content: string;
@@ -18,6 +23,7 @@ interface Message {
   optionsDisabled?: boolean; // 标记选项是否已禁用
   canRefine?: boolean; // 是否可以优化（用于支持多轮对话）
   step?: Step; // 当前步骤（用于反馈）
+  failedRequest?: FailedRequest; // 将失败操作绑定到消息，避免历史按钮重试错误请求
 }
 
 interface WizardData {
@@ -36,10 +42,7 @@ interface CacheData {
   wizardData: Partial<WizardData>;
   initialIdea: string;
   selectedOptions: string[];
-  lastFailedRequest: {
-    step: 'title' | 'description' | 'theme' | 'genre';
-    context: Partial<WizardData>;
-  } | null;
+  lastFailedRequest: FailedRequest | null;
   timestamp: number;
 }
 
@@ -91,12 +94,10 @@ const Inspiration: React.FC = () => {
   // 滚动容器引用
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const sessionVersionRef = useRef(0);
 
   // 记录上次失败的请求参数，用于重试
-  const [lastFailedRequest, setLastFailedRequest] = useState<{
-    step: 'title' | 'description' | 'theme' | 'genre';
-    context: Partial<WizardData>;
-  } | null>(null);
+  const [lastFailedRequest, setLastFailedRequest] = useState<FailedRequest | null>(null);
 
   // 标记是否已经加载缓存
   const [cacheLoaded, setCacheLoaded] = useState(false);
@@ -227,15 +228,18 @@ const Inspiration: React.FC = () => {
   }, [messages]);
 
   // 重试生成
-  const handleRetry = async () => {
-    if (!lastFailedRequest) return;
+  const handleRetry = async (failedRequest: FailedRequest | null = lastFailedRequest) => {
+    if (!failedRequest || loading) return;
 
+    const sessionVersion = sessionVersionRef.current;
     setLoading(true);
     try {
       const response = await inspirationApi.generateOptions({
-        step: lastFailedRequest.step,
-        context: lastFailedRequest.context
+        step: failedRequest.step,
+        context: failedRequest.context
       });
+
+      if (sessionVersion !== sessionVersionRef.current) return;
 
       if (response.error) {
         message.error(response.error);
@@ -244,10 +248,15 @@ const Inspiration: React.FC = () => {
 
       setMessages(prev => {
         const newMessages = [...prev];
-        if (newMessages[newMessages.length - 1].type === 'ai' &&
-          (newMessages[newMessages.length - 1].content.includes('生成失败') ||
-            newMessages[newMessages.length - 1].content.includes('出错了'))) {
-          newMessages.pop();
+        let failedMessageIndex = -1;
+        for (let index = newMessages.length - 1; index >= 0; index -= 1) {
+          if (newMessages[index].failedRequest?.step === failedRequest.step) {
+            failedMessageIndex = index;
+            break;
+          }
+        }
+        if (failedMessageIndex >= 0) {
+          newMessages.splice(failedMessageIndex, 1);
         }
         return newMessages;
       });
@@ -256,21 +265,24 @@ const Inspiration: React.FC = () => {
         type: 'ai',
         content: response.prompt || '请选择一个选项，或者输入你自己的：',
         options: response.options || [],
-        isMultiSelect: lastFailedRequest.step === 'genre'
+        isMultiSelect: failedRequest.step === 'genre',
+        canRefine: true,
+        step: failedRequest.step,
       };
       setMessages(prev => [...prev, aiMessage]);
+      setCurrentStep(failedRequest.step);
       setLastFailedRequest(null);
     } catch (error: unknown) {
       console.error('重试失败:', error);
       message.error('重试失败，请稍后再试');
     } finally {
-      setLoading(false);
+      if (sessionVersion === sessionVersionRef.current) setLoading(false);
     }
   };
 
   // 处理用户反馈，重新生成选项
   const handleRefineOptions = async (messageIndex: number, feedback: string) => {
-    if (!feedback.trim()) {
+    if (!feedback.trim() || refining || loading) {
       message.warning('请输入您的反馈意见');
       return;
     }
@@ -280,6 +292,7 @@ const Inspiration: React.FC = () => {
       return;
     }
 
+    const sessionVersion = sessionVersionRef.current;
     setRefining(true);
     setShowFeedbackInput(null);
     setFeedbackValue('');
@@ -323,7 +336,14 @@ const Inspiration: React.FC = () => {
         previous_options: targetMessage.options,
       });
 
+      if (sessionVersion !== sessionVersionRef.current) return;
+
       if (response.error) {
+        setMessages(prev => prev.map((item, index) => index === messageIndex
+          ? { ...item, optionsDisabled: false, canRefine: true }
+          : item));
+        setFeedbackValue(feedback);
+        setShowFeedbackInput(messageIndex);
         message.error(response.error);
         return;
       }
@@ -341,12 +361,18 @@ const Inspiration: React.FC = () => {
 
       message.success('已根据您的反馈重新生成选项');
     } catch (error: unknown) {
+      if (sessionVersion !== sessionVersionRef.current) return;
+      setMessages(prev => prev.map((item, index) => index === messageIndex
+        ? { ...item, optionsDisabled: false, canRefine: true }
+        : item));
+      setFeedbackValue(feedback);
+      setShowFeedbackInput(messageIndex);
       console.error('优化选项失败:', error);
       const errMsg = error instanceof Error ? error.message : '优化失败，请重试';
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
-      setRefining(false);
+      if (sessionVersion === sessionVersionRef.current) setRefining(false);
     }
   };
 
@@ -354,7 +380,7 @@ const Inspiration: React.FC = () => {
   const stepOrder: Step[] = ['idea', 'title', 'description', 'theme', 'genre', 'perspective', 'outline_mode', 'confirm'];
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim()) {
+    if (!inputValue.trim() || loading || refining) {
       message.warning('请输入内容');
       return;
     }
@@ -367,6 +393,7 @@ const Inspiration: React.FC = () => {
 
     const userInput = inputValue;
     setInputValue('');
+    const sessionVersion = sessionVersionRef.current;
     setLoading(true);
 
     try {
@@ -383,13 +410,16 @@ const Inspiration: React.FC = () => {
 
         const response = await inspirationApi.generateOptions(requestData);
 
+        if (sessionVersion !== sessionVersionRef.current) return;
+
         if (response.error || !response.options || response.options.length < 3) {
           const errorMessage: Message = {
             type: 'ai',
             content: response.error
               ? `生成书名时出错：${response.error}\n\n你可以选择：`
               : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
-            options: response.options && response.options.length > 0 ? response.options : ['重新生成', '我自己输入书名']
+            options: ['重新生成', '我自己输入书名'],
+            failedRequest: requestData,
           };
           setMessages(prev => [...prev, errorMessage]);
           setLastFailedRequest(requestData);
@@ -410,20 +440,24 @@ const Inspiration: React.FC = () => {
         await handleCustomInput(userInput);
       }
     } catch (error: unknown) {
+      if (sessionVersion !== sessionVersionRef.current) return;
       console.error('发送消息失败:', error);
       const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
-      setLoading(false);
+      if (sessionVersion === sessionVersionRef.current) setLoading(false);
     }
   };
 
-  const handleSelectOption = async (option: string) => {
-    if (option === '重新生成' && lastFailedRequest) {
-      await handleRetry();
+  const handleSelectOption = async (option: string, sourceMessage?: Message) => {
+    const retryRequest = sourceMessage?.failedRequest || lastFailedRequest;
+    if ((option === '重新生成' || option === '让AI重新生成') && retryRequest) {
+      await handleRetry(retryRequest);
       return;
     }
+
+    if (loading || refining) return;
 
     if (option === '我自己输入书名' || option === '我自己输入') {
       message.info('请在下方输入框中输入您的内容');
@@ -566,6 +600,7 @@ const Inspiration: React.FC = () => {
       content: option,
     };
     setMessages(prev => [...prev, userMessage]);
+    const sessionVersion = sessionVersionRef.current;
     setLoading(true);
 
     try {
@@ -581,16 +616,18 @@ const Inspiration: React.FC = () => {
 
       await generateNextStep(updatedData);
     } catch (error: unknown) {
+      if (sessionVersion !== sessionVersionRef.current) return;
       console.error('选择选项失败:', error);
       const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
-      setLoading(false);
+      if (sessionVersion === sessionVersionRef.current) setLoading(false);
     }
   };
 
   const handleCustomInput = async (input: string) => {
+    const sessionVersion = sessionVersionRef.current;
     setLoading(true);
     try {
       const updatedData = { ...wizardData };
@@ -633,12 +670,13 @@ const Inspiration: React.FC = () => {
       setWizardData(updatedData);
       await generateNextStep(updatedData);
     } catch (error: unknown) {
+      if (sessionVersion !== sessionVersionRef.current) return;
       console.error('处理自定义输入失败:', error);
       const errMsg = error instanceof Error ? error.message : '处理失败，请重试';
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
-      setLoading(false);
+      if (sessionVersion === sessionVersionRef.current) setLoading(false);
     }
   };
 
@@ -686,6 +724,7 @@ const Inspiration: React.FC = () => {
   };
 
   const generateNextStep = async (data: Partial<WizardData>) => {
+    const sessionVersion = sessionVersionRef.current;
     const currentIndex = stepOrder.indexOf(currentStep);
     const nextStep = stepOrder[currentIndex + 1];
 
@@ -708,13 +747,16 @@ const Inspiration: React.FC = () => {
       };
       const response = await inspirationApi.generateOptions(requestData);
 
+      if (sessionVersion !== sessionVersionRef.current) return;
+
       if (response.error || !response.options || response.options.length < 3) {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
             ? `生成简介时出错：${response.error}\n\n你可以选择：`
             : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
-          options: response.options && response.options.length > 0 ? response.options : ['重新生成', '我自己输入']
+          options: ['重新生成', '我自己输入'],
+          failedRequest: requestData,
         };
         setMessages(prev => [...prev, errorMessage]);
         setLastFailedRequest(requestData);
@@ -743,13 +785,16 @@ const Inspiration: React.FC = () => {
       };
       const response = await inspirationApi.generateOptions(requestData);
 
+      if (sessionVersion !== sessionVersionRef.current) return;
+
       if (response.error || !response.options || response.options.length < 3) {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
             ? `生成主题时出错：${response.error}\n\n你可以选择：`
             : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
-          options: response.options && response.options.length > 0 ? response.options : ['重新生成', '我自己输入']
+          options: ['重新生成', '我自己输入'],
+          failedRequest: requestData,
         };
         setMessages(prev => [...prev, errorMessage]);
         setLastFailedRequest(requestData);
@@ -779,14 +824,17 @@ const Inspiration: React.FC = () => {
       };
       const response = await inspirationApi.generateOptions(requestData);
 
+      if (sessionVersion !== sessionVersionRef.current) return;
+
       if (response.error || !response.options || response.options.length < 3) {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
             ? `生成类型时出错：${response.error}\n\n你可以选择：`
             : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
-          options: response.options && response.options.length > 0 ? response.options : ['重新生成', '我自己输入'],
-          isMultiSelect: false
+          options: ['重新生成', '我自己输入'],
+          isMultiSelect: false,
+          failedRequest: requestData,
         };
         setMessages(prev => [...prev, errorMessage]);
         setLastFailedRequest(requestData);
@@ -808,8 +856,12 @@ const Inspiration: React.FC = () => {
   };
 
   const handleRestart = () => {
+    sessionVersionRef.current += 1;
     // 清除缓存
     clearCache();
+    localStorage.removeItem('inspiration_project_id');
+    localStorage.removeItem('inspiration_generation_data');
+    localStorage.removeItem('inspiration_current_step');
 
     setCurrentStep('idea');
     setMessages([
@@ -821,6 +873,12 @@ const Inspiration: React.FC = () => {
     setWizardData({});
     setInitialIdea('');
     setSelectedOptions([]);
+    setLastFailedRequest(null);
+    setFeedbackValue('');
+    setShowFeedbackInput(null);
+    setRefining(false);
+    setGenerationConfig(null);
+    setInputValue('');
     setLoading(false);
   };
 
@@ -901,9 +959,9 @@ const Inspiration: React.FC = () => {
                         key={optIndex}
                         hoverable={!msg.optionsDisabled}
                         size="small"
-                        onClick={() => !msg.optionsDisabled && handleSelectOption(option)}
+                        onClick={() => !msg.optionsDisabled && !loading && !refining && handleSelectOption(option, msg)}
                         style={{
-                          cursor: msg.optionsDisabled ? 'not-allowed' : 'pointer',
+                          cursor: msg.optionsDisabled || loading || refining ? 'not-allowed' : 'pointer',
                           border: msg.isMultiSelect && selectedOptions.includes(option)
                             ? `2px solid ${token.colorPrimary}`
                             : `1px solid ${token.colorBorder}`,
@@ -982,7 +1040,7 @@ const Inspiration: React.FC = () => {
                                 loading={refining}
                                 disabled={!feedbackValue.trim()}
                               >
-                                重新生成
+                                根据反馈生成
                               </Button>
                             </Space>
                           </Space>
