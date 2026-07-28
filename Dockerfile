@@ -65,7 +65,7 @@ COPY backend/requirements.txt ./
 
 # 安装不包含 PyTorch/Transformers 的 ONNX 运行时依赖
 RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
-        pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/; \
+        pip install --no-cache-dir -r requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple; \
     else \
         pip install --no-cache-dir -r requirements.txt; \
     fi
