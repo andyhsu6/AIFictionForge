@@ -5,7 +5,7 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 import json
 import asyncio
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 from datetime import datetime, timedelta
 from asyncio import Queue, Lock
 
@@ -888,7 +888,8 @@ async def analyze_chapter_background(
     user_id: str,
     project_id: str,
     task_id: str,
-    ai_service: Optional[AIService] = None
+    ai_service: Optional[AIService] = None,
+    progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> bool:
     """执行有硬超时保障的章节分析，并确保中断后任务进入终态。"""
     try:
@@ -899,6 +900,7 @@ async def analyze_chapter_background(
                 project_id=project_id,
                 task_id=task_id,
                 ai_service=ai_service,
+                progress_callback=progress_callback,
             ),
             timeout=ANALYSIS_TASK_TIMEOUT_SECONDS,
         )
@@ -925,7 +927,8 @@ async def _analyze_chapter_background_impl(
     user_id: str,
     project_id: str,
     task_id: str,
-    ai_service: Optional[AIService] = None
+    ai_service: Optional[AIService] = None,
+    progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> bool:
     """
     后台异步分析章节（支持并发，使用锁保护数据库写入）
@@ -942,6 +945,14 @@ async def _analyze_chapter_background_impl(
     """
     db_session = None
     write_lock = await get_db_write_lock(user_id)
+
+    async def report_progress(progress: int) -> None:
+        if not progress_callback:
+            return
+        try:
+            await progress_callback(progress)
+        except Exception as callback_error:
+            logger.warning(f"⚠️ 同步章节分析进度失败: {callback_error}")
     
     try:
         logger.info(f"🔍 开始分析章节: {chapter_id}, 任务ID: {task_id}")
@@ -977,6 +988,7 @@ async def _analyze_chapter_background_impl(
             task.started_at = datetime.now()
             task.progress = 10
             await db_session.commit()
+        await report_progress(10)
         
         # 2. 获取章节信息（读操作）
         chapter_result = await db_session.execute(
@@ -995,6 +1007,7 @@ async def _analyze_chapter_background_impl(
         async with write_lock:
             task.progress = 20
             await db_session.commit()
+        await report_progress(20)
         
         if ai_service is None:
             ai_service = await get_user_ai_service_from_db_by_usage(
@@ -1086,6 +1099,7 @@ async def _analyze_chapter_background_impl(
                         task_retry.error_message = f"正在重试({attempt}/{max_retries})：{error_reason[:100]}"
                         await db_session.commit()
                         logger.info(f"🔄 分析任务重试状态已更新: 尝试 {attempt}/{max_retries}, 等待 {wait_time}s, 原因: {error_reason[:50]}...")
+                await report_progress(25 + attempt * 5)
             except Exception as callback_error:
                 logger.warning(f"⚠️ 更新重试状态失败: {callback_error}")
         
@@ -1113,6 +1127,7 @@ async def _analyze_chapter_background_impl(
         async with write_lock:
             task.progress = 60
             await db_session.commit()
+        await report_progress(60)
         
         # 4. 保存分析结果到数据库（写操作，需要锁）
         async with write_lock:
@@ -1183,6 +1198,7 @@ async def _analyze_chapter_background_impl(
             
             task.progress = 80
             await db_session.commit()
+        await report_progress(80)
         
         # 5. 清理旧的分析伏笔（重新分析时需要先清理）
         try:
@@ -1394,6 +1410,7 @@ async def _analyze_chapter_background_impl(
             user_id, task_id, "completed"
         )
         if update_success:
+            await report_progress(100)
             logger.info(f"✅ 章节分析完成: {chapter_id}, 提取{len(memories)}条记忆")
         else:
             logger.error(f"❌ 章节分析完成但无法更新任务终态: {chapter_id}")
@@ -2374,42 +2391,25 @@ async def _run_chapter_generation_bg(
 
     logger.info(f"📋 后台生成：已创建分析任务: {analysis_task.id}")
 
-    await asyncio.sleep(0.05)
+    await tracker.set_result({
+        "chapter_id": chapter_id,
+        "word_count": new_word_count,
+        "analysis_task_id": analysis_task.id,
+    })
+    await tracker.analyzing(0, "章节创作完成，准备分析...")
 
-    # 启动后台分析
-    _schedule_analysis_background(
-        analyze_chapter_background(
-            chapter_id=chapter_id,
-            user_id=user_id,
-            project_id=current_chapter.project_id,
-            task_id=analysis_task.id
-        )
+    analysis_success = await analyze_chapter_background(
+        chapter_id=chapter_id,
+        user_id=user_id,
+        project_id=current_chapter.project_id,
+        task_id=analysis_task.id,
+        progress_callback=tracker.analyzing,
     )
+    if not analysis_success:
+        raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作完成！共 {new_word_count} 字")
-
-    # 更新任务结果
-    from app.services.background_task_service import background_task_service
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession as BgAsyncSession
-    from app.database import get_engine as bg_get_engine
-    try:
-        engine = await bg_get_engine(user_id)
-        AsyncSessionLocal = async_sessionmaker(engine, class_=BgAsyncSession, expire_on_commit=False)
-        async with AsyncSessionLocal() as result_db:
-            from sqlalchemy import update as sql_update
-            await result_db.execute(
-                sql_update(BackgroundTask)
-                .where(BackgroundTask.id == task_id)
-                .values(task_result={
-                    "chapter_id": chapter_id,
-                    "word_count": new_word_count,
-                    "analysis_task_id": analysis_task.id
-                })
-            )
-            await result_db.commit()
-    except Exception as e:
-        logger.warning(f"⚠️ 更新任务结果失败: {e}")
+    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
 
 
 def _build_analysis_task_status_payload(
@@ -2925,43 +2925,26 @@ async def _run_chapter_generation_bg(
 
     logger.info(f"📋 后台生成：已创建分析任务: {analysis_task.id}")
 
-    await asyncio.sleep(0.05)
+    await tracker.set_result({
+        "chapter_id": chapter_id,
+        "word_count": new_word_count,
+        "analysis_task_id": analysis_task.id,
+    })
+    await tracker.analyzing(0, "章节创作完成，准备分析...")
 
-    # 启动后台分析
-    _schedule_analysis_background(
-        analyze_chapter_background(
-            chapter_id=chapter_id,
-            user_id=user_id,
-            project_id=current_chapter.project_id,
-            task_id=analysis_task.id,
-            ai_service=ai_service
-        )
+    analysis_success = await analyze_chapter_background(
+        chapter_id=chapter_id,
+        user_id=user_id,
+        project_id=current_chapter.project_id,
+        task_id=analysis_task.id,
+        ai_service=ai_service,
+        progress_callback=tracker.analyzing,
     )
+    if not analysis_success:
+        raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作完成！共 {new_word_count} 字")
-
-    # 更新任务结果
-    from app.services.background_task_service import background_task_service
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession as BgAsyncSession
-    from app.database import get_engine as bg_get_engine
-    try:
-        engine = await bg_get_engine(user_id)
-        AsyncSessionLocal = async_sessionmaker(engine, class_=BgAsyncSession, expire_on_commit=False)
-        async with AsyncSessionLocal() as result_db:
-            from sqlalchemy import update as sql_update
-            await result_db.execute(
-                sql_update(BackgroundTask)
-                .where(BackgroundTask.id == task_id)
-                .values(task_result={
-                    "chapter_id": chapter_id,
-                    "word_count": new_word_count,
-                    "analysis_task_id": analysis_task.id
-                })
-            )
-            await result_db.commit()
-    except Exception as e:
-        logger.warning(f"⚠️ 更新任务结果失败: {e}")
+    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
 
 
 def _build_analysis_task_status_payload(
