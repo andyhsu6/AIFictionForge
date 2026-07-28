@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
+import sys
 
 from app.config import settings as config_settings
 from app.database import close_db, _session_stats
@@ -213,8 +214,12 @@ app.include_router(book_import.router, prefix="/api")  # 拆书导入API
 app.include_router(tasks.router, prefix="/api")  # 后台任务API
 app.include_router(announcements.router, prefix="/api")  # 公告API
 
-static_dir = Path(__file__).parent.parent / "static"
-generated_assets_root_dir = Path(__file__).parent.parent / "storage"
+if getattr(sys, "frozen", False):
+    static_dir = Path(sys._MEIPASS) / "backend" / "static"
+    generated_assets_root_dir = Path(sys.executable).parent / "storage"
+else:
+    static_dir = Path(__file__).parent.parent / "static"
+    generated_assets_root_dir = Path(__file__).parent.parent / "storage"
 generated_covers_dir = generated_assets_root_dir / "generated_covers"
 generated_covers_dir.mkdir(parents=True, exist_ok=True)
 if static_dir.exists():

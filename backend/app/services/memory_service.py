@@ -1,70 +1,14 @@
 """向量记忆服务 - 基于ChromaDB实现长期记忆和语义检索"""
 import chromadb
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any, Optional
 import json
 from datetime import datetime
 from app.logger import get_logger
+from app.services.onnx_embedding import OnnxEmbeddingModel
 import os
 import hashlib
 
 logger = get_logger(__name__)
-
-# 配置模型缓存目录
-# 优先使用 backend/embedding 目录（打包后的实际位置）
-import sys
-from pathlib import Path
-
-if 'SENTENCE_TRANSFORMERS_HOME' not in os.environ:
-    # 根据运行环境确定模型目录
-    if getattr(sys, 'frozen', False):
-        # PyInstaller 打包后 - 需要检查多个可能的位置
-        exe_dir = Path(sys.executable).parent
-        
-        # 检查顺序：
-        # 1. _MEIPASS/backend/embedding (临时解压目录)
-        # 2. exe同级/_internal/backend/embedding
-        # 3. exe同级/backend/embedding
-        possible_paths = []
-        
-        if hasattr(sys, '_MEIPASS'):
-            possible_paths.append(Path(sys._MEIPASS) / 'backend' / 'embedding')
-        
-        possible_paths.extend([
-            exe_dir / '_internal' / 'backend' / 'embedding',
-            exe_dir / 'backend' / 'embedding',
-            exe_dir / '_internal' / 'embedding',
-            exe_dir / 'embedding'
-        ])
-        
-        model_dir = None
-        for path in possible_paths:
-            if path.exists():
-                model_dir = path
-                logger.info(f"🔧 找到打包环境模型目录: {model_dir}")
-                break
-        
-        if model_dir:
-            os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(model_dir)
-        else:
-            # 最后降级方案
-            fallback_dir = exe_dir / 'embedding'
-            os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(fallback_dir)
-            logger.warning(f"⚠️ 未找到预打包模型，使用降级目录: {fallback_dir}")
-            logger.warning(f"   检查过的路径: {[str(p) for p in possible_paths]}")
-    else:
-        # 开发模式，从当前文件位置向上找到项目根目录
-        base_dir = Path(__file__).parent.parent.parent
-        model_dir = base_dir / 'backend' / 'embedding'
-        if model_dir.exists():
-            os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(model_dir)
-            logger.info(f"🔧 设置开发环境模型目录: {model_dir}")
-        else:
-            # 降级到项目根目录的 embedding
-            fallback_dir = base_dir / 'embedding'
-            os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(fallback_dir)
-            logger.info(f"🔧 使用降级模型目录: {fallback_dir}")
-
 
 class MemoryService:
     """向量记忆管理服务 - 实现语义检索和长期记忆"""
@@ -91,137 +35,14 @@ class MemoryService:
             # 初始化ChromaDB客户端(使用新API - PersistentClient)
             self.client = chromadb.PersistentClient(path=chroma_dir)
             
-            # 初始化多语言embedding模型(支持中文)
-            logger.info("🔄 正在加载Embedding模型...")
-            
-            # 使用环境变量中配置的模型目录
-            model_cache_dir = os.environ.get('SENTENCE_TRANSFORMERS_HOME', 'embedding')
-            os.makedirs(model_cache_dir, exist_ok=True)
-            logger.info(f"📂 使用模型缓存目录: {os.path.abspath(model_cache_dir)}")
-            
-            # 调试信息：打印环境变量和路径
-            logger.info(f"📂 当前工作目录: {os.getcwd()}")
-            logger.info(f"📂 模型缓存目录: {os.path.abspath(model_cache_dir)}")
-            logger.info(f"🔧 SENTENCE_TRANSFORMERS_HOME: {os.environ.get('SENTENCE_TRANSFORMERS_HOME', '未设置')}")
-            logger.info(f"🔧 TRANSFORMERS_OFFLINE: {os.environ.get('TRANSFORMERS_OFFLINE', '未设置')}")
-            logger.info(f"🔧 HF_HUB_OFFLINE: {os.environ.get('HF_HUB_OFFLINE', '未设置')}")
-            
-            # 检查模型目录内容
-            abs_cache_dir = os.path.abspath(model_cache_dir)
-            logger.info(f"📂 检查模型缓存目录: {abs_cache_dir}")
-            
-            if os.path.exists(abs_cache_dir):
-                logger.info(f"📁 模型目录存在，检查内容...")
-                try:
-                    items = os.listdir(abs_cache_dir)
-                    logger.info(f"📁 模型目录内容 ({len(items)} 项): {items}")
-                    
-                    # 检查是否有预期的模型文件夹
-                    expected_model_dir = os.path.join(abs_cache_dir, 'models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2')
-                    logger.info(f"🔍 检查预期路径: {expected_model_dir}")
-                    
-                    if os.path.exists(expected_model_dir):
-                        logger.info(f"✅ 找到本地模型目录!")
-                        # 检查快照目录
-                        snapshots_dir = os.path.join(expected_model_dir, 'snapshots')
-                        if os.path.exists(snapshots_dir):
-                            snapshots = os.listdir(snapshots_dir)
-                            logger.info(f"📁 模型快照 ({len(snapshots)} 个): {snapshots}")
-                            # 检查是否有有效的快照
-                            if snapshots:
-                                logger.info(f"✅ 发现有效快照，可以使用离线模式")
-                    else:
-                        logger.warning(f"⚠️ 未找到本地模型目录")
-                        logger.warning(f"   预期位置: {expected_model_dir}")
-                except Exception as e:
-                    logger.error(f"❌ 检查模型目录失败: {str(e)}")
-                    import traceback
-                    logger.error(f"   堆栈: {traceback.format_exc()}")
-            else:
-                logger.warning(f"⚠️ 模型目录不存在: {abs_cache_dir}")
-            
-            try:
-                logger.info("🔄 尝试加载主模型: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-                
-                # 使用绝对路径检查本地模型
-                abs_cache_dir = os.path.abspath(model_cache_dir)
-                local_model_path = os.path.join(
-                    abs_cache_dir,
-                    'models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2'
-                )
-                
-                logger.info(f"🔍 检查本地模型路径: {local_model_path}")
-                logger.info(f"🔍 路径存在检查: {os.path.exists(local_model_path)}")
-                
-                # 检查快照目录是否存在且有内容
-                snapshots_dir = os.path.join(local_model_path, 'snapshots')
-                has_valid_model = False
-                if os.path.exists(snapshots_dir):
-                    try:
-                        snapshots = os.listdir(snapshots_dir)
-                        if snapshots:
-                            logger.info(f"✅ 发现本地模型快照: {snapshots}")
-                            has_valid_model = True
-                    except Exception as e:
-                        logger.warning(f"⚠️ 检查快照失败: {e}")
-                
-                # 优先尝试从本地路径加载
-                if has_valid_model:
-                    logger.info(f"✅ 检测到完整本地模型，使用离线模式加载")
-                    try:
-                        self.embedding_model = SentenceTransformer(
-                            'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2',
-                            cache_folder=abs_cache_dir,
-                            device='cpu',
-                            trust_remote_code=True,
-                            local_files_only=True  # 强制使用本地文件
-                        )
-                        logger.info("✅ Embedding模型加载成功 (离线模式)")
-                    except Exception as local_err:
-                        logger.warning(f"⚠️ 离线模式加载失败: {str(local_err)}")
-                        logger.info("🔄 尝试在线模式...")
-                        raise local_err
-                else:
-                    logger.info("📥 本地模型不完整或不存在，将联网下载...")
-                    logger.info(f"   下载后将保存到: {abs_cache_dir}")
-                    self.embedding_model = SentenceTransformer(
-                        'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2',
-                        cache_folder=abs_cache_dir,
-                        device='cpu',
-                        trust_remote_code=True,
-                        local_files_only=False  # 允许联网下载
-                    )
-                    logger.info("✅ Embedding模型加载成功 (在线下载)")
-            except Exception as e:
-                logger.warning(f"⚠️ 无法加载多语言模型: {str(e)}")
-                logger.error(f"❌ 详细错误: {repr(e)}")
-                import traceback
-                logger.error(f"❌ 错误堆栈:\n{traceback.format_exc()}")
-                logger.info("🔄 尝试使用备用模型: sentence-transformers/all-MiniLM-L6-v2")
-                try:
-                    # 降级到更小的模型作为备选
-                    self.embedding_model = SentenceTransformer(
-                        'sentence-transformers/all-MiniLM-L6-v2',
-                        cache_folder=model_cache_dir,
-                        device='cpu',
-                        trust_remote_code=False
-                    )
-                    logger.info("✅ 使用备用Embedding模型 (all-MiniLM-L6-v2)")
-                except Exception as e2:
-                    logger.error(f"❌ 所有模型加载失败: {str(e2)}")
-                    logger.error(f"❌ 详细错误: {repr(e2)}")
-                    import traceback
-                    logger.error(f"❌ 错误堆栈:\n{traceback.format_exc()}")
-                    logger.error("💡 模型首次使用需要联网下载（约420MB）")
-                    logger.error("   或手动下载模型文件到 embedding 目录")
-                    logger.error(f"💡 期望的模型目录结构:")
-                    logger.error(f"   {os.path.abspath(model_cache_dir)}/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/")
-                    raise RuntimeError("无法加载任何Embedding模型")
+            logger.info("🔄 正在加载 ONNX Embedding 模型...")
+            self.embedding_model = OnnxEmbeddingModel()
+            logger.info(f"✅ ONNX Embedding 模型加载成功: {self.embedding_model.model_dir}")
             
             self._initialized = True
             logger.info("✅ MemoryService初始化成功")
             logger.info(f"  - ChromaDB目录: {chroma_dir}")
-            logger.info(f"  - Embedding模型: paraphrase-multilingual-MiniLM-L12-v2")
+            logger.info("  - Embedding模型: paraphrase-multilingual-MiniLM-L12-v2 (ONNX FP32)")
             
         except Exception as e:
             logger.error(f"❌ MemoryService初始化失败: {str(e)}")
@@ -972,4 +793,3 @@ class MemoryService:
 
 # 创建全局实例
 memory_service = MemoryService()
-            

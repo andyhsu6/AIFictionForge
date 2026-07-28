@@ -565,7 +565,7 @@ export default function SettingsPage() {
         api_provider: 'openai',
         api_base_url: 'https://api.openai.com/v1',
         temperature: 0.7,
-        max_tokens: 2000,
+        max_tokens: 32000,
       });
     }
     setIsPresetModalVisible(true);
@@ -2163,7 +2163,7 @@ export default function SettingsPage() {
                     min={1}
                     max={100000}
                     style={{ width: '100%' }}
-                    placeholder="2000"
+                    placeholder="32000"
                   />
                 </Form.Item>
               </Col>

@@ -44,6 +44,10 @@ postgres_data/
 # ChromaDB数据库（不包含在镜像中，会在运行时生成）
 backend/data/chroma_db/
 
+# Embedding 模型由 Dockerfile 从 ModelScope 下载，避免发送本地缓存。
+backend/embedding/
+backend/embedding.*
+
 
 # 日志文件
 logs/
@@ -58,6 +62,7 @@ logs/
 docs/
 *.md
 !README.md
+!backend/app/skills/**/*.md
 
 # 测试
 tests/

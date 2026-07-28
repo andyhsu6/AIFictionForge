@@ -1,0 +1,4 @@
+# Build-time only. The packaged application does not need these dependencies.
+onnx==1.19.1
+torch==2.9.0
+transformers==4.57.1
