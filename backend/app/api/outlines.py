@@ -98,7 +98,7 @@ async def get_outlines(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
-    """获取指定项目的所有大纲（优化版：后端完全解析structure，构建标准JSON返回）"""
+    """获取指定项目的所有大纲。title/content 字段是展示数据的唯一来源。"""
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(project_id, user_id, db)
@@ -132,29 +132,9 @@ async def get_outlines(
             if outline_id
         }
 
-    # 🔧 优化：后端完全解析structure，提取所有字段填充到outline对象
     for outline in outlines:
         # 动态附加是否已有章节展开状态，供前端直接使用
         setattr(outline, "has_chapters", outline_has_chapters_map.get(outline.id, False))
-
-        if outline.structure:
-            try:
-                structure_data = json.loads(outline.structure)
-
-                # 从structure中提取所有字段填充到outline对象
-                outline.title = structure_data.get("title", f"第{outline.order_index}章")
-                outline.content = structure_data.get("summary") or structure_data.get("content", "")
-
-                # structure字段保持不变，供前端使用其他字段（如characters、scenes等）
-
-            except json.JSONDecodeError:
-                logger.warning(f"解析大纲 {outline.id} 的structure失败")
-                outline.title = f"第{outline.order_index}章"
-                outline.content = "解析失败"
-        else:
-            # 没有structure的异常情况
-            outline.title = f"第{outline.order_index}章"
-            outline.content = "暂无内容"
 
     return OutlineListResponse(total=total, items=outlines)
 

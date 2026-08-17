@@ -12,6 +12,9 @@ import type {
   Outline,
   OutlineCreate,
   OutlineUpdate,
+  OutlineImportMode,
+  OutlineImportPreview,
+  OutlineImportResult,
   OutlineReorderRequest,
   OutlineExpansionRequest,
   OutlineExpansionResponse,
@@ -525,6 +528,59 @@ export const outlineApi = {
     api.put<unknown, Outline>(`/outlines/${id}`, data),
 
   deleteOutline: (id: string) => api.delete(`/outlines/${id}`),
+
+  exportOutlines: async (projectId: string, outlineIds?: string[]) => {
+    const response = await axios.post(
+      '/api/outlines/export',
+      { project_id: projectId, outline_ids: outlineIds },
+      { responseType: 'blob', withCredentials: true },
+    );
+
+    const contentDisposition = response.headers['content-disposition'] as string | undefined;
+    let filename = 'outlines_export.json';
+    if (contentDisposition) {
+      const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition);
+      const plainMatch = /filename="?([^";]+)"?/i.exec(contentDisposition);
+      if (encodedMatch?.[1]) {
+        try {
+          filename = decodeURIComponent(encodedMatch[1]);
+        } catch {
+          filename = encodedMatch[1];
+        }
+      } else if (plainMatch?.[1]) {
+        filename = plainMatch[1].trim();
+      }
+    }
+
+    const url = window.URL.createObjectURL(response.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  previewImport: (projectId: string, mode: OutlineImportMode, file: File) => {
+    const formData = new FormData();
+    formData.append('project_id', projectId);
+    formData.append('mode', mode);
+    formData.append('file', file);
+    return api.post<unknown, OutlineImportPreview>('/outlines/import/preview', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
+  importOutlines: (projectId: string, mode: OutlineImportMode, file: File) => {
+    const formData = new FormData();
+    formData.append('project_id', projectId);
+    formData.append('mode', mode);
+    formData.append('file', file);
+    return api.post<unknown, OutlineImportResult>('/outlines/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 
   reorderOutlines: (data: OutlineReorderRequest) =>
     api.post<unknown, { message: string; updated_outlines: number; updated_chapters: number }>('/outlines/reorder', data),

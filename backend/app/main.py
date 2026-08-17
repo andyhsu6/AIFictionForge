@@ -179,7 +179,7 @@ async def db_session_stats(request: Request):
 
 
 from app.api import (
-    projects, outlines, characters, chapters,
+    projects, outlines, outline_transfer, characters, chapters,
     wizard_stream, relationships, organizations,
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
@@ -197,6 +197,7 @@ app.include_router(project_covers.router, prefix="/api")
 app.include_router(wizard_stream.router, prefix="/api")
 app.include_router(inspiration.router, prefix="/api")
 app.include_router(outlines.router, prefix="/api")
+app.include_router(outline_transfer.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(careers.router, prefix="/api")  # 职业管理API
 app.include_router(chapters.router, prefix="/api")

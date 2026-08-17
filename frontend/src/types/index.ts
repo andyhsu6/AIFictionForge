@@ -273,6 +273,44 @@ export interface OutlineUpdate {
   // order_index 只能通过 reorder 接口批量调整
 }
 
+export type OutlineImportMode = 'append' | 'merge';
+
+export interface OutlineImportPreview {
+  valid: boolean;
+  version: string;
+  source_type: 'outlines' | 'project' | 'unknown';
+  source_project?: {
+    title: string;
+    outline_mode: 'one-to-one' | 'one-to-many';
+  } | null;
+  target_outline_mode?: 'one-to-one' | 'one-to-many' | null;
+  mode: OutlineImportMode;
+  statistics: {
+    total: number;
+    will_create: number;
+    will_update: number;
+    will_create_chapters: number;
+  };
+  errors: string[];
+  warnings: string[];
+}
+
+export interface OutlineImportResult {
+  success: boolean;
+  message: string;
+  mode: OutlineImportMode;
+  imported: number;
+  updated: number;
+  created_chapters: number;
+  details: Array<{
+    source_order_index: number;
+    target_order_index: number;
+    title: string;
+    action: 'created' | 'updated';
+  }>;
+  warnings: string[];
+}
+
 // 角色类型定义
 export interface Character {
   id: string;

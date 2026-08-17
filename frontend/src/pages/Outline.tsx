@@ -1,13 +1,13 @@
 ﻿import { useState, useEffect, useMemo } from 'react';
-import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme } from 'antd';
-import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme, Upload, Alert, Divider } from 'antd';
+import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
-import { eventBus } from '../store/eventBus';
+import { eventBus, EventNames } from '../store/eventBus';
 import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
 import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
 import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
-import type { ApiError, Character } from '../types';
+import type { ApiError, Character, OutlineImportMode, OutlineImportPreview } from '../types';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -117,6 +117,13 @@ export default function Outline() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [isExpanding, setIsExpanding] = useState(false);
   const [projectCharacters, setProjectCharacters] = useState<Array<{ label: string; value: string }>>([]);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importMode, setImportMode] = useState<OutlineImportMode>('append');
+  const [importPreview, setImportPreview] = useState<OutlineImportPreview | null>(null);
+  const [isPreviewingImport, setIsPreviewingImport] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) =>
     `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
@@ -1446,9 +1453,213 @@ export default function Outline() {
     });
   };
 
+  const resetImportDialog = () => {
+    setImportFile(null);
+    setImportMode('append');
+    setImportPreview(null);
+    setIsPreviewingImport(false);
+  };
+
+  const handleExportOutlines = async () => {
+    if (!currentProject?.id) return;
+    setIsExporting(true);
+    try {
+      await outlineApi.exportOutlines(currentProject.id);
+      message.success(`已导出 ${outlines.length} 条大纲`);
+    } catch (error) {
+      console.error('导出大纲失败:', error);
+      message.error('导出大纲失败，请稍后重试');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handlePreviewImport = async () => {
+    if (!currentProject?.id || !importFile) {
+      message.warning('请先选择要导入的 JSON 文件');
+      return;
+    }
+
+    setIsPreviewingImport(true);
+    setImportPreview(null);
+    try {
+      const preview = await outlineApi.previewImport(currentProject.id, importMode, importFile);
+      setImportPreview(preview);
+    } catch (error) {
+      console.error('预览大纲导入失败:', error);
+    } finally {
+      setIsPreviewingImport(false);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!currentProject?.id || !importFile || !importPreview?.valid) return;
+
+    setIsImporting(true);
+    try {
+      const result = await outlineApi.importOutlines(currentProject.id, importMode, importFile);
+      const chapterMessage = result.created_chapters > 0
+        ? `，同步创建 ${result.created_chapters} 个章节`
+        : '';
+      message.success(`${result.message}${chapterMessage}`);
+      setImportModalOpen(false);
+      resetImportDialog();
+      await refreshOutlines();
+      if (result.created_chapters > 0) {
+        eventBus.emit(EventNames.CHAPTER_NEEDS_REFRESH);
+      }
+    } catch (error) {
+      console.error('导入大纲失败:', error);
+      setImportPreview(null);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   return (
     <>
       {contextHolder}
+
+      <Modal
+        title="导入大纲"
+        open={importModalOpen}
+        width={680}
+        okText="确认导入"
+        cancelText="取消"
+        confirmLoading={isImporting}
+        okButtonProps={{ disabled: !importPreview?.valid || isPreviewingImport }}
+        maskClosable={!isImporting}
+        closable={!isImporting}
+        onOk={handleConfirmImport}
+        onCancel={() => {
+          if (isImporting) return;
+          setImportModalOpen(false);
+          resetImportDialog();
+        }}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="支持大纲导出文件，也支持从完整项目导出文件中提取大纲。文件须为 JSON 格式，最大 10MB。"
+          />
+
+          <div>
+            <div style={{ marginBottom: 8, fontWeight: 500 }}>1. 选择文件</div>
+            <Upload
+              accept=".json,application/json"
+              maxCount={1}
+              fileList={importFile ? [{
+                uid: 'outline-import-file',
+                name: importFile.name,
+                size: importFile.size,
+                type: importFile.type,
+                status: 'done',
+              }] : []}
+              beforeUpload={(file) => {
+                if (!file.name.toLowerCase().endsWith('.json')) {
+                  message.error('只支持 JSON 格式文件');
+                  return Upload.LIST_IGNORE;
+                }
+                if (file.size > 10 * 1024 * 1024) {
+                  message.error('文件大小不能超过 10MB');
+                  return Upload.LIST_IGNORE;
+                }
+                setImportFile(file);
+                setImportPreview(null);
+                return false;
+              }}
+              onRemove={() => {
+                setImportFile(null);
+                setImportPreview(null);
+                return true;
+              }}
+            >
+              <Button icon={<UploadOutlined />}>选择 JSON 文件</Button>
+            </Upload>
+          </div>
+
+          <div>
+            <div style={{ marginBottom: 8, fontWeight: 500 }}>2. 选择导入方式</div>
+            <Radio.Group
+              value={importMode}
+              onChange={(event) => {
+                setImportMode(event.target.value as OutlineImportMode);
+                setImportPreview(null);
+              }}
+            >
+              <Space direction="vertical">
+                <Radio value="append">追加：从当前末尾新增，自动重新编号</Radio>
+                <Radio value="merge">按序号合并：相同序号更新，不同序号新增</Radio>
+              </Space>
+            </Radio.Group>
+          </div>
+
+          <Button
+            type="primary"
+            ghost
+            icon={<FileTextOutlined />}
+            disabled={!importFile}
+            loading={isPreviewingImport}
+            onClick={handlePreviewImport}
+          >
+            预览导入结果
+          </Button>
+
+          {importPreview && (
+            <>
+              <Divider style={{ margin: '4px 0' }} />
+              <Alert
+                type={importPreview.valid ? 'success' : 'error'}
+                showIcon
+                message={importPreview.valid ? '文件校验通过' : '文件校验失败'}
+                description={
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <div>
+                      文件格式版本：{importPreview.version || '未知'}
+                      {importPreview.source_project?.title && ` · 来源项目：${importPreview.source_project.title}`}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      <Tag>共 {importPreview.statistics.total} 条</Tag>
+                      <Tag color="green">新增 {importPreview.statistics.will_create} 条</Tag>
+                      <Tag color="blue">更新 {importPreview.statistics.will_update} 条</Tag>
+                      {importPreview.target_outline_mode === 'one-to-one' && (
+                        <Tag color="purple">创建章节 {importPreview.statistics.will_create_chapters} 个</Tag>
+                      )}
+                    </div>
+                  </Space>
+                }
+              />
+
+              {importPreview.errors.length > 0 && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="无法导入"
+                  description={
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
+                      {importPreview.errors.map((error, index) => <li key={`${index}-${error}`}>{error}</li>)}
+                    </ul>
+                  }
+                />
+              )}
+
+              {importPreview.warnings.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="注意事项"
+                  description={
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
+                      {importPreview.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}
+                    </ul>
+                  }
+                />
+              )}
+            </>
+          )}
+        </Space>
+      </Modal>
 
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         {/* 固定头部 */}
@@ -1485,6 +1696,25 @@ export default function Outline() {
               onChange={(e) => setOutlineSearchKeyword(e.target.value)}
               style={{ width: isMobile ? '100%' : 280 }}
             />
+            <Button
+              icon={<UploadOutlined />}
+              onClick={() => {
+                resetImportDialog();
+                setImportModalOpen(true);
+              }}
+              block={isMobile}
+            >
+              导入大纲
+            </Button>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={handleExportOutlines}
+              loading={isExporting}
+              disabled={outlines.length === 0}
+              block={isMobile}
+            >
+              导出大纲
+            </Button>
             <Button
               icon={<PlusOutlined />}
               onClick={showManualCreateOutlineModal}
