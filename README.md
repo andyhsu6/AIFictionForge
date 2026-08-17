@@ -281,7 +281,7 @@ services:
     environment:
       # 应用配置
       - APP_NAME=${APP_NAME:-MuMuAINovel}
-      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - APP_VERSION=${APP_VERSION:-1.5.4}
       - APP_HOST=${APP_HOST:-0.0.0.0}
       - APP_PORT=8000
       - DEBUG=${DEBUG:-false}
