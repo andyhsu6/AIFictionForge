@@ -133,92 +133,69 @@ export default function Chapters() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 处理文本选中 - 检测选中文本并显示浮动工具栏
-  const handleTextSelection = useCallback(() => {
-    // 只在编辑器打开时处理选中
-    if (!isEditorOpen || isGenerating) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
+  // 读取 textarea 原生选区。textarea 的选区不会出现在 window.getSelection() 中，
+  // 且失焦后 selectionStart/selectionEnd 仍然保留，因此可以稳定支持拖拽出编辑框和点击外部。
+  const getTextAreaSelection = useCallback(() => {
+    if (!isEditorOpen || isGenerating) return null;
 
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
-
-    const selectedText = selection.toString().trim();
-    
-    // 至少选中10个字符才显示工具栏
-    if (selectedText.length < 10) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
-
-    // 检查选中是否在 TextArea 内
     const textArea = contentTextAreaRef.current?.resizableTextArea?.textArea;
-    if (!textArea) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
-    
-    // 检查选中是否在 textarea 内（需要特殊处理，因为 textarea 的选中不会创建 range）
-    if (document.activeElement !== textArea) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
+    if (!textArea) return null;
 
-    // 获取 textarea 中的选中位置
     const start = textArea.selectionStart;
     const end = textArea.selectionEnd;
-    const textContent = textArea.value;
-    const selectedInTextArea = textContent.substring(start, end);
+    if (end <= start) return null;
 
-    if (selectedInTextArea.trim().length < 10) {
+    const selectedText = textArea.value.substring(start, end);
+    if (selectedText.trim().length < 10) return null;
+
+    return { textArea, start, end, selectedText };
+  }, [isEditorOpen, isGenerating]);
+
+  // 处理文本选中 - 检测选中文本并显示浮动工具栏
+  const handleTextSelection = useCallback(() => {
+    const currentSelection = getTextAreaSelection();
+    if (!currentSelection) {
       setPartialRegenerateToolbarVisible(false);
       return;
     }
+
+    const { textArea, start, end, selectedText: selectedInTextArea } = currentSelection;
+    const textContent = textArea.value;
 
     // 计算浮动工具栏位置
     const rect = textArea.getBoundingClientRect();
     const computedStyle = window.getComputedStyle(textArea);
     const lineHeight = parseFloat(computedStyle.lineHeight) || 24;
     const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
-    
+
     // 计算选中文本起始位置所在的行号
     const textBeforeSelection = textContent.substring(0, start);
     const startLine = textBeforeSelection.split('\n').length - 1;
-    
-    // 计算选中文本在 textarea 中的视觉位置
-    // 需要考虑 scrollTop（textarea 内部滚动偏移）
+
+    // 计算选中文本在 textarea 中的视觉位置，并考虑内部滚动偏移
     const scrollTop = textArea.scrollTop;
     const visualTop = (startLine * lineHeight) + paddingTop - scrollTop;
-    
-    // 工具栏位置：textarea 顶部 + 选中文本的视觉位置 - 工具栏高度偏移
     const toolbarTop = rect.top + visualTop - 45;
-    
-    // 水平位置：放在 textarea 的右侧区域，避免遮挡文本
     const toolbarLeft = rect.right - 180;
 
     setSelectedTextForRegenerate(selectedInTextArea);
     setSelectionStartPosition(start);
     setSelectionEndPosition(end);
-    
-    // 计算工具栏位置，如果选中位置不在可视区域内，固定在边缘
+
+    // 如果选中位置不在可视区域内，固定在 textarea 边缘
     let finalTop = toolbarTop;
     if (visualTop < 0) {
       finalTop = rect.top + 10;
     } else if (visualTop > textArea.clientHeight) {
       finalTop = rect.bottom - 50;
     }
-    
+
     setPartialRegenerateToolbarPosition({
       top: Math.max(rect.top + 10, Math.min(finalTop, rect.bottom - 50)),
       left: Math.min(Math.max(rect.left + 20, toolbarLeft), window.innerWidth - 200),
     });
     setPartialRegenerateToolbarVisible(true);
-  }, [isEditorOpen, isGenerating]);
-
+  }, [getTextAreaSelection]);
   // 更新工具栏位置的函数（不检测选中，只更新位置）
   const updateToolbarPosition = useCallback(() => {
     if (!partialRegenerateToolbarVisible || !selectedTextForRegenerate) return;
@@ -267,26 +244,32 @@ export default function Chapters() {
     const textArea = contentTextAreaRef.current?.resizableTextArea?.textArea;
     if (!textArea) return;
 
-    const handleMouseUp = () => {
-      // 鼠标释放时检查选中
-      setTimeout(handleTextSelection, 50);
+    const handleMouseUp = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-partial-regenerate-toolbar]')) return;
+
+      // 在 document 级别监听，拖拽出 textarea 后松开鼠标也能捕获选区。
+      window.setTimeout(handleTextSelection, 0);
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      // Shift + 方向键选中时检查
-      if (e.shiftKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
-        setTimeout(handleTextSelection, 50);
-      }
+    const handleKeyUp = () => {
+      // 键盘扩选、收缩选区以及清除选区都通过统一逻辑处理。
+      window.setTimeout(handleTextSelection, 0);
     };
 
+    const handleSelect = () => {
+      // 原生 textarea 的 select 事件比 window.selection 更可靠。
+      handleTextSelection();
+    };
     const handleScroll = () => {
       // 滚动时更新位置（使用 requestAnimationFrame 优化性能）
       requestAnimationFrame(updateToolbarPosition);
     };
 
     // 监听 textarea 滚动
-    textArea.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('mouseup', handleMouseUp, true);
     textArea.addEventListener('keyup', handleKeyUp);
+    textArea.addEventListener('select', handleSelect);
     textArea.addEventListener('scroll', handleScroll);
 
     // 同时监听 Modal body 滚动（Modal 内容可能在外层容器滚动）
@@ -299,8 +282,9 @@ export default function Chapters() {
     window.addEventListener('resize', handleScroll);
 
     return () => {
-      textArea.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('mouseup', handleMouseUp, true);
       textArea.removeEventListener('keyup', handleKeyUp);
+      textArea.removeEventListener('select', handleSelect);
       textArea.removeEventListener('scroll', handleScroll);
       if (modalBody) {
         modalBody.removeEventListener('scroll', handleScroll);
@@ -309,35 +293,7 @@ export default function Chapters() {
     };
   }, [isEditorOpen, handleTextSelection, updateToolbarPosition]);
 
-  // 点击其他区域时隐藏工具栏
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      
-      // 如果点击的是工具栏，不隐藏
-      if (target.closest('[data-partial-regenerate-toolbar]')) {
-        return;
-      }
-      
-      // 如果点击的是 textarea，不隐藏
-      if (target.tagName === 'TEXTAREA') {
-        return;
-      }
-      
-      // 如果点击的是 Modal 内部（包括滚动条），不隐藏
-      if (target.closest('.ant-modal-content')) {
-        return;
-      }
-      
-      // 点击 Modal 外部才隐藏工具栏
-      setPartialRegenerateToolbarVisible(false);
-    };
 
-    if (partialRegenerateToolbarVisible) {
-      document.addEventListener('click', handleClickOutside);
-      return () => document.removeEventListener('click', handleClickOutside);
-    }
-  }, [partialRegenerateToolbarVisible]);
 
   const {
     refreshChapters,
