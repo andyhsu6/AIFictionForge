@@ -60,8 +60,10 @@ export const PartialRegenerateToolbar: React.FC<PartialRegenerateToolbarProps> =
             onRegenerate();
           }}
           style={{
-            background: 'linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%)',
-            border: 'none',
+            // 使用当前 Ant Design 主题 token，避免明暗主题下 CSS 变量失效或对比度不足。
+            background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
+            color: token.colorTextLightSolid,
+            borderColor: token.colorPrimary,
             fontWeight: 500,
             boxShadow: token.boxShadowSecondary,
           }}
