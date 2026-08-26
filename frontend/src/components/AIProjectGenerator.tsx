@@ -45,6 +45,12 @@ interface WorldBuildingResult {
   rules: string;
 }
 
+const isAbortError = (error: unknown): boolean =>
+  typeof error === 'object'
+  && error !== null
+  && 'name' in error
+  && error.name === 'AbortError';
+
 export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   config,
   storagePrefix,
@@ -118,22 +124,50 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
     });
   };
 
+  // 使用配置内容作为依赖，避免父组件创建等价的新对象时重新启动生成流程。
+  const generationKey = JSON.stringify([
+    config.title,
+    config.description,
+    config.theme,
+    config.genre,
+    config.narrative_perspective,
+    config.target_words,
+    config.chapter_count,
+    config.character_count,
+    config.outline_mode,
+  ]);
+
   // 开始自动化生成流程
   useEffect(() => {
-    if (config) {
+    const controller = new AbortController();
+
+    // 延迟到下一轮事件循环：StrictMode 会立即清理首次探测 Effect，
+    // 因此探测执行不会真正发出生成请求，第二次正式 Effect 才会启动流程。
+    const startTimer = window.setTimeout(() => {
+      if (controller.signal.aborted) return;
+
       if (resumeProjectId) {
         // 恢复生成模式
-        handleResumeGenerate(config, resumeProjectId);
+        void handleResumeGenerate(config, resumeProjectId, controller.signal);
       } else {
         // 新建项目模式
-        handleAutoGenerate(config);
+        void handleAutoGenerate(config, controller.signal);
       }
-    }
+    }, 0);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, resumeProjectId]);
+  }, [generationKey, resumeProjectId]);
 
   // 恢复未完成项目的生成
-  const handleResumeGenerate = async (data: GenerationConfig, projectIdParam: string) => {
+  const handleResumeGenerate = async (
+    data: GenerationConfig,
+    projectIdParam: string,
+    signal?: AbortSignal,
+  ) => {
     try {
       setLoading(true);
       setProgress(0);
@@ -144,7 +178,8 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
 
       // 获取项目信息,判断当前完成到哪一步
       const response = await fetch(`/api/projects/${projectIdParam}`, {
-        credentials: 'include'
+        credentials: 'include',
+        signal,
       });
       if (!response.ok) {
         throw new Error('获取项目信息失败');
@@ -167,27 +202,27 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         // 从世界观开始
         message.info('从世界观步骤开始生成...');
         setGenerationSteps({ worldBuilding: 'processing', careers: 'pending', characters: 'pending', outline: 'pending' });
-        await resumeFromWorldBuilding(data);
+        await resumeFromWorldBuilding(data, signal);
       } else if (wizardStep === 1) {
         // 世界观已完成，从职业体系开始
         message.info('世界观已完成，从职业体系步骤继续...');
         setGenerationSteps({ worldBuilding: 'completed', careers: 'processing', characters: 'pending', outline: 'pending' });
         setWorldBuildingResult(worldResult);
         setProgress(20);
-        await resumeFromCareers(data, worldResult);
+        await resumeFromCareers(data, worldResult, signal);
       } else if (wizardStep === 2) {
         // 职业体系已完成，从角色开始
         message.info('职业体系已完成，从角色步骤继续...');
         setGenerationSteps({ worldBuilding: 'completed', careers: 'completed', characters: 'processing', outline: 'pending' });
         setWorldBuildingResult(worldResult);
         setProgress(40);
-        await resumeFromCharacters(data, worldResult);
+        await resumeFromCharacters(data, worldResult, signal);
       } else if (wizardStep === 3) {
         // 角色已完成，从大纲开始
         message.info('角色已完成，从大纲步骤继续...');
         setGenerationSteps({ worldBuilding: 'completed', careers: 'completed', characters: 'completed', outline: 'processing' });
         setProgress(70);
-        await resumeFromOutline(data, projectIdParam);
+        await resumeFromOutline(data, projectIdParam, signal);
       } else {
         // 已全部完成
         message.success('项目已完成,正在跳转...');
@@ -198,6 +233,8 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         }, 1000);
       }
     } catch (error) {
+      if (isAbortError(error)) return;
+
       const apiError = error as ApiError;
       const errorMsg = apiError.response?.data?.detail || apiError.message || '未知错误';
       console.error('恢复生成失败:', errorMsg);
@@ -208,7 +245,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   };
 
   // 恢复:从世界观步骤开始
-  const resumeFromWorldBuilding = async (data: GenerationConfig) => {
+  const resumeFromWorldBuilding = async (data: GenerationConfig, signal?: AbortSignal) => {
     const genreString = Array.isArray(data.genre) ? data.genre.join('、') : data.genre;
 
     const worldResult = await wizardStreamApi.generateWorldBuildingStream(
@@ -224,6 +261,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         outline_mode: data.outline_mode || 'one-to-many',  // 传递大纲模式
       },
       {
+        signal,
         onProgress: (msg, prog) => {
           // 直接使用后端返回的进度值
           setProgress(prog);
@@ -246,11 +284,15 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
       }
     );
 
-    await resumeFromCareers(data, worldResult);
+    await resumeFromCareers(data, worldResult, signal);
   };
 
   // 恢复:从职业体系步骤继续
-  const resumeFromCareers = async (data: GenerationConfig, worldResult: WorldBuildingResult) => {
+  const resumeFromCareers = async (
+    data: GenerationConfig,
+    worldResult: WorldBuildingResult,
+    signal?: AbortSignal,
+  ) => {
     const pid = projectId || worldResult.project_id;
 
     setGenerationSteps(prev => ({ ...prev, careers: 'processing' }));
@@ -261,6 +303,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         project_id: pid,
       },
       {
+        signal,
         onProgress: (msg, prog) => {
           setProgress(prog);
           setProgressMessage(msg);
@@ -282,11 +325,15 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
       }
     );
 
-    await resumeFromCharacters(data, worldResult);
+    await resumeFromCharacters(data, worldResult, signal);
   };
 
   // 恢复:从角色步骤继续
-  const resumeFromCharacters = async (data: GenerationConfig, worldResult: WorldBuildingResult) => {
+  const resumeFromCharacters = async (
+    data: GenerationConfig,
+    worldResult: WorldBuildingResult,
+    signal?: AbortSignal,
+  ) => {
     const genreString = Array.isArray(data.genre) ? data.genre.join('、') : data.genre;
     const pid = projectId || worldResult.project_id;
 
@@ -307,6 +354,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         genre: genreString,
       },
       {
+        signal,
         onProgress: (msg, prog) => {
           // 直接使用后端返回的进度值
           setProgress(prog);
@@ -329,11 +377,15 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
       }
     );
 
-    await resumeFromOutline(data, pid);
+    await resumeFromOutline(data, pid, signal);
   };
 
   // 恢复:从大纲步骤继续
-  const resumeFromOutline = async (data: GenerationConfig, pid: string) => {
+  const resumeFromOutline = async (
+    data: GenerationConfig,
+    pid: string,
+    signal?: AbortSignal,
+  ) => {
     setGenerationSteps(prev => ({ ...prev, outline: 'processing' }));
     setProgressMessage('正在生成大纲...');
 
@@ -345,6 +397,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
         target_words: data.target_words,
       },
       {
+        signal,
         onProgress: (msg, prog) => {
           // 直接使用后端返回的进度值
           setProgress(prog);
@@ -381,7 +434,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   };
 
   // 自动化生成流程
-  const handleAutoGenerate = async (data: GenerationConfig) => {
+  const handleAutoGenerate = async (data: GenerationConfig, signal?: AbortSignal) => {
     try {
       setLoading(true);
       setProgress(0);
@@ -409,6 +462,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
           outline_mode: data.outline_mode || 'one-to-many',  // 传递大纲模式
         },
         {
+          signal,
           onProgress: (msg, prog) => {
             // 直接使用后端返回的进度值
             setProgress(prog);
@@ -450,6 +504,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
           project_id: createdProjectId,
         },
         {
+          signal,
           onProgress: (msg, prog) => {
             setProgress(prog);
             setProgressMessage(msg);
@@ -489,6 +544,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
           genre: genreString,
         },
         {
+          signal,
           onProgress: (msg, prog) => {
             // 直接使用后端返回的进度值
             setProgress(prog);
@@ -523,6 +579,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
           target_words: data.target_words,
         },
         {
+          signal,
           onProgress: (msg, prog) => {
             // 直接使用后端返回的进度值
             setProgress(prog);
@@ -560,6 +617,8 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
       }, 1000);
 
     } catch (error) {
+      if (isAbortError(error)) return;
+
       const apiError = error as ApiError;
       const errorMsg = apiError.response?.data?.detail || apiError.message || '未知错误';
       console.error('创建项目失败:', errorMsg);

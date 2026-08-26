@@ -18,6 +18,7 @@ export interface SSEClientOptions {
   onError?: (error: string, code?: number) => void;
   onComplete?: () => void;
   onConnectionError?: (error: Event) => void;
+  signal?: AbortSignal;
 }
 
 export class SSEClient {
@@ -127,6 +128,7 @@ export class SSEPostClient {
   private data: any;
   private options: SSEClientOptions;
   private abortController: AbortController | null = null;
+  private externalAbortHandler: (() => void) | null = null;
   private accumulatedContent: string = '';
   private resultData: any = null;
 
@@ -144,7 +146,16 @@ export class SSEPostClient {
 
   private async connectInternal(resolve: (value: any) => void, reject: (reason?: any) => void) {
       try {
+        if (this.options.signal?.aborted) {
+          throw new DOMException('请求已取消', 'AbortError');
+        }
+
         this.abortController = new AbortController();
+
+        if (this.options.signal) {
+          this.externalAbortHandler = () => this.abortController?.abort();
+          this.options.signal.addEventListener('abort', this.externalAbortHandler, { once: true });
+        }
 
         const response = await fetch(this.url, {
           method: 'POST',
@@ -204,12 +215,18 @@ export class SSEPostClient {
       } catch (error: any) {
         if (error.name === 'AbortError') {
           console.log('请求已取消');
+          reject(error);
         } else {
           console.error('SSE POST请求失败:', error);
           if (this.options.onError) {
             this.options.onError(error.message || '请求失败');
           }
           reject(error);
+        }
+      } finally {
+        if (this.options.signal && this.externalAbortHandler) {
+          this.options.signal.removeEventListener('abort', this.externalAbortHandler);
+          this.externalAbortHandler = null;
         }
       }
   }

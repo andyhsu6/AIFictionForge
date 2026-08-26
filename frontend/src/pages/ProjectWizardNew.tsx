@@ -24,6 +24,7 @@ export default function ProjectWizardNew() {
   const [currentStep, setCurrentStep] = useState<'form' | 'generating'>('form');
   const [generationConfig, setGenerationConfig] = useState<GenerationConfig | null>(null);
   const [resumeProjectId, setResumeProjectId] = useState<string | null>(null);
+  const requestedProjectId = searchParams.get('project_id');
 
   useEffect(() => {
     const handleResize = () => {
@@ -35,19 +36,31 @@ export default function ProjectWizardNew() {
 
   // 检查URL参数,如果有project_id则恢复生成
   useEffect(() => {
-    const projectId = searchParams.get('project_id');
-    if (projectId) {
+    if (!requestedProjectId) return;
+
+    const projectId = requestedProjectId;
+
+    const controller = new AbortController();
+    const startTimer = window.setTimeout(() => {
+      if (controller.signal.aborted) return;
+
       setResumeProjectId(projectId);
-      handleResumeGeneration(projectId);
-    }
+      void handleResumeGeneration(projectId, controller.signal);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [requestedProjectId]);
 
   // 恢复未完成项目的生成
-  const handleResumeGeneration = async (projectId: string) => {
+  const handleResumeGeneration = async (projectId: string, signal?: AbortSignal) => {
     try {
       const response = await fetch(`/api/projects/${projectId}`, {
-        credentials: 'include'
+        credentials: 'include',
+        signal,
       });
       if (!response.ok) {
         throw new Error('获取项目信息失败');
@@ -68,6 +81,15 @@ export default function ProjectWizardNew() {
       setGenerationConfig(config);
       setCurrentStep('generating');
     } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'name' in error
+        && error.name === 'AbortError'
+      ) {
+        return;
+      }
+
       console.error('恢复生成失败:', error);
       message.error('恢复生成失败,请重试');
       navigate('/');
