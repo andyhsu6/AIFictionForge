@@ -3,6 +3,7 @@ import json
 import re
 from typing import Any, Dict, List, Union
 from app.logger import get_logger, safe_preview
+from app.utils.reasoning_text import strip_think_tags
 
 try:
     import json5
@@ -370,6 +371,8 @@ def clean_json_response(text: str) -> str:
         
         original_length = len(text)
         logger.debug(f"🔍 开始清洗JSON，原始长度: {original_length}")
+
+        text = strip_think_tags(text)
         
         # 上下文感知修复：中文引号/逗号/冒号、裸控制字符、未转义的内容引号
         # （区分字符串内外：结构位置替换为ASCII，字符串内保留或转义）

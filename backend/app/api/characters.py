@@ -988,6 +988,9 @@ async def generate_character_stream(
                 return
             
             if not ai_response or not ai_response.strip():
+                logger.error(
+                    "❌ AI服务返回空响应：未收到正文。若使用推理模型，思考内容不会写入角色 JSON，请检查模型是否输出了最终 JSON。"
+                )
                 yield await tracker.error("AI服务返回空响应")
                 return
             

@@ -9,6 +9,7 @@ import httpx
 
 from app.logger import get_logger, safe_preview
 from app.services.ai_config import AIClientConfig, default_config
+from app.utils.reasoning_text import split_content_and_reasoning, strip_think_tags
 
 logger = get_logger(__name__)
 
@@ -167,12 +168,13 @@ def _parse_sse_chat_completion_response(response: httpx.Response) -> Dict[str, A
 
         if delta.get("role"):
             role = delta.get("role")
-        if delta.get("content"):
-            content_parts.append(delta.get("content"))
+        content, _reasoning = split_content_and_reasoning(delta)
+        if content:
+            content_parts.append(content)
         for tool_call_delta in delta.get("tool_calls") or []:
             _merge_tool_call_delta(tool_calls, tool_call_delta)
 
-    message: Dict[str, Any] = {"role": role, "content": "".join(content_parts)}
+    message: Dict[str, Any] = {"role": role, "content": strip_think_tags("".join(content_parts))}
     if tool_calls:
         message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
 
