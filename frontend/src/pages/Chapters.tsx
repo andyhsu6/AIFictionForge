@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge, Tag, Card, InputNumber, Alert, Radio, Descriptions, Collapse, Popconfirm, Pagination, theme } from 'antd';
 import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
-import { eventBus } from '../store/eventBus';
+import { eventBus, EventNames } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
 import { projectApi, writingStyleApi, chapterApi } from '../services/api';
@@ -451,7 +451,7 @@ export default function Chapters() {
 
   // 加载所有章节的分析任务状态（批量接口，避免逐章请求风暴）
   // 接受可选的 chaptersToLoad 参数，解决 React 状态更新延迟导致的问题
-  const loadAnalysisTasks = async (
+  const loadAnalysisTasks = useCallback(async (
     chaptersToLoad?: typeof chapters,
     projectId?: string,
   ) => {
@@ -492,7 +492,19 @@ export default function Chapters() {
     } catch (error) {
       console.error('批量加载分析任务状态失败:', error);
     }
-  };
+  }, [chapters, clearAnalysisPollingIfIdle, ensureAnalysisPolling]);
+
+  useEffect(() => {
+    const handleTaskSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as { projectId?: string; resources?: string[] };
+      if (data.projectId && data.projectId !== currentProjectIdRef.current) return;
+      if (!data.resources?.includes('analysis')) return;
+      void refreshChapters().then(latestChapters => loadAnalysisTasks(latestChapters));
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+    return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+  }, [loadAnalysisTasks, refreshChapters]);
 
   // 启动单个章节的任务轮询（内部合并到批量轮询）
   const startPollingTask = (chapterId: string) => {

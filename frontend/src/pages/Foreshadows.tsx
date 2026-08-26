@@ -17,6 +17,7 @@ import type {
   Foreshadow, ForeshadowCreate, ForeshadowUpdate, ForeshadowStats,
   ForeshadowStatus, ForeshadowCategory, Chapter, Character
 } from '../types';
+import { eventBus, EventNames } from '../store/eventBus';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -144,6 +145,19 @@ export default function Foreshadows() {
     loadChapters();
     loadCharacters();
   }, [loadForeshadows, loadChapters, loadCharacters]);
+
+  useEffect(() => {
+    const handleTaskSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as { projectId?: string; resources?: string[] };
+      if (data.projectId && data.projectId !== projectId) return;
+      if (!data.resources?.includes('foreshadows')) return;
+      void loadForeshadows();
+      void loadStats();
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+    return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+  }, [loadForeshadows, loadStats, projectId]);
 
   // 计算表格滚动高度
   useEffect(() => {

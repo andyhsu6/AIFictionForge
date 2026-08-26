@@ -184,7 +184,7 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, prompt_workshop, book_import,
-    project_covers, tasks, skills, announcements
+    project_covers, project_agent, tasks, skills, announcements
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -194,6 +194,7 @@ app.include_router(admin.router, prefix="/api")
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(project_covers.router, prefix="/api")
+app.include_router(project_agent.router, prefix="/api")
 app.include_router(wizard_stream.router, prefix="/api")
 app.include_router(inspiration.router, prefix="/api")
 app.include_router(outlines.router, prefix="/api")

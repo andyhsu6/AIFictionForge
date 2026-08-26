@@ -19,6 +19,25 @@ class AnthropicClient:
             kwargs["base_url"] = base_url
         self.client = AsyncAnthropic(**kwargs)
 
+    @staticmethod
+    def _convert_tools(tools: list) -> list:
+        """同时接受项目内通用的 OpenAI function tool 格式。"""
+        converted = []
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if function:
+                converted.append({
+                    "name": function.get("name"),
+                    "description": function.get("description", ""),
+                    "input_schema": function.get("parameters") or {
+                        "type": "object",
+                        "properties": {},
+                    },
+                })
+            else:
+                converted.append(tool)
+        return converted
+
     async def chat_completion(
         self,
         messages: list,
@@ -38,7 +57,7 @@ class AnthropicClient:
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = self._convert_tools(tools)
             if tool_choice == "required":
                 kwargs["tool_choice"] = {"type": "any"}
             elif tool_choice == "auto":
@@ -101,7 +120,7 @@ class AnthropicClient:
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = self._convert_tools(tools)
             if tool_choice == "required":
                 kwargs["tool_choice"] = {"type": "any"}
             elif tool_choice == "auto":

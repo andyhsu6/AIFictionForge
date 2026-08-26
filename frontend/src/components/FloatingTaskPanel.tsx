@@ -11,12 +11,13 @@ import {
   DownOutlined,
   ClearOutlined,
 } from '@ant-design/icons';
-import { getProjectTasks, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
-import { eventBus } from '../store/eventBus';
+import { getProjectTasks, getTaskStatus, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
+import { eventBus, EventNames } from '../store/eventBus';
 
 interface FloatingTaskPanelProps {
   projectId: string;
   autoRefreshInterval?: number; // 自动刷新间隔（毫秒），默认3000
+  rightOffset?: number;
 }
 
 /**
@@ -26,25 +27,68 @@ interface FloatingTaskPanelProps {
 export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
   projectId,
   autoRefreshInterval = 3000,
+  rightOffset = 23,
 }) => {
   const [taskList, setTaskList] = useState<TaskStatus[]>([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(true); // 默认收起
   const userCollapsedRef = useRef(false); // 用户手动收起标记
+  const taskStatusRef = useRef<Map<string, TaskStatus['status']>>(new Map());
+  const watchedTaskIdsRef = useRef<Set<string>>(new Set());
+  const loadRequestIdRef = useRef(0);
   const { token } = theme.useToken();
 
   // 加载任务列表
   const loadTasks = useCallback(async () => {
     if (!projectId) return;
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     try {
       const result = await getProjectTasks(projectId);
-      setTaskList(result.items || []);
+      if (requestId !== loadRequestIdRef.current) return;
+      const nextTasks = result.items || [];
+      const visibleTaskIds = new Set(nextTasks.map(task => task.id));
+      // 列表有数量上限。对智能体刚创建但未出现在列表中的任务按 ID 查询，
+      // 避免大量活动任务把它挤出后无法感知完成状态。
+      const missingWatchedTasks = await Promise.all(
+        [...watchedTaskIdsRef.current]
+          .filter(taskId => !visibleTaskIds.has(taskId))
+          .map(taskId => getTaskStatus(taskId).catch(() => null)),
+      );
+      if (requestId !== loadRequestIdRef.current) return;
+
+      const observedTasks = [
+        ...nextTasks,
+        ...missingWatchedTasks.filter((task): task is TaskStatus => task !== null),
+      ];
+      observedTasks.forEach(task => {
+        const previousStatus = taskStatusRef.current.get(task.id);
+        const wasActive = previousStatus === 'running' || previousStatus === 'pending';
+        const isSettled = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
+        const isWatchedTask = watchedTaskIdsRef.current.has(task.id);
+        if (isSettled && (wasActive || isWatchedTask)) {
+          eventBus.emit(EventNames.BACKGROUND_TASK_SETTLED, {
+            projectId: task.project_id,
+            taskId: task.id,
+            resources: task.affected_resources || [],
+            task,
+          });
+          watchedTaskIdsRef.current.delete(task.id);
+        }
+      });
+      taskStatusRef.current = new Map(observedTasks.map(task => [task.id, task.status]));
+      setTaskList(nextTasks);
     } catch (error) {
       console.error('加载任务列表失败:', error);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) setLoading(false);
     }
+  }, [projectId]);
+
+  useEffect(() => {
+    taskStatusRef.current.clear();
+    watchedTaskIdsRef.current.clear();
+    loadRequestIdRef.current += 1;
   }, [projectId]);
 
   // 初始加载
@@ -54,17 +98,26 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
 
   // 监听后台任务创建事件，立即刷新列表并展开浮窗
   useEffect(() => {
-    const handleTaskCreated = () => {
-      loadTasks();
+    const handleTaskCreated = (payload?: unknown) => {
+      if (payload && typeof payload === 'object') {
+        const eventPayload = payload as { projectId?: unknown; taskId?: unknown };
+        if (typeof eventPayload.projectId === 'string' && eventPayload.projectId !== projectId) return;
+        const taskId = eventPayload.taskId;
+        if (typeof taskId === 'string') watchedTaskIdsRef.current.add(taskId);
+      }
+      void loadTasks();
       // 创建新任务时自动展开（重置用户手动收起标记）
       userCollapsedRef.current = false;
       setCollapsed(false);
     };
+    eventBus.on(EventNames.BACKGROUND_TASK_CREATED, handleTaskCreated);
+    // 兼容尚未迁移的页面内任务创建通知。
     eventBus.on('background-task-created', handleTaskCreated);
     return () => {
+      eventBus.off(EventNames.BACKGROUND_TASK_CREATED, handleTaskCreated);
       eventBus.off('background-task-created', handleTaskCreated);
     };
-  }, [loadTasks]);
+  }, [loadTasks, projectId]);
 
   // 有活跃任务时自动展开（仅当用户没有手动收起时）
   useEffect(() => {
@@ -76,17 +129,28 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
     }
   }, [taskList]);
 
-  // 自动刷新（仅当有运行中或等待中的任务时）
+  // 活跃任务高频刷新；空闲时保留低频刷新，以发现跨标签页或外部创建的任务。
   useEffect(() => {
     const hasActiveTasks = taskList.some(
       (t) => t.status === 'running' || t.status === 'pending'
     );
     
-    if (!hasActiveTasks) return;
-
-    const timer = setInterval(loadTasks, autoRefreshInterval);
+    const interval = hasActiveTasks ? autoRefreshInterval : Math.max(autoRefreshInterval * 5, 15000);
+    const timer = setInterval(loadTasks, interval);
     return () => clearInterval(timer);
   }, [taskList, autoRefreshInterval, loadTasks]);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadTasks();
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [loadTasks]);
 
   // 取消任务
   const handleCancelTask = async (task: TaskStatus) => {
@@ -159,6 +223,18 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
         return '批量章节生成';
       case 'wizard':
         return '向导创建';
+      case 'chapter_analysis':
+        return '章节分析';
+      case 'chapter_regenerate':
+        return '章节重写';
+      case 'chapter_partial_regenerate':
+        return '局部重写';
+      case 'character_generate':
+        return '角色生成';
+      case 'organization_generate':
+        return '组织生成';
+      case 'career_generate':
+        return '职业生成';
       default:
         return taskType;
     }
@@ -175,7 +251,7 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
       style={{
         position: 'fixed',
         bottom: 10,
-        right: 23,
+        right: rightOffset,
         width: collapsed ? 260 : 400,
         maxHeight: collapsed ? 60 : 500,
         zIndex: 1000,
@@ -205,7 +281,9 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
                 loading={loading}
               />
             </Tooltip>
-            {taskList.some(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') && (
+            {taskList.some(t => t.can_delete && (
+              t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
+            )) && (
               <Popconfirm
                 title="确认清理所有已结束的任务记录？"
                 onConfirm={handleClearTasks}
@@ -300,7 +378,7 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
 
                       <div style={{ marginTop: 8 }}>
                         <Space size={4}>
-                          {(task.status === 'running' || task.status === 'pending') && (
+                          {task.can_cancel && (task.status === 'running' || task.status === 'pending') && (
                             <Popconfirm
                               title="确认取消任务？"
                               onConfirm={() => handleCancelTask(task)}
@@ -312,7 +390,7 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
                               </Button>
                             </Popconfirm>
                           )}
-                          {(task.status === 'completed' ||
+                          {task.can_delete && (task.status === 'completed' ||
                             task.status === 'failed' ||
                             task.status === 'cancelled') && (
                               <Popconfirm

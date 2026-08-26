@@ -113,6 +113,13 @@ export const EventNames = {
   CHAPTER_DELETED: 'chapter:deleted',
   CHAPTER_NEEDS_REFRESH: 'chapter:needsRefresh',
 
+  // 项目智能体确认写入后的统一刷新事件
+  AGENT_DATA_CHANGED: 'agent:dataChanged',
+
+  // 统一后台任务生命周期事件
+  BACKGROUND_TASK_CREATED: 'backgroundTask:created',
+  BACKGROUND_TASK_SETTLED: 'backgroundTask:settled',
+
   // 视图切换事件
   SWITCH_TO_MCP_VIEW: 'view:switchToMcp',
 } as const;

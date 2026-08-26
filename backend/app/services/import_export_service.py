@@ -952,7 +952,7 @@ class ImportExportService:
             outline = Outline(
                 project_id=project_id,
                 title=ol_data.get("title"),
-                content=ol_data.get("content"),
+                content=ol_data.get("content") or "",
                 structure=ol_data.get("structure"),
                 order_index=ol_data.get("order_index")
             )

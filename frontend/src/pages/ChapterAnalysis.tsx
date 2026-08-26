@@ -13,6 +13,7 @@ import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import AnnotatedText, { type MemoryAnnotation } from '../components/AnnotatedText';
 import MemorySidebar from '../components/MemorySidebar';
+import { eventBus, EventNames } from '../store/eventBus';
 
 interface ChapterItem {
   id: string;
@@ -140,6 +141,19 @@ const ChapterAnalysis: React.FC = () => {
       setContentLoading(false);
     }
   };
+
+  useEffect(() => {
+    const handleTaskSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as { projectId?: string; resources?: string[] };
+      if (data.projectId && data.projectId !== projectId) return;
+      if (data.resources?.includes('analysis') && selectedChapter?.id) {
+        void loadChapterContent(selectedChapter.id);
+      }
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+    return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+  }, [projectId, selectedChapter?.id]);
 
   const handleChapterSelect = (chapterId: string) => {
     loadChapterContent(chapterId);

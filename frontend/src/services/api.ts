@@ -67,6 +67,11 @@ import type {
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
+  AgentConversation,
+  AgentConversationDetail,
+  AgentToolCall,
+  AgentToolDecision,
+  AgentExecutionStep,
 } from '../types';
 
 interface MCPPluginSimpleCreate {
@@ -1360,4 +1365,109 @@ export const foreshadowApi = {
       `/foreshadows/projects/${projectId}/sync-from-analysis`,
       data
     ),
+};
+
+export interface ProjectAgentStreamCallbacks {
+  onConversation?: (data: { conversation_id: string; title: string }) => void;
+  onChunk?: (content: string) => void;
+  onToolProposed?: (toolCall: AgentToolCall) => void;
+  onToolExecuted?: (data: {
+    tool_call: AgentToolCall;
+    resources: string[];
+    approval_mode: 'automatic' | 'manual';
+  }) => void;
+  onStepStart?: (step: AgentExecutionStep) => void;
+  onStepUpdate?: (step: AgentExecutionStep) => void;
+  onFinalStart?: (data: { message_id: string }) => void;
+  onFinalChunk?: (content: string) => void;
+  onFinalDone?: (data: { message_id: string }) => void;
+  onResult?: (data: { conversation_id: string; message_id: string; status: string }) => void;
+  onError?: (error: string) => void;
+}
+
+export const projectAgentApi = {
+  listConversations: (projectId: string) =>
+    api.get<unknown, AgentConversation[]>(`/projects/${projectId}/agent/conversations`),
+
+  createConversation: (projectId: string, title?: string) =>
+    api.post<unknown, AgentConversation>(`/projects/${projectId}/agent/conversations`, { title }),
+
+  getConversation: (projectId: string, conversationId: string) =>
+    api.get<unknown, AgentConversationDetail>(
+      `/projects/${projectId}/agent/conversations/${conversationId}`
+    ),
+
+  deleteConversation: (projectId: string, conversationId: string) =>
+    api.delete(`/projects/${projectId}/agent/conversations/${conversationId}`),
+
+  confirmToolCall: (projectId: string, toolCallId: string) =>
+    api.post<unknown, AgentToolDecision>(
+      `/projects/${projectId}/agent/tool-calls/${toolCallId}/confirm`
+    ),
+
+  rejectToolCall: (projectId: string, toolCallId: string) =>
+    api.post<unknown, AgentToolDecision>(
+      `/projects/${projectId}/agent/tool-calls/${toolCallId}/reject`
+    ),
+
+  chatStream: async (
+    projectId: string,
+    payload: {
+      conversation_id?: string;
+      message: string;
+      page_context?: Record<string, unknown>;
+      auto_approve?: boolean;
+    },
+    callbacks: ProjectAgentStreamCallbacks,
+    signal?: AbortSignal,
+  ) => {
+    const response = await fetch(`/api/projects/${projectId}/agent/chat-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!response.ok) {
+      let detail = `请求失败 (${response.status})`;
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        // 保留 HTTP 状态错误。
+      }
+      throw new Error(detail);
+    }
+    if (!response.body) throw new Error('无法读取木木创作助手响应流');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
+      for (const block of blocks) {
+        const match = block.match(/^data:\s*(.+)$/m);
+        if (!match) continue;
+        const event = JSON.parse(match[1]);
+        if (event.type === 'conversation') callbacks.onConversation?.(event.data);
+        else if (event.type === 'chunk') callbacks.onChunk?.(event.content || '');
+        else if (event.type === 'tool_proposed') callbacks.onToolProposed?.(event.data);
+        else if (event.type === 'tool_executed') callbacks.onToolExecuted?.(event.data);
+        else if (event.type === 'step_start') callbacks.onStepStart?.(event.data);
+        else if (event.type === 'step_update') callbacks.onStepUpdate?.(event.data);
+        else if (event.type === 'final_start') callbacks.onFinalStart?.(event.data);
+        else if (event.type === 'final_chunk') callbacks.onFinalChunk?.(event.content || '');
+        else if (event.type === 'final_done') callbacks.onFinalDone?.(event.data);
+        else if (event.type === 'result') callbacks.onResult?.(event.data);
+        else if (event.type === 'error') {
+          callbacks.onError?.(event.error || '木木创作助手执行失败');
+          throw new Error(event.error || '木木创作助手执行失败');
+        }
+      }
+    }
+  },
 };

@@ -273,6 +273,80 @@ export interface OutlineUpdate {
   // order_index 只能通过 reorder 接口批量调整
 }
 
+export interface AgentConversation {
+  id: string;
+  user_id: string;
+  project_id: string;
+  title: string;
+  summary?: string;
+  status: string;
+  last_message_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content: string;
+  model?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  created_at: string;
+}
+
+export interface AgentToolCall {
+  id: string;
+  conversation_id: string;
+  message_id?: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  risk_level: number;
+  requires_confirmation: boolean;
+  status: string;
+  preview?: {
+    entity_type: string;
+    entity_id: string;
+    label: string;
+    changes: Record<string, { before: unknown; after: unknown }>;
+    resources: string[];
+  };
+  result?: Record<string, unknown>;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface AgentExecutionStep {
+  id: string;
+  conversation_id: string;
+  user_message_id?: string;
+  assistant_message_id?: string;
+  tool_call_id?: string;
+  sequence: number;
+  step_type: 'thought' | 'tool' | 'skill' | string;
+  category: 'analysis' | 'project' | 'mcp' | 'skill' | string;
+  title: string;
+  content?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected' | 'waiting_confirmation' | string;
+  detail?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentConversationDetail extends AgentConversation {
+  messages: AgentMessage[];
+  tool_calls: AgentToolCall[];
+  execution_steps: AgentExecutionStep[];
+}
+
+export interface AgentToolDecision {
+  success: boolean;
+  message: string;
+  tool_call: AgentToolCall;
+  resources: string[];
+}
+
 export type OutlineImportMode = 'append' | 'merge';
 
 export interface OutlineImportPreview {

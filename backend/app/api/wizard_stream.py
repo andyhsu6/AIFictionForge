@@ -1378,7 +1378,7 @@ async def outline_generator(
             outline = Outline(
                 project_id=project_id,
                 title=outline_item.get("title", f"第{index}节"),
-                content=outline_item.get("summary", outline_item.get("content", "")),
+                content=outline_item.get("summary") or outline_item.get("content") or "",
                 structure=json.dumps(outline_item, ensure_ascii=False),
                 order_index=index
             )

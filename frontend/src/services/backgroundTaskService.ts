@@ -12,11 +12,17 @@ export interface TaskStatus {
   progress: number; // 0-100
   status_message: string | null;
   progress_details: {
-    stage: string;
+    stage?: string;
     message?: string;
     current_chars?: number;
     retry_count?: number;
     queue_size?: number;
+    chapter_id?: string;
+    chapter_number?: number | null;
+    chapter_title?: string | null;
+    completed?: number;
+    total?: number;
+    current_chapter_number?: number | null;
   } | null;
   error_message: string | null;
   task_result: Record<string, unknown> | null;
@@ -26,6 +32,10 @@ export interface TaskStatus {
   started_at: string | null;
   completed_at: string | null;
   updated_at: string | null;
+  archived_at?: string | null;
+  affected_resources: string[];
+  can_cancel: boolean;
+  can_delete: boolean;
 }
 
 export interface TaskListResponse {

@@ -1,5 +1,5 @@
 """大纲相关的Pydantic模型"""
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -38,6 +38,12 @@ class OutlineResponse(BaseModel):
     has_chapters: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def normalize_legacy_null_content(cls, value: Any) -> str:
+        """兼容历史导入或旧版本生成的 NULL 大纲内容。"""
+        return "" if value is None else value
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from app.database import get_engine
 from app.models.background_task import BackgroundTask
 from app.logger import get_logger
@@ -314,7 +314,13 @@ class BackgroundTaskService:
                 BackgroundTask.project_id == project_id,
                 BackgroundTask.user_id == user_id
             )
-            .order_by(BackgroundTask.created_at.desc())
+            .order_by(
+                case(
+                    (BackgroundTask.status.in_(["pending", "running"]), 0),
+                    else_=1,
+                ),
+                BackgroundTask.created_at.desc(),
+            )
         )
         if task_type:
             query = query.where(BackgroundTask.task_type == task_type)

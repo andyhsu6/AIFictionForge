@@ -127,3 +127,7 @@ backend/embedding/
 backend/.instance_id
 test.json
 tests/
+# Local test suite (kept outside version control)
+backend/tests/
+**/test_*.py
+**/*_test.py

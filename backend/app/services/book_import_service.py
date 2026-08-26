@@ -770,6 +770,7 @@ class BookImportService:
             outline_content = item.content
             if not outline_content and item.structure and isinstance(item.structure, dict):
                 outline_content = str(item.structure.get("summary") or item.structure.get("content") or "").strip()
+            outline_content = outline_content or ""
 
             outline = Outline(
                 project_id=project_id,

@@ -50,6 +50,8 @@ class MCPToolsLoader:
         
         # 用户工具缓存: user_id -> UserToolsCache
         self._cache: Dict[str, UserToolsCache] = {}
+        # 风险元数据只供服务端判断，不加入发送给模型的工具定义。
+        self._tool_metadata: Dict[str, Dict[str, Dict[str, Any]]] = {}
         
         # 缓存TTL（5分钟）
         self._cache_ttl = timedelta(minutes=5)
@@ -160,9 +162,11 @@ class MCPToolsLoader:
         plugins = result.scalars().all()
         
         if not plugins:
+            self._tool_metadata[user_id] = {}
             return None
         
         all_tools = []
+        metadata: Dict[str, Dict[str, Any]] = {}
         
         for plugin in plugins:
             try:
@@ -185,6 +189,10 @@ class MCPToolsLoader:
                 
                 # 转换为OpenAI格式
                 formatted = mcp_client.format_tools_for_openai(plugin_tools, plugin.plugin_name)
+                for source_tool, formatted_tool in zip(plugin_tools, formatted):
+                    function_name = formatted_tool.get("function", {}).get("name")
+                    if function_name:
+                        metadata[function_name] = dict(source_tool.get("annotations") or {})
                 all_tools.extend(formatted)
                 
                 logger.debug(f"✅ 从插件 {plugin.plugin_name} 加载了 {len(formatted)} 个工具")
@@ -193,7 +201,12 @@ class MCPToolsLoader:
                 logger.warning(f"⚠️ 加载插件 {plugin.plugin_name} 工具失败: {e}")
                 continue
         
+        self._tool_metadata[user_id] = metadata
         return all_tools if all_tools else None
+
+    def get_tool_metadata(self, user_id: str, tool_name: str) -> Dict[str, Any]:
+        """返回 MCP 工具的服务端元数据；缺失元数据时返回空字典。"""
+        return dict(self._tool_metadata.get(user_id, {}).get(tool_name) or {})
     
     def invalidate_cache(self, user_id: Optional[str] = None):
         """
@@ -203,12 +216,14 @@ class MCPToolsLoader:
             user_id: 用户ID，为None时清空所有缓存
         """
         if user_id:
+            self._tool_metadata.pop(user_id, None)
             if user_id in self._cache:
                 del self._cache[user_id]
                 logger.debug(f"🧹 清理用户工具缓存: {user_id}")
         else:
             count = len(self._cache)
             self._cache.clear()
+            self._tool_metadata.clear()
             logger.info(f"🧹 清理所有用户工具缓存 ({count}个)")
     
     def get_cache_stats(self) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ import { PlusOutlined, UserOutlined, EditOutlined, DeleteOutlined, UnorderedList
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
 import axios from 'axios';
+import { eventBus, EventNames } from '../store/eventBus';
 
 interface Organization {
   id: string;
@@ -102,6 +103,20 @@ export default function Organizations() {
       loadCharacters();
     }
   }, [projectId, loadOrganizations, loadCharacters]);
+
+  useEffect(() => {
+    const handleTaskSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as { projectId?: string; resources?: string[] };
+      if (data.projectId && data.projectId !== projectId) return;
+      if (!data.resources?.includes('organizations')) return;
+      void loadOrganizations();
+      void loadCharacters();
+      if (selectedOrg?.id) void loadMembers(selectedOrg.id);
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+    return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+  }, [loadCharacters, loadOrganizations, projectId, selectedOrg?.id]);
 
   const loadMembers = async (orgId: string) => {
     try {

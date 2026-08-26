@@ -4,6 +4,7 @@ import { ThunderboltOutlined, PlusOutlined, EditOutlined, DeleteOutlined, Trophy
 import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import SSEProgressModal from '../components/SSEProgressModal';
+import { eventBus, EventNames } from '../store/eventBus';
 
 const { TextArea } = Input;
 const { Title, Text, Paragraph } = Typography;
@@ -66,6 +67,19 @@ export default function Careers() {
             fetchCareers();
         }
     }, [projectId, fetchCareers]);
+
+    useEffect(() => {
+        const handleTaskSettled = (payload?: unknown) => {
+            if (!payload || typeof payload !== 'object') return;
+            const data = payload as { projectId?: string; resources?: string[] };
+            if (data.projectId && data.projectId !== projectId) return;
+            if (data.resources?.includes('careers')) {
+                void fetchCareers();
+            }
+        };
+        eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+        return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
+    }, [fetchCareers, projectId]);
 
     const handleOpenModal = (career?: Career) => {
         if (career) {

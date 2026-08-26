@@ -613,14 +613,22 @@ class MCPClientFacade:
         session = await self._get_session(user_id, plugin_name)
         result = await session.list_tools()
         
-        tools = [
-            {
-                "name": t.name,
-                "description": t.description or "",
-                "inputSchema": t.inputSchema
-            }
-            for t in result.tools
-        ]
+        tools = []
+        for tool in result.tools:
+            annotations = getattr(tool, "annotations", None)
+            if annotations is not None and hasattr(annotations, "model_dump"):
+                annotations = annotations.model_dump(exclude_none=True)
+            elif annotations is not None and not isinstance(annotations, dict):
+                annotations = {
+                    key: value for key, value in vars(annotations).items()
+                    if not key.startswith("_") and value is not None
+                }
+            tools.append({
+                "name": tool.name,
+                "description": tool.description or "",
+                "inputSchema": tool.inputSchema,
+                "annotations": annotations or {},
+            })
         
         # 更新缓存
         self._tool_cache[cache_key] = ToolCacheEntry(

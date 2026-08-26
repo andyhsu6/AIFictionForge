@@ -193,6 +193,8 @@ async def update_outline(
     
     # 更新字段
     update_data = outline_update.model_dump(exclude_unset=True)
+    if "content" in update_data and update_data["content"] is None:
+        update_data["content"] = ""
     
     # 🔧 特殊处理：如果直接传递了structure字段，优先使用它
     if 'structure' in update_data:
@@ -987,7 +989,7 @@ async def _save_outlines(
         
         # 🔧 修复：从structure中提取title和summary/content保存到数据库
         chapter_title = chapter_data.get("title", f"第{order_idx}章")
-        chapter_content = chapter_data.get("summary") or chapter_data.get("content", "")
+        chapter_content = chapter_data.get("summary") or chapter_data.get("content") or ""
         
         outline = Outline(
             project_id=project_id,

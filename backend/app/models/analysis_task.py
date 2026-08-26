@@ -27,11 +27,15 @@ class AnalysisTask(Base):
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     started_at = Column(DateTime, nullable=True, comment="开始执行时间")
     completed_at = Column(DateTime, nullable=True, comment="完成时间")
+
+    # 任务面板归档时间。归档只隐藏任务记录，不影响章节分析状态判断。
+    archived_at = Column(DateTime, nullable=True, comment="从任务面板归档的时间")
     
     # 索引优化查询
     __table_args__ = (
         Index('idx_chapter_id_created', 'chapter_id', 'created_at'),
         Index('idx_status', 'status'),
+        Index('idx_analysis_task_panel', 'project_id', 'user_id', 'archived_at', 'created_at'),
     )
     
     def __repr__(self):
