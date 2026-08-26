@@ -3,6 +3,12 @@ import json
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from app.logger import get_logger, summarize_log_value
+from app.utils.reasoning_text import (
+    split_content_and_reasoning,
+    sse_data_payload,
+    strip_think_tags,
+    uses_minimax_api,
+)
 from .base_client import BaseAIClient
 
 logger = get_logger(__name__)
@@ -74,6 +80,10 @@ class OpenAIClient(BaseAIClient):
         }
         if stream:
             payload["stream"] = True
+        if uses_minimax_api(model, self.base_url):
+            # MiniMax otherwise embeds <think> in the visible chapter text.
+            # extra_body is the SDK name; the HTTP JSON body uses the raw field.
+            payload["reasoning_split"] = False
         if tools:
             # 清理 $schema 字段
             cleaned = []
@@ -113,8 +123,17 @@ class OpenAIClient(BaseAIClient):
         choice = choices[0]
         message = choice.get("message", {})
         usage = data.get("usage") or {}
+        content, reasoning = split_content_and_reasoning(message)
+        content = strip_think_tags(content)
+        if not content and reasoning:
+            logger.warning(
+                "非流式响应正文为空，已丢弃推理内容以免污染 JSON: model=%s reasoning_chars=%s finish_reason=%s",
+                model,
+                len(reasoning),
+                choice.get("finish_reason"),
+            )
         return {
-            "content": message.get("content", ""),
+            "content": content,
             "tool_calls": message.get("tool_calls"),
             "finish_reason": choice.get("finish_reason"),
             "usage": {
@@ -145,59 +164,85 @@ class OpenAIClient(BaseAIClient):
         payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True)
         
         tool_calls_buffer = {}  # 收集工具调用块
+        content_chars = 0
+        reasoning_chars = 0
+        finish_reason = None
         
         try:
             async with await self._request_with_retry("POST", "/chat/completions", payload, stream=True) as response:
                 response.raise_for_status()
                 try:
                     async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str.strip() == "[DONE]":
-                                # 流结束，检查是否有工具调用需要处理
-                                if tool_calls_buffer:
-                                    yield {"tool_calls": list(tool_calls_buffer.values()), "done": True}
-                                yield {"done": True}
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                choices = data.get("choices", [])
-                                if choices and len(choices) > 0:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    
-                                    # 检查工具调用
-                                    tc_list = delta.get("tool_calls")
-                                    if tc_list:
-                                        for tc in tc_list:
-                                            index = tc.get("index", 0)
-                                            if index not in tool_calls_buffer:
-                                                tool_calls_buffer[index] = tc
-                                            else:
-                                                existing = tool_calls_buffer[index]
-                                                # 合并 function.arguments
-                                                if "function" in tc and "function" in existing:
-                                                    if tc["function"].get("arguments"):
-                                                        existing["function"]["arguments"] = (
-                                                            existing["function"].get("arguments", "") +
-                                                            tc["function"]["arguments"]
-                                                        )
+                        data_str = sse_data_payload(line)
+                        if data_str is None:
+                            continue
+                        if data_str == "[DONE]":
+                            if tool_calls_buffer:
+                                yield {"tool_calls": list(tool_calls_buffer.values()), "done": True}
+                            if not content_chars:
+                                logger.warning(
+                                    "流式响应结束但正文为空: model=%s reasoning_chars=%s finish_reason=%s tool_calls=%s",
+                                    model,
+                                    reasoning_chars,
+                                    finish_reason,
+                                    bool(tool_calls_buffer),
+                                )
+                            yield {"done": True, "finish_reason": finish_reason}
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            choices = data.get("choices", [])
+                            if choices and len(choices) > 0:
+                                choice = choices[0]
+                                finish_reason = choice.get("finish_reason") or finish_reason
+                                delta = choice.get("delta") or {}
+                                content, reasoning = split_content_and_reasoning(delta)
+                                if not content:
+                                    content = ""
+                                
+                                # 检查工具调用
+                                tc_list = delta.get("tool_calls")
+                                if tc_list:
+                                    for tc in tc_list:
+                                        index = tc.get("index", 0)
+                                        if index not in tool_calls_buffer:
+                                            tool_calls_buffer[index] = tc
+                                        else:
+                                            existing = tool_calls_buffer[index]
+                                            # 合并 function.arguments
+                                            if "function" in tc and "function" in existing:
+                                                if tc["function"].get("arguments"):
+                                                    existing["function"]["arguments"] = (
+                                                        existing["function"].get("arguments", "") +
+                                                        tc["function"]["arguments"]
+                                                    )
 
-                                    usage = data.get("usage")
-                                    if usage:
-                                        yield {
-                                            "usage": {
-                                                "prompt_tokens": usage.get("prompt_tokens"),
-                                                "completion_tokens": usage.get("completion_tokens"),
-                                                "total_tokens": usage.get("total_tokens"),
-                                            }
+                                usage = data.get("usage")
+                                if usage:
+                                    yield {
+                                        "usage": {
+                                            "prompt_tokens": usage.get("prompt_tokens"),
+                                            "completion_tokens": usage.get("completion_tokens"),
+                                            "total_tokens": usage.get("total_tokens"),
                                         }
-                                    
+                                    }
+
+                                if reasoning:
+                                    reasoning_chars += len(reasoning)
+                                    logger.debug(
+                                        "丢弃推理增量以免混入正文: model=%s reasoning_chars=%s",
+                                        model,
+                                        len(reasoning),
+                                    )
+
+                                if content:
+                                    content = strip_think_tags(content)
                                     if content:
+                                        content_chars += len(content)
                                         yield {"content": content}
                                         
-                            except json.JSONDecodeError:
-                                continue
+                        except json.JSONDecodeError:
+                            continue
                 except GeneratorExit:
                     # 生成器被关闭，这是正常的清理过程
                     logger.debug("流式响应生成器被关闭(GeneratorExit)")
