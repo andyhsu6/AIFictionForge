@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     default_model: str = "gpt-4"
     default_temperature: float = 0.7
     default_max_tokens: int = 32000
+    # Allow Ollama / local Llama / Docker host.docker.internal as AI base URLs.
+    # Default false keeps SSRF protection for public deployments.
+    allow_private_ai_endpoints: bool = False
+    # Comma-separated host allowlist, e.g. "host.docker.internal,127.0.0.1"
+    allowed_ai_hosts: str = ""
     
     # MCP配置
     mcp_max_rounds: int = 3  # MCP工具调用最大轮数（全局统一控制）

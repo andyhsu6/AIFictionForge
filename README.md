@@ -312,6 +312,8 @@ services:
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
       - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE:-0.7}
       - DEFAULT_MAX_TOKENS=${DEFAULT_MAX_TOKENS:-32000}
+      - ALLOW_PRIVATE_AI_ENDPOINTS=${ALLOW_PRIVATE_AI_ENDPOINTS:-false}
+      - ALLOWED_AI_HOSTS=${ALLOWED_AI_HOSTS:-}
       # LinuxDO OAuth 配置
       - LINUXDO_CLIENT_ID=${LINUXDO_CLIENT_ID:-11111}
       - LINUXDO_CLIENT_SECRET=${LINUXDO_CLIENT_SECRET:-11111}
@@ -449,6 +451,10 @@ DATABASE_MAX_OVERFLOW=20
 # 会话 Cookie Secure 标记
 # 默认 true，适合 HTTPS 部署；如果使用 HTTP 访问并且浏览器不保存登录 Cookie，可设为 false
 SESSION_COOKIE_SECURE=true
+
+# 本地 / Docker 内网 LLM（默认关闭，保持 SSRF 防护）
+# ALLOW_PRIVATE_AI_ENDPOINTS=true
+# ALLOWED_AI_HOSTS=host.docker.internal,127.0.0.1
 ```
 
 > **🔐 Cookie Secure 说明**
@@ -463,6 +469,13 @@ SESSION_COOKIE_SECURE=true
 > - `LINUXDO_PROXY_URL` 只会用于 LinuxDO OAuth 的 token 交换和用户信息请求，不影响 AI 服务、SMTP、数据库等其他网络调用。
 > - 常见示例：`LINUXDO_PROXY_URL=http://127.0.0.1:7890`；Docker 容器内访问宿主机代理时通常需要使用宿主机在 Docker 网络中的地址，而不是容器内的 `127.0.0.1`。
 > - 当前示例按 HTTP 代理配置；如果需要 SOCKS 代理，请先确保运行环境安装了 httpx 的 SOCKS 支持依赖。
+>
+> **🖥️ 本地 / Docker 内网 LLM 说明**
+>
+> - 默认会拒绝 `localhost`、`127.0.0.1`、私网 IP 以及解析到内网的主机名（例如 `host.docker.internal`），用于降低 SSRF 风险。
+> - 如果 AI 服务跑在本机 Ollama / llama.cpp，或 Docker 容器需要访问宿主机上的模型，请在 `.env` 中设置 `ALLOW_PRIVATE_AI_ENDPOINTS=true`，或把允许的主机名写入 `ALLOWED_AI_HOSTS`。
+> - 即使开启本地放行，链路本地地址（如云厂商元数据 `169.254.169.254`）仍然会被拒绝。
+> - MCP 插件 URL 不受该开关影响，继续走严格的公网校验。
 
 ### 中转 API 配置
 

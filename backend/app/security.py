@@ -74,8 +74,42 @@ def _is_forbidden_ip(ip: ipaddress._BaseAddress) -> bool:
     ])
 
 
-def validate_public_http_url(raw_url: str, *, allowed_schemes: Iterable[str] = ("https", "http")) -> str:
-    """Validate an outbound URL to reduce SSRF risk."""
+def _is_always_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
+    """Even local-LLM allowlists must not reach metadata / multicast endpoints."""
+    return any([
+        ip.is_link_local,
+        ip.is_multicast,
+        ip.is_unspecified,
+    ])
+
+
+def _normalize_hostname(host: str) -> str:
+    return host.lower().strip().rstrip(".")
+
+
+def _parse_allowed_hosts(raw: Iterable[str] | str | None) -> set[str]:
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        items = raw.split(",")
+    else:
+        items = list(raw)
+    return {_normalize_hostname(item) for item in items if str(item).strip()}
+
+
+def validate_public_http_url(
+    raw_url: str,
+    *,
+    allowed_schemes: Iterable[str] = ("https", "http"),
+    allow_private: bool = False,
+    allowed_hosts: Iterable[str] | str | None = None,
+) -> str:
+    """Validate an outbound URL to reduce SSRF risk.
+
+    By default only public HTTP(S) hosts are accepted. Local/private targets can
+    be opted in for self-hosted LLM endpoints without disabling SSRF checks for
+    MCP plugins or other callers.
+    """
     if not raw_url or not isinstance(raw_url, str):
         raise HTTPException(status_code=400, detail="URL不能为空")
 
@@ -87,22 +121,62 @@ def validate_public_http_url(raw_url: str, *, allowed_schemes: Iterable[str] = (
     if parsed.username or parsed.password:
         raise HTTPException(status_code=400, detail="URL不允许包含认证信息")
 
-    host = parsed.hostname.strip().rstrip(".")
-    if host.lower() in {"localhost", "localhost.localdomain"}:
+    host = _normalize_hostname(parsed.hostname)
+    host_allowed = allow_private or host in _parse_allowed_hosts(allowed_hosts)
+
+    if host in {"localhost", "localhost.localdomain"} and not host_allowed:
         raise HTTPException(status_code=400, detail="URL不允许指向本机地址")
 
     try:
         ip = ipaddress.ip_address(host)
-        if _is_forbidden_ip(ip):
+        if _is_always_blocked_ip(ip):
+            raise HTTPException(status_code=400, detail="URL不允许指向链路本地、组播或未指定地址")
+        if _is_forbidden_ip(ip) and not host_allowed:
             raise HTTPException(status_code=400, detail="URL不允许指向内网或保留地址")
     except ValueError:
         try:
-            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+            infos = socket.getaddrinfo(
+                host,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
         except socket.gaierror:
             raise HTTPException(status_code=400, detail="URL主机名无法解析")
         for info in infos:
             resolved_ip = ipaddress.ip_address(info[4][0])
-            if _is_forbidden_ip(resolved_ip):
+            if _is_always_blocked_ip(resolved_ip):
+                raise HTTPException(status_code=400, detail="URL解析到链路本地、组播或未指定地址")
+            if _is_forbidden_ip(resolved_ip) and not host_allowed:
                 raise HTTPException(status_code=400, detail="URL解析到内网或保留地址")
 
     return raw_url.strip().rstrip("/")
+
+
+def validate_ai_http_url(raw_url: str) -> str:
+    """Validate an AI provider base URL.
+
+    Public endpoints stay subject to SSRF checks. Local Ollama / Docker
+    `host.docker.internal` targets are allowed only when explicitly configured.
+    """
+    allow_private = bool(getattr(settings, "allow_private_ai_endpoints", False))
+    allowed_hosts = getattr(settings, "allowed_ai_hosts", "") or ""
+    try:
+        return validate_public_http_url(
+            raw_url,
+            allow_private=allow_private,
+            allowed_hosts=allowed_hosts,
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        if exc.status_code == 400 and any(
+            token in detail for token in ("本机", "内网", "链路本地")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{detail}。如需连接本地或 Docker 内网 LLM，"
+                    "请设置 ALLOW_PRIVATE_AI_ENDPOINTS=true，"
+                    "或把主机名加入 ALLOWED_AI_HOSTS（例如 host.docker.internal,127.0.0.1）。"
+                ),
+            ) from exc
+        raise
