@@ -293,6 +293,8 @@ export interface AgentMessage {
   model?: string;
   prompt_tokens?: number;
   completion_tokens?: number;
+  tool_calls?: string;
+  tool_call_id?: string;
   created_at: string;
 }
 
