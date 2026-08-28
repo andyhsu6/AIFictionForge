@@ -78,6 +78,23 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+// tool_calls 是后端 TEXT 列存下的 JSON 字符串（数组或 { tool_calls: [...] } 包裹形式）。
+// 解析失败或形状不符时返回 0，保证旧消息（无该字段）不受影响。
+function countToolCalls(raw?: string): number {
+  if (!raw) return 0;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.length;
+    if (parsed && typeof parsed === 'object') {
+      const list = (parsed as Record<string, unknown>).tool_calls;
+      if (Array.isArray(list)) return list.length;
+    }
+  } catch {
+    // 忽略解析失败
+  }
+  return 0;
+}
+
 function fieldLabel(field: string): string {
   const labels: Record<string, string> = {
     title: '标题', description: '简介', theme: '主题', genre: '类型',
@@ -543,6 +560,51 @@ export default function ProjectAgentPanel({
     );
   };
 
+  const renderToolMessage = (item: AgentMessage) => {
+    let toolName = '工具';
+    let resultText = item.content;
+    try {
+      const parsed = JSON.parse(item.content) as { tool?: unknown; error?: unknown; result?: unknown };
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.tool === 'string' && parsed.tool) toolName = parsed.tool;
+        if (parsed.error) {
+          resultText = `错误：${typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error)}`;
+        } else {
+          resultText = formatValue(parsed.result);
+        }
+      }
+    } catch {
+      // content 不是合法 JSON 时回退为原始文本
+    }
+    return (
+      <div key={item.id} style={{ marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{
+            width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+            display: 'grid', placeItems: 'center',
+            background: token.colorBgContainer,
+            border: `1px solid ${token.colorBorderSecondary}`,
+          }}>
+            <AssistantLogo size={20} />
+          </div>
+          <div style={{ maxWidth: 'calc(100% - 42px)', minWidth: 0, flex: 1 }}>
+            <details style={{ fontSize: 12 }}>
+              <summary style={{ cursor: 'pointer', color: token.colorTextSecondary, userSelect: 'none' }}>
+                ⚙️ {toolName} 调用
+              </summary>
+              <pre style={{
+                margin: '6px 0 0', padding: 8, borderRadius: 6,
+                background: token.colorFillQuaternary, whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word', maxHeight: 220, overflow: 'auto',
+                color: token.colorTextSecondary,
+              }}>{resultText}</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderProcess = (steps: AgentExecutionStep[], messageId: string) => {
     if (!steps.length) return null;
     const ordered = [...steps].sort((a, b) => a.sequence - b.sequence);
@@ -709,7 +771,8 @@ export default function ProjectAgentPanel({
               <Text type="secondary" style={{ fontSize: 12 }}>例如：“把第三条大纲标题改得更有悬念”</Text>
             </div>
           </div>
-        ) : messages.filter(item => item.role === 'user' || item.role === 'assistant').map((item, index, visibleMessages) => {
+        ) : messages.filter(item => item.role === 'user' || item.role === 'assistant' || item.role === 'tool').map((item, index, visibleMessages) => {
+          if (item.role === 'tool') return renderToolMessage(item);
           const previousUserMessage = item.role === 'assistant'
             ? visibleMessages.slice(0, index).reverse().find(messageItem => messageItem.role === 'user')
             : undefined;
@@ -719,6 +782,7 @@ export default function ProjectAgentPanel({
               || (!step.assistant_message_id && step.user_message_id === previousUserMessage?.id)
             ))
             : [];
+          const toolCallCount = item.role === 'assistant' ? countToolCalls(item.tool_calls) : 0;
           return (
             <div key={item.id} style={{ marginBottom: 14 }}>
               <div style={{
@@ -745,7 +809,11 @@ export default function ProjectAgentPanel({
                     whiteSpace: item.role === 'user' ? 'pre-wrap' : undefined,
                   }}>
                     {item.role === 'assistant'
-                      ? (item.content ? <MarkdownRenderer content={item.content} compact /> : <Spin size="small" />)
+                      ? (item.content
+                          ? <MarkdownRenderer content={item.content} compact />
+                          : (toolCallCount > 0
+                              ? <Text type="secondary" style={{ fontSize: 12 }}>🔧 准备调用 {toolCallCount} 个工具...</Text>
+                              : <Spin size="small" />))
                       : item.content}
                   </div>
                 </div>
