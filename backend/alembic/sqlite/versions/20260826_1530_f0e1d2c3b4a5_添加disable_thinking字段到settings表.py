@@ -26,7 +26,7 @@ def upgrade() -> None:
                 sa.Boolean(),
                 server_default='0',
                 nullable=False,
-                comment='是否关闭模型思考（vLLM等自部署思考模型，注入 enable_thinking=false）',
+                comment='是否关闭模型思考（开启后思考型模型跳过思考阶段直接输出正文）',
             )
         )
 

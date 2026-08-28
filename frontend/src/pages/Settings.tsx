@@ -1524,7 +1524,7 @@ export default function SettingsPage() {
                               <Space size={4}>
                                 <span>关闭模型思考</span>
                                 <InfoCircleOutlined
-                                  title="开启后向模型注入 enable_thinking=false（仅对 vLLM 等自部署的思考模型如 Qwen 生效）。关闭思考可大幅减少思考token消耗与生成耗时，适合正文创作类任务；对 OpenAI 官方等不支持该参数的服务端无影响"
+                                  title="适用于思考型模型：开启后模型跳过思考阶段直接输出正文，可显著减少等待时间与token消耗；对不支持此选项的服务无影响"
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
