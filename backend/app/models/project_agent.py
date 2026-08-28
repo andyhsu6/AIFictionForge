@@ -46,6 +46,8 @@ class AgentMessage(Base):
     model = Column(String(100))
     prompt_tokens = Column(Integer)
     completion_tokens = Column(Integer)
+    tool_calls = Column(Text)
+    tool_call_id = Column(String(36), index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
