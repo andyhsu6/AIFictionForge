@@ -541,9 +541,11 @@ async def delete_career(
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(career.project_id, user_id, db)
     
-    # 检查是否有角色使用该职业
+    # 检查是否有角色使用该职业（只统计仍存在的角色，忽略角色已删除的孤儿关联行）
     char_career_result = await db.execute(
-        select(func.count(CharacterCareer.id)).where(CharacterCareer.career_id == career_id)
+        select(func.count(CharacterCareer.id))
+        .join(Character, CharacterCareer.character_id == Character.id)
+        .where(CharacterCareer.career_id == career_id)
     )
     usage_count = char_career_result.scalar_one()
     
