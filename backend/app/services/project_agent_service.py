@@ -31,6 +31,7 @@ SYSTEM_PROMPT = """你是 MuMuAINovel 的“木木创作助手”，帮助用户
 6. 不需要工具也能回答的问题可直接回答；数据相关问题优先查询后再回答。
 7. 创建角色、组织、职业等结构化内容时，你可以先根据项目资料设计数据，再调用对应 manage_* 工具；长时间的大纲/章节生成与分析使用 start_project_task。
 8. 导出时使用 get_project_export_links 返回下载地址；导入大纲时只能处理用户明确提供的 JSON 内容，不得臆造文件内容。
+9. 历史消息和工具结果中已有的数据（角色、大纲、职业、章节等）应直接复用，不要重复调用工具查询。仅当数据不存在、可能已变更、或用户明确要求刷新时才重新查询。
 """
 
 
@@ -732,14 +733,19 @@ class ProjectAgentService:
         self,
         history: list[AgentMessage],
         page_context: dict[str, Any],
-        tool_context: list[dict[str, Any]],
-        force_answer: bool,
+        tool_context: list[dict[str, Any]] | None = None,
+        force_answer: bool = False,
     ) -> str:
         history_parts: list[str] = []
         history_length = 0
         for item in reversed(history):
-            content = item.content[:6000]
-            part = f"<{item.role}>\n{content}\n</{item.role}>"
+            if item.role == "assistant" and item.tool_calls:
+                part = self._serialize_assistant_with_tools(item)
+            elif item.role == "tool":
+                part = self._serialize_tool_response(item)
+            else:
+                content = item.content[:6000]
+                part = f"<{item.role}>\n{content}\n</{item.role}>"
             if history_parts and history_length + len(part) > 60000:
                 break
             history_parts.append(part)
@@ -771,6 +777,23 @@ class ProjectAgentService:
             sections.append("请处理最后一条用户消息；需要项目数据时调用工具。")
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _serialize_assistant_with_tools(item: AgentMessage) -> str:
+        """assistant(tool_calls) 消息序列化：内容 + <tool_calls> JSON 块。"""
+        content = item.content or ""
+        tool_calls = item.tool_calls or "[]"
+        return (
+            f"<assistant>\n{content}\n<tool_calls>\n{tool_calls}\n</tool_calls>\n</assistant>"
+        )
+
+    @staticmethod
+    def _serialize_tool_response(item: AgentMessage) -> str:
+        """role=tool 消息序列化：tool_call_id + 结果内容。"""
+        return (
+            f"<tool>\n<tool_call_id>{item.tool_call_id}</tool_call_id>\n"
+            f"<result>{item.content}</result>\n</tool>"
+        )
+
     async def _save_assistant(
         self,
         conversation: AgentConversation,
@@ -794,6 +817,53 @@ class ProjectAgentService:
         if commit:
             await self.db.commit()
         return assistant
+
+    async def _save_assistant_with_tool_calls(
+        self,
+        conversation: AgentConversation,
+        content: str,
+        tool_calls: list[dict[str, Any]],
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> AgentMessage:
+        """保存带 tool_calls 的 assistant 消息；不提交，由调用方统一 commit。"""
+        assistant = AgentMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=content.strip(),
+            tool_calls=json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
+            model=getattr(self.ai_service, "default_model", None),
+            prompt_tokens=prompt_tokens or None,
+            completion_tokens=completion_tokens or None,
+        )
+        self.db.add(assistant)
+        await self.db.flush()
+        return assistant
+
+    async def _save_tool_response(
+        self,
+        conversation: AgentConversation,
+        tool_call_id: str,
+        tool_name: str,
+        result: Any,
+        *,
+        error: str | None = None,
+    ) -> AgentMessage:
+        """把工具执行结果保存为 role=tool 消息；不提交，由调用方统一 commit。"""
+        content = json.dumps({
+            "tool": tool_name,
+            "error": error,
+            "result": result,
+        }, ensure_ascii=False, default=str)[:50000]
+        tool_msg = AgentMessage(
+            conversation_id=conversation.id,
+            role="tool",
+            content=content,
+            tool_call_id=tool_call_id,
+        )
+        self.db.add(tool_msg)
+        await self.db.flush()
+        return tool_msg
 
     @staticmethod
     def _parse_tool_call(raw_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
