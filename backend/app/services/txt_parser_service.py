@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from app.logger import get_logger
 
@@ -55,14 +54,20 @@ class TxtParserService:
             return []
 
         lines = text.split("\n")
-        heading_indexes: list[int] = []
+        strong_indexes: list[int] = []
+        weak_indexes: list[int] = []
 
         for idx, line in enumerate(lines):
             stripped = line.strip()
             if not stripped:
                 continue
-            if self._is_strong_heading(stripped) or self._is_weak_heading(lines, idx):
-                heading_indexes.append(idx)
+            if self._is_strong_heading(stripped):
+                strong_indexes.append(idx)
+            elif self._is_weak_heading(lines, idx):
+                weak_indexes.append(idx)
+
+        # 存在强标题时只用强标题切分；弱标题仅作无强标题时的兜底
+        heading_indexes = strong_indexes if strong_indexes else weak_indexes
 
         # 去重并排序
         heading_indexes = sorted(set(heading_indexes))
