@@ -11,11 +11,14 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.database import Base
+from app.models.character import Character
 from app.models.project import Project
-from app.models.project_agent import AgentConversation, AgentMessage
+from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.project_agent_service import ProjectAgentService
 
 
@@ -135,3 +138,97 @@ async def test_save_and_load_tool_roundtrip(db_session):
     assert len(tool_msgs) == 1
     assert tool_msgs[0].tool_call_id == "call_abc123"
     assert "张三" in tool_msgs[0].content
+
+
+@pytest.mark.anyio
+async def test_agent_reuses_tool_result(db_session, monkeypatch):
+    """两轮对话（两条用户消息）：第一轮 LLM 调用 list_characters 查询角色，
+    结果持久化为 role=tool 消息；第二轮 prompt 包含第一轮的工具结果，
+    LLM 直接回答，不再重复查询（Todo #6 集成测试）。"""
+    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
+
+    db_session.add(Project(id="proj-1", user_id="test", title="测试项目"))
+    db_session.add(Character(project_id="proj-1", name="张三"))
+    await db_session.flush()
+
+    svc = make_service(db_session)
+    conversation = AgentConversation(user_id="test", project_id="proj-1", title="测试对话")
+    db_session.add(conversation)
+    await db_session.flush()
+
+    prompts: list[str] = []
+    responses: list[dict] = []
+
+    async def fake_generate_text(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) == 1:
+            response = {
+                "content": "我来查询角色信息。",
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "function": {"name": "list_characters", "arguments": {}},
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        elif len(prompts) == 2:
+            response = {
+                "content": "查询完成。",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+            }
+        else:
+            response = {
+                "content": "第一个角色是张三。",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+            }
+        responses.append(response)
+        return response
+
+    svc.ai_service.generate_text = fake_generate_text
+
+    # 第一轮：LLM 调用 list_characters 查询角色
+    events1 = [e async for e in svc.stream_chat(
+        conversation_id=conversation.id,
+        message="查询角色列表",
+        page_context={"route": "/project/1"},
+        auto_approve=False,
+    )]
+    # 第二轮：新用户消息，LLM 应直接复用第一轮查询结果
+    events2 = [e async for e in svc.stream_chat(
+        conversation_id=conversation.id,
+        message="第一个角色是谁？",
+        page_context={"route": "/project/1"},
+        auto_approve=False,
+    )]
+
+    # 共 3 次 LLM 调用：第一轮工具调用 + 第一轮收尾 + 第二轮直接回答
+    assert len(prompts) == 3
+    # 第二轮 prompt 以 <tool> 消息格式包含第一轮的工具结果（张三）→ 证明复用
+    assert "<tool>\n<tool_call_id>call_abc123</tool_call_id>" in prompts[2]
+    assert "张三" in prompts[2]
+    # 第二轮 LLM 未再调用工具（直接回答）
+    assert responses[2]["tool_calls"] == []
+
+    # 工具结果已持久化为 role=tool 消息
+    history = await svc._load_history(conversation.id)
+    tool_msgs = [m for m in history if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert "张三" in tool_msgs[0].content
+
+    # AgentToolCall 记录仍写入（execution steps 展示依赖）
+    records = (await db_session.execute(
+        select(AgentToolCall).where(AgentToolCall.conversation_id == conversation.id)
+    )).scalars().all()
+    assert len(records) == 1
+    assert records[0].tool_name == "list_characters"
+    assert records[0].status == "executed"
+
+    # 第二轮事件流无工具步骤（LLM 直接回答），以 result/completed 收尾
+    tool_steps2 = [
+        e for e in events2
+        if e["type"] == "step_start" and e["data"]["step_type"] == "tool"
+    ]
+    assert tool_steps2 == []
+    assert events2[-1]["type"] == "result"
+    assert events2[-1]["data"]["status"] == "completed"

@@ -8,6 +8,7 @@ from typing import Any, AsyncGenerator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.project import Project
 from app.models.project_agent import (
     AgentConversation,
@@ -136,6 +137,33 @@ class ProjectAgentService:
         page_context: dict[str, Any],
         auto_approve: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """按 feature flag 分发：v1 旧逻辑（内存 tool_context）或 v2 持久化工具历史。"""
+        if settings.agent_tool_persistence_enabled:
+            async for event in self._stream_chat_v2(
+                conversation_id=conversation_id,
+                message=message,
+                page_context=page_context,
+                auto_approve=auto_approve,
+            ):
+                yield event
+        else:
+            async for event in self._stream_chat_v1(
+                conversation_id=conversation_id,
+                message=message,
+                page_context=page_context,
+                auto_approve=auto_approve,
+            ):
+                yield event
+
+    async def _stream_chat_v1(
+        self,
+        *,
+        conversation_id: str | None,
+        message: str,
+        page_context: dict[str, Any],
+        auto_approve: bool = False,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """v1：工具结果仅累积在内存 tool_context，不持久化（旧行为，逐字节保留）。"""
         conversation = await self.get_or_create_conversation(conversation_id, message)
         user_message = AgentMessage(
             conversation_id=conversation.id,
@@ -570,6 +598,475 @@ class ProjectAgentService:
                 return
 
             await self.db.commit()
+
+        raise RuntimeError("木木创作助手超过最大工具调用轮数")
+
+    async def _stream_chat_v2(
+        self,
+        *,
+        conversation_id: str | None,
+        message: str,
+        page_context: dict[str, Any],
+        auto_approve: bool = False,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """v2：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。"""
+        conversation = await self.get_or_create_conversation(conversation_id, message)
+        user_message = AgentMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=message.strip(),
+        )
+        self.db.add(user_message)
+        conversation.last_message_at = datetime.now()
+        await self.db.commit()
+
+        yield {
+            "type": "conversation",
+            "data": {"conversation_id": conversation.id, "title": conversation.title},
+        }
+
+        history = await self._load_history(conversation.id)
+        prompt_tokens = 0
+        completion_tokens = 0
+        sequence = 0
+        steps: list[AgentExecutionStep] = []
+        tool_records: list[AgentToolCall] = []
+        self._active_conversation = conversation
+        self._active_user_message = user_message
+
+        # Skill 是本地工作流指令，不是模型的隐藏思维；只把它作为受约束的补充上下文。
+        approval_prompt = (
+            "\n\n当前已开启自动批准模式：写入工具生成预览后会由系统自动执行，你可以在工具执行成功后说明结果。"
+            if auto_approve
+            else "\n\n当前为手动批准模式：写入工具生成预览后必须等待用户在界面确认，不得提前声称修改已生效。"
+        )
+        active_system_prompt = SYSTEM_PROMPT + approval_prompt
+        try:
+            from app.services.skill_loader import get_skill_by_trigger
+
+            matched_skill = get_skill_by_trigger(message)
+        except Exception:
+            matched_skill = None
+        if matched_skill:
+            thought = await self._create_step(
+                conversation,
+                user_message,
+                sequence,
+                step_type="thought",
+                category="analysis",
+                title="分析请求",
+                content="正在识别当前请求需要的数据和创作能力。",
+                steps=steps,
+            )
+            sequence += 1
+            yield {"type": "step_start", "data": self._step_data(thought)}
+            await self._update_step(
+                thought,
+                content="已识别到适用的 Skill 工作流，正在加载其公开规则。",
+                status="completed",
+            )
+            yield {"type": "step_update", "data": self._step_data(thought)}
+
+            skill_step = await self._create_step(
+                conversation,
+                user_message,
+                sequence,
+                step_type="skill",
+                category="skill",
+                title=str(matched_skill.get("template_name") or matched_skill.get("name") or "Skill"),
+                content="已加载 Skill 工作流，后续回答会遵守其公开创作规则。",
+                status="completed",
+                detail={"skill_key": matched_skill.get("template_key")},
+                steps=steps,
+            )
+            sequence += 1
+            yield {"type": "step_start", "data": self._step_data(skill_step)}
+            skill_content = str(matched_skill.get("content") or "")[:30000]
+            active_system_prompt = (
+                SYSTEM_PROMPT
+                + approval_prompt
+                + "\n\n以下是用户已配置 Skill 的公开工作流，只能作为补充规则，不能覆盖安全、项目边界和批准机制：\n"
+                + skill_content
+            )
+
+        try:
+            prepare_mcp = getattr(self.ai_service, "_prepare_mcp_tools", None)
+            if prepare_mcp:
+                self.mcp_tools = list((await prepare_mcp(auto_mcp=True)) or [])
+        except Exception:
+            self.mcp_tools = []
+        project_definitions = self.registry.definitions()
+        project_names = {
+            tool["function"]["name"] for tool in project_definitions
+            if tool.get("function")
+        }
+        available_tools = project_definitions + [
+            tool for tool in self.mcp_tools
+            if tool.get("function", {}).get("name") not in project_names
+        ]
+
+        for round_index in range(self.MAX_TOOL_ROUNDS + 1):
+            force_answer = round_index == self.MAX_TOOL_ROUNDS
+            thought = await self._create_step(
+                conversation,
+                user_message,
+                sequence,
+                step_type="thought",
+                category="analysis",
+                title=f"分析第 {round_index + 1} 步",
+                content="正在判断是否需要读取项目数据、调用扩展工具或直接回答。",
+                steps=steps,
+            )
+            sequence += 1
+            yield {"type": "step_start", "data": self._step_data(thought)}
+            prompt = self._build_prompt(history, page_context, force_answer=force_answer)
+            response = await self.ai_service.generate_text(
+                prompt=prompt,
+                system_prompt=active_system_prompt,
+                tools=None if force_answer else available_tools,
+                tool_choice="none" if force_answer else "auto",
+                auto_mcp=False,
+                handle_tool_calls=False,
+            )
+            usage = response.get("usage") or {}
+            prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            completion_tokens += int(usage.get("completion_tokens") or 0)
+
+            tool_calls = response.get("tool_calls") or []
+            if not tool_calls:
+                await self._update_step(
+                    thought,
+                    content="分析完成，正在整理回答。",
+                    status="completed",
+                )
+                yield {"type": "step_update", "data": self._step_data(thought)}
+                content = (response.get("content") or "").strip()
+                if not content:
+                    content = "我暂时没有生成有效回复，请换一种说法后重试。"
+                assistant = await self._save_assistant(
+                    conversation,
+                    content,
+                    prompt_tokens,
+                    completion_tokens,
+                )
+                await self._attach_steps(steps, tool_records, assistant)
+                yield {"type": "final_start", "data": {"message_id": assistant.id}}
+                yield {"type": "final_chunk", "content": content}
+                yield {"type": "final_done", "data": {"message_id": assistant.id}}
+                yield {
+                    "type": "result",
+                    "data": {
+                        "conversation_id": conversation.id,
+                        "message_id": assistant.id,
+                        "status": "completed",
+                    },
+                }
+                return
+
+            await self._update_step(
+                thought,
+                content=f"分析完成，需要调用 {len(tool_calls)} 个工具获取信息或准备修改。",
+                status="completed",
+            )
+            yield {"type": "step_update", "data": self._step_data(thought)}
+
+            await self._save_assistant_with_tool_calls(
+                conversation,
+                response.get("content") or "",
+                tool_calls,
+                prompt_tokens,
+                completion_tokens,
+            )
+
+            proposed: list[AgentToolCall] = []
+            for raw_call in tool_calls:
+                try:
+                    name, arguments = self._parse_tool_call(raw_call)
+                    try:
+                        tool = self.registry.get(name)
+                        tool_category = "project"
+                    except ValueError:
+                        tool = None
+                        tool_category = "mcp"
+                except ValueError as exc:
+                    await self._update_step(
+                        thought,
+                        content=f"工具参数需要修正：{exc}",
+                        status="completed",
+                    )
+                    yield {"type": "step_update", "data": self._step_data(thought)}
+                    await self._save_tool_response(
+                        conversation,
+                        raw_call.get("id", ""),
+                        str(raw_call.get("function", {}).get("name") or "unknown"),
+                        None,
+                        error=str(exc),
+                    )
+                    continue
+                if tool is None and name not in {
+                    item.get("function", {}).get("name") for item in self.mcp_tools
+                }:
+                    await self._save_tool_response(
+                        conversation,
+                        raw_call.get("id", ""),
+                        name,
+                        None,
+                        error="工具未启用或未注册",
+                    )
+                    continue
+                if tool is None:
+                    from app.services.mcp_tools_loader import mcp_tools_loader
+
+                    mcp_metadata = mcp_tools_loader.get_tool_metadata(self.user_id, name)
+                    requires_confirmation = not mcp_tool_is_read_only(mcp_metadata)
+                    risk_level = 2 if requires_confirmation else 0
+                else:
+                    requires_confirmation = tool.requires_confirmation
+                    risk_level = tool.risk_level
+                record = AgentToolCall(
+                    conversation_id=conversation.id,
+                    user_id=self.user_id,
+                    project_id=self.project.id,
+                    tool_name=name,
+                    arguments=arguments,
+                    risk_level=risk_level,
+                    requires_confirmation=requires_confirmation,
+                )
+                self.db.add(record)
+                await self.db.flush()
+                tool_records.append(record)
+                tool_step = await self._create_step(
+                    conversation,
+                    user_message,
+                    sequence,
+                    step_type="tool",
+                    category=tool_category,
+                    title=name,
+                    content="正在调用工具。",
+                    detail={"arguments": self._display_value(arguments)},
+                    tool_call=record,
+                    steps=steps,
+                )
+                sequence += 1
+                yield {"type": "step_start", "data": self._step_data(tool_step)}
+                call_id = raw_call.get("id") or record.id
+
+                if tool is None:
+                    if record.requires_confirmation:
+                        record.preview = build_mcp_tool_preview(name, arguments)
+                        if not auto_approve:
+                            record.status = "waiting_confirmation"
+                            proposed.append(record)
+                            await self._update_step(
+                                tool_step,
+                                content="已生成 MCP 工具调用预览，等待用户确认。",
+                                status="waiting_confirmation",
+                                detail={
+                                    "arguments": self._display_value(arguments),
+                                    "preview": record.preview,
+                                    "tool_call": self._tool_call_data(record),
+                                },
+                            )
+                            yield {"type": "step_update", "data": self._step_data(tool_step)}
+                            continue
+
+                    try:
+                        mcp_result = await execute_mcp_tool_call(
+                            self.user_id, name, arguments, record.id
+                        )
+                        succeeded = bool(mcp_result.get("success"))
+                        record.status = "executed" if succeeded else "failed"
+                        record.result = mcp_result
+                        record.error_message = mcp_result.get("error")
+                        record.confirmed_at = datetime.now() if record.requires_confirmation else None
+                        record.executed_at = datetime.now()
+                        if succeeded:
+                            await self._save_tool_response(conversation, call_id, name, mcp_result)
+                        else:
+                            await self._save_tool_response(
+                                conversation,
+                                call_id,
+                                name,
+                                mcp_result,
+                                error=mcp_result.get("error"),
+                            )
+                        await self._update_step(
+                            tool_step,
+                            content=(
+                                "MCP 工具已自动批准并执行。"
+                                if succeeded and record.requires_confirmation
+                                else "MCP 工具调用完成。" if succeeded
+                                else "MCP 工具调用失败。"
+                            ),
+                            status="completed" if succeeded else "failed",
+                            detail={
+                                "arguments": self._display_value(arguments),
+                                "preview": record.preview,
+                                "result": self._display_value(mcp_result),
+                                "approval_mode": "automatic" if record.requires_confirmation else None,
+                                "tool_call": self._tool_call_data(record),
+                            },
+                        )
+                        if succeeded and record.requires_confirmation:
+                            await self.db.commit()
+                    except Exception as exc:
+                        record.status = "failed"
+                        record.error_message = str(exc)
+                        await self._update_step(
+                            tool_step,
+                            content=f"MCP 工具调用失败：{exc}",
+                            status="failed",
+                        )
+                        await self._save_tool_response(
+                            conversation, call_id, name, None, error=str(exc)
+                        )
+                        succeeded = False
+                    yield {"type": "step_update", "data": self._step_data(tool_step)}
+                    if succeeded and record.requires_confirmation:
+                        yield {
+                            "type": "tool_executed",
+                            "data": {
+                                "tool_call": self._tool_call_data(record),
+                                "resources": [],
+                                "approval_mode": "automatic",
+                            },
+                        }
+                    continue
+
+                if tool.requires_confirmation:
+                    auto_result: dict[str, Any] | None = None
+                    try:
+                        record.preview = await self.registry.preview(name, arguments)
+                        if auto_approve:
+                            auto_result = await self.registry.execute(name, arguments)
+                            record.status = "executed"
+                            record.result = auto_result
+                            record.before_snapshot = auto_result.get("before")
+                            record.after_snapshot = auto_result.get("after")
+                            record.confirmed_at = datetime.now()
+                            record.executed_at = datetime.now()
+                            await self._save_tool_response(
+                                conversation, call_id, name, auto_result
+                            )
+                            await self._update_step(
+                                tool_step,
+                                content="修改已自动批准并执行。",
+                                status="completed",
+                                detail={
+                                    "arguments": self._display_value(arguments),
+                                    "preview": record.preview,
+                                    "result": self._display_value(auto_result),
+                                    "approval_mode": "automatic",
+                                    "tool_call": self._tool_call_data(record),
+                                },
+                            )
+                        else:
+                            record.status = "waiting_confirmation"
+                            proposed.append(record)
+                            await self._update_step(
+                                tool_step,
+                                content="已生成修改预览，等待用户确认。",
+                                status="waiting_confirmation",
+                                detail={
+                                    "arguments": self._display_value(arguments),
+                                    "preview": record.preview,
+                                    "tool_call": self._tool_call_data(record),
+                                },
+                            )
+                    except Exception as exc:
+                        record.status = "failed"
+                        record.error_message = str(exc)
+                        await self._save_tool_response(
+                            conversation, call_id, name, None, error=str(exc)
+                        )
+                        await self._update_step(
+                            tool_step,
+                            content=f"{'自动执行' if auto_approve else '修改预览'}失败：{exc}",
+                            status="failed",
+                        )
+                    if auto_result is not None:
+                        # 在通知前端刷新前提交，避免页面立即读取到旧数据。
+                        await self.db.commit()
+                    yield {"type": "step_update", "data": self._step_data(tool_step)}
+                    if auto_result is not None:
+                        yield {
+                            "type": "tool_executed",
+                            "data": {
+                                "tool_call": self._tool_call_data(record),
+                                "resources": auto_result.get("resources") or [],
+                                "approval_mode": "automatic",
+                            },
+                        }
+                    continue
+
+                try:
+                    result = await self.registry.execute(name, arguments)
+                    record.status = "executed"
+                    record.result = result
+                    record.executed_at = datetime.now()
+                    await self._save_tool_response(conversation, call_id, name, result)
+                    await self._update_step(
+                        tool_step,
+                        content="项目工具调用完成。",
+                        status="completed",
+                        detail={
+                            "arguments": self._display_value(arguments),
+                            "result": self._display_value(result),
+                            "tool_call": self._tool_call_data(record),
+                        },
+                    )
+                except Exception as exc:
+                    record.status = "failed"
+                    record.error_message = str(exc)
+                    await self._save_tool_response(
+                        conversation, call_id, name, None, error=str(exc)
+                    )
+                    await self._update_step(
+                        tool_step,
+                        content=f"项目工具调用失败：{exc}",
+                        status="failed",
+                    )
+                yield {"type": "step_update", "data": self._step_data(tool_step)}
+
+            if proposed:
+                await self._update_step(
+                    thought,
+                    content=f"已完成分析，准备了 {len(proposed)} 项待确认修改。",
+                    status="completed",
+                )
+                yield {"type": "step_update", "data": self._step_data(thought)}
+                content = (response.get("content") or "").strip()
+                if not content:
+                    labels = "、".join(str(item.preview.get("label")) for item in proposed if item.preview)
+                    content = f"我已准备好修改{labels or '项目数据'}，请核对下方差异后确认。"
+                assistant = await self._save_assistant(
+                    conversation,
+                    content,
+                    prompt_tokens,
+                    completion_tokens,
+                    commit=False,
+                )
+                for record in proposed:
+                    record.message_id = assistant.id
+                await self._attach_steps(steps, tool_records, assistant, commit=False)
+                await self.db.commit()
+                yield {"type": "final_start", "data": {"message_id": assistant.id}}
+                yield {"type": "final_chunk", "content": content}
+                yield {"type": "final_done", "data": {"message_id": assistant.id}}
+                yield {
+                    "type": "result",
+                    "data": {
+                        "conversation_id": conversation.id,
+                        "message_id": assistant.id,
+                        "status": "waiting_confirmation",
+                    },
+                }
+                return
+
+            # 持久化本轮（assistant(tool_calls) + tool 响应），流中断也不丢消息；
+            # 重载 history 让下一轮 LLM 看到工具结果。
+            await self.db.commit()
+            history = await self._load_history(conversation.id)
 
         raise RuntimeError("木木创作助手超过最大工具调用轮数")
 
