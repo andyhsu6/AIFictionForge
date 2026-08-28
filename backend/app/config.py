@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     
     # MCP配置
     mcp_max_rounds: int = 3  # MCP工具调用最大轮数（全局统一控制）
+    agent_tool_persistence_enabled: bool = False  # 工具调用结果是否持久化为对话消息（灰度开关）
     
     # LinuxDO OAuth2 配置
     LINUXDO_CLIENT_ID: Optional[str] = None
