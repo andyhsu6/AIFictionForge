@@ -683,14 +683,18 @@ class AIService:
             prompt=prompt,
             auto_mcp=auto_mcp,
             tools_count=0,
-            stream=False,
+            stream=True,
         )
         
         try:
             for attempt in range(1, max_retries + 1):
                 current_prompt = prompt if attempt == 1 else self._add_json_hint(prompt, last_response, attempt)
                 
-                result = await self.generate_text(
+                # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
+                # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
+                accumulated: List[str] = []
+                finish_reason = None
+                async for chunk in self.generate_text_stream(
                     prompt=current_prompt,
                     provider=provider,
                     model=model,
@@ -698,9 +702,19 @@ class AIService:
                     max_tokens=max_tokens,
                     system_prompt=system_prompt,
                     auto_mcp=auto_mcp,
-                    handle_tool_calls=True,
-                )
-                aggregate_usage.add(TokenUsage.from_response(result))
+                ):
+                    if isinstance(chunk, dict):
+                        if chunk.get("finish_reason"):
+                            finish_reason = chunk.get("finish_reason")
+                        if chunk.get("usage"):
+                            aggregate_usage.add(TokenUsage.from_response({"usage": chunk["usage"]}))
+                        continue
+                    if chunk:
+                        accumulated.append(chunk)
+                result = {
+                    "content": "".join(accumulated),
+                    "finish_reason": finish_reason,
+                }
                 metrics.retry_count = attempt
                 metrics.tools_count = max(metrics.tools_count, len(self._cached_tools) if self._cached_tools else 0)
                 
