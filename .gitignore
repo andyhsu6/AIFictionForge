@@ -37,6 +37,7 @@ env/
 *~
 .DS_Store
 .kilocode/
+.omo/
 
 # Environment variables
 .env
