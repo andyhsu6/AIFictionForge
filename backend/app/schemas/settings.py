@@ -15,6 +15,7 @@ class SettingsBase(BaseModel):
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="温度参数")
     max_tokens: Optional[int] = Field(default=2000, ge=1, description="最大token数")
     system_prompt: Optional[str] = Field(default=None, description="系统级别提示词，每次AI调用都会使用")
+    disable_thinking: Optional[bool] = Field(default=False, description="关闭模型思考：思考型模型跳过思考阶段直接输出正文，减少token消耗与等待时间")
     cover_api_provider: Optional[str] = Field(default=None, description="封面图片API提供商")
     cover_api_key: Optional[str] = Field(default=None, description="封面图片API密钥")
     cover_api_base_url: Optional[str] = Field(default=None, description="封面图片自定义API地址")

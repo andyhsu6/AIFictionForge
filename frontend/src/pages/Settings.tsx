@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, theme } from 'antd';
+import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, Switch, theme } from 'antd';
 import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
@@ -119,6 +119,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          disable_thinking: false,
           ...defaultCoverSettings,
         });
       } else {
@@ -257,6 +258,7 @@ export default function SettingsPage() {
           llm_model: 'gpt-4',
           temperature: 0.7,
           max_tokens: 2000,
+          disable_thinking: false,
           ...defaultCoverSettings,
         });
         message.info('已重置为默认值，请点击保存');
@@ -1519,6 +1521,22 @@ export default function SettingsPage() {
                               min={1}
                               placeholder="2000"
                             />
+                          </Form.Item>
+
+                          <Form.Item
+                            label={
+                              <Space size={4}>
+                                <span>关闭模型思考</span>
+                                <InfoCircleOutlined
+                                  title="适用于思考型模型：开启后模型跳过思考阶段直接输出正文，可显著减少等待时间与token消耗；对不支持此选项的服务无影响"
+                                  style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
+                                />
+                              </Space>
+                            }
+                            name="disable_thinking"
+                            valuePropName="checked"
+                          >
+                            <Switch />
                           </Form.Item>
 
                           <Form.Item
