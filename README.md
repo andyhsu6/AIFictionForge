@@ -214,6 +214,9 @@ POSTGRES_PASSWORD=your_secure_password
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
+# ⭐ 推荐使用大上下文（≥1M token）模型（如 DeepSeek V4 Flash / V3、Gemini 2.0 Pro）：
+# 系统会按模型上下文窗口自动分级注入上下文——1M 模型章节生成可喂全书，
+# 128K 模型自动降级为最近章节摘要 + 记忆检索。拆书等长输出任务建议配合流式。
 DEFAULT_MODEL=gpt-4o-mini
 
 # 本地账户登录
