@@ -131,3 +131,6 @@ tests/
 backend/tests/
 **/test_*.py
 **/*_test.py
+
+# AI-generated working docs (kept locally, not shipped)
+docs/
