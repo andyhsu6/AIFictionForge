@@ -645,6 +645,63 @@ class AIService:
             self._log_call_metrics(metrics)
             raise
 
+    async def generate_text_stream_full(
+        self,
+        prompt: str,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        auto_mcp: bool = True,
+    ) -> Dict[str, Any]:
+        """流式累积生成，返回与 generate_text 相同的完整响应结构。
+
+        用于长回复场景（如创作助手最终回答）：流式输出规避网关单次
+        响应时长上限（Cloudflare 524），同时调用方仍拿到 content、
+        finish_reason、usage 字段。
+        """
+        tools_to_use = None
+        if auto_mcp:
+            tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
+
+        prov = self._get_provider(provider)
+        accumulated: List[str] = []
+        latest_usage = TokenUsage()
+        finish_reason = "stop"
+        async for chunk in prov.generate_stream(
+            prompt=prompt,
+            model=model or self.default_model,
+            temperature=temperature or self.default_temperature,
+            max_tokens=resolve_effective_max_tokens(
+                max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+            ),
+            system_prompt=system_prompt or self.default_system_prompt,
+            tools=tools_to_use,
+            tool_choice="none" if tools_to_use else None,
+            user_id=self.user_id,
+        ):
+            if isinstance(chunk, dict):
+                if chunk.get("usage"):
+                    latest_usage = TokenUsage.from_response({"usage": chunk["usage"]})
+                if chunk.get("finish_reason"):
+                    finish_reason = chunk.get("finish_reason") or finish_reason
+                if chunk.get("content"):
+                    accumulated.append(chunk["content"])
+                continue
+            if chunk:
+                accumulated.append(chunk)
+        return {
+            "content": "".join(accumulated),
+            "tool_calls": None,
+            "finish_reason": finish_reason,
+            "usage": {
+                "prompt_tokens": latest_usage.prompt_tokens,
+                "completion_tokens": latest_usage.completion_tokens,
+                "total_tokens": latest_usage.total_tokens,
+            },
+        }
+
     async def call_with_json_retry(
         self,
         prompt: str,
