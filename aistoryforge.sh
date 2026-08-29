@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# MuMuAINovel 服务管理脚本
-# 用法: ./mumu.sh {start|stop|restart|status|logs} [backend|frontend|all]
-# 示例: ./mumu.sh start          # 启动全部
-#       ./mumu.sh restart backend # 仅重启后端
-#       ./mumu.sh status          # 查看状态
-#       ./mumu.sh logs backend   # 实时查看后端日志
+# AIFictionForge 服务管理脚本
+# 用法: ./aistoryforge.sh {start|stop|restart|status|logs} [backend|frontend|all]
+# 示例: ./aistoryforge.sh start          # 启动全部
+#       ./aistoryforge.sh restart backend # 仅重启后端
+#       ./aistoryforge.sh status          # 查看状态
+#       ./aistoryforge.sh logs backend   # 实时查看后端日志
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 VENV_PY="$BACKEND_DIR/.venv/bin/python"
-DB_URL="sqlite+aiosqlite:///$BACKEND_DIR/data/mumuai_novel.db"
+DB_URL="sqlite+aiosqlite:///$BACKEND_DIR/data/aistoryforge.db"
 BACKEND_PORT=8008
 FRONTEND_PORT=5173
-BACKEND_LOG="/tmp/mumu-backend.log"
-FRONTEND_LOG="/tmp/mumu-frontend.log"
+BACKEND_LOG="/tmp/aistoryforge-backend.log"
+FRONTEND_LOG="/tmp/aistoryforge-frontend.log"
 
 # 颜色输出
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -113,8 +113,8 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "用法: ./mumu.sh {start|stop|restart|status|logs} [backend|frontend|all]"
-    echo "示例: ./mumu.sh start | ./mumu.sh restart backend | ./mumu.sh status | ./mumu.sh logs backend"
+    echo "用法: ./aistoryforge.sh {start|stop|restart|status|logs} [backend|frontend|all]"
+    echo "示例: ./aistoryforge.sh start | ./aistoryforge.sh restart backend | ./aistoryforge.sh status | ./aistoryforge.sh logs backend"
     exit 1
     ;;
 esac
