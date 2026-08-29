@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Card, Button, Modal, message, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme } from 'antd';
 import { EditOutlined, BookOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, SettingOutlined, UploadOutlined, ApiOutlined, FileSearchOutlined, MenuUnfoldOutlined, MenuFoldOutlined, BulbOutlined, MoonOutlined, DesktopOutlined, MailOutlined } from '@ant-design/icons';
-import { authApi, projectApi } from '../services/api';
+import { authApi, changelogApi, projectApi } from '../services/api';
 import { useStore } from '../store';
 import { useProjectSync } from '../store/hooks';
 import { eventBus, EventNames } from '../store/eventBus';
@@ -76,6 +76,7 @@ export default function ProjectList() {
     includeMemories: false,
     includePlotAnalysis: false,
   });
+  const [changelogVisible, setChangelogVisible] = useState(false);
   const { refreshProjects, deleteProject } = useProjectSync();
   const { mode, resolvedMode, setMode } = useThemeMode();
   const { token } = theme.useToken();
@@ -116,6 +117,15 @@ export default function ProjectList() {
   useEffect(() => {
     refreshProjects();
     authApi.getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
+    
+    // 登录后自动显示本地更新日志
+    changelogApi.getLocalChangelog()
+      .then((data) => {
+        if (data.entries && data.entries.length > 0) {
+          setChangelogVisible(true);
+        }
+      })
+      .catch(() => {});
     
     // 监听切换到 MCP 视图的事件
     eventBus.on(EventNames.SWITCH_TO_MCP_VIEW, handleSwitchToMcp);
@@ -886,7 +896,7 @@ export default function ProjectList() {
             />
           )}
         
-        <ChangelogFloatingButton />
+        <ChangelogFloatingButton defaultVisible={changelogVisible} />
         </div>
       </div>
 
