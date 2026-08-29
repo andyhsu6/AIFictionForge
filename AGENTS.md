@@ -1,25 +1,25 @@
-# MuMuAINovel 项目约定
+# AIFictionForge 项目约定
 
 ## 项目定位
 - **仅本地开发**：本项目只在本机运行，不涉及 PR/branch 工作流、不推送远程、不创建 feature 分支。
 - 修改直接提交到 `main` 分支（用户明确要求时除外）。
 
-## 服务管理（mumu.sh）
-项目根目录提供 `mumu.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
+## 服务管理（aistoryforge.sh）
+项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
 
 ```bash
 cd /Users/andyhsu/codehouse/MuMuAINovel
 
-./mumu.sh status              # 查看两个服务状态（PID + 健康检查）
-./mumu.sh start               # 启动全部（后端 + 前端）
-./mumu.sh stop                # 停止全部
-./mumu.sh restart             # 重启全部
-./mumu.sh restart backend     # 仅重启后端
-./mumu.sh start frontend      # 仅启动前端
-./mumu.sh stop backend        # 仅停止后端
+./aistoryforge.sh status              # 查看两个服务状态（PID + 健康检查）
+./aistoryforge.sh start               # 启动全部（后端 + 前端）
+./aistoryforge.sh stop                # 停止全部
+./aistoryforge.sh restart             # 重启全部
+./aistoryforge.sh restart backend     # 仅重启后端
+./aistoryforge.sh start frontend      # 仅启动前端
+./aistoryforge.sh stop backend        # 仅停止后端
 ```
 
-- 日志：后端 `/tmp/mumu-backend.log`、前端 `/tmp/mumu-frontend.log`
+- 日志：后端 `/tmp/aistoryforge-backend.log`、前端 `/tmp/aistoryforge-frontend.log`
 - 后端健康检查：`curl http://localhost:8008/health` 应返回 `{"status":"ok"}`
 
 ## 环境约定
