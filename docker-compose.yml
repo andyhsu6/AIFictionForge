@@ -1,10 +1,10 @@
 services:
   postgres:
     image: postgres:18-alpine
-    container_name: mumuainovel-postgres
+    container_name: aistoryforge-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-mumuai_novel}
-      POSTGRES_USER: ${POSTGRES_USER:-mumuai}
+      POSTGRES_DB: ${POSTGRES_DB:-aistoryforge}
+      POSTGRES_USER: ${POSTGRES_USER:-aistoryforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
       TZ: ${TZ:-Asia/Shanghai}
@@ -15,7 +15,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mumuai} -d ${POSTGRES_DB:-mumuai_novel}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aistoryforge} -d ${POSTGRES_DB:-aistoryforge}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,12 +49,12 @@ services:
       - -c
       - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-4GB}
 
-  mumuainovel:
+  aistoryforge:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mumujie/mumuainovel:latest
-    container_name: mumuainovel
+    image: aistoryforge:latest
+    container_name: aistoryforge
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,14 +69,14 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       
       # 应用配置
-      - APP_NAME=${APP_NAME:-MuMuAINovel}
+      - APP_NAME=${APP_NAME:-AIFictionForge}
       - APP_VERSION=${APP_VERSION:-1.5.4}
       - APP_HOST=${APP_HOST:-0.0.0.0}
       - APP_PORT=8000
       - DEBUG=${DEBUG:-false}
       
       # 数据库配置
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-mumuai}:${POSTGRES_PASSWORD:-123456}@postgres:5432/${POSTGRES_DB:-mumuai_novel}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-aistoryforge}:${POSTGRES_PASSWORD:-123456}@postgres:5432/${POSTGRES_DB:-aistoryforge}
       
       # 数据库连接信息（用于 entrypoint.sh）
       - DB_HOST=postgres
