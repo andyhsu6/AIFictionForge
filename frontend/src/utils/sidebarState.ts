@@ -1,4 +1,4 @@
-const SIDEBAR_COLLAPSED_STORAGE_KEY = 'mumu_sidebar_collapsed';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'aistoryforge_sidebar_collapsed';
 
 export const getStoredSidebarCollapsed = (): boolean => {
   if (typeof window === 'undefined') {

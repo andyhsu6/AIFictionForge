@@ -573,7 +573,7 @@ export default function ProjectList() {
                     overflow: 'hidden',
                     textOverflow: 'ellipsis'
                   }}>
-                    MuMuAINovel
+                    AIFictionForge
                   </span>
                 </div>
                 <Button
@@ -787,7 +787,7 @@ export default function ProjectList() {
               }}>
                 <BookOutlined />
               </div>
-              <span style={{ fontWeight: 600, fontSize: 16, fontFamily: token.fontFamily }}>MuMuAINovel</span>
+              <span style={{ fontWeight: 600, fontSize: 16, fontFamily: token.fontFamily }}>AIFictionForge</span>
             </div>
           }
           placement="left"

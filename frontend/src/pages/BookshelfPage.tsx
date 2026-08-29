@@ -219,7 +219,7 @@ export default function BookshelfPage({
 
       {showApiTip && projects.length === 0 && (
         <Alert
-          message="欢迎使用 MuMuAINovel"
+          message="欢迎使用 AIFictionForge"
           description={
             <div style={{
               display: 'flex',
