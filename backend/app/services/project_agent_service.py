@@ -155,6 +155,36 @@ class ProjectAgentService:
             ):
                 yield event
 
+    async def _call_round(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        force_answer: bool,
+        available_tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """单轮 AI 调用：最终回答轮走流式，工具决策轮走非流式。
+
+        最终回答轮（force_answer=True，无工具）输出可能很长，必须流式
+        累积以避免网关单次响应超时（Cloudflare 524）；工具决策轮输出
+        很小，且工具必须由 agent 自己的 registry 路由执行，因此保持
+        非流式 generate_text（不走 provider 的流式工具劫持）。
+        """
+        if force_answer:
+            return await self.ai_service.generate_text_stream_full(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                auto_mcp=False,
+            )
+        return await self.ai_service.generate_text(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tools=available_tools,
+            tool_choice="auto",
+            auto_mcp=False,
+            handle_tool_calls=False,
+        )
+
     async def _stream_chat_v1(
         self,
         *,
@@ -275,13 +305,11 @@ class ProjectAgentService:
             sequence += 1
             yield {"type": "step_start", "data": self._step_data(thought)}
             prompt = self._build_prompt(history, page_context, tool_context, force_answer)
-            response = await self.ai_service.generate_text(
+            response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
-                tools=None if force_answer else available_tools,
-                tool_choice="none" if force_answer else "auto",
-                auto_mcp=False,
-                handle_tool_calls=False,
+                force_answer=force_answer,
+                available_tools=available_tools,
             )
             usage = response.get("usage") or {}
             prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -720,13 +748,11 @@ class ProjectAgentService:
             sequence += 1
             yield {"type": "step_start", "data": self._step_data(thought)}
             prompt = self._build_prompt(history, page_context, force_answer=force_answer)
-            response = await self.ai_service.generate_text(
+            response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
-                tools=None if force_answer else available_tools,
-                tool_choice="none" if force_answer else "auto",
-                auto_mcp=False,
-                handle_tool_calls=False,
+                force_answer=force_answer,
+                available_tools=available_tools,
             )
             usage = response.get("usage") or {}
             prompt_tokens += int(usage.get("prompt_tokens") or 0)
