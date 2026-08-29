@@ -51,7 +51,7 @@ from app.schemas.regeneration import (
     RegenerationTaskResponse,
     RegenerationTaskStatus
 )
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, resolve_context_budget_chars
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
@@ -70,6 +70,32 @@ analysis_background_tasks: set[asyncio.Task] = set()
 
 ANALYSIS_TASK_TIMEOUT_SECONDS = 600
 ANALYSIS_TASK_STALE_SECONDS = 720
+
+
+def _resolve_full_book_budget(model_name: Optional[str]) -> int:
+    """按模型上下文窗口解析全书注入预算（Tier3 + D4 能力分级）。
+
+    1M 模型 → 大预算（全书全量注入）；128K → 中预算（摘要+检索）；
+    小窗口/未知 → 保守预算。模型名取自定义 model 优先，否则用服务默认。
+    """
+    return resolve_context_budget_chars(model_name)
+
+
+def _append_full_book_context(prompt: str, full_book_context: Optional[str]) -> str:
+    """把全书注入上下文追加到生成 prompt（Tier3）。
+
+    以独立块追加而非模板占位符，避免用户自定义模板缺少占位符时
+    触发 format KeyError；预算为 0（小窗口模型）时原样返回。
+    """
+    if not full_book_context:
+        return prompt
+    return (
+        prompt
+        + "\n\n<full_book_context priority=\"P1\">\n"
+        + "【全书剧情上下文 - 保持角色、设定与已发生剧情一致性】\n"
+        + full_book_context
+        + "\n</full_book_context>"
+    )
 
 
 def _schedule_analysis_background(coroutine) -> asyncio.Task:
@@ -1578,7 +1604,10 @@ async def generate_chapter_content_stream(
                     logger.info(f"🔧 [1-1模式] 使用 OneToOneContextBuilder")
                     context_builder = OneToOneContextBuilder(
                         memory_service=memory_service,
-                        foreshadow_service=foreshadow_service
+                        foreshadow_service=foreshadow_service,
+                        full_book_budget_chars=_resolve_full_book_budget(
+                            custom_model or getattr(user_ai_service, "default_model", None)
+                        ),
                     )
                     chapter_context = await context_builder.build(
                         chapter=current_chapter,
@@ -1603,7 +1632,10 @@ async def generate_chapter_content_stream(
                     logger.info(f"🔧 [1-N模式] 使用 OneToManyContextBuilder")
                     context_builder = OneToManyContextBuilder(
                         memory_service=memory_service,
-                        foreshadow_service=foreshadow_service
+                        foreshadow_service=foreshadow_service,
+                        full_book_budget_chars=_resolve_full_book_budget(
+                            custom_model or getattr(user_ai_service, "default_model", None)
+                        ),
                     )
                     chapter_context = await context_builder.build(
                         chapter=current_chapter,
@@ -1733,6 +1765,7 @@ async def generate_chapter_content_stream(
                     prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
                 else:
                     prompt = base_prompt
+                prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
                 
                 # === 准备阶段 ===
                 yield await tracker.preparing("准备AI提示词...")
@@ -2149,7 +2182,10 @@ async def _run_chapter_generation_bg(
     if outline_mode == 'one-to-one':
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=current_chapter,
@@ -2162,7 +2198,10 @@ async def _run_chapter_generation_bg(
     else:
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=current_chapter,
@@ -2264,6 +2303,7 @@ async def _run_chapter_generation_bg(
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
+    prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
 
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
@@ -2662,7 +2702,10 @@ async def _run_chapter_generation_bg(
     if outline_mode == 'one-to-one':
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=current_chapter,
@@ -2675,7 +2718,10 @@ async def _run_chapter_generation_bg(
     else:
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=current_chapter,
@@ -2777,6 +2823,7 @@ async def _run_chapter_generation_bg(
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
+    prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
 
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
@@ -4184,7 +4231,10 @@ async def generate_single_chapter_for_batch(
         logger.info(f"🔧 批量生成 - [1-1模式] 使用 OneToOneContextBuilder")
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=chapter,
@@ -4199,7 +4249,10 @@ async def generate_single_chapter_for_batch(
         logger.info(f"🔧 批量生成 - [1-N模式] 使用 OneToManyContextBuilder")
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
-            foreshadow_service=foreshadow_service
+            foreshadow_service=foreshadow_service,
+            full_book_budget_chars=_resolve_full_book_budget(
+                custom_model or getattr(ai_service, "default_model", None)
+            ),
         )
         chapter_context = await context_builder.build(
             chapter=chapter,
@@ -4313,6 +4366,7 @@ async def generate_single_chapter_for_batch(
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
+    prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
     
     # 🎨 将 Skill / 写作风格注入到系统提示词（批量生成）
     system_prompt_with_style = None

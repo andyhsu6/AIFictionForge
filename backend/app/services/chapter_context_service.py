@@ -116,6 +116,7 @@ class OneToManyContext:
     # === P0-核心信息 ===
     chapter_outline: str = ""           # 本章大纲（从expansion_plan构建）
     recent_chapters_context: Optional[str] = None  # 最近10章expansion_plan摘要
+    full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
     continuation_point: Optional[str] = None  # 衔接锚点（上一章完整正文）
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     previous_chapter_events: Optional[List[str]] = None  # 上一章关键事件
@@ -149,7 +150,7 @@ class OneToManyContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point',
-                          'chapter_characters', 'chapter_careers',
+                          'full_book_context', 'chapter_characters', 'chapter_careers',
                           'relevant_memories', 'foreshadow_reminders',
                           'previous_chapter_summary']:
             value = getattr(self, field_name, None)
@@ -187,6 +188,7 @@ class OneToOneContext:
     
     # === P1-重要信息 ===
     recent_chapters_context: Optional[str] = None  # 最近N章剧情摘要
+    full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
     continuation_point: Optional[str] = None  # 上一章完整正文
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     chapter_characters: str = ""        # 从structure.characters获取
@@ -203,7 +205,7 @@ class OneToOneContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point', 'previous_chapter_summary',
-                          'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
+                          'full_book_context', 'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
                           'relevant_memories']:
             value = getattr(self, field_name, None)
             if value:
@@ -235,16 +237,19 @@ class OneToManyContextBuilder:
     MEMORY_SIMILARITY_THRESHOLD = 0.6  # 记忆相关度阈值
     RECENT_CHAPTERS_COUNT = 10   # 最近章节规划数量
     
-    def __init__(self, memory_service=None, foreshadow_service=None):
+    def __init__(self, memory_service=None, foreshadow_service=None, full_book_budget_chars: int = 0):
         """
         初始化构建器
-        
+
         Args:
             memory_service: 记忆服务实例（可选，用于检索相关记忆）
             foreshadow_service: 伏笔服务实例（可选，用于获取伏笔提醒）
+            full_book_budget_chars: Tier3 全书注入字符预算（0=禁用，
+                由模型上下文能力分级决定，见 D4 方案）
         """
         self.memory_service = memory_service
         self.foreshadow_service = foreshadow_service
+        self.full_book_budget_chars = full_book_budget_chars
     
     async def build(
         self,
@@ -305,6 +310,20 @@ class OneToManyContextBuilder:
                 chapter, project.id, db
             )
             logger.info(f"  ✅ 最近章节规划: {len(context.recent_chapters_context or '')}字符")
+
+        # === Tier3 全书注入（1M 上下文利用，双模式）===
+        if self.full_book_budget_chars > 0:
+            full_book_result = await db.execute(
+                select(Chapter)
+                .where(Chapter.project_id == project.id)
+                .where(Chapter.chapter_number <= chapter_number)
+                .order_by(Chapter.chapter_number)
+            )
+            context.full_book_context = self._build_full_book_context(
+                full_book_result.scalars().all(),
+                budget_chars=self.full_book_budget_chars,
+            )
+            logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
         
         # === 衔接锚点（上一章完整正文 + 摘要）===
         if chapter_number == 1:
@@ -357,6 +376,7 @@ class OneToManyContextBuilder:
             "characters_length": len(context.chapter_characters),
             "careers_length": len(context.chapter_careers or ""),
             "recent_context_length": len(context.recent_chapters_context or ""),
+            "full_book_length": len(context.full_book_context or ""),
             "memories_length": len(context.relevant_memories or ""),
             "foreshadow_length": len(context.foreshadow_reminders or ""),
             "total_length": context.get_total_context_length()
@@ -749,7 +769,56 @@ class OneToManyContextBuilder:
         except Exception as e:
             logger.error(f"❌ 构建最近章节上下文失败: {str(e)}")
             return None
-    
+
+    def _build_full_book_context(
+        self,
+        chapters: list[Any],
+        budget_chars: int = 1000000,
+        tail_chapters: int = 30,
+    ) -> str:
+        """构建全书注入上下文（Tier3 1M 上下文利用）。
+
+        双模式：
+        - 全书 ≤ budget_chars → 全量注入（1M 模型直接可用）
+        - 超预算 → 尾部加权（保留最后 tail_chapters 章全文，近期剧情最相关）
+          + 头部保留（第一章设定/伏笔），丢弃中间章节
+
+        Args:
+            chapters: 按章节号升序的章节列表
+            budget_chars: 注入字符预算（默认 1M，对齐 1M 上下文模型）
+            tail_chapters: 超预算时保留的尾部章节数
+
+        Returns:
+            格式化后的全书上下文文本
+        """
+        if not chapters:
+            return ""
+        ordered = sorted(chapters, key=lambda c: c.chapter_number)
+
+        def _render(c: Any) -> str:
+            return f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')}"
+
+        full_text = "\n\n".join(_render(c) for c in ordered)
+        if len(full_text) <= budget_chars:
+            return full_text
+
+        # 超预算：尾部加权（最近章节最相关）+ 头部保留（世界观/伏笔）
+        head = ordered[0]
+        tail_candidates = ordered[-tail_chapters:] if len(ordered) > tail_chapters else ordered[1:]
+
+        selected = [head]
+        total = len(_render(head))
+        # 从最新章节往前尝试加入，放不下即停（尾部优先于中间）
+        for c in reversed(tail_candidates):
+            part = _render(c)
+            if total + len(part) > budget_chars:
+                break
+            selected.append(c)
+            total += len(part)
+
+        selected.sort(key=lambda c: c.chapter_number)
+        return "\n\n".join(_render(c) for c in selected)
+
     async def _get_relevant_memories_enhanced(
         self,
         user_id: str,
@@ -1135,16 +1204,19 @@ class OneToOneContextBuilder:
     MEMORY_CONTEXT_LIMIT = 10    # 最终注入提示词的记忆条数
     MEMORY_FALLBACK_COUNT = 5    # 无高分命中时保留的候选数量
 
-    def __init__(self, memory_service=None, foreshadow_service=None):
+    def __init__(self, memory_service=None, foreshadow_service=None, full_book_budget_chars: int = 0):
         """
         初始化构建器
-        
+
         Args:
             memory_service: 记忆服务实例（可选）
             foreshadow_service: 伏笔服务实例（可选）
+            full_book_budget_chars: Tier3 全书注入字符预算（0=禁用，
+                由模型上下文能力分级决定，见 D4 方案）
         """
         self.memory_service = memory_service
         self.foreshadow_service = foreshadow_service
+        self.full_book_budget_chars = full_book_budget_chars
     
     async def build(
         self,
@@ -1196,6 +1268,20 @@ class OneToOneContextBuilder:
                 chapter, project.id, db
             )
             logger.info(f"  ✅ P1-最近章节摘要: {len(context.recent_chapters_context or '')}字符")
+
+        # 0.5 Tier3 全书注入（1M 上下文利用，双模式）
+        if self.full_book_budget_chars > 0:
+            full_book_result = await db.execute(
+                select(Chapter)
+                .where(Chapter.project_id == project.id)
+                .where(Chapter.chapter_number <= chapter_number)
+                .order_by(Chapter.chapter_number)
+            )
+            context.full_book_context = self._build_full_book_context(
+                full_book_result.scalars().all(),
+                budget_chars=self.full_book_budget_chars,
+            )
+            logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
 
         # 1. 获取上一章完整正文和上一章摘要
         if chapter_number > 1:

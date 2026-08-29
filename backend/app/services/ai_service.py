@@ -86,6 +86,59 @@ def resolve_effective_max_tokens(
     return default
 
 
+# 已知模型上下文窗口（D4 模型能力分级；未列出的按保守值处理）
+_KNOWN_CONTEXT_WINDOWS = {
+    "deepseek-v4": 1000000,
+    "deepseek-v3": 1000000,
+    "deepseek-r1": 163840,
+    "gpt-5": 400000,
+    "gpt-4o": 128000,
+    "gpt-4.1": 1047576,
+    "gpt-4": 8192,
+    "gpt-3.5": 16384,
+    "claude-3": 200000,
+    "claude-2": 100000,
+    "gemini-1.5": 2000000,
+    "gemini-2": 1000000,
+    "qwen": 131072,
+    "glm": 131072,
+    "minimax": 200000,
+}
+
+
+def detect_context_window(model: Optional[str]) -> int:
+    """检测模型上下文窗口（token 数）。
+
+    基于模型名前缀匹配已知表，未命中的返回保守值 32K。
+    """
+    name = (model or "").lower()
+    for key, window in _KNOWN_CONTEXT_WINDOWS.items():
+        if key in name:
+            return window
+    return 32768
+
+
+# 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
+# 全书注入保留 20% 余量给输出与系统提示词
+_FULL_BOOK_BUDGET_RATIO = 0.8
+_1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入
+
+
+def resolve_context_budget_chars(model: Optional[str]) -> int:
+    """按模型上下文窗口解析全书注入字符预算（Tier3）。
+
+    - 1M 以上窗口 → 全书全量注入预算（≈窗口的 80% 字符）
+    - 128K-1M → 降级为中等预算（摘要+检索为主，不触发全书全量）
+    - 小窗口 → 保守预算（基本不注入全书）
+    """
+    window = detect_context_window(model)
+    if window >= 1000000:
+        return int(window * _FULL_BOOK_BUDGET_RATIO)
+    if window >= 128000:
+        return int(window * 0.3)
+    return int(window * 0.1)
+
+
 class AIService:
     """
     AI服务统一接口
