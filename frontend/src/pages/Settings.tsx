@@ -324,6 +324,7 @@ export default function SettingsPage() {
     { value: 'openai', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
     // { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
     { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+    { value: 'commandcode', label: 'Command Code GOAT', defaultUrl: 'https://api.commandcode.ai/provider/v1' },
   ];
 
   const selectedProvider = Form.useWatch('api_provider', form);
@@ -344,6 +345,9 @@ export default function SettingsPage() {
       if (builtInKeyProviders.includes(provider.value)) {
         nextValues.api_key = '';
         nextValues.llm_model = provider.defaultModel || xiaomiMimoDefaultModels[0].value;
+      }
+      if (provider.value === 'commandcode') {
+        nextValues.llm_model = 'deepseek/deepseek-v4-flash';
       }
       form.setFieldsValue(nextValues);
     }
