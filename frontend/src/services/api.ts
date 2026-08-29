@@ -1332,3 +1332,8 @@ export const projectAgentApi = {
     }
   },
 };
+
+export const changelogApi = {
+  getLocalChangelog: () =>
+    api.get<unknown, { entries: Array<{ id: string; date: string; message: string }> }>('/changelog'),
+};
