@@ -44,6 +44,24 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
 ID = {"type": "string", "minLength": 1, "pattern": r".*\S.*"}
 DATA = {"type": "object", "additionalProperties": True}
 
+# 关系工具 data 字段显式 Schema，避免 LLM 猜错字段名
+RELATIONSHIP_DATA = {
+    "type": "object",
+    "properties": {
+        "character_from_id": {"type": "string", "description": "关系来源角色ID"},
+        "character_to_id": {"type": "string", "description": "关系目标角色ID"},
+        "relationship_type_id": {"type": "integer", "description": "关系类型ID（来自 get_relationship_types）"},
+        "relationship_name": {"type": "string", "description": "关系名称（可选）"},
+        "intimacy_level": {"type": "integer", "minimum": -100, "maximum": 100, "description": "亲密度，-100 到 100"},
+        "status": {"type": "string", "enum": ["active", "broken", "past", "complicated"], "description": "关系状态"},
+        "description": {"type": "string", "description": "关系描述"},
+        "started_at": {"type": "string", "description": "关系开始时间（可选）"},
+        "ended_at": {"type": "string", "description": "关系结束时间（可选）"},
+    },
+    "required": ["character_from_id", "character_to_id", "relationship_type_id"],
+    "additionalProperties": False,
+}
+
 
 EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -120,7 +138,7 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "manage_relationship",
         "description": "创建、更新或删除当前项目的角色关系；执行前必须确认。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete"]}, "relationship_id": ID, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete"]}, "relationship_id": ID, "data": RELATIONSHIP_DATA}, ["action"]),
         "risk_level": 2,
         "resources": ("relationships",),
     },
