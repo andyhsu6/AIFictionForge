@@ -32,6 +32,7 @@ from app.services.prompt_service import prompt_service, PromptService
 from app.services.memory_service import memory_service
 from app.services.plot_expansion_service import PlotExpansionService
 from app.services.foreshadow_service import foreshadow_service
+from app.services.relationship_service import relationship_display_name
 from app.services.memory_service import memory_service
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
@@ -610,7 +611,7 @@ async def _build_outline_continue_context(
                                 target_name = name_map.get(r.character_to_id, "未知")
                             else:
                                 target_name = name_map.get(r.character_from_id, "未知")
-                            rel_name = r.relationship_name or "相关"
+                            rel_name = await relationship_display_name(db, r)
                             rel_parts.append(f"与{target_name}：{rel_name}")
                         char_text += f"\n  关系网络：{'；'.join(rel_parts)}"
                 

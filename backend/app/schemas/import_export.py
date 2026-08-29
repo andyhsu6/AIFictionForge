@@ -70,6 +70,7 @@ class RelationshipExportData(BaseModel):
     source_name: str
     target_name: str
     relationship_name: Optional[str] = None
+    relationship_type_names: Optional[List[str]] = None
     intimacy_level: int = 50
     status: str = "active"
     description: Optional[str] = None

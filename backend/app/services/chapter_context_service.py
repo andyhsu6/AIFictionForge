@@ -14,6 +14,7 @@ from app.models.career import Career, CharacterCareer
 from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.foreshadow import Foreshadow
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
+from app.services.relationship_service import relationship_display_name
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -606,7 +607,7 @@ class OneToManyContextBuilder:
                             target_name = all_char_map.get(r.character_to_id, "未知")
                         else:
                             target_name = all_char_map.get(r.character_from_id, "未知")
-                        rel_name = r.relationship_name or "相关"
+                        rel_name = await relationship_display_name(db, r)
                         rel_parts.append(f"与{target_name}：{rel_name}")
                     info_lines.append(f"  关系网络: {'；'.join(rel_parts)}")
             
@@ -1696,7 +1697,7 @@ class OneToOneContextBuilder:
                                 target_name = name_map.get(r.character_to_id, "未知")
                             else:
                                 target_name = name_map.get(r.character_from_id, "未知")
-                            rel_name = r.relationship_name or "相关"
+                            rel_name = await relationship_display_name(db, r)
                             rel_parts.append(f"与{target_name}：{rel_name}")
                         info_lines.append(f"  关系网络: {'；'.join(rel_parts)}")
             
@@ -1867,4 +1868,3 @@ class OneToOneContextBuilder:
         except Exception as e:
             logger.error(f"❌ 获取伏笔提醒失败: {str(e)}")
             return None
-

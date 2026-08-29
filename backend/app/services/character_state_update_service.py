@@ -393,11 +393,7 @@ class CharacterStateUpdateService:
                 intimacy_delta = CharacterStateUpdateService._calculate_intimacy_delta(change_desc)
 
                 if existing_rel:
-                    # 更新已有关系
-                    # 更新关系名称为最新的变化描述（以AI分析结果为准）
-                    existing_rel.relationship_name = change_desc
-                    
-                    # 追加变更记录到描述
+                    # 不覆盖原关系名称；只追加章节变化描述
                     chapter_note = f"[第{chapter_number}章] {change_desc}"
                     if existing_rel.description:
                         existing_rel.description = f"{existing_rel.description}\n{chapter_note}"
@@ -421,7 +417,7 @@ class CharacterStateUpdateService:
                     logger.info(f"  ✅ 更新关系: {character.name}↔{target_name} - {change_desc}")
 
                 else:
-                    # 创建新关系 — 关系名称直接使用AI的变化描述
+                    # 创建新关系 — 关系名称保留通用标签，变化描述写入 description
                     # 设定初始亲密度
                     initial_intimacy = max(-100, min(100, 50 + intimacy_delta))
 
@@ -430,8 +426,8 @@ class CharacterStateUpdateService:
                         project_id=project_id,
                         character_from_id=character.id,
                         character_to_id=target_character.id,
-                        relationship_type_id=None,  # 不强制关联预定义类型
-                        relationship_name=change_desc,  # 直接使用AI分析返回的描述
+                        relationship_name="",
+                        relationship_type_id=None,
                         intimacy_level=initial_intimacy,
                         status="active",
                         description=f"[第{chapter_number}章] {change_desc}",

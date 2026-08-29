@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, Slider, Input, Tabs, AutoComplete, theme } from 'antd';
+import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, Slider, Input, Tabs, theme } from 'antd';
 import { PlusOutlined, ApartmentOutlined, UserOutlined, EditOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import axios from 'axios';
@@ -12,6 +12,7 @@ interface Relationship {
   character_from_id: string;
   character_to_id: string;
   relationship_name: string;
+  relationship_type_names?: string[];
   intimacy_level: number;
   status: string;
   description?: string;
@@ -24,6 +25,10 @@ interface RelationshipType {
   category: string;
   reverse_name?: string;
   icon?: string;
+  description?: string;
+  is_system?: boolean;
+  source?: string;
+  project_id?: string | null;
 }
 
 interface Character {
@@ -49,6 +54,9 @@ export default function Relationships() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
+  const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
+  const [editingType, setEditingType] = useState<RelationshipType | null>(null);
+  const [typeForm] = Form.useForm();
 
   useEffect(() => {
     const handleResize = () => {
@@ -71,7 +79,7 @@ export default function Relationships() {
     try {
       const [relsRes, typesRes, charsRes] = await Promise.all([
         axios.get(`/api/relationships/project/${projectId}`),
-        axios.get('/api/relationships/types'),
+        axios.get(`/api/relationships/types?project_id=${projectId}`),
         axios.get(`/api/characters?project_id=${projectId}`)
       ]);
 
@@ -89,7 +97,7 @@ export default function Relationships() {
   const handleCreateRelationship = async (values: {
     character_from_id: string;
     character_to_id: string;
-    relationship_name: string;
+    relationship_type_names: string[];
     intimacy_level: number;
     status: string;
     description?: string;
@@ -97,7 +105,8 @@ export default function Relationships() {
     try {
       await axios.post('/api/relationships/', {
         project_id: projectId,
-        ...values
+        ...values,
+        relationship_name: values.relationship_type_names?.join('、') || '',
       });
       message.success('关系创建成功');
       setIsModalOpen(false);
@@ -115,7 +124,7 @@ export default function Relationships() {
     form.setFieldsValue({
       character_from_id: record.character_from_id,
       character_to_id: record.character_to_id,
-      relationship_name: record.relationship_name,
+      relationship_type_names: record.relationship_type_names || (record.relationship_name ? [record.relationship_name] : []),
       intimacy_level: record.intimacy_level,
       status: record.status,
       description: record.description,
@@ -126,7 +135,7 @@ export default function Relationships() {
   const handleUpdateRelationship = async (values: {
     character_from_id: string;
     character_to_id: string;
-    relationship_name: string;
+    relationship_type_names: string[];
     intimacy_level: number;
     status: string;
     description?: string;
@@ -135,7 +144,8 @@ export default function Relationships() {
 
     try {
       await axios.put(`/api/relationships/${editingRelationship.id}`, {
-        relationship_name: values.relationship_name,
+        relationship_type_names: values.relationship_type_names,
+        relationship_name: values.relationship_type_names?.join('、') || '',
         intimacy_level: values.intimacy_level,
         status: values.status,
         description: values.description,
@@ -167,6 +177,63 @@ export default function Relationships() {
           loadData();
         } catch (error) {
           message.error('删除失败');
+          console.error(error);
+        }
+      }
+    });
+  };
+
+  const openCreateTypeModal = () => {
+    setEditingType(null);
+    typeForm.resetFields();
+    setIsTypeModalOpen(true);
+  };
+
+  const openEditTypeModal = (type: RelationshipType) => {
+    setEditingType(type);
+    typeForm.setFieldsValue({
+      name: type.name,
+      category: type.category,
+      reverse_name: type.reverse_name,
+      description: type.description,
+      icon: type.icon,
+    });
+    setIsTypeModalOpen(true);
+  };
+
+  const handleSaveType = async (values: { name: string; category: string; reverse_name?: string; description?: string; icon?: string }) => {
+    try {
+      if (editingType) {
+        await axios.put(`/api/relationships/types/${editingType.id}`, values);
+      } else {
+        await axios.post('/api/relationships/types', { project_id: projectId, ...values });
+      }
+      message.success(editingType ? '关系类型已更新' : '关系类型已创建');
+      setIsTypeModalOpen(false);
+      setEditingType(null);
+      typeForm.resetFields();
+      loadData();
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '保存关系类型失败');
+      console.error(error);
+    }
+  };
+
+  const handleDeleteType = async (type: RelationshipType) => {
+    modal.confirm({
+      title: '确认删除',
+      content: `确定要删除关系类型「${type.name}」吗？`,
+      centered: true,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await axios.delete(`/api/relationships/types/${type.id}`);
+          message.success('关系类型删除成功');
+          loadData();
+        } catch (error: any) {
+          message.error(error?.response?.data?.detail || '删除失败');
           console.error(error);
         }
       }
@@ -222,7 +289,13 @@ export default function Relationships() {
       title: '关系',
       dataIndex: 'relationship_name',
       key: 'relationship',
-      render: (name: string) => <strong>{name}</strong>,
+      render: (_: string, record: Relationship) => (
+        <Space size={4} wrap>
+          {(record.relationship_type_names?.length ? record.relationship_type_names : [record.relationship_name])
+            .filter(Boolean)
+            .map(name => <Tag key={name} color="blue">{name}</Tag>)}
+        </Space>
+      ),
       width: 120,
     },
     {
@@ -300,6 +373,25 @@ export default function Relationships() {
     return acc;
   }, {} as Record<string, RelationshipType[]>);
 
+  const groupedRelationships = relationships.reduce<Record<string, Relationship[]>>((acc, rel) => {
+    const key = [rel.character_from_id, rel.character_to_id].sort().join('|');
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(rel);
+    return acc;
+  }, {});
+
+  const groupedRows = Object.entries(groupedRelationships).map(([key, rels]) => ({
+    key,
+    id: rels[0].id,
+    character_from_id: rels[0].character_from_id,
+    character_to_id: rels[0].character_to_id,
+    relationship_name: rels.flatMap(r => r.relationship_type_names?.length ? r.relationship_type_names : [r.relationship_name]).join('、'),
+    intimacy_level: Math.round(rels.reduce((sum, r) => sum + (r.intimacy_level || 0), 0) / rels.length),
+    status: rels.map(r => r.status).join(' / '),
+    source: rels.map(r => r.source).join(' / '),
+    children: rels,
+  }));
+
   const categoryLabels: Record<string, string> = {
     family: '家族关系',
     social: '社交关系',
@@ -346,9 +438,10 @@ export default function Relationships() {
               children: (
                 <Table
                   columns={columns}
-                  dataSource={relationships}
-                  rowKey="id"
+                  dataSource={groupedRows}
+                  rowKey="key"
                   loading={loading}
+                  expandable={{ childrenColumnName: 'children' }}
                   pagination={{
                     current: currentPage,
                     pageSize: isMobile ? 10 : pageSize,
@@ -380,7 +473,14 @@ export default function Relationships() {
             },
             {
               key: 'types',
-              label: `关系类型 (${relationshipTypes.length})`,
+              label: (
+                <Space>
+                  <span>关系类型 ({relationshipTypes.length})</span>
+                  <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateTypeModal}>
+                    新增
+                  </Button>
+                </Space>
+              ),
               children: (
                 <div style={{
                   display: 'grid',
@@ -398,10 +498,19 @@ export default function Relationships() {
                     >
                       <Space direction="vertical" style={{ width: '100%' }}>
                         {types.map(type => (
-                          <Tag key={type.id} color={getCategoryColor(category)}>
-                            {type.icon} {type.name}
-                            {type.reverse_name && ` ↔ ${type.reverse_name}`}
-                          </Tag>
+                          <Space key={type.id} style={{ width: '100%', justifyContent: 'space-between' }}>
+                            <Tag color={getCategoryColor(category)}>
+                              {type.icon} {type.name}
+                              {type.reverse_name && ` ↔ ${type.reverse_name}`}
+                              {!type.is_system && <span style={{ marginLeft: 4, color: 'gray' }}>项目</span>}
+                            </Tag>
+                            {!type.is_system && (
+                              <Space size={4}>
+                                <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEditTypeModal(type)} />
+                                <Button size="small" type="link" danger onClick={() => handleDeleteType(type)}>删除</Button>
+                              </Space>
+                            )}
+                          </Space>
                         ))}
                       </Space>
                     </Card>
@@ -452,19 +561,17 @@ export default function Relationships() {
           </Form.Item>
 
           <Form.Item
-            name="relationship_name"
-            label="关系类型"
-            rules={[{ required: true, message: '请选择或输入关系类型' }]}
+            name="relationship_type_names"
+            label="关系类型（可多选）"
+            rules={[{ required: true, message: '请至少选择一个关系类型' }]}
           >
-            <AutoComplete
-              placeholder="选择预定义类型或输入自定义关系"
+            <Select
+              mode="tags"
+              placeholder="选择已有类型或输入新类型"
               options={relationshipTypes.map(t => ({
-                label: `${t.icon || ''} ${t.name} (${categoryLabels[t.category]})`,
+                label: `${t.icon || ''} ${t.name}${t.is_system ? '' : '（项目）'}`,
                 value: t.name
               }))}
-              filterOption={(inputValue, option) =>
-                option!.value.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1
-              }
             />
           </Form.Item>
 
@@ -532,6 +639,53 @@ export default function Relationships() {
               <Button type="primary" htmlType="submit">
                 {isEditMode ? '更新' : '创建'}
               </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={editingType ? '编辑关系类型' : '新增关系类型'}
+        open={isTypeModalOpen}
+        onCancel={() => {
+          setIsTypeModalOpen(false);
+          setEditingType(null);
+          typeForm.resetFields();
+        }}
+        footer={null}
+        centered={!isMobile}
+        width={isMobile ? '100%' : 480}
+      >
+        <Form form={typeForm} layout="vertical" onFinish={handleSaveType}>
+          <Form.Item name="name" label="类型名称" rules={[{ required: true, message: '请输入类型名称' }]}>
+            <Input maxLength={50} />
+          </Form.Item>
+          <Form.Item name="category" label="分类" initialValue="custom">
+            <Select options={[
+              { label: '自定义', value: 'custom' },
+              { label: '家族关系', value: 'family' },
+              { label: '社交关系', value: 'social' },
+              { label: '职业关系', value: 'professional' },
+              { label: '敌对关系', value: 'hostile' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="reverse_name" label="反向名称">
+            <Input maxLength={50} />
+          </Form.Item>
+          <Form.Item name="icon" label="图标">
+            <Input maxLength={50} />
+          </Form.Item>
+          <Form.Item name="description" label="描述">
+            <TextArea rows={2} />
+          </Form.Item>
+          <Form.Item>
+            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Button onClick={() => {
+                setIsTypeModalOpen(false);
+                setEditingType(null);
+                typeForm.resetFields();
+              }}>取消</Button>
+              <Button type="primary" htmlType="submit">保存</Button>
             </Space>
           </Form.Item>
         </Form>

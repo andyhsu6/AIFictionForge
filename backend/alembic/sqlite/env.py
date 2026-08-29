@@ -23,7 +23,7 @@ from app.database import Base
 from app.models import (
     Project, Outline, Character, Chapter, GenerationHistory,
     Settings, WritingStyle, ProjectDefaultStyle,
-    RelationshipType, CharacterRelationship, Organization, OrganizationMember,
+    RelationshipType, CharacterRelationship, RelationshipTypeLink, Organization, OrganizationMember,
     StoryMemory, PlotAnalysis, AnalysisTask, BatchGenerationTask,
     RegenerationTask, Career, CharacterCareer, User, MCPPlugin, PromptTemplate,
     BackgroundTask

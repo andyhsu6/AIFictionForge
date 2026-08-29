@@ -13,6 +13,7 @@ from app.models.outline import Outline
 from app.models.chapter import Chapter
 from app.models.career import Career, CharacterCareer
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
+from app.services.relationship_service import resolve_relationship_type_ids, sync_relationship_links
 from app.models.writing_style import WritingStyle
 from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
@@ -1092,17 +1093,13 @@ async def characters_generator(
                                 source="ai"
                             )
                             
-                            # 匹配预定义关系类型
-                            rel_type_result = await db.execute(
-                                select(RelationshipType).where(
-                                    RelationshipType.name == rel.get("relationship_type")
-                                )
-                            )
-                            rel_type = rel_type_result.scalar_one_or_none()
-                            if rel_type:
-                                relationship.relationship_type_id = rel_type.id
-                            
                             db.add(relationship)
+                            await db.flush()
+                            type_names = rel.get("relationship_types") or [rel.get("relationship_type")]
+                            type_ids = await resolve_relationship_type_ids(
+                                db, project_id, type_names, source="ai"
+                            )
+                            await sync_relationship_links(db, relationship, type_ids)
                             relationships_created += 1
                             logger.info(f"  ✅ 向导创建关系：{character.name} -> {target_name} ({rel.get('relationship_type')})")
                         else:

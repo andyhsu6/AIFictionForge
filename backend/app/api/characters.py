@@ -23,6 +23,8 @@ from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
+from app.services.relationship_service import relationship_display_name
+from app.services.relationship_service import resolve_relationship_type_ids, sync_relationship_links
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
@@ -72,10 +74,9 @@ async def _build_relationships_summary(character_id: str, project_id: str, db: A
     for r in rels:
         if r.character_from_id == character_id:
             target_name = name_map.get(r.character_to_id, "未知")
-            rel_name = r.relationship_name or "相关"
         else:
             target_name = name_map.get(r.character_from_id, "未知")
-            rel_name = r.relationship_name or "相关"
+        rel_name = await relationship_display_name(db, r)
         parts.append(f"与{target_name}：{rel_name}")
     
     return "；".join(parts)
@@ -1236,17 +1237,13 @@ async def generate_character_stream(
                                     source="ai"
                                 )
                                 
-                                # 匹配预定义关系类型
-                                rel_type_result = await db.execute(
-                                    select(RelationshipType).where(
-                                        RelationshipType.name == rel.get("relationship_type")
-                                    )
-                                )
-                                rel_type = rel_type_result.scalar_one_or_none()
-                                if rel_type:
-                                    relationship.relationship_type_id = rel_type.id
-                                
                                 db.add(relationship)
+                                await db.flush()
+                                type_names = rel.get("relationship_types") or [rel.get("relationship_type")]
+                                type_ids = await resolve_relationship_type_ids(
+                                    db, request.project_id, type_names, source="ai"
+                                )
+                                await sync_relationship_links(db, relationship, type_ids)
                                 created_rels += 1
                                 logger.info(f"  ✅ 创建关系：{character.name} -> {target_name} ({rel.get('relationship_type')})")
                             else:

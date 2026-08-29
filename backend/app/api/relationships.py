@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.relationship import (
     RelationshipType,
     CharacterRelationship,
+    RelationshipTypeLink,
     Organization,
     OrganizationMember
 )
@@ -15,6 +16,8 @@ from app.models.character import Character
 from app.models.project import Project
 from app.schemas.relationship import (
     RelationshipTypeResponse,
+    RelationshipTypeCreate,
+    RelationshipTypeUpdate,
     CharacterRelationshipCreate,
     CharacterRelationshipUpdate,
     CharacterRelationshipResponse,
@@ -24,17 +27,135 @@ from app.schemas.relationship import (
 )
 from app.logger import get_logger
 from app.api.common import verify_project_access
+from app.services.relationship_service import (
+    normalize_relationship_type_name,
+    resolve_relationship_type_ids,
+    sync_relationship_links,
+    relationship_display_name,
+    relationship_display_names,
+    ensure_relationship_type_not_in_use,
+)
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
 logger = get_logger(__name__)
 
 
 @router.get("/types", response_model=List[RelationshipTypeResponse], summary="获取关系类型列表")
-async def get_relationship_types(db: AsyncSession = Depends(get_db)):
-    """获取所有预定义的关系类型"""
-    result = await db.execute(select(RelationshipType).order_by(RelationshipType.category, RelationshipType.id))
+async def get_relationship_types(
+    request: Request,
+    project_id: Optional[str] = Query(None, description="项目ID，返回系统预置+项目级类型"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取关系类型列表；不传 project_id 时仅返回系统预置。"""
+    query = select(RelationshipType).order_by(RelationshipType.category, RelationshipType.id)
+    if project_id:
+        user_id = getattr(request.state, 'user_id', None)
+        await verify_project_access(project_id, user_id, db)
+        query = query.where(
+            (RelationshipType.project_id == project_id) | (RelationshipType.project_id.is_(None))
+        )
+    else:
+        query = query.where(RelationshipType.project_id.is_(None))
+    result = await db.execute(query)
     types = result.scalars().all()
     return types
+
+
+@router.post("/types", response_model=RelationshipTypeResponse, summary="创建项目级关系类型")
+async def create_relationship_type(
+    payload: RelationshipTypeCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(payload.project_id, user_id, db)
+    name = normalize_relationship_type_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=422, detail="关系类型名称不能为空")
+    ids = await resolve_relationship_type_ids(
+        db,
+        payload.project_id,
+        [name],
+        source="manual",
+        category=payload.category,
+    )
+    type_id = ids[0]
+    rt = (
+        await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
+    ).scalar_one_or_none()
+    if not rt:
+        raise HTTPException(status_code=500, detail="关系类型创建失败")
+    if payload.reverse_name is not None:
+        rt.reverse_name = payload.reverse_name
+    if payload.icon is not None:
+        rt.icon = payload.icon
+    if payload.description is not None:
+        rt.description = payload.description
+    await db.commit()
+    await db.refresh(rt)
+    return rt
+
+
+@router.put("/types/{type_id}", response_model=RelationshipTypeResponse, summary="更新项目级关系类型")
+async def update_relationship_type(
+    type_id: int,
+    payload: RelationshipTypeUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    rt = (
+        await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
+    ).scalar_one_or_none()
+    if not rt:
+        raise HTTPException(status_code=404, detail="关系类型不存在")
+    if rt.is_system:
+        raise HTTPException(status_code=403, detail="系统预置类型不可修改")
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(rt.project_id, user_id, db)
+    update_data = payload.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        name = normalize_relationship_type_name(update_data["name"])
+        if not name:
+            raise HTTPException(status_code=422, detail="关系类型名称不能为空")
+        dup = (
+            await db.execute(
+                select(RelationshipType).where(
+                    RelationshipType.project_id == rt.project_id,
+                    RelationshipType.name == name,
+                    RelationshipType.id != rt.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if dup:
+            raise HTTPException(status_code=409, detail="同项目已存在同名关系类型")
+        update_data["name"] = name
+    for field, value in update_data.items():
+        setattr(rt, field, value)
+    await db.commit()
+    await db.refresh(rt)
+    return rt
+
+
+@router.delete("/types/{type_id}", summary="删除项目级关系类型")
+async def delete_relationship_type(
+    type_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    rt = (
+        await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
+    ).scalar_one_or_none()
+    if not rt:
+        raise HTTPException(status_code=404, detail="关系类型不存在")
+    if rt.is_system:
+        raise HTTPException(status_code=403, detail="系统预置类型不可删除")
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(rt.project_id, user_id, db)
+    if await ensure_relationship_type_not_in_use(db, rt.project_id, rt.id):
+        raise HTTPException(status_code=409, detail="该类型仍被关系使用，无法删除")
+    await db.delete(rt)
+    await db.commit()
+    return {"message": "关系类型删除成功", "id": type_id}
 
 
 @router.get("/project/{project_id}", response_model=List[CharacterRelationshipResponse], summary="获取项目的所有关系")
@@ -69,6 +190,8 @@ async def get_project_relationships(
     query = query.order_by(CharacterRelationship.created_at.desc())
     result = await db.execute(query)
     relationships = result.scalars().all()
+    for r in relationships:
+        r.relationship_type_names = await relationship_display_names(db, r)
     
     logger.info(f"获取项目 {project_id} 的关系列表，共 {len(relationships)} 条")
     return relationships
@@ -116,16 +239,20 @@ async def get_relationship_graph(
     )
     relationships = rels_result.scalars().all()
 
-    links = [
-        RelationshipGraphLink(
-            source=r.character_from_id,
-            target=r.character_to_id,
-            relationship=r.relationship_name or "未知关系",
-            intimacy=r.intimacy_level,
-            status=r.status
+    links: list[RelationshipGraphLink] = []
+    for r in relationships:
+        names = await relationship_display_names(db, r)
+        links.append(
+            RelationshipGraphLink(
+                source=r.character_from_id,
+                target=r.character_to_id,
+                relationship=r.relationship_name or "、".join(names) or "未知关系",
+                relationship_names=names,
+                relationship_ids=[t.id for t in await _load_relationship_type_ids(db, r.id)],
+                intimacy=r.intimacy_level,
+                status=r.status,
+            )
         )
-        for r in relationships
-    ]
 
     # 获取组织成员关系（组织 -> 成员）并追加到图谱边
     # source 使用组织对应的角色ID（Organization.character_id），确保与节点ID一致
@@ -188,13 +315,26 @@ async def create_relationship(
         raise HTTPException(status_code=404, detail=f"角色B（ID: {relationship.character_to_id}）不存在")
     
     # 创建关系
-    db_relationship = CharacterRelationship(
-        **relationship.model_dump(),
-        source="manual"
-    )
+    create_data = relationship.model_dump(exclude={"relationship_type_ids", "relationship_type_names"})
+    db_relationship = CharacterRelationship(**create_data, source="manual")
     db.add(db_relationship)
+    await db.flush()
+    type_ids = list(relationship.relationship_type_ids or [])
+    if relationship.relationship_type_id and relationship.relationship_type_id not in type_ids:
+        type_ids.insert(0, relationship.relationship_type_id)
+    if relationship.relationship_type_names:
+        type_ids.extend(
+            await resolve_relationship_type_ids(
+                db,
+                relationship.project_id,
+                relationship.relationship_type_names,
+                source="manual",
+            )
+        )
+    await sync_relationship_links(db, db_relationship, type_ids)
     await db.commit()
     await db.refresh(db_relationship)
+    db_relationship.relationship_type_names = await relationship_display_names(db, db_relationship)
     
     logger.info(f"创建关系成功：{relationship.character_from_id} -> {relationship.character_to_id}")
     return db_relationship
@@ -222,16 +362,43 @@ async def update_relationship(
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(db_rel.project_id, user_id, db)
     
-    # 更新字段
     update_data = relationship.model_dump(exclude_unset=True)
+    type_ids = update_data.pop("relationship_type_ids", None)
+    type_names = update_data.pop("relationship_type_names", None)
     for field, value in update_data.items():
         setattr(db_rel, field, value)
-    
+    if type_ids is not None or type_names is not None:
+        merged_ids = list(type_ids or [])
+        if update_data.get("relationship_type_id") and update_data["relationship_type_id"] not in merged_ids:
+            merged_ids.insert(0, update_data["relationship_type_id"])
+        if type_names:
+            merged_ids.extend(
+                await resolve_relationship_type_ids(
+                    db,
+                    db_rel.project_id,
+                    type_names,
+                    source="manual",
+                )
+            )
+        await sync_relationship_links(db, db_rel, merged_ids)
     await db.commit()
     await db.refresh(db_rel)
+    db_rel.relationship_type_names = await relationship_display_names(db, db_rel)
     
     logger.info(f"更新关系成功：{relationship_id}")
     return db_rel
+
+
+async def _load_relationship_type_ids(db: AsyncSession, relationship_id: str) -> list[RelationshipType]:
+    rows = (
+        await db.execute(
+            select(RelationshipType)
+            .join(RelationshipTypeLink, RelationshipTypeLink.relationship_type_id == RelationshipType.id)
+            .where(RelationshipTypeLink.relationship_id == relationship_id)
+            .order_by(RelationshipType.id)
+        )
+    ).scalars().all()
+    return list(rows)
 
 
 @router.delete("/{relationship_id}", summary="删除关系")

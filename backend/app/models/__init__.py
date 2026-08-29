@@ -3,7 +3,7 @@ from app.models.project import Project
 from app.models.outline import Outline
 from app.models.chapter import Chapter
 from app.models.character import Character
-from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
+from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType, RelationshipTypeLink
 from app.models.generation_history import GenerationHistory
 from app.models.analysis_task import AnalysisTask
 from app.models.batch_generation_task import BatchGenerationTask
@@ -31,6 +31,7 @@ __all__ = [
     "Organization",
     "OrganizationMember",
     "RelationshipType",
+    "RelationshipTypeLink",
     "GenerationHistory",
     "AnalysisTask",
     "BatchGenerationTask",
