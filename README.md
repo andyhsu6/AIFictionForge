@@ -1,4 +1,4 @@
-# MuMuAINovel 📚✨
+# AIFictionForge（灵创）📚✨
 
 <div align="center">
 
@@ -16,51 +16,9 @@
 
 ---
 
-<div align="center">
-
-## 💬 加入交流群
-
-欢迎扫码加入 QQ 交流群，一起交流 AI 小说创作心得、反馈问题、获取最新动态！
-
-<img src="frontend/public/qq.jpg" alt="QQ交流群二维码" width="300" />
-
-</div>
-
----
-
-<div align="center">
-
-## 💖 支持项目
-
-如果这个项目对你有帮助，欢迎通过以下方式支持开发：
-
-**[☕ 请我喝杯咖啡](https://mumuverse.space:1588/)**
-
-**[🌐 MuMuのAPI站点](https://api.mumuverse.space/register?aff=4NN8)**
-
-> 在 MuMu の API 站点充值满 50 元及以上，也可以获得下方赞助专属权益。
-
-### 🎁 赞助专属权益
-
-| 权益 | 说明 |
-|------|------|
-| 📋 **优先需求响应** | 您的功能需求和问题反馈将获得优先处理 |
-| 🚀 **Windows一键启动** | 获取免安装 EXE 程序，双击即可使用 |
-| 💬 **专属技术支持** | 加入赞助者内部群，获得远程协助和配置指导 |
-
-### ☕ 赞助 / API 站点充值档位
-
-| 金额 | 描述 |
-|------|------|
-| ¥5 | 🌶️ 一包辣条 |
-| ¥10 | 🍱 一顿拼好饭 |
-| ¥20 | ☕ 一杯咖啡 |
-| ¥50 | 🍖 一次烧烤  |
-| ¥99 | 🍲 一顿海底捞 |
-
-您的支持是我持续开发的动力！🙏
-
-</div>
+> 本项目 fork 自 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel)。
+> 这是基于上游源码的本地化与去上游化衍生版本，不是独立原创项目。
+> 感谢原作者与所有贡献者。代码遵循 GPL-3.0，详见 [LICENSE](LICENSE)。
 
 ---
 
@@ -98,11 +56,6 @@
 
 ![项目管理](images/3-1.png)
 
-### 赞助我 💖
-![赞助我](images/4.png)
-
-![赞助我](images/4-1.png)
-
 </div>
 
 </details>
@@ -122,14 +75,11 @@
 - [x] **职业等级体系** - 自定义职业和等级系统，支持修仙境界、魔法等级等多种体系
 - [x] **角色/组织卡片导入导出** - 单独导出角色和组织卡片，支持跨项目数据共享
 - [x] **伏笔管理** - 智能追踪剧情伏笔，提醒未回收线索，可视化伏笔时间线
-- [x] **提示词工坊** - 社区驱动的 Prompt 模板分享平台，一键导入优质提示词
-- [x] **拆书功能** - 目前呼声比较高的功能，一键拆书，给当年的ta一个圆满的结局
+- [x] **拆书功能** - 一键拆书
 
 ### 📝 规划中功能
 
 ......
-
-> 💡 欢迎提交 Issue 或 Pull Request！
 
 ## 💻 硬件配置要求
 
@@ -170,15 +120,17 @@
 
 ### 前置要求
 
-- Docker 和 Docker Compose
+- Docker 和 Docker Compose（可选，本地开发无需）
 - 至少一个 AI 服务的 API Key（OpenAI/Gemini/Claude）
 
-### Docker Compose 部署（推荐）
+### Docker Compose 部署
 
 ```bash
-# 1. 克隆项目
+# 1. 获取源码（本地已有源码则跳过）
+# 若从上游 fork，先克隆上游仓库：
 git clone https://github.com/xiamuceer-j/MuMuAINovel.git
 cd MuMuAINovel
+# 然后将本衍生版本的修改合并到你的副本中
 
 # 2. 配置环境变量（必需）
 cp backend/.env.example .env
@@ -199,184 +151,20 @@ docker-compose up -d
 > **📌 注意事项**
 >
 > 1. **`.env` 文件挂载**: `docker-compose.yml` 会自动将 `.env` 挂载到容器，确保文件存在
-> 2. **数据库初始化**: `init_postgres.sql` 会在首次启动时自动执行，安装必要的PostgreSQL扩展
-> 3. **自行构建**: 如需从源码构建，请先下载 embedding 模型文件（[加群获取](frontend/public/qq.jpg)）
-
-### 使用 Docker Hub 镜像（推荐新手）
-
-```bash
-# 1. 拉取最新镜像（已包含模型文件）
-docker pull mumujie/mumuainovel:latest
-
-# 2. 创建 docker-compose.yml（点击下方展开查看完整配置）
-```
-
-<details>
-<summary>📄 点击展开 docker-compose.yml 完整配置</summary>
-
-```yaml
-services:
-  postgres:
-    image: postgres:18-alpine
-    container_name: mumuainovel-postgres
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-mumuai_novel}
-      POSTGRES_USER: ${POSTGRES_USER:-mumuai}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
-      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-      TZ: ${TZ:-Asia/Shanghai}
-    volumes:
-      - postgres_data:/var/lib/postgresql
-      - ./backend/scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mumuai} -d ${POSTGRES_DB:-mumuai_novel}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    networks:
-      - ai-story-network
-    command:
-      - postgres
-      - -c
-      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
-      - -c
-      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
-      - -c
-      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
-      - -c
-      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
-      - -c
-      - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
-      - -c
-      - wal_buffers=${POSTGRES_WAL_BUFFERS:-16MB}
-      - -c
-      - default_statistics_target=${POSTGRES_DEFAULT_STATISTICS_TARGET:-100}
-      - -c
-      - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}
-      - -c
-      - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
-      - -c
-      - work_mem=${POSTGRES_WORK_MEM:-4MB}
-      - -c
-      - min_wal_size=${POSTGRES_MIN_WAL_SIZE:-1GB}
-      - -c
-      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-4GB}
-
-  mumuainovel:
-    image: mumujie/mumuainovel:latest
-    container_name: mumuainovel
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
-      - ./storage/generated_covers:/app/backend/storage/generated_covers
-    environment:
-      # 应用配置
-      - APP_NAME=${APP_NAME:-MuMuAINovel}
-      - APP_VERSION=${APP_VERSION:-1.5.4}
-      - APP_HOST=${APP_HOST:-0.0.0.0}
-      - APP_PORT=8000
-      - DEBUG=${DEBUG:-false}
-      # 数据库配置
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-mumuai}:${POSTGRES_PASSWORD:-123456}@postgres:5432/${POSTGRES_DB:-mumuai_novel}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-123456}
-      # PostgreSQL 连接池配置
-      - DATABASE_POOL_SIZE=${DATABASE_POOL_SIZE:-30}
-      - DATABASE_MAX_OVERFLOW=${DATABASE_MAX_OVERFLOW:-20}
-      - DATABASE_POOL_TIMEOUT=${DATABASE_POOL_TIMEOUT:-60}
-      - DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE:-1800}
-      - DATABASE_POOL_PRE_PING=${DATABASE_POOL_PRE_PING:-True}
-      - DATABASE_POOL_USE_LIFO=${DATABASE_POOL_USE_LIFO:-True}
-      # 全局代理配置（可选）
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
-      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
-      # AI 服务配置
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_BASE_URL=${GEMINI_BASE_URL:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
-      - DEFAULT_AI_PROVIDER=${DEFAULT_AI_PROVIDER:-openai}
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
-      - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE:-0.7}
-      - DEFAULT_MAX_TOKENS=${DEFAULT_MAX_TOKENS:-32000}
-      - ALLOW_PRIVATE_AI_ENDPOINTS=${ALLOW_PRIVATE_AI_ENDPOINTS:-false}
-      - ALLOWED_AI_HOSTS=${ALLOWED_AI_HOSTS:-}
-      # LinuxDO OAuth 配置
-      - LINUXDO_CLIENT_ID=${LINUXDO_CLIENT_ID:-11111}
-      - LINUXDO_CLIENT_SECRET=${LINUXDO_CLIENT_SECRET:-11111}
-      - LINUXDO_REDIRECT_URI=${LINUXDO_REDIRECT_URI:-http://localhost:8000/api/auth/linuxdo/callback}
-      - LINUXDO_PROXY_URL=${LINUXDO_PROXY_URL:-}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8000}
-      # 本地账户登录配置
-      - LOCAL_AUTH_ENABLED=${LOCAL_AUTH_ENABLED:-true}
-      - LOCAL_AUTH_USERNAME=${LOCAL_AUTH_USERNAME:-admin}
-      - LOCAL_AUTH_PASSWORD=${LOCAL_AUTH_PASSWORD:-admin123}
-      - LOCAL_AUTH_DISPLAY_NAME=${LOCAL_AUTH_DISPLAY_NAME:-本地管理员}
-      # 会话配置
-      - SESSION_EXPIRE_MINUTES=${SESSION_EXPIRE_MINUTES:-120}
-      - SESSION_REFRESH_THRESHOLD_MINUTES=${SESSION_REFRESH_THRESHOLD_MINUTES:-30}
-      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - ai-story-network
-
-volumes:
-  postgres_data:
-    driver: local
-
-networks:
-  ai-story-network:
-    driver: bridge
-```
-
-</details>
-
-```bash
-# 3. 启动服务
-docker-compose up -d
-
-# 4. 查看日志
-docker-compose logs -f
-
-# 5. 更新到最新版本
-docker-compose pull
-docker-compose up -d
-```
-
-> **💡 提示**: Docker Hub 镜像已包含所有依赖和模型文件，无需额外下载
+> 2. **数据库初始化**: `init_postgres.sql` 会在首次启动时自动执行，安装必要的 PostgreSQL 扩展
+> 3. **自行构建**: 本项目不提供预构建镜像，请使用 `docker-compose build` 从源码自行构建；Embedding 模型文件需放置到 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`
 
 ### 本地开发 / 从源码构建
 
 #### 前置准备
 
 ```bash
-# ⚠️ 重要：如果从源码构建，需要先下载 embedding 模型文件
+# ⚠️ 重要：从源码运行前，需要先准备 embedding 模型文件
 # 模型文件较大（约 400MB），需放置到以下目录：
 # backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/
 #
-# 📥 获取方式：
-# - 加入项目 QQ 群或 Linux DO 讨论区获取下载链接
-# - 群号：见项目主页
-# - Linux DO：https://linux.do/t/topic/1100112
+# 📥 获取方式：首次启动时会从 Hugging Face 官方仓库自动下载，或手动下载
+# https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
 #### 后端
@@ -394,7 +182,7 @@ cp .env.example .env
 # 启动 PostgreSQL（可使用 Docker）
 docker run -d --name postgres \
   -e POSTGRES_PASSWORD=your_password \
-  -e POSTGRES_DB=mumuai_novel \
+  -e POSTGRES_DB=aistoryforge \
   -p 5432:5432 \
   postgres:18-alpine
 
@@ -419,7 +207,7 @@ npm run build  # 生产构建
 
 ```bash
 # PostgreSQL 数据库（必需）
-DATABASE_URL=postgresql+asyncpg://mumuai:your_password@postgres:5432/mumuai_novel
+DATABASE_URL=postgresql+asyncpg://aistoryforge:your_password@postgres:5432/aistoryforge
 POSTGRES_PASSWORD=your_secure_password
 
 # AI 服务
@@ -461,7 +249,6 @@ SESSION_COOKIE_SECURE=true
 >
 > - HTTPS 部署：建议保持 `SESSION_COOKIE_SECURE=true`，浏览器只会通过 HTTPS 发送登录 Cookie。
 > - HTTP 部署：如果登录后浏览器没有保存 Cookie，请在 `.env` 中设置 `SESSION_COOKIE_SECURE=false`，然后重启后端或 Docker 容器。
-> - Docker Compose 示例默认使用 `SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}`，如需关闭必须在 `.env` 中显式配置。
 >
 > **🌐 LinuxDO 专用代理说明**
 >
@@ -500,7 +287,7 @@ OPENAI_BASE_URL=https://your-proxy-service.com/v1
   - 初始化脚本: `backend/scripts/init_postgres.sql`（自动挂载）
   - 优化配置: 支持 80-150 并发用户
 
-- **mumuainovel**: 主应用服务
+- **aistoryforge**: 主应用服务
   - 端口: 8000
   - 日志目录: `./logs`
   - 配置挂载: `.env` 文件
@@ -516,12 +303,11 @@ OPENAI_BASE_URL=https://your-proxy-service.com/v1
 | `backend/scripts/init_postgres.sql` | PostgreSQL 扩展安装脚本 | ✅ 自动挂载 |
 | `backend/embedding/models--*/` | Embedding 模型文件 | ⚠️ 自建需要 |
 
-> **注意**: 使用 Docker Hub 镜像时，模型文件已包含在镜像中，无需额外下载
-
 ### 常用命令
 
 ```bash
-# 启动服务
+# 构建并启动服务
+docker-compose build
 docker-compose up -d
 
 # 查看状态
@@ -557,7 +343,7 @@ ports:
 ## 📁 项目结构
 
 ```
-MuMuAINovel/
+AIFictionForge/
 ├── backend/                 # 后端服务
 │   ├── app/
 │   │   ├── api/            # API 路由
@@ -598,24 +384,6 @@ MuMuAINovel/
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 提交 Pull Request
-
-### 贡献者
-
-感谢所有为本项目做出贡献的开发者！
-
-<a href="https://github.com/xiamuceer-j/MuMuAINovel/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=xiamuceer-j/MuMuAINovel" />
-</a>
-
 ## 📝 许可证
 
 本项目采用 [GNU General Public License v3.0](LICENSE)
@@ -629,38 +397,8 @@ MuMuAINovel/
 
 ## 🙏 致谢
 
+- 上游项目 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) 及所有贡献者
 - [FastAPI](https://fastapi.tiangolo.com/) - Python Web 框架
 - [React](https://react.dev/) - 前端框架
 - [Ant Design](https://ant.design/) - UI 组件库
 - [PostgreSQL](https://www.postgresql.org/) - 数据库
-
-## 📧 联系方式
-
-- 提交 [Issue](https://github.com/xiamuceer-j/MuMuAINovel/issues)
-- Linux DO [讨论](https://linux.do/t/topic/1106333)
-- 加入QQ群 [QQ群](frontend/public/qq.jpg)
-- 加入WX群 [WX群](frontend/public/WX.png)
-
----
-
-<div align="center">
-
-**如果这个项目对你有帮助，请给个 ⭐️ Star！**
-
-Made with ❤️
-
-</div>
-
-## Star History
-
-<a href="https://star-history.dera.page/#xiamuceer-j/MuMuAINovel&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=xiamuceer-j/MuMuAINovel&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=xiamuceer-j/MuMuAINovel&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=xiamuceer-j/MuMuAINovel&type=date&legend=top-left" />
- </picture>
-</a>
-
-## History
-
-![Alt](https://repobeats.axiom.co/api/embed/ee7141a5f269c64759302e067abe23b46796bafe.svg "Repobeats analytics image")
