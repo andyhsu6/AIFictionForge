@@ -1,6 +1,6 @@
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-const THEME_MODE_STORAGE_KEY = 'mumu_theme_mode';
+const THEME_MODE_STORAGE_KEY = 'aistoryforge_theme_mode';
 
 const isThemeMode = (value: string | null): value is ThemeMode => {
   return value === 'light' || value === 'dark' || value === 'system';

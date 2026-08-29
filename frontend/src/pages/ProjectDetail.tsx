@@ -406,7 +406,7 @@ export default function ProjectDetail() {
           <Space size={2} style={{ zIndex: 1 }}>
             <Button
               type="text"
-              icon={<img src="/logo.svg" alt="木木创作助手" style={{ width: 20, height: 20, display: 'block' }} />}
+              icon={<img src="/logo.svg" alt="灵创创作助手" style={{ width: 20, height: 20, display: 'block' }} />}
               onClick={() => setAgentDrawerVisible(true)}
               style={{ color: token.colorWhite, width: 36, height: 36 }}
             />
@@ -504,7 +504,7 @@ export default function ProjectDetail() {
                 }}>
                   <BookOutlined />
                 </div>
-                <span style={{ fontWeight: 600, fontSize: 16 }}>MuMuAINovel</span>
+                <span style={{ fontWeight: 600, fontSize: 16 }}>AIFictionForge</span>
               </div>
             }
             placement="left"
@@ -600,7 +600,7 @@ export default function ProjectDetail() {
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        MuMuAINovel
+                        AIFictionForge
                       </span>
                     </div>
                     <Button
