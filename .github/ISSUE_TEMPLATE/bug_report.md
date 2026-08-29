@@ -1,38 +1,42 @@
 ---
-name: Bug report
-about: Create a report to help us improve
-title: ''
-labels: ''
+name: Bug 报告
+about: 报告一个 bug，帮助我们改进
+title: '[Bug] '
+labels: bug
 assignees: ''
 
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## 问题描述
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+清晰简洁地描述这个 bug 是什么。
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## 复现步骤
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+1. 打开 '...'
+2. 点击 '....'
+3. 滚动到 '....'
+4. 看到错误
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## 预期行为
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+你期望发生什么。
 
-**Additional context**
-Add any other context about the problem here.
+## 实际行为
+
+实际发生了什么（如有错误信息请附上）。
+
+## 截图 / 日志
+
+如果适用，添加截图或日志帮助解释问题。
+
+## 环境信息
+
+ - 操作系统：[如 macOS 14.5]
+ - 浏览器：[如 Chrome 126]
+ - 部署方式：[如 Docker / 源码运行 / 本地开发]
+ - 版本：[如 1.5.4]
+
+## 补充信息
+
+其他有助于解决问题的上下文。
