@@ -1517,6 +1517,21 @@ class BookImportService:
         return max(5, min(count, 10))
 
     @staticmethod
+    def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = 1800) -> str:
+        """把章节原文构建为 excerpt 文本（Tier2 拆书喂全文）。
+
+        与关系抽取对齐：每章截取前 per_chapter_chars 字符，按章节号正序
+        拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
+        """
+        parts = []
+        for c in sorted(chapters, key=lambda x: x.chapter_number):
+            content = (c.content or "").strip()
+            if not content:
+                continue
+            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
+        return "\n\n".join(parts)
+
+    @staticmethod
     def _split_character_batches(total: int, batch_size: int = 6) -> list[int]:
         """把总目标数拆成若干小批次，控制单次 JSON 输出规模。"""
         if total <= batch_size:
@@ -1977,6 +1992,22 @@ class BookImportService:
             "如果包含组织，数量不超过2个。"
             "请尽量为非组织角色补充 organization_memberships。"
         )
+
+        # Tier2 拆书喂全文：把已入库章节原文 excerpt 注入角色生成，
+        # 让 AI 基于真实剧情生成角色（而非仅世界观摘要）
+        chapters_result = await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project.id)
+            .order_by(Chapter.chapter_number)
+        )
+        chapter_excerpt = self._build_chapter_excerpt(chapters_result.scalars().all())
+        if chapter_excerpt:
+            requirements += (
+                "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
+                "请基于其中真实出现的人物、组织与剧情生成角色，"
+                "避免编造与正文不符的内容。\n"
+                + chapter_excerpt
+            )
 
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
