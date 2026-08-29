@@ -24,7 +24,7 @@ def _session_secret() -> bytes:
         or settings.openai_api_key
     )
     if not secret:
-        secret = "mumuainovel-development-session-secret"
+        secret = "aistoryforge-development-session-secret"
     return str(secret).encode("utf-8")
 
 

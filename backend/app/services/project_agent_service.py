@@ -1,4 +1,4 @@
-"""木木创作助手会话编排、工具循环和持久化。"""
+"""灵创创作助手会话编排、工具循环和持久化。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -21,7 +21,7 @@ from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.project_agent_selectors import normalize_tool_arguments
 
 
-SYSTEM_PROMPT = """你是 MuMuAINovel 的“木木创作助手”，帮助用户查看和修改当前小说项目。
+SYSTEM_PROMPT = """你是 AIFictionForge 的“灵创创作助手”，帮助用户查看和修改当前小说项目。
 
 必须遵守以下规则：
 1. 只能使用提供的工具读取或修改当前项目，禁止猜测数据库中的值。
@@ -599,7 +599,7 @@ class ProjectAgentService:
 
             await self.db.commit()
 
-        raise RuntimeError("木木创作助手超过最大工具调用轮数")
+        raise RuntimeError("灵创创作助手超过最大工具调用轮数")
 
     async def _stream_chat_v2(
         self,
@@ -1068,7 +1068,7 @@ class ProjectAgentService:
             await self.db.commit()
             history = await self._load_history(conversation.id)
 
-        raise RuntimeError("木木创作助手超过最大工具调用轮数")
+        raise RuntimeError("灵创创作助手超过最大工具调用轮数")
 
     async def finalize_interrupted_turn(self, reason: str, *, cancelled: bool) -> None:
         """把已提交的部分调用记录绑定到一条可见的终止消息。"""

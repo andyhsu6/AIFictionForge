@@ -450,9 +450,9 @@ async def test_system_smtp_settings(
     if not from_email:
         raise HTTPException(status_code=400, detail="请先配置发件人邮箱或 SMTP 用户名")
 
-    subject = "MuMuAINovel SMTP 测试邮件"
+    subject = "AIFictionForge SMTP 测试邮件"
     text_body = (
-        "这是一封来自 MuMuAINovel 系统设置页面的 SMTP 测试邮件。\n\n"
+        "这是一封来自 AIFictionForge 系统设置页面的 SMTP 测试邮件。\n\n"
         f"发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"SMTP 服务商：{settings.smtp_provider}\n"
         f"SMTP 主机：{settings.smtp_host}:{settings.smtp_port}\n"
@@ -460,7 +460,7 @@ async def test_system_smtp_settings(
     )
     html_body = f"""
     <div style=\"font-family: Arial, sans-serif; line-height: 1.7; color: #1f1f1f;\">
-      <h2 style=\"margin-bottom: 12px;\">MuMuAINovel SMTP 测试邮件</h2>
+      <h2 style=\"margin-bottom: 12px;\">AIFictionForge SMTP 测试邮件</h2>
       <p>这是一封来自系统设置页面的 SMTP 测试邮件。</p>
       <ul>
         <li><strong>发送时间：</strong>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>

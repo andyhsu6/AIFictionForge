@@ -17,7 +17,7 @@ if [ -z "$APP_NAME" ]; then
     if [ -f "/app/.env.example" ]; then
         APP_NAME=$(grep "^APP_NAME=" /app/.env.example | cut -d '=' -f2)
     fi
-    APP_NAME="${APP_NAME:-MuMuAINovel}"
+    APP_NAME="${APP_NAME:-AIFictionForge}"
 fi
 
 BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S')
@@ -31,8 +31,8 @@ echo "================================================"
 # 数据库配置（从环境变量读取）
 DB_HOST="${DB_HOST:-postgres}"
 DB_PORT="${DB_PORT:-5432}"
-DB_USER="${POSTGRES_USER:-mumuai}"
-DB_NAME="${POSTGRES_DB:-mumuai_novel}"
+DB_USER="${POSTGRES_USER:-aistoryforge}"
+DB_NAME="${POSTGRES_DB:-aistoryforge}"
 
 # 等待数据库就绪
 echo "⏳ 等待数据库启动..."

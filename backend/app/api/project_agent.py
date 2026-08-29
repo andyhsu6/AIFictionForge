@@ -41,7 +41,7 @@ from app.services.outline_transfer_service import OutlineTransferService
 from app.utils.sse_response import SSEResponse
 
 
-router = APIRouter(prefix="/projects/{project_id}/agent", tags=["木木创作助手"])
+router = APIRouter(prefix="/projects/{project_id}/agent", tags=["灵创创作助手"])
 
 
 def _user_id(request: Request) -> str:
@@ -51,7 +51,7 @@ def _user_id(request: Request) -> str:
     return user_id
 
 
-@router.get("/exports/{export_type}", summary="下载木木创作助手导出的项目数据")
+@router.get("/exports/{export_type}", summary="下载灵创创作助手导出的项目数据")
 async def download_agent_export(
     project_id: str,
     export_type: str,
@@ -279,7 +279,7 @@ async def chat_stream(
             yield await SSEResponse.send_done()
         except Exception as exc:
             await service.finalize_interrupted_turn(str(exc), cancelled=False)
-            yield await SSEResponse.send_error(f"木木创作助手执行失败：{exc}", 500)
+            yield await SSEResponse.send_error(f"灵创创作助手执行失败：{exc}", 500)
             yield await SSEResponse.send_done()
 
     return StreamingResponse(

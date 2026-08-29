@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";    -- 模糊搜索和全文检索支�
 DO $$
 BEGIN
     RAISE NOTICE '==================================================';
-    RAISE NOTICE 'MuMuAINovel PostgreSQL 扩展安装完成';
+    RAISE NOTICE 'AIFictionForge PostgreSQL 扩展安装完成';
     RAISE NOTICE '已安装扩展:';
     RAISE NOTICE '  - uuid-ossp: UUID生成支持';
     RAISE NOTICE '  - pg_trgm: 模糊搜索和全文检索支持';
