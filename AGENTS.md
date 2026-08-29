@@ -7,6 +7,12 @@
 - **重大改动必须提交 PR**：涉及核心架构、数据库 schema、鉴权/安全、跨模块接口或影响用户数据/体验的大改动，不得直接提交或推送主干；应创建 feature 分支、推送远程并提交 PR，评审通过后再合并。
 - 不确定是否属于重大改动时，先询问用户确认。
 
+## Issues 同步规范
+- **需求（feature）**：新功能或功能改动落地前/后，在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；完成后在 issue 中补充状态与提交引用并关闭。
+- **Bug**：发现 bug 时先创建 issue（`[Bug]` 前缀，label `bug`）记录复现步骤、预期/实际行为与环境；修复提交时在 commit message 中引用 issue 编号（如 `fix: ... closes #9`），完成后关闭 issue。
+- 批量/历史同步：按功能主题合并建 issue，颗粒度到功能模块而非单个提交。
+- 使用仓库内的中文模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
+
 ## 服务管理（aistoryforge.sh）
 项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
 
