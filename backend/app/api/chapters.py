@@ -13,7 +13,8 @@ from app.database import get_db, get_engine
 from app.api.common import verify_project_access
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
-    OneToOneContextBuilder
+    OneToOneContextBuilder,
+    relationship_display_name,
 )
 from app.models.chapter import Chapter
 from app.models.project import Project
@@ -816,7 +817,7 @@ async def build_characters_info_with_careers(
                     continue
                 seen_pairs.add(pair_key)
                 
-                rel_name = r.relationship_name or '关联'
+                rel_name = await relationship_display_name(db, r)
                 rel_desc = f"{other_name}({rel_name})"
                 if r.intimacy_level is not None and r.intimacy_level != 50:
                     rel_desc += f"[亲密度:{r.intimacy_level}]"
@@ -5248,4 +5249,3 @@ async def apply_partial_regenerate(
         "old_word_count": old_word_count,
         "message": "局部重写已应用"
     }
-

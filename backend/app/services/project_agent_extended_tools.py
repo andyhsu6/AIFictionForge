@@ -20,6 +20,7 @@ from app.models.relationship import (
     OrganizationMember,
     RelationshipType,
 )
+from app.services.relationship_service import relationship_display_names, resolve_relationship_type_ids, sync_relationship_links
 from app.services.project_agent_selectors import (
     clean_identifier,
     find_career,
@@ -51,6 +52,8 @@ RELATIONSHIP_DATA = {
         "character_from_id": {"type": "string", "description": "关系来源角色ID"},
         "character_to_id": {"type": "string", "description": "关系目标角色ID"},
         "relationship_type_id": {"type": "integer", "description": "关系类型ID（来自 get_relationship_types）"},
+        "relationship_type_ids": {"type": "array", "items": {"type": "integer"}, "description": "关系类型ID列表（可多选）"},
+        "relationship_type_names": {"type": "array", "items": {"type": "string"}, "description": "关系类型名称列表（不存在自动补录）"},
         "relationship_name": {"type": "string", "description": "关系名称（可选）"},
         "intimacy_level": {"type": "integer", "minimum": -100, "maximum": 100, "description": "亲密度，-100 到 100"},
         "status": {"type": "string", "enum": ["active", "broken", "past", "complicated"], "description": "关系状态"},
@@ -205,7 +208,8 @@ class ProjectAgentExtendedTools:
         "current_state", "state_updated_chapter",
     }
     RELATIONSHIP_FIELDS = {
-        "relationship_type_id", "relationship_name", "intimacy_level", "status",
+        "relationship_type_id", "relationship_type_ids", "relationship_type_names",
+        "relationship_name", "intimacy_level", "status",
         "description", "started_at", "ended_at",
     }
     ORGANIZATION_FIELDS = {"parent_org_id", "level", "power_level", "location", "motto", "color"}
@@ -371,15 +375,31 @@ class ProjectAgentExtendedTools:
         }
 
     async def _get_relationship_types(self, _: dict[str, Any]) -> dict[str, Any]:
-        rows = (await self.db.execute(select(RelationshipType).order_by(RelationshipType.id))).scalars().all()
+        rows = (await self.db.execute(
+            select(RelationshipType)
+            .where((RelationshipType.project_id == self.project.id) | (RelationshipType.project_id.is_(None)))
+            .order_by(RelationshipType.id)
+        )).scalars().all()
         return {"items": [_snapshot(row, {"id", "name", "category", "reverse_name", "intimacy_range", "description"}) for row in rows]}
 
     async def _get_relationship_graph(self, _: dict[str, Any]) -> dict[str, Any]:
         chars = (await self.db.execute(select(Character).where(Character.project_id == self.project.id))).scalars().all()
         relationships = (await self.db.execute(select(CharacterRelationship).where(CharacterRelationship.project_id == self.project.id))).scalars().all()
+        links = []
+        for row in relationships:
+            names = await relationship_display_names(self.db, row)
+            links.append({
+                "id": row.id,
+                "source": row.character_from_id,
+                "target": row.character_to_id,
+                "relationship": "、".join(names) or row.relationship_name or "未知关系",
+                "relationship_names": names,
+                "intimacy": row.intimacy_level,
+                "status": row.status,
+            })
         return {
             "nodes": [{"id": row.id, "name": row.name, "type": "organization" if row.is_organization else "character", "role_type": row.role_type} for row in chars],
-            "links": [{"id": row.id, "source": row.character_from_id, "target": row.character_to_id, "relationship": row.relationship_name, "intimacy": row.intimacy_level, "status": row.status} for row in relationships],
+            "links": links,
         }
 
     async def _get_foreshadow_detail(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -769,9 +789,17 @@ class ProjectAgentExtendedTools:
         data = self._fields(self._data(arguments), self.RELATIONSHIP_FIELDS | {"character_from_id", "character_to_id"})
         await self._validate_relationship_characters(data)
         self._validate_relationship_fields(data)
+        type_ids = data.pop("relationship_type_ids", None) or []
+        type_names = data.pop("relationship_type_names", None) or []
         row = CharacterRelationship(project_id=self.project.id, source="manual", **data)
         self.db.add(row)
         await self.db.flush()
+        if type_names:
+            type_ids.extend(await resolve_relationship_type_ids(self.db, self.project.id, type_names, source="manual"))
+        if type_ids or row.relationship_type_id:
+            if row.relationship_type_id and row.relationship_type_id not in type_ids:
+                type_ids.insert(0, row.relationship_type_id)
+            await sync_relationship_links(self.db, row, type_ids)
         return row.id, _snapshot(row, self.RELATIONSHIP_FIELDS | {"id", "character_from_id", "character_to_id"}), "已创建角色关系"
 
     async def _manage_relationship_preview_update(self, arguments: dict[str, Any]):
@@ -784,7 +812,14 @@ class ProjectAgentExtendedTools:
         row = await self._find_relationship(arguments.get("relationship_id"))
         fields = self._fields(self._data(arguments), self.RELATIONSHIP_FIELDS)
         self._validate_relationship_fields(fields)
+        type_ids = fields.pop("relationship_type_ids", None)
+        type_names = fields.pop("relationship_type_names", None)
         for key, value in fields.items(): setattr(row, key, value)
+        if type_ids is not None or type_names is not None:
+            merged_ids = list(type_ids or [])
+            if type_names:
+                merged_ids.extend(await resolve_relationship_type_ids(self.db, self.project.id, type_names, source="manual"))
+            await sync_relationship_links(self.db, row, merged_ids)
         return row.id, _snapshot(row, set(fields)), "已更新角色关系"
 
     async def _manage_relationship_preview_delete(self, arguments: dict[str, Any]):

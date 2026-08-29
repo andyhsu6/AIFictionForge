@@ -44,6 +44,7 @@ class Character(Base):
     main_career_id = Column(String(36), ForeignKey("careers.id", ondelete="SET NULL"), comment="主职业ID")
     main_career_stage = Column(Integer, comment="主职业当前阶段")
     sub_careers = Column(Text, comment="副职业列表(JSON): [{\"career_id\": \"xxx\", \"stage\": 3}, ...]")
+    source = Column(String(20), default="manual", comment="来源：system/manual/ai/imported")
     
     # 其他
     avatar_url = Column(String(500), comment="头像URL")

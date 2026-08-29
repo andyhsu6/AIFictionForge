@@ -11,13 +11,35 @@ class RelationshipTypeResponse(BaseModel):
     id: int
     name: str
     category: str
+    project_id: Optional[str] = None
     reverse_name: Optional[str] = None
     intimacy_range: Optional[str] = None
     icon: Optional[str] = None
     description: Optional[str] = None
+    source: Optional[str] = None
+    is_system: Optional[bool] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class RelationshipTypeCreate(BaseModel):
+    """创建项目级关系类型请求"""
+    project_id: str = Field(..., description="项目ID")
+    name: str = Field(..., max_length=50, description="关系类型名")
+    category: str = Field("custom", description="分类：family/social/hostile/professional/custom")
+    reverse_name: Optional[str] = Field(None, max_length=50, description="反向关系名")
+    icon: Optional[str] = None
+    description: Optional[str] = None
+
+
+class RelationshipTypeUpdate(BaseModel):
+    """更新项目级关系类型请求"""
+    name: Optional[str] = Field(None, max_length=50)
+    category: Optional[str] = None
+    reverse_name: Optional[str] = Field(None, max_length=50)
+    icon: Optional[str] = None
+    description: Optional[str] = None
 
 
 # ============ 角色关系相关 ============
@@ -25,6 +47,8 @@ class RelationshipTypeResponse(BaseModel):
 class CharacterRelationshipBase(BaseModel):
     """角色关系基础模型"""
     relationship_type_id: Optional[int] = Field(None, description="关系类型ID")
+    relationship_type_ids: Optional[List[int]] = Field(None, description="关系类型ID列表")
+    relationship_type_names: Optional[List[str]] = Field(None, description="关系类型名称列表（未命中自动补录）")
     relationship_name: Optional[str] = Field(None, description="自定义关系名称")
     intimacy_level: int = Field(50, ge=-100, le=100, description="亲密度：-100到100")
     status: str = Field("active", description="状态：active/broken/past/complicated")
@@ -43,6 +67,8 @@ class CharacterRelationshipCreate(CharacterRelationshipBase):
 class CharacterRelationshipUpdate(BaseModel):
     """更新角色关系的请求模型"""
     relationship_type_id: Optional[int] = None
+    relationship_type_ids: Optional[List[int]] = None
+    relationship_type_names: Optional[List[str]] = None
     relationship_name: Optional[str] = None
     intimacy_level: Optional[int] = Field(None, ge=-100, le=100)
     status: Optional[str] = None
@@ -58,6 +84,7 @@ class CharacterRelationshipResponse(CharacterRelationshipBase):
     character_from_id: str
     character_to_id: str
     source: str
+    relationship_type_names: List[str] = Field(default_factory=list, description="关联的类型名")
     created_at: datetime
     updated_at: datetime
     
@@ -78,6 +105,8 @@ class RelationshipGraphLink(BaseModel):
     source: str
     target: str
     relationship: str
+    relationship_names: Optional[List[str]] = None
+    relationship_ids: Optional[List[int]] = None
     intimacy: int
     status: str
 

@@ -13,6 +13,7 @@ from app.models.foreshadow import Foreshadow
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.relationship import CharacterRelationship, Organization
+from app.services.relationship_service import relationship_display_names
 from app.services.project_agent_extended_tools import (
     EXTENDED_TOOL_SPECS,
     READ_TOOL_NAMES,
@@ -597,6 +598,7 @@ class ProjectAgentToolRegistry:
         return {"total": len(rows), "items": [
             {"id": row.id, "from": names.get(row.character_from_id),
              "to": names.get(row.character_to_id), "relationship_name": row.relationship_name,
+             "relationship_type_names": await relationship_display_names(self.db, row),
              "intimacy_level": row.intimacy_level, "status": row.status,
              "description": row.description}
             for row in rows

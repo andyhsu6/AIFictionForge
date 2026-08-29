@@ -2530,6 +2530,63 @@ class PromptService:
 ❌ target_words输出非整数
 </constraints>"""
 
+    # 拆书导入-原文关系抽取提示词
+    RELATIONSHIP_EXTRACTION = """<system>
+你是资深网文人物关系分析师，擅长从小说正文中抽取人物关系，并把关系类型泛化为可复用标签。
+</system>
+
+<task>
+【任务】
+从提供的章节正文中抽取角色之间明确存在的人物关系，输出结构化 JSON 数组。
+</task>
+
+<input priority="P0">
+【项目信息】
+书名：{title}
+类型：{genre}
+
+【章节内容】
+{chapters_text}
+</input>
+
+<output priority="P0">
+【输出格式】
+仅输出一个纯JSON数组（不要markdown、不要代码块、不要解释），每个元素：
+{{
+  "character_a": "角色名",
+  "character_b": "角色名",
+  "relationship_types": ["泛化关系类型1", "泛化关系类型2"],
+  "intimacy_level": 50,
+  "status": "active",
+  "description": "关系描述（可包含具体门派、姓名、情节）",
+  "chapter_number": 1,
+  "evidence": "原文证据片段"
+}}
+
+【关系类型泛化要求】
+1) relationship_types 必须是可复用的泛化标签，禁止把具体专名放入类型。
+2) 接受：同门、宗门弟子、宗门记名弟子、主仆、契约、青梅竹马、死敌、君臣、血亲。
+3) 拒绝：玄天宗记名弟子、九尾狐契约、林家三少爷、青云门大师兄。
+4) 具体专名、具体情节必须写入 description 与 evidence。
+5) 同一对角色可输出多条关系记录，但每条关系记录可包含多个关系类型。
+6) 只抽取正文中明确出现或可靠推断的关系，不臆造。
+</output>
+
+<constraints>
+【必须遵守】
+✅ 只输出 JSON 数组
+✅ character_a 与 character_b 必须是正文中出现的角色名
+✅ relationship_types 至少1个，最多4个
+✅ intimacy_level 为 -100 到 100 整数
+✅ status 只能是 active/broken/past/complicated
+✅ 无法确认的关系不要抽取
+
+【禁止事项】
+❌ 输出JSON以外的任何文字
+❌ 把具体专名作为关系类型
+❌ 臆造原文不存在的角色关系
+</constraints>"""
+
     # 拆书导入-反向生成章节大纲（严格对齐 OUTLINE_CREATE 结构）
     BOOK_IMPORT_REVERSE_OUTLINES = """<system>
 你是资深网文总编与剧情策划，擅长基于已完成章节反向提炼标准化章节大纲。
@@ -2888,6 +2945,12 @@ class PromptService:
                 "category": "拆书导入",
                 "description": "基于前3章内容反向提炼简介、主题、类型、叙事视角与目标字数",
                 "parameters": ["title", "sampled_text"]
+            },
+            "RELATIONSHIP_EXTRACTION": {
+                "name": "拆书导入-原文关系抽取",
+                "category": "拆书导入",
+                "description": "从章节正文抽取人物关系并泛化关系类型",
+                "parameters": ["title", "genre", "chapters_text"]
             },
             "BOOK_IMPORT_REVERSE_OUTLINES": {
                 "name": "拆书导入-反向章节大纲",

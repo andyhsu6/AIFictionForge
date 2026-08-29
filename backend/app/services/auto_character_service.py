@@ -6,6 +6,7 @@ import json
 
 from app.models.character import Character
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
+from app.services.relationship_service import resolve_relationship_type_ids, sync_relationship_links
 from app.models.project import Project
 from app.services.ai_service import AIService
 from app.services.prompt_service import PromptService
@@ -321,19 +322,13 @@ class AutoCharacterService:
                     source="auto"  # 标记为自动生成
                 )
                 
-                # 尝试匹配预定义关系类型
-                rel_type_name = rel_spec.get("relationship_type")
-                if rel_type_name:
-                    rel_type_result = await db.execute(
-                        select(RelationshipType).where(
-                            RelationshipType.name == rel_type_name
-                        )
-                    )
-                    rel_type = rel_type_result.scalar_one_or_none()
-                    if rel_type:
-                        relationship.relationship_type_id = rel_type.id
-                
                 db.add(relationship)
+                await db.flush()
+                type_names = rel_spec.get("relationship_types") or [rel_spec.get("relationship_type")]
+                type_ids = await resolve_relationship_type_ids(
+                    db, project_id, type_names, source="auto"
+                )
+                await sync_relationship_links(db, relationship, type_ids)
                 relationships.append(relationship)
                 
                 logger.info(

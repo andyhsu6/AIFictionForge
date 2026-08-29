@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Card, Tag, Button, Space, message, Typography, theme } from 'antd';
+import { Card, Tag, Button, Space, message, Typography, theme, Modal, Descriptions } from 'antd';
 import {
   ArrowLeftOutlined,
   ApartmentOutlined,
@@ -36,6 +36,8 @@ interface GraphLink {
   source: string;
   target: string;
   relationship: string;
+  relationship_names?: string[];
+  relationship_ids?: number[];
   intimacy: number;
   status: string;
 }
@@ -571,6 +573,7 @@ export default function RelationshipGraph() {
   const [, setLoading] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeDetail, setNodeDetail] = useState<CharacterDetail | null>(null);
+  const [edgeDetail, setEdgeDetail] = useState<GraphLink[] | null>(null);
   const [, setDetailLoading] = useState(false);
   const [relationshipTypes, setRelationshipTypes] = useState<RelationshipType[]>([]);
   const [characterDetailMap, setCharacterDetailMap] = useState<Record<string, CharacterDetail>>({});
@@ -955,18 +958,27 @@ export default function RelationshipGraph() {
           });
         });
 
-      // 最后才连接成员之间的人际关系
-      const memberRelationEdges: Edge[] = memberRelationLinks.map((link) =>
-        buildFlowEdge(
-          `${link.source}-${link.target}-${link.relationship}`,
-          link.source,
-          link.target,
-          link.relationship,
-          link.status,
-          link.intimacy,
+      // 最后才连接成员之间的人际关系；同一对角色聚合为一条边
+      const pairMap = new Map<string, typeof memberRelationLinks>();
+      memberRelationLinks.forEach((link) => {
+        const key = [link.source, link.target].sort().join('|');
+        if (!pairMap.has(key)) pairMap.set(key, []);
+        pairMap.get(key)!.push(link);
+      });
+      const memberRelationEdges: Edge[] = Array.from(pairMap.entries()).map(([key, links]) => {
+        const first = links[0];
+        const names = Array.from(new Set(links.flatMap(l => l.relationship_names?.length ? l.relationship_names : [l.relationship])));
+        const label = names.slice(0, 2).join('、') + (names.length > 2 ? ` +${names.length - 2}` : '');
+        return buildFlowEdge(
+          `member-${key}`,
+          first.source,
+          first.target,
+          label,
+          first.status,
+          Math.round(links.reduce((s, l) => s + (l.intimacy || 0), 0) / links.length),
           { layoutWeight: 1 },
-        ),
-      );
+        );
+      });
 
       const layoutEdges = [...orgMemberEdges, ...careerGroupEdges, ...careerToCharacterEdges];
       const fallbackLayoutEdges = layoutEdges.length > 0 ? layoutEdges : memberRelationEdges;
@@ -1298,6 +1310,14 @@ export default function RelationshipGraph() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
+            onEdgeClick={(_, edge) => {
+              const links = (graphData?.links || []).filter(
+                (l) =>
+                  (l.source === edge.source && l.target === edge.target) ||
+                  (l.source === edge.target && l.target === edge.source),
+              );
+              if (links.length) setEdgeDetail(links);
+            }}
             fitView
             fitViewOptions={{ padding: 0.2 }}
             attributionPosition="bottom-left"
@@ -1557,6 +1577,31 @@ export default function RelationshipGraph() {
           </Card>
         </div>
       )}
+
+      <Modal
+        title="关系详情"
+        open={!!edgeDetail}
+        onCancel={() => setEdgeDetail(null)}
+        footer={null}
+        width={560}
+      >
+        {edgeDetail?.map((link, idx) => (
+          <div key={idx} style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: token.colorFillQuaternary, border: `1px solid ${token.colorBorderSecondary}` }}>
+            <Space wrap style={{ marginBottom: 8 }}>
+              {(link.relationship_names?.length ? link.relationship_names : [link.relationship]).map(name => (
+                <Tag key={name} color="blue">{name}</Tag>
+              ))}
+            </Space>
+            <Descriptions size="small" column={2}>
+              <Descriptions.Item label="亲密度">{link.intimacy}</Descriptions.Item>
+              <Descriptions.Item label="状态">{link.status}</Descriptions.Item>
+            </Descriptions>
+            {link.relationship && (
+              <div style={{ color: token.colorTextSecondary, fontSize: 13, marginTop: 4 }}>{link.relationship}</div>
+            )}
+          </div>
+        ))}
+      </Modal>
     </div>
   );
 }

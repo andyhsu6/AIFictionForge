@@ -1,5 +1,5 @@
 """角色关系和组织管理数据模型"""
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Boolean, UniqueConstraint, Index
 from sqlalchemy.sql import func
 from app.database import Base
 import uuid
@@ -8,16 +8,23 @@ import uuid
 class RelationshipType(Base):
     """关系类型定义表"""
     __tablename__ = "relationship_types"
-    
+
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, comment="所属项目ID，NULL为系统预置")
     name = Column(String(50), nullable=False, comment="关系名称")
     category = Column(String(20), nullable=False, comment="分类：family/social/hostile/professional")
     reverse_name = Column(String(50), comment="反向关系名称")
     intimacy_range = Column(String(20), comment="亲密度范围：high/medium/low")
     icon = Column(String(50), comment="图标标识")
     description = Column(Text, comment="关系描述")
+    source = Column(String(20), default="manual", comment="来源：system/import/manual/analysis")
+    is_system = Column(Boolean, default=False, comment="是否为系统预置类型")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
-    
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_relationship_types_project_name"),
+    )
+
     def __repr__(self):
         return f"<RelationshipType(id={self.id}, name={self.name}, category={self.category})>"
 
@@ -54,6 +61,33 @@ class CharacterRelationship(Base):
     
     def __repr__(self):
         return f"<CharacterRelationship(id={self.id}, from={self.character_from_id}, to={self.character_to_id})>"
+
+
+class RelationshipTypeLink(Base):
+    """角色关系与关系类型多对多关联表"""
+    __tablename__ = "character_relationship_type_links"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    relationship_id = Column(
+        String(36),
+        ForeignKey("character_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="角色关系ID",
+    )
+    relationship_type_id = Column(
+        Integer,
+        ForeignKey("relationship_types.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="关系类型ID",
+    )
+    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+
+    __table_args__ = (
+        UniqueConstraint("relationship_id", "relationship_type_id", name="uq_relationship_type_links_pair"),
+        Index("ix_relationship_type_links_type", "relationship_type_id"),
+    )
 
 
 class Organization(Base):

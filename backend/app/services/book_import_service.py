@@ -45,6 +45,13 @@ from app.schemas.book_import import (
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
+from app.services.relationship_service import (
+    is_probably_proper_noun_type,
+    normalize_relationship_type_name,
+    resolve_relationship_type_ids,
+    sync_relationship_links,
+    MAX_IMPORTED_CHARACTERS_PER_IMPORT,
+)
 
 logger = get_logger(__name__)
 
@@ -396,13 +403,39 @@ class BookImportService:
                 ))
                 await _notify(f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning")
 
+            # -- 步骤6.5: 原文关系抽取 (92-95%)
+            await _notify("🔗 正在从原文抽取人物关系...", 93)
+            try:
+                extracted = await self._extract_relationships_from_chapters(
+                    db=db,
+                    user_id=user_id,
+                    project=project,
+                    chapters=chapters_to_import,
+                    ai_service=ai_service,
+                )
+                statistics["extracted_relationships"] = extracted["extracted_relationships"]
+                statistics["created_relationship_types"] = extracted["created_types"]
+                statistics["created_imported_characters"] = extracted["created_characters"]
+                await _notify(
+                    f"🔗 原文关系抽取完成（{extracted['extracted_relationships']}条关系）",
+                    95,
+                )
+            except Exception as exc:
+                logger.warning(f"拆书导入：原文关系抽取失败（将继续后续步骤）: {exc}")
+                failed_steps.append(_StepFailure(
+                    step_name="relationship_extraction",
+                    step_label="原文关系抽取",
+                    error_message=str(exc),
+                ))
+                await _notify(f"⚠️ 原文关系抽取失败：{str(exc)[:80]}，将继续后续步骤", 95, "warning")
+
             # 标记向导完成并将项目置为创作中
             project.wizard_step = 3
             project.wizard_status = "completed"
             project.status = "writing"
 
-            # -- 步骤7: 提交数据库 (92-98%)
-            await _notify("正在保存到数据库...", 95)
+            # -- 步骤7: 提交数据库 (95-98%)
+            await _notify("正在保存到数据库...", 96)
             await db.commit()
             await _notify("数据保存完成", 98)
 
@@ -562,6 +595,41 @@ class BookImportService:
                             retry_count=retry_count,
                         ))
                         await _notify(f"⚠️ 角色/组织重试失败：{str(exc)[:80]}", step_end_pct, "warning")
+
+                elif step_name == "relationship_extraction":
+                    await _notify("🔄 正在重试原文关系抽取...", step_start_pct)
+                    try:
+                        result = await self._extract_relationships_from_chapters(
+                            db=db,
+                            user_id=user_id,
+                            project=project,
+                            chapters=[
+                                BookImportChapter(
+                                    title=c.title,
+                                    content=c.content or "",
+                                    summary=c.summary,
+                                    chapter_number=c.chapter_number,
+                                    outline_title=None,
+                                )
+                                for c in (
+                                    await db.execute(
+                                        select(Chapter).where(Chapter.project_id == project.id)
+                                    )
+                                ).scalars().all()
+                            ],
+                            ai_service=ai_service,
+                        )
+                        retry_results["relationship_extraction"] = result
+                        await _notify("✅ 原文关系抽取重试成功", step_end_pct)
+                    except Exception as exc:
+                        logger.warning(f"原文关系抽取重试失败 (第{retry_count}次): {exc}")
+                        still_failed.append(_StepFailure(
+                            step_name="relationship_extraction",
+                            step_label="原文关系抽取",
+                            error_message=str(exc),
+                            retry_count=retry_count,
+                        ))
+                        await _notify(f"⚠️ 原文关系抽取重试失败：{str(exc)[:80]}", step_end_pct, "warning")
 
             # 提交数据库
             await _notify("正在保存到数据库...", 93)
@@ -2129,26 +2197,42 @@ class BookImportService:
                 if pair in relationship_pairs:
                     continue
 
-                relationship_name = (rel.get("relationship_type") or "未知关系").strip()[:100]
+                raw_types = rel.get("relationship_types")
+                if not isinstance(raw_types, list):
+                    raw_types = [rel.get("relationship_type")]
+                type_names = []
+                for raw in raw_types:
+                    name = normalize_relationship_type_name(raw)
+                    if name and not is_probably_proper_noun_type(name):
+                        type_names.append(name)
+                relationship_name = "、".join(type_names) or "未知关系"
+                relationship_name = relationship_name[:100]
                 intimacy_level = max(-100, min(_to_int(rel.get("intimacy_level", 50), 50), 100))
                 status = (rel.get("status") or "active")[:20]
                 description = rel.get("description")
                 if description is not None:
                     description = str(description)
 
-                db.add(
-                    CharacterRelationship(
-                        project_id=project.id,
-                        character_from_id=character.id,
-                        character_to_id=target_char.id,
-                        relationship_type_id=relationship_type_map.get(relationship_name),
-                        relationship_name=relationship_name,
-                        intimacy_level=intimacy_level,
-                        status=status,
-                        description=description,
-                        source="ai",
-                    )
+                rel_obj = CharacterRelationship(
+                    project_id=project.id,
+                    character_from_id=character.id,
+                    character_to_id=target_char.id,
+                    relationship_type_id=relationship_type_map.get(relationship_name),
+                    relationship_name=relationship_name,
+                    intimacy_level=intimacy_level,
+                    status=status,
+                    description=description,
+                    source="ai",
                 )
+                db.add(rel_obj)
+                await db.flush()
+                type_ids = await resolve_relationship_type_ids(
+                    db,
+                    project.id,
+                    type_names,
+                    source="import",
+                )
+                await sync_relationship_links(db, rel_obj, type_ids)
                 relationship_pairs.add(pair)
 
         # 第四阶段：创建组织成员关系（优先使用角色上的 organization_memberships）
@@ -2228,10 +2312,145 @@ class BookImportService:
                     )
                 )
                 member_pairs.add(pair)
-                org.member_count = (org.member_count or 0) + 1
+
+        return created
+
+    async def _extract_relationships_from_chapters(
+        self,
+        *,
+        db: AsyncSession,
+        user_id: str,
+        project: Project,
+        chapters: list[Any],
+        ai_service: Optional[AIService] = None,
+    ) -> dict[str, int]:
+        """从导入章节原文抽取人物关系，补录项目级类型、自动补角色并落库。"""
+        if not chapters:
+            return {"extracted_relationships": 0, "created_types": 0, "created_characters": 0}
+
+        ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
+        template = await PromptService.get_template("RELATIONSHIP_EXTRACTION", user_id, db)
+
+        # 预加载角色与关系，便于名称匹配与去重
+        chars = (
+            await db.execute(select(Character).where(Character.project_id == project.id))
+        ).scalars().all()
+        char_by_name: dict[str, Character] = {c.name: c for c in chars}
+        relationships = (
+            await db.execute(
+                select(CharacterRelationship).where(CharacterRelationship.project_id == project.id)
+            )
+        ).scalars().all()
+
+        extracted_count = 0
+        created_type_count = 0
+        created_char_count = 0
+        batch_size = 5
+
+        for start in range(0, len(chapters), batch_size):
+            batch = chapters[start:start + batch_size]
+            chapters_text = "\n\n".join(
+                f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')[:1800]}"
+                for c in batch
+            )
+            prompt = PromptService.format_prompt(
+                template,
+                title=project.title or "未命名",
+                genre=project.genre or "通用",
+                chapters_text=chapters_text,
+            )
+            ai_data = await ai_service.call_with_json_retry(
+                prompt=prompt,
+                max_retries=2,
+                expected_type="array",
+            )
+            items = ai_data if isinstance(ai_data, list) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                char_a = (item.get("character_a") or "").strip()
+                char_b = (item.get("character_b") or "").strip()
+                if not char_a or not char_b or char_a == char_b:
+                    continue
+
+                type_names_raw = item.get("relationship_types")
+                if not isinstance(type_names_raw, list):
+                    type_names_raw = [item.get("relationship_type")]
+                type_names: list[str] = []
+                for raw in type_names_raw:
+                    name = normalize_relationship_type_name(raw)
+                    if name and not is_probably_proper_noun_type(name):
+                        type_names.append(name)
+                if not type_names:
+                    continue
+
+                # 自动补角色：只在确实不存在时创建，且受上限保护
+                for name in (char_a, char_b):
+                    if name not in char_by_name and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                        new_char = Character(
+                            project_id=project.id,
+                            name=name[:100],
+                            role_type="supporting",
+                            source="imported",
+                            personality=item.get("description"),
+                        )
+                        db.add(new_char)
+                        await db.flush()
+                        char_by_name[name] = new_char
+                        created_char_count += 1
+
+                source_char = char_by_name.get(char_a)
+                target_char = char_by_name.get(char_b)
+                if not source_char or not target_char or source_char.is_organization or target_char.is_organization:
+                    continue
+
+                type_ids = await resolve_relationship_type_ids(
+                    db,
+                    project.id,
+                    type_names,
+                    source="import",
+                )
+                created_type_count += len(type_ids)
+
+                # 合并规则：同对 + 相同类型集合 + 同来源批次才合并；否则新增关系
+                merged = False
+                for rel in relationships:
+                    if (
+                        rel.character_from_id == source_char.id
+                        and rel.character_to_id == target_char.id
+                        and rel.source in ("ai", "analysis", "manual")
+                    ):
+                        await sync_relationship_links(db, rel, list({rel.relationship_type_id, *type_ids}))
+                        note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
+                        if note:
+                            rel.description = (rel.description + "\n" + note).strip()
+                        merged = True
+                        extracted_count += 1
+                        break
+
+                if not merged:
+                    rel = CharacterRelationship(
+                        project_id=project.id,
+                        character_from_id=source_char.id,
+                        character_to_id=target_char.id,
+                        relationship_name="、".join(type_names),
+                        intimacy_level=max(-100, min(int(item.get("intimacy_level", 50) or 50), 100)),
+                        status=item.get("status") or "active",
+                        description=item.get("description") or item.get("evidence") or "",
+                        source="import",
+                    )
+                    db.add(rel)
+                    await db.flush()
+                    await sync_relationship_links(db, rel, type_ids)
+                    relationships.append(rel)
+                    extracted_count += 1
 
         await db.flush()
-        return created
+        return {
+            "extracted_relationships": extracted_count,
+            "created_types": created_type_count,
+            "created_characters": created_char_count,
+        }
 
     def _build_summary(self, content: str, max_len: int = 120) -> Optional[str]:
         if not content:

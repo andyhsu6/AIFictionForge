@@ -9,6 +9,11 @@ from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.outline import Outline
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
+from app.services.relationship_service import (
+    relationship_display_names,
+    resolve_relationship_type_ids,
+    sync_relationship_links,
+)
 from app.models.writing_style import WritingStyle
 from app.models.generation_history import GenerationHistory
 from app.models.career import Career, CharacterCareer
@@ -303,10 +308,12 @@ class ImportExportService:
             char_to = target_result.scalar_one_or_none()
             
             if char_to:
+                names = await relationship_display_names(db, rel)
                 exported.append(RelationshipExportData(
                     source_name=char_from.name,
                     target_name=char_to.name,
                     relationship_name=rel.relationship_name,
+                    relationship_type_names=names or None,
                     intimacy_level=rel.intimacy_level or 50,
                     status=rel.status or "active",
                     description=rel.description,
@@ -991,6 +998,13 @@ class ImportExportService:
                     started_at=rel_data.get("started_at")
                 )
                 db.add(relationship)
+                await db.flush()
+                type_names = rel_data.get("relationship_type_names")
+                if type_names:
+                    type_ids = await resolve_relationship_type_ids(
+                        db, project_id, type_names, source="import"
+                    )
+                    await sync_relationship_links(db, relationship, type_ids)
                 count += 1
         
         return count
