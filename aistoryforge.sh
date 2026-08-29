@@ -10,7 +10,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 VENV_PY="$BACKEND_DIR/.venv/bin/python"
-DB_URL="sqlite+aiosqlite:///$BACKEND_DIR/data/aistoryforge.db"
+DB_URL="sqlite+aiosqlite:///$BACKEND_DIR/data/mumuai_novel.db"
 BACKEND_PORT=8008
 FRONTEND_PORT=5173
 BACKEND_LOG="/tmp/aistoryforge-backend.log"
