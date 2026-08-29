@@ -72,6 +72,10 @@ class OpenAIClient(BaseAIClient):
         tool_choice: Optional[str] = None,
         stream: bool = False,
     ) -> Dict[str, Any]:
+        # Command Code Provider API 网关限制单次输出 max_tokens 上限（对齐 models.dev 中
+        # DeepSeek V4 Flash 的 limit.output=384000，小于网关硬上限 393216）
+        if "commandcode.ai" in self.base_url:
+            max_tokens = min(max_tokens, 384000)
         payload = {
             "model": model,
             "messages": messages,
