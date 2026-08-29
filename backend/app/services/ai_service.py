@@ -94,6 +94,7 @@ _KNOWN_CONTEXT_WINDOWS = {
     "gpt-5": 400000,
     "gpt-4o": 128000,
     "gpt-4.1": 1047576,
+    "gpt-4-turbo": 128000,
     "gpt-4": 8192,
     "gpt-3.5": 16384,
     "claude-3": 200000,
@@ -109,10 +110,13 @@ _KNOWN_CONTEXT_WINDOWS = {
 def detect_context_window(model: Optional[str]) -> int:
     """检测模型上下文窗口（token 数）。
 
-    基于模型名前缀匹配已知表，未命中的返回保守值 32K。
+    按键长度降序匹配已知表（更具体的键优先，如 gpt-4o 先于 gpt-4），
+    未命中的返回保守值 32K。
     """
     name = (model or "").lower()
-    for key, window in _KNOWN_CONTEXT_WINDOWS.items():
+    for key, window in sorted(
+        _KNOWN_CONTEXT_WINDOWS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         if key in name:
             return window
     return 32768

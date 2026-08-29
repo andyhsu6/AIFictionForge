@@ -42,3 +42,18 @@ def test_unknown_model_defaults_conservative():
     """未知模型：保守预算，避免超窗口。"""
     budget = resolve_context_budget_chars("unknown-model-xyz")
     assert budget < 200000
+
+
+def test_gpt4_turbo_is_128k_not_8192():
+    """gpt-4-turbo 是 128K 窗口，不能误判为 gpt-4 的 8K。"""
+    assert detect_context_window("gpt-4-turbo") >= 128000
+
+
+def test_gpt4o_mini_is_128k():
+    """gpt-4o-mini 匹配 gpt-4o 键（128K），不是 gpt-4 键。"""
+    assert detect_context_window("gpt-4o-mini") >= 128000
+
+
+def test_gpt41_mini_uses_1047576():
+    """gpt-4.1-mini 匹配 gpt-4.1（1M），不受 gpt-4 键干扰。"""
+    assert detect_context_window("gpt-4.1-mini") >= 1000000
