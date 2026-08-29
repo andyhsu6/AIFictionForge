@@ -24,25 +24,27 @@ from tokenizers import Tokenizer
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 MODEL_ENV_VAR = "ONNX_EMBEDDING_MODEL_DIR"
 MODEL_OFFLINE_ENV_VAR = "ONNX_EMBEDDING_OFFLINE"
-MODEL_REVISION = "60750e200f336606cdd1ecbda9bb33fbf4d5b2a1"
 MODEL_BASE_URL = (
-    "https://modelscope.cn/models/"
-    "mumujie/paraphrase-multilingual-MiniLM-L12-v2-ONNX/resolve/"
-    f"{MODEL_REVISION}"
+    "https://huggingface.co/sentence-transformers/"
+    "paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx"
 )
 MODEL_FILES = {
     "model.onnx": {
-        "bytes": 470236255,
-        "sha256": "e7515ed8b2f63e84f99dfed652b572e61a9a799f694a1c9399a7f3845b69cda5",
+        "bytes": 470301610,
+        "sha256": "10f7a088420252b26caf819236ca2c9d2987afd0fc06fec7553b542a5655a05a",
     },
     "tokenizer.json": {
         "bytes": 9081518,
         "sha256": "2c3387be76557bd40970cec13153b3bbf80407865484b209e655e5e4729076b8",
     },
-    "embedding_config.json": {
-        "bytes": 182,
-        "sha256": "d9cfbb22ea59e66294db9bd5b35b452326658a2fe1580e409f0c806be01973c2",
-    },
+}
+# Hugging Face 仓库中 tokenizer.json 位于仓库根目录，model.onnx 位于 onnx/ 子目录
+MODEL_FILE_URLS = {
+    "model.onnx": f"{MODEL_BASE_URL}/model.onnx",
+    "tokenizer.json": (
+        "https://huggingface.co/sentence-transformers/"
+        "paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json"
+    ),
 }
 
 logger = logging.getLogger(__name__)
@@ -65,7 +67,7 @@ def _default_download_dir() -> Path:
     if getattr(sys, "frozen", False):
         local_app_data = os.getenv("LOCALAPPDATA")
         cache_root = Path(local_app_data) if local_app_data else Path.home() / ".cache"
-        return cache_root / "MuMuAINovel" / "embedding-onnx" / MODEL_NAME
+        return cache_root / "AIFictionForge" / "embedding-onnx" / MODEL_NAME
 
     backend_dir = Path(__file__).resolve().parents[2]
     return backend_dir / "embedding" / "onnx" / MODEL_NAME
@@ -113,7 +115,7 @@ def _download_file(filename: str, target_dir: Path) -> None:
     if partial.exists() and partial.stat().st_size > expected_size:
         partial.unlink()
 
-    url = f"{MODEL_BASE_URL}/{filename}"
+    url = MODEL_FILE_URLS[filename]
     for attempt in range(1, 4):
         try:
             if _commit_partial(
@@ -121,7 +123,7 @@ def _download_file(filename: str, target_dir: Path) -> None:
             ):
                 return
             resume_at = partial.stat().st_size if partial.exists() else 0
-            headers = {"User-Agent": "MuMuAINovel/ONNX-model-downloader"}
+            headers = {"User-Agent": "AIFictionForge/ONNX-model-downloader"}
             if resume_at:
                 headers["Range"] = f"bytes={resume_at}-"
 
@@ -158,24 +160,37 @@ def _download_file(filename: str, target_dir: Path) -> None:
                 return
         except (OSError, urllib.error.URLError) as error:
             if attempt == 3:
-                raise RuntimeError(f"从 ModelScope 下载 {filename} 失败") from error
+                raise RuntimeError(f"从 Hugging Face 下载 {filename} 失败") from error
             logger.warning("下载 %s 失败，第 %s/3 次重试: %s", filename, attempt, error)
             time.sleep(2**attempt)
 
 
 def download_model(target_dir: Path | str | None = None) -> Path:
-    """Download and verify the deployment model from ModelScope."""
+    """Download and verify the deployment model from Hugging Face."""
     target = Path(target_dir).resolve() if target_dir else _default_download_dir()
     target.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(target) + ".lock", timeout=3600)
 
-    logger.info("本地未找到 ONNX Embedding 模型，将从 ModelScope 下载到: %s", target)
+    logger.info("本地未找到 ONNX Embedding 模型，将从 Hugging Face 下载到: %s", target)
     with lock:
         if _is_model_dir(target):
             return target
         target.mkdir(parents=True, exist_ok=True)
         for filename in MODEL_FILES:
             _download_file(filename, target)
+        config_path = target / "embedding_config.json"
+        if not config_path.exists():
+            config_path.write_text(
+                json.dumps({
+                    "model_name": MODEL_NAME,
+                    "max_seq_length": 128,
+                    "embedding_dimension": 384,
+                    "pooling": "mean",
+                    "normalize": False,
+                    "pad_token": "<pad>",
+                }),
+                encoding="utf-8",
+            )
 
     if not _is_model_dir(target):
         raise RuntimeError(f"ONNX Embedding 模型下载不完整: {target}")

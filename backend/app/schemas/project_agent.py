@@ -1,4 +1,4 @@
-"""木木创作助手 API 模型。"""
+"""灵创创作助手 API 模型。"""
 from datetime import datetime
 from typing import Any, Literal, Optional
 

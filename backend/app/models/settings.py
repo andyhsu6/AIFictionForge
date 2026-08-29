@@ -36,7 +36,7 @@ class Settings(Base):
     smtp_use_tls = Column(Boolean, default=False, server_default="0", nullable=False, comment="是否启用 TLS")
     smtp_use_ssl = Column(Boolean, default=True, server_default="1", nullable=False, comment="是否启用 SSL")
     smtp_from_email = Column(String(255), comment="发件人邮箱")
-    smtp_from_name = Column(String(255), default="MuMuAINovel", server_default="MuMuAINovel", nullable=False, comment="发件人名称")
+    smtp_from_name = Column(String(255), default="AIFictionForge", server_default="AIFictionForge", nullable=False, comment="发件人名称")
     email_auth_enabled = Column(Boolean, default=True, server_default="1", nullable=False, comment="是否启用邮箱认证")
     email_register_enabled = Column(Boolean, default=True, server_default="1", nullable=False, comment="是否启用邮箱注册")
     verification_code_ttl_minutes = Column(Integer, default=10, server_default="10", nullable=False, comment="验证码有效期（分钟）")

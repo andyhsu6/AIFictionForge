@@ -16,7 +16,7 @@ config_logger = logging.getLogger(__name__)
 
 # 数据库配置：PostgreSQL
 # 从环境变量获取数据库URL
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://mumuai:password@localhost:5432/mumuai_novel")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://aistoryforge:password@localhost:5432/aistoryforge")
 
 config_logger.debug(f"数据库类型: PostgreSQL")
 config_logger.debug(f"数据库URL: {DATABASE_URL}")
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     """应用配置"""
     
     # 应用配置
-    app_name: str = "MuMuAINovel"
+    app_name: str = "AIFictionForge"
     app_version: str = "1.5.4"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
@@ -130,15 +130,15 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = False
     SMTP_USE_SSL: bool = True
     SMTP_FROM_EMAIL: Optional[str] = None
-    SMTP_FROM_NAME: str = "MuMuAINovel"
+    SMTP_FROM_NAME: str = "AIFictionForge"
     EMAIL_AUTH_ENABLED: bool = True
     EMAIL_REGISTER_ENABLED: bool = True
     EMAIL_VERIFICATION_CODE_TTL_MINUTES: int = 10
     EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS: int = 60
     
-    # 提示词工坊配置
-    WORKSHOP_MODE: str = "client"  # client: 本地部署实例, server: 云端中央服务器
-    WORKSHOP_CLOUD_URL: str = "https://mumuverse.space:1566"  # 云端服务地址
+    # 提示词工坊配置（本地模式默认关闭云端工坊）
+    WORKSHOP_MODE: str = "disabled"  # disabled: 本地部署不启用云端工坊
+    WORKSHOP_CLOUD_URL: str = ""  # 云端服务地址（默认空，不指向上游）
     WORKSHOP_API_TIMEOUT: int = 30  # 云端API请求超时时间（秒）
     
     class Config:
