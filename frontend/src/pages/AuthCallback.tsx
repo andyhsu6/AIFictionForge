@@ -2,13 +2,11 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Spin, Result, Button, Modal, Input, message, theme } from 'antd';
 import { authApi } from '../services/api';
-import AnnouncementModal from '../components/AnnouncementModal';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState('');
-  const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
@@ -61,22 +59,10 @@ export default function AuthCallback() {
         const redirect = sessionStorage.getItem('login_redirect') || '/';
         sessionStorage.removeItem('login_redirect');
 
-        // 检查是否永久隐藏公告或今日已隐藏
-        const hideForever = localStorage.getItem('announcement_hide_forever');
-        const hideToday = localStorage.getItem('announcement_hide_today');
-        const today = new Date().toDateString();
-
-        if (hideForever === 'true' || hideToday === today) {
-          // 延迟一下再跳转，让用户看到成功提示
-          setTimeout(() => {
-            navigate(redirect);
-          }, 1000);
-        } else {
-          // 延迟一下再显示公告，让用户看到成功提示
-          setTimeout(() => {
-            setShowAnnouncement(true);
-          }, 1000);
-        }
+        // 延迟一下再跳转，让用户看到成功提示
+        setTimeout(() => {
+          navigate(redirect);
+        }, 1000);
       } catch (error) {
         console.error('登录失败:', error);
         setStatus('error');
@@ -130,24 +116,6 @@ export default function AuthCallback() {
     );
   }
 
-  const handleAnnouncementClose = () => {
-    setShowAnnouncement(false);
-    const redirect = sessionStorage.getItem('login_redirect') || '/';
-    sessionStorage.removeItem('login_redirect');
-    navigate(redirect);
-  };
-
-  const handleDoNotShowToday = () => {
-    // 设置今日不再显示
-    const today = new Date().toDateString();
-    localStorage.setItem('announcement_hide_today', today);
-  };
-
-  const handleNeverShow = () => {
-    // 设置永久不再显示
-    localStorage.setItem('announcement_hide_forever', 'true');
-  };
-
   const handleSetPassword = async () => {
     // 如果没有输入新密码，使用默认密码
     const passwordToSet = newPassword || passwordStatus?.default_password;
@@ -182,19 +150,9 @@ export default function AuthCallback() {
       const redirect = sessionStorage.getItem('login_redirect') || '/';
       sessionStorage.removeItem('login_redirect');
 
-      const hideForever = localStorage.getItem('announcement_hide_forever');
-      const hideToday = localStorage.getItem('announcement_hide_today');
-      const today = new Date().toDateString();
-
-      if (hideForever === 'true' || hideToday === today) {
-        setTimeout(() => {
-          navigate(redirect);
-        }, 500);
-      } else {
-        setTimeout(() => {
-          setShowAnnouncement(true);
-        }, 500);
-      }
+      setTimeout(() => {
+        navigate(redirect);
+      }, 500);
     } catch {
       message.error('密码设置失败，请重试');
     } finally {
@@ -219,30 +177,13 @@ export default function AuthCallback() {
     const redirect = sessionStorage.getItem('login_redirect') || '/';
     sessionStorage.removeItem('login_redirect');
 
-    const hideForever = localStorage.getItem('announcement_hide_forever');
-    const hideToday = localStorage.getItem('announcement_hide_today');
-    const today = new Date().toDateString();
-
-    if (hideForever === 'true' || hideToday === today) {
-      setTimeout(() => {
-        navigate(redirect);
-      }, 500);
-    } else {
-      setTimeout(() => {
-        setShowAnnouncement(true);
-      }, 500);
-    }
+    setTimeout(() => {
+      navigate(redirect);
+    }, 500);
   };
 
   return (
     <>
-      <AnnouncementModal
-        visible={showAnnouncement}
-        onClose={handleAnnouncementClose}
-        onDoNotShowToday={handleDoNotShowToday}
-        onNeverShow={handleNeverShow}
-      />
-
       <Modal
         title="设置账号密码"
         open={showPasswordModal}
@@ -308,7 +249,7 @@ export default function AuthCallback() {
         <Result
           status="success"
           title="登录成功"
-          subTitle={showPasswordModal ? "请设置账号密码..." : (showAnnouncement ? "欢迎使用..." : "正在跳转...")}
+          subTitle={showPasswordModal ? "请设置账号密码..." : "正在跳转..."}
           style={{ background: alphaColor(token.colorBgContainer, 0.96), padding: 40, borderRadius: 8 }}
         />
       </div>
