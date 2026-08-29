@@ -1511,6 +1511,24 @@ class BookImportService:
             "goal": goal[:300],
         }
 
+    @staticmethod
+    def _cap_character_target(count: int) -> int:
+        """控制角色/组织单次生成总数上限（#13：过大单次输出易触发网关超时）。"""
+        return max(5, min(count, 10))
+
+    @staticmethod
+    def _split_character_batches(total: int, batch_size: int = 6) -> list[int]:
+        """把总目标数拆成若干小批次，控制单次 JSON 输出规模。"""
+        if total <= batch_size:
+            return [total]
+        batches = []
+        remaining = total
+        while remaining > 0:
+            take = min(batch_size, remaining)
+            batches.append(take)
+            remaining -= take
+        return batches
+
     def _build_fallback_outline_structure(self, chapter: BookImportChapter) -> dict[str, Any]:
         summary = (chapter.summary or self._build_summary(chapter.content or "") or "").strip()
         if not summary:
@@ -1940,8 +1958,8 @@ class BookImportService:
         await _notify("👥 正在初始化AI服务...", 0.05)
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
-        # 控制数量区间，避免过多生成
-        target_count = max(5, min(count, 20))
+        # 控制数量区间，避免过多生成（上限 10，#13 防单次输出过大）
+        target_count = self._cap_character_target(count)
 
         # 职业上下文：用于提示词约束与后续名称映射
         careers_result = await db.execute(select(Career).where(Career.project_id == project.id))
@@ -1971,31 +1989,43 @@ class BookImportService:
                 careers_context += "- 可用副职业：" + "、".join([c.name for c in sub_careers]) + "\n"
             requirements += careers_context
 
-        prompt = PromptService.format_prompt(
-            template,
-            count=target_count,
-            time_period=project.world_time_period or "未设定",
-            location=project.world_location or "未设定",
-            atmosphere=project.world_atmosphere or "未设定",
-            rules=project.world_rules or "未设定",
-            theme=project.theme or "未设定",
-            genre=project.genre or "未设定",
-            requirements=requirements,
-        )
+        # 分批生成：控制单次 JSON 输出规模（#13 防网关超时）
+        batches = self._split_character_batches(target_count)
+        generated_entities: list = []
+        total_batches = len(batches)
+        for batch_idx, batch_count in enumerate(batches):
+            batch_prompt = PromptService.format_prompt(
+                template,
+                count=batch_count,
+                time_period=project.world_time_period or "未设定",
+                location=project.world_location or "未设定",
+                atmosphere=project.world_atmosphere or "未设定",
+                rules=project.world_rules or "未设定",
+                theme=project.theme or "未设定",
+                genre=project.genre or "未设定",
+                requirements=requirements,
+            )
+            if total_batches > 1:
+                # 非首批时，提示词补充已生成实体，避免重复生成
+                known_names = "、".join(e.get("name", "") for e in generated_entities if isinstance(e, dict))
+                if known_names:
+                    batch_prompt += f"\n\n【已生成实体】请避免与以下名称重复：{known_names}"
 
-        await _notify("👥 AI正在生成角色与组织...", 0.25)
-        generated_data = await ai_service.call_with_json_retry(
-            prompt=prompt,
-            max_retries=3,
-            expected_type="array",
-        )
+            await _notify(
+                f"👥 AI正在生成角色与组织（第 {batch_idx + 1}/{total_batches} 批）...",
+                0.25 + 0.4 * (batch_idx / max(total_batches, 1)),
+            )
+            batch_data = await ai_service.call_with_json_retry(
+                prompt=batch_prompt,
+                max_retries=3,
+                expected_type="array",
+            )
+            if isinstance(batch_data, dict):
+                generated_entities.append(batch_data)
+            elif isinstance(batch_data, list):
+                generated_entities.extend(batch_data)
+
         await _notify("👥 正在解析角色数据...", 0.7)
-        if isinstance(generated_data, dict):
-            generated_entities = [generated_data]
-        elif isinstance(generated_data, list):
-            generated_entities = generated_data
-        else:
-            generated_entities = []
 
         # 预加载角色/组织，便于去重和兼容 append 场景的名称引用
         existing_chars_result = await db.execute(select(Character).where(Character.project_id == project.id))
