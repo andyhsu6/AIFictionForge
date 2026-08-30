@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.relationship import (
@@ -59,8 +59,13 @@ async def resolve_relationship_type_ids(
     names: Optional[Iterable[Any]],
     source: str = "manual",
     category: str = "custom",
+    max_auto_types: Optional[int] = None,
 ) -> list[int]:
-    """把关系类型名解析为 ID；系统或项目内已有同名则复用，否则新建项目级类型。"""
+    """把关系类型名解析为 ID；系统或项目内已有同名则复用，否则新建项目级类型。
+
+    max_auto_types: 若提供，则当"待新建"项目级类型数达到该上限后停止自动注册
+    （已有类型与系统类型不受影响），用于限制批量导入时类型池膨胀。
+    """
     if not names:
         return []
     normalized_names: list[str] = []
@@ -81,10 +86,24 @@ async def resolve_relationship_type_ids(
     ).scalars().all()
     existing = {r.name: r.id for r in rows}
 
+    # 项目已注册的类型总数（含新建计数），供自动注册上限使用
+    project_type_count = 0
+    if max_auto_types is not None:
+        project_type_count = (
+            await db.execute(
+                select(func.count(RelationshipType.id)).where(
+                    RelationshipType.project_id == project_id
+                )
+            )
+        ).scalar_one()
+
     ids: list[int] = []
     for name in normalized_names:
         if name in existing:
             ids.append(existing[name])
+            continue
+        if max_auto_types is not None and project_type_count >= max_auto_types:
+            # 达到自动注册上限：跳过新建，不再为本次未命中类型注册
             continue
         rt = RelationshipType(
             project_id=project_id,
@@ -97,6 +116,7 @@ async def resolve_relationship_type_ids(
         await db.flush()
         ids.append(rt.id)
         existing[name] = rt.id
+        project_type_count += 1
     return ids
 
 

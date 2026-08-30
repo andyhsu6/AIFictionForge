@@ -2487,6 +2487,7 @@ class BookImportService:
                     project.id,
                     type_names,
                     source="import",
+                    max_auto_types=MAX_PROJECT_TYPES_PER_IMPORT,
                 )
                 await sync_relationship_links(db, rel_obj, type_ids)
                 relationship_pairs.add(pair)
@@ -2597,6 +2598,21 @@ class BookImportService:
                 select(CharacterRelationship).where(CharacterRelationship.project_id == project.id)
             )
         ).scalars().all()
+        # 关系对索引：无视方向（A→B 与 B→A 视为同一对），用于合并判定
+        rel_by_pair: dict[frozenset, list[CharacterRelationship]] = {}
+        for rel in relationships:
+            rel_by_pair.setdefault(frozenset({rel.character_from_id, rel.character_to_id}), []).append(rel)
+
+        # 主角别名映射：仅当文本为明确第一人称且项目已生成主角时才启用
+        protagonist_name: Optional[str] = None
+        full_text = "".join((c.content or "") for c in chapters)
+        if self._is_clear_first_person(full_text):
+            protagonist_char = next(
+                (c for c in chars if c.role_type == "protagonist" and not c.is_organization), None
+            )
+            if protagonist_char:
+                protagonist_name = protagonist_char.name
+        alias_map = {token: protagonist_name for token in FIRST_PERSON_ALIAS_TOKENS if protagonist_name}
 
         extracted_count = 0
         created_type_count = 0
@@ -2626,7 +2642,15 @@ class BookImportService:
                     continue
                 char_a = (item.get("character_a") or "").strip()
                 char_b = (item.get("character_b") or "").strip()
-                if not char_a or not char_b or char_a == char_b:
+                if not char_a or not char_b:
+                    continue
+
+                # 第一人称别名映射：仅在明确第一人称且找到主角时启用（alias_map 非空）。
+                # 映射发生在自动补角色之前，保证"我"不会被创建成新角色；
+                # 映射后两端相同的（如"我"-"我"）由下方 char_a == char_b 兜底跳过。
+                char_a = alias_map.get(char_a, char_a)
+                char_b = alias_map.get(char_b, char_b)
+                if char_a == char_b:
                     continue
 
                 type_names_raw = item.get("relationship_types")
@@ -2640,15 +2664,26 @@ class BookImportService:
                 if not type_names:
                     continue
 
-                # 自动补角色：只在确实不存在时创建，且受上限保护
+                # 自动补角色：只在确实不存在时创建，且受上限保护。
+                # 未映射的别名 token（如第一人称但未找到主角）也不得创建为角色。
                 for name in (char_a, char_b):
-                    if name not in char_by_name and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                    if name not in char_by_name and name not in FIRST_PERSON_ALIAS_TOKENS and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                        personality = (item.get("evidence") or "").strip() or None
+                        relationship_desc = (item.get("description") or "").strip()
+                        # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
+                        # 或缺失，则不写入 personality，避免关系描述污染性格字段
+                        if personality and personality == relationship_desc:
+                            personality = None
                         new_char = Character(
                             project_id=project.id,
                             name=name[:100],
                             role_type="supporting",
                             source="imported",
-                            personality=item.get("description"),
+                            personality=personality,
+                            age=(str(item.get("age")) if item.get("age") is not None else None),
+                            gender=item.get("gender"),
+                            background=item.get("background"),
+                            appearance=item.get("appearance"),
                         )
                         db.add(new_char)
                         await db.flush()
@@ -2665,24 +2700,29 @@ class BookImportService:
                     project.id,
                     type_names,
                     source="import",
+                    max_auto_types=MAX_PROJECT_TYPES_PER_IMPORT,
                 )
                 created_type_count += len(type_ids)
 
-                # 合并规则：同对 + 相同类型集合 + 同来源批次才合并；否则新增关系
-                merged = False
-                for rel in relationships:
-                    if (
-                        rel.character_from_id == source_char.id
-                        and rel.character_to_id == target_char.id
-                        and rel.source in ("ai", "analysis", "manual")
-                    ):
-                        await sync_relationship_links(db, rel, list({rel.relationship_type_id, *type_ids}))
+                # 合并规则：同一对角色（无视方向）且来源在白名单内（含 import）即合并，
+                # 并集类型链接；但已有的 manual 关系不可被覆盖——只并类型、不追加描述。
+                pair = frozenset({source_char.id, target_char.id})
+                matched: Optional[CharacterRelationship] = None
+                for rel in rel_by_pair.get(pair, []):
+                    if rel.source in ("ai", "analysis", "manual", "import"):
+                        matched = rel
+                        break
+
+                if matched:
+                    await sync_relationship_links(db, matched, list({matched.relationship_type_id, *type_ids}))
+                    if matched.source != "manual":
                         note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
                         if note:
-                            rel.description = (rel.description + "\n" + note).strip()
-                        merged = True
-                        extracted_count += 1
-                        break
+                            matched.description = (matched.description + "\n" + note).strip()
+                    merged = True
+                    extracted_count += 1
+                else:
+                    merged = False
 
                 if not merged:
                     rel = CharacterRelationship(
@@ -2699,6 +2739,7 @@ class BookImportService:
                     await db.flush()
                     await sync_relationship_links(db, rel, type_ids)
                     relationships.append(rel)
+                    rel_by_pair.setdefault(pair, []).append(rel)
                     extracted_count += 1
 
         await db.flush()
