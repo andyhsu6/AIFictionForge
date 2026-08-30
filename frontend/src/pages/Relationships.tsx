@@ -14,7 +14,7 @@ interface Relationship {
   relationship_name: string;
   relationship_type_names?: string[];
   intimacy_level: number;
-  status: string;
+  status?: string;
   description?: string;
   source: string;
 }
@@ -126,7 +126,7 @@ export default function Relationships() {
       character_to_id: record.character_to_id,
       relationship_type_names: record.relationship_type_names || (record.relationship_name ? [record.relationship_name] : []),
       intimacy_level: record.intimacy_level,
-      status: record.status,
+      status: record.status || 'active',
       description: record.description,
     });
     setIsModalOpen(true);
