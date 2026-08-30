@@ -20,7 +20,7 @@
 项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
 
 ```bash
-cd /Users/andyhsu/codehouse/MuMuAINovel
+cd /Users/andyhsu/codehouse/AIFictionForge
 
 ./aistoryforge.sh status              # 查看两个服务状态（PID + 健康检查）
 ./aistoryforge.sh start               # 启动全部（后端 + 前端）

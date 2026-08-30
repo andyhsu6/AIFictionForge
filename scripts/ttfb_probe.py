@@ -2,7 +2,7 @@
 """TTFB 实测脚本（D3 调研）：真实调用 commandcode API，测不同 prompt 大小的首字延迟。
 
 用法:
-  cd /Users/andyhsu/codehouse/MuMuAINovel
+  cd /Users/andyhsu/codehouse/AIFictionForge
   backend/.venv/bin/python scripts/ttfb_probe.py            # 默认 4 档
   backend/.venv/bin/python scripts/ttfb_probe.py --sizes 50000,200000,500000,800000
   backend/.venv/bin/python scripts/ttfb_probe.py --stream   # 流式测 TTFB（推荐，模拟真实生成）
