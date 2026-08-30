@@ -123,8 +123,10 @@ def detect_context_window(model: Optional[str]) -> int:
 
 
 # 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
-# 全书注入保留 20% 余量给输出与系统提示词
-_FULL_BOOK_BUDGET_RATIO = 0.8
+# 全书注入保留 40% 余量给输出/系统提示词/思考模型推理（0.6 为保守值：
+# 800K 字符 prompt 的 prefill TTFB 未实测，且 1M 窗口需容纳基础上下文栈
+# + 输出预算；或acle 评审 F1 指出单位错配风险，保守化先行）
+_FULL_BOOK_BUDGET_RATIO = 0.6
 _1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入
 
 

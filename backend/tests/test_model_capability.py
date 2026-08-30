@@ -26,9 +26,10 @@ def test_detect_small_context_window():
 
 
 def test_1m_model_gets_full_book_budget():
-    """1M 模型：全书注入预算 = 窗口的 80%（≈800K 字符）。"""
+    """1M 模型：全书注入预算 = 窗口的 60%（保守值，≈600K 字符）。"""
     budget = resolve_context_budget_chars("deepseek-v4-flash")
-    assert budget >= 700000  # 全书量级，显著高于 128K 档位
+    assert budget >= 500000  # 全书量级，显著高于 128K 档位
+    assert budget < 700000  # 保守化：0.6 比例，不再用满 80%
 
 
 def test_128k_model_gets_reduced_budget():
