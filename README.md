@@ -1,6 +1,8 @@
-# AIFictionForge（灵创）📚✨
+# AIFictionForge (灵创) 📚✨
 
 <div align="center">
+
+**[中文](/README.zh-CN.md) | English**
 
 ![Version](https://img.shields.io/badge/version-1.5.4-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
@@ -8,53 +10,53 @@
 ![React](https://img.shields.io/badge/react-18.3.1-blue.svg)
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
 
-**基于 AI 的智能小说创作助手**
+**An AI-powered intelligent novel creation assistant**
 
-[特性](#-特性) • [快速开始](#-快速开始) • [配置说明](#%EF%B8%8F-配置说明) • [项目结构](#-项目结构)
+[Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#%EF%B8%8F-configuration) • [Project Structure](#-project-structure)
 
 </div>
 
 ---
 
-> 本项目 fork 自 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel)。
-> 这是基于上游源码的本地化与去上游化衍生版本，不是独立原创项目。
-> 感谢原作者与所有贡献者。代码遵循 GPL-3.0，详见 [LICENSE](LICENSE)。
+> This project is forked from [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel).
+> It is a localized, de-upstreamed derivative built on the upstream source, not an original standalone project.
+> Thanks to the original author and all contributors. The code is licensed under GPL-3.0, see [LICENSE](LICENSE).
 
 ---
 
-## ✨ 特性
+## ✨ Features
 
-- 🤖 **多 AI 模型** - 支持 OpenAI、Gemini、Claude 等主流模型
-- 📝 **智能向导** - AI 自动生成大纲、角色和世界观
-- 👥 **角色管理** - 人物关系、组织架构可视化管理
-- 📖 **章节编辑** - 支持创建、编辑、重新生成和润色
-- 🌐 **世界观设定** - 构建完整的故事背景
-- 🔐 **多种登录** - LinuxDO OAuth 或本地账户登录
-- 💾 **PostgreSQL** - 生产级数据库，多用户数据隔离
-- 🐳 **Docker 部署** - 一键启动，开箱即用
+- 🤖 **Multiple AI Models** - Supports major providers including OpenAI, Gemini, and Claude
+- 📝 **Smart Wizard** - AI automatically generates outlines, characters, and world settings
+- 👥 **Character Management** - Visual management of character relationships and organization structures
+- 📖 **Chapter Editing** - Create, edit, regenerate, and polish chapters
+- 🌐 **Worldbuilding** - Build complete story backgrounds
+- 🔐 **Multiple Login Methods** - LinuxDO OAuth or local account login
+- 💾 **PostgreSQL** - Production-grade database with multi-user data isolation
+- 🐳 **Docker Deployment** - One-click startup, out of the box
 
-## 📸 项目预览
+## 📸 Project Preview
 
 <details>
 
-<summary>多图预警</summary>
+<summary>Multiple images ahead</summary>
 
 <div align="center">
 
-### 登录界面
-![登录界面](images/1.png)
+### Login Screen
+![Login Screen](images/1.png)
 
-![登录界面](images/1-1.png)
+![Login Screen](images/1-1.png)
 
-### 主界面
-![主界面](images/2.png)
+### Main Interface
+![Main Interface](images/2.png)
 
-![主界面（暗色）](images/2-1.png)
+![Main Interface (Dark)](images/2-1.png)
 
-### 项目管理
-![项目管理](images/3.png)
+### Project Management
+![Project Management](images/3.png)
 
-![项目管理](images/3-1.png)
+![Project Management](images/3-1.png)
 
 </div>
 
@@ -62,112 +64,113 @@
 
 ## 📋 TODO List
 
-### ✅ 已完成功能
+### ✅ Completed Features
 
-- [x] **灵感模式** - 创作灵感和点子生成
-- [x] **自定义写作风格** - 支持自定义 AI 写作风格
-- [x] **数据导入导出** - 项目数据的导入导出
-- [x] **Prompt 调整界面** - 可视化编辑 Prompt 模板
-- [x] **章节字数限制** - 用户可设置生成字数
-- [x] **思维链与章节关系图谱** - 可视化章节逻辑关系
-- [x] **根据分析一键重写** - 根据分析建议重新生成
-- [x] **Linux DO 自动创建账号** - OAuth 登录自动生成账号
-- [x] **职业等级体系** - 自定义职业和等级系统，支持修仙境界、魔法等级等多种体系
-- [x] **角色/组织卡片导入导出** - 单独导出角色和组织卡片，支持跨项目数据共享
-- [x] **伏笔管理** - 智能追踪剧情伏笔，提醒未回收线索，可视化伏笔时间线
-- [x] **拆书功能** - 一键拆书
+- [x] **Inspiration Mode** - Generate creative inspiration and ideas
+- [x] **Custom Writing Styles** - Define your own AI writing styles
+- [x] **Data Import / Export** - Import and export project data
+- [x] **Prompt Editing UI** - Visually edit Prompt templates
+- [x] **Chapter Word Limits** - Users can set the target length for generated chapters
+- [x] **Chain-of-Thought & Chapter Relationship Graph** - Visualize logical relationships between chapters
+- [x] **One-Click Rewrite from Analysis** - Regenerate content based on analysis suggestions
+- [x] **Linux DO Auto Account Creation** - OAuth login automatically creates an account
+- [x] **Career & Rank System** - Customizable career and level systems, supporting cultivation realms, magic levels, and more
+- [x] **Character / Organization Card Import & Export** - Export character and organization cards individually for cross-project data sharing
+- [x] **Foreshadowing Management** - Intelligently track plot foreshadowing, remind about unrecovered threads, and visualize the foreshadowing timeline
+- [x] **Book Deconstruction** - One-click book breakdown and analysis
 
-### 📝 规划中功能
+### 📝 Planned Features
 
 ......
 
-## 💻 硬件配置要求
+## 💻 Hardware Requirements
 
-### 最低配置（个人使用/开发环境）
+### Minimum (Personal Use / Development)
 
-| 组件 | 要求 |
+| Component | Requirement |
 |------|------|
-| **CPU** | 2 核 |
-| **内存** | 2 GB RAM |
-| **存储** | 10 GB 可用空间 |
-| **网络** | 稳定互联网连接（用于调用 AI API） |
+| **CPU** | 2 cores |
+| **Memory** | 2 GB RAM |
+| **Storage** | 10 GB free space |
+| **Network** | Stable internet connection (for AI API calls) |
 
-### 推荐配置（小型团队/生产环境）
+### Recommended (Small Team / Production)
 
-| 组件 | 要求 |
+| Component | Requirement |
 |------|------|
-| **CPU** | 4 核 |
-| **内存** | 8 GB RAM |
-| **存储** | 20 GB SSD |
-| **网络** | 稳定互联网连接 |
+| **CPU** | 4 cores |
+| **Memory** | 8 GB RAM |
+| **Storage** | 20 GB SSD |
+| **Network** | Stable internet connection |
 
-### 高并发配置（80-150 用户）
+### High Concurrency (80-150 Users)
 
-| 组件 | 要求 |
+| Component | Requirement |
 |------|------|
-| **CPU** | 8 核 |
-| **内存** | 16 GB RAM |
-| **存储** | 50 GB+ SSD |
-| **网络** | 高带宽连接 |
+| **CPU** | 8 cores |
+| **Memory** | 16 GB RAM |
+| **Storage** | 50 GB+ SSD |
+| **Network** | High-bandwidth connection |
 
-> **📌 说明**
-> - **Embedding 模型**：约 400 MB 磁盘空间，运行时加载到内存
-> - **PostgreSQL**：默认配置使用 256 MB shared_buffers，1 GB effective_cache_size
-> - **Docker 部署**：建议预留额外 1-2 GB 内存给容器运行时
-> - 本项目主要依赖外部 AI API（OpenAI/Claude/Gemini），不需要本地 GPU
+> **📌 Notes**
+> - **Embedding model**: ~400 MB disk space, loaded into memory at runtime
+> - **PostgreSQL**: default config uses 256 MB shared_buffers and 1 GB effective_cache_size
+> - **Docker deployment**: reserve an additional 1-2 GB of memory for the container runtime
+> - This project primarily depends on external AI APIs (OpenAI/Claude/Gemini); no local GPU is required
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 前置要求
+### Prerequisites
 
-- Docker 和 Docker Compose（可选，本地开发无需）
-- 至少一个 AI 服务的 API Key（OpenAI/Gemini/Claude）
+- Docker and Docker Compose (optional, not required for local development)
+- At least one AI service API Key (OpenAI/Gemini/Claude)
 
-### Docker Compose 部署
+### Docker Compose Deployment
 
 ```bash
-# 1. 获取源码（本地已有源码则跳过）
-# 若从上游 fork，先克隆上游仓库：
+# 1. Get the source code (skip if you already have it locally)
+# If forking from upstream, first clone the upstream repository:
 git clone https://github.com/xiamuceer-j/MuMuAINovel.git
 cd MuMuAINovel
-# 然后将本衍生版本的修改合并到你的副本中
+# Then merge the changes from this derivative into your copy
 
-# 2. 配置环境变量（必需）
+# 2. Configure environment variables (required)
 cp backend/.env.example .env
-# 编辑 .env 文件，填入必要配置（API Key、数据库密码等）
+# Edit the .env file and fill in the required config (API Key, database password, etc.)
 
-# 3. 确保文件准备完整
-# ⚠️ 重要：确保以下文件存在
-# - .env（配置文件，必需挂载到容器）
-# - backend/scripts/init_postgres.sql（数据库初始化脚本）
+# 3. Make sure the required files are in place
+# ⚠️ Important: ensure the following files exist
+# - .env (config file, must be mounted into the container)
+# - backend/scripts/init_postgres.sql (database initialization script)
 
-# 4. 启动服务
+# 4. Start the services
 docker-compose up -d
 
-# 5. 访问应用
-# 打开浏览器访问 http://localhost:8000
+# 5. Access the app
+# Open your browser and visit http://localhost:8000
 ```
 
-> **📌 注意事项**
+> **📌 Notes**
 >
-> 1. **`.env` 文件挂载**: `docker-compose.yml` 会自动将 `.env` 挂载到容器，确保文件存在
-> 2. **数据库初始化**: `init_postgres.sql` 会在首次启动时自动执行，安装必要的 PostgreSQL 扩展
-> 3. **自行构建**: 本项目不提供预构建镜像，请使用 `docker-compose build` 从源码自行构建；Embedding 模型文件需放置到 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`
+> 1. **`.env` file mounting**: `docker-compose.yml` automatically mounts `.env` into the container; make sure the file exists
+> 2. **Database initialization**: `init_postgres.sql` runs automatically on first startup to install the required PostgreSQL extensions
+> 3. **Build from source**: this project does not ship prebuilt images; build it yourself with `docker-compose build`. Place the embedding model files under `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`
 
-### 本地开发 / 从源码构建
+### Local Development / Building from Source
 
-#### 前置准备
+#### Preparation
 
 ```bash
-# ⚠️ 重要：从源码运行前，需要先准备 embedding 模型文件
-# 模型文件较大（约 400MB），需放置到以下目录：
+# ⚠️ Important: before running from source, prepare the embedding model files
+# The model is large (~400MB) and must be placed in the following directory:
 # backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/
 #
-# 📥 获取方式：首次启动时会从 Hugging Face 官方仓库自动下载，或手动下载
+# 📥 How to get it: it is downloaded automatically from the official Hugging Face
+# repository on first startup, or you can download it manually from
 # https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
-#### 后端
+#### Backend
 
 ```bash
 cd backend
@@ -175,230 +178,236 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 配置 .env 文件
+# Configure the .env file
 cp .env.example .env
-# 编辑 .env 填入必要配置
+# Edit .env and fill in the required configuration
 
-# 启动 PostgreSQL（可使用 Docker）
+# Start PostgreSQL (via Docker)
 docker run -d --name postgres \
   -e POSTGRES_PASSWORD=your_password \
   -e POSTGRES_DB=aistoryforge \
   -p 5432:5432 \
   postgres:18-alpine
 
-# 启动后端
+# Start the backend
 python -m uvicorn app.main:app --host localhost --port 8000 --reload
 ```
 
-#### 前端
+#### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev  # 开发模式
-npm run build  # 生产构建
+npm run dev  # development mode
+npm run build  # production build
 ```
 
-## ⚙️ 配置说明
+## ⚙️ Configuration
 
-### 必需配置
+### Required Configuration
 
-创建 `.env` 文件：
+Create the `.env` file:
 
 ```bash
-# PostgreSQL 数据库（必需）
+# PostgreSQL database (required)
 DATABASE_URL=postgresql+asyncpg://aistoryforge:your_password@postgres:5432/aistoryforge
 POSTGRES_PASSWORD=your_secure_password
 
-# AI 服务
+# AI services
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
+# ⭐ Recommended: large-context (≥1M token) models such as DeepSeek V4 Flash / V3, Gemini 2.0 Pro
+# The system tiers context injection by the model's context window: 1M models can feed
+# the whole book during chapter generation, while 128K models automatically fall back to
+# recent-chapter summaries plus memory retrieval. For long-output tasks like book
+# deconstruction, streaming is recommended.
 DEFAULT_MODEL=gpt-4o-mini
 
-# 本地账户登录
+# Local account login
 LOCAL_AUTH_ENABLED=true
 LOCAL_AUTH_USERNAME=admin
 LOCAL_AUTH_PASSWORD=your_password
 ```
 
-### 可选配置
+### Optional Configuration
 
 ```bash
 # LinuxDO OAuth
 LINUXDO_CLIENT_ID=your_client_id
 LINUXDO_CLIENT_SECRET=your_client_secret
 LINUXDO_REDIRECT_URI=http://localhost:8000/api/auth/callback
-# LinuxDO 登录专用代理（可选，仅影响 OAuth token 与用户信息请求）
+# LinuxDO login-specific proxy (optional, only affects OAuth token and user info requests)
 LINUXDO_PROXY_URL=http://127.0.0.1:7890
 
-# PostgreSQL 连接池（高并发优化）
+# PostgreSQL connection pool (high-concurrency tuning)
 DATABASE_POOL_SIZE=30
 DATABASE_MAX_OVERFLOW=20
 
-# 会话 Cookie Secure 标记
-# 默认 true，适合 HTTPS 部署；如果使用 HTTP 访问并且浏览器不保存登录 Cookie，可设为 false
+# Session Cookie Secure flag
+# Defaults to true, suitable for HTTPS deployments; if you access over HTTP and the
+# browser does not persist the login cookie, set it to false
 SESSION_COOKIE_SECURE=true
 
-# 本地 / Docker 内网 LLM（默认关闭，保持 SSRF 防护）
+# Local / Docker internal LLM (off by default to keep SSRF protection)
 # ALLOW_PRIVATE_AI_ENDPOINTS=true
 # ALLOWED_AI_HOSTS=host.docker.internal,127.0.0.1
 ```
 
-> **🔐 Cookie Secure 说明**
+> **🔐 Cookie Secure Notes**
 >
-> - HTTPS 部署：建议保持 `SESSION_COOKIE_SECURE=true`，浏览器只会通过 HTTPS 发送登录 Cookie。
-> - HTTP 部署：如果登录后浏览器没有保存 Cookie，请在 `.env` 中设置 `SESSION_COOKIE_SECURE=false`，然后重启后端或 Docker 容器。
+> - HTTPS deployment: keep `SESSION_COOKIE_SECURE=true`; the browser will only send the login cookie over HTTPS.
+> - HTTP deployment: if the browser does not save the cookie after login, set `SESSION_COOKIE_SECURE=false` in `.env`, then restart the backend or the Docker container.
 >
-> **🌐 LinuxDO 专用代理说明**
+> **🌐 LinuxDO-Specific Proxy Notes**
 >
-> - 如果只有 LinuxDO 授权登录在当前网络不可达，优先配置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`。
-> - `LINUXDO_PROXY_URL` 只会用于 LinuxDO OAuth 的 token 交换和用户信息请求，不影响 AI 服务、SMTP、数据库等其他网络调用。
-> - 常见示例：`LINUXDO_PROXY_URL=http://127.0.0.1:7890`；Docker 容器内访问宿主机代理时通常需要使用宿主机在 Docker 网络中的地址，而不是容器内的 `127.0.0.1`。
-> - 当前示例按 HTTP 代理配置；如果需要 SOCKS 代理，请先确保运行环境安装了 httpx 的 SOCKS 支持依赖。
+> - If only the LinuxDO authorization login is unreachable on the current network, prefer configuring `LINUXDO_PROXY_URL` rather than a global `HTTP_PROXY` / `HTTPS_PROXY`.
+> - `LINUXDO_PROXY_URL` is used only for LinuxDO OAuth token exchange and user-info requests; it does not affect AI services, SMTP, database, or other network calls.
+> - Common example: `LINUXDO_PROXY_URL=http://127.0.0.1:7890`. Inside a Docker container, use the host's address on the Docker network instead of the container's `127.0.0.1`.
+> - The example above is an HTTP proxy; if you need a SOCKS proxy, first make sure the httpx SOCKS support dependency is installed in your runtime environment.
 >
-> **🖥️ 本地 / Docker 内网 LLM 说明**
+> **🖥️ Local / Docker Internal LLM Notes**
 >
-> - 默认会拒绝 `localhost`、`127.0.0.1`、私网 IP 以及解析到内网的主机名（例如 `host.docker.internal`），用于降低 SSRF 风险。
-> - 如果 AI 服务跑在本机 Ollama / llama.cpp，或 Docker 容器需要访问宿主机上的模型，请在 `.env` 中设置 `ALLOW_PRIVATE_AI_ENDPOINTS=true`，或把允许的主机名写入 `ALLOWED_AI_HOSTS`。
-> - 即使开启本地放行，链路本地地址（如云厂商元数据 `169.254.169.254`）仍然会被拒绝。
-> - MCP 插件 URL 不受该开关影响，继续走严格的公网校验。
+> - By default, `localhost`, `127.0.0.1`, private IPs, and hostnames that resolve to internal networks (e.g. `host.docker.internal`) are rejected to reduce SSRF risk.
+> - If your AI service runs on a local Ollama / llama.cpp, or a Docker container needs to reach a model on the host, set `ALLOW_PRIVATE_AI_ENDPOINTS=true` in `.env`, or add the allowed hostnames to `ALLOWED_AI_HOSTS`.
+> - Even with local access enabled, link-local addresses (such as the cloud metadata endpoint `169.254.169.254`) are still rejected.
+> - MCP plugin URLs are not affected by this switch and always go through strict public-internet validation.
 
-### 中转 API 配置
+### Relay API Configuration
 
-支持所有 OpenAI 兼容格式的中转服务：
+Supports any OpenAI-compatible relay / proxy service:
 
 ```bash
-# New API 示例
+# New API example
 OPENAI_API_KEY=sk-xxxxxxxx
 OPENAI_BASE_URL=https://api.new-api.com/v1
 
-# 其他中转服务
+# Other relay services
 OPENAI_BASE_URL=https://your-proxy-service.com/v1
 ```
 
-## 🐳 Docker 部署详情
+## 🐳 Docker Deployment Details
 
-### 服务架构
+### Service Architecture
 
-- **postgres**: PostgreSQL 18 数据库
-  - 端口: 5432
-  - 数据持久化: `postgres_data` volume
-  - 初始化脚本: `backend/scripts/init_postgres.sql`（自动挂载）
-  - 优化配置: 支持 80-150 并发用户
+- **postgres**: PostgreSQL 18 database
+  - Port: 5432
+  - Data persistence: `postgres_data` volume
+  - Init script: `backend/scripts/init_postgres.sql` (mounted automatically)
+  - Tuned for 80-150 concurrent users
 
-- **aistoryforge**: 主应用服务
-  - 端口: 8000
-  - 日志目录: `./logs`
-  - 配置挂载: `.env` 文件
-  - 自动等待数据库就绪
-  - 健康检查: 每 30 秒检测一次
+- **aistoryforge**: main application service
+  - Port: 8000
+  - Log directory: `./logs`
+  - Config mount: `.env` file
+  - Automatically waits for the database to be ready
+  - Health check: runs every 30 seconds
 
-### 重要文件说明
+### Key Files
 
-| 文件 | 说明 | 是否必需 |
+| File | Description | Required |
 |------|------|---------|
-| `.env` | 环境配置（API Key、数据库密码等） | ✅ 必需 |
-| `docker-compose.yml` | 服务编排配置 | ✅ 必需 |
-| `backend/scripts/init_postgres.sql` | PostgreSQL 扩展安装脚本 | ✅ 自动挂载 |
-| `backend/embedding/models--*/` | Embedding 模型文件 | ⚠️ 自建需要 |
+| `.env` | Environment config (API Key, database password, etc.) | ✅ Required |
+| `docker-compose.yml` | Service orchestration config | ✅ Required |
+| `backend/scripts/init_postgres.sql` | PostgreSQL extension installation script | ✅ Auto-mounted |
+| `backend/embedding/models--*/` | Embedding model files | ⚠️ Needed for self-built images |
 
-### 常用命令
+### Common Commands
 
 ```bash
-# 构建并启动服务
+# Build and start the services
 docker-compose build
 docker-compose up -d
 
-# 查看状态
+# Check status
 docker-compose ps
 
-# 查看日志
+# View logs
 docker-compose logs -f
 
-# 停止服务
+# Stop the services
 docker-compose down
 
-# 重启服务
+# Restart the services
 docker-compose restart
 
-# 查看资源使用
+# Check resource usage
 docker stats
 ```
 
-### 数据持久化
+### Data Persistence
 
-- `./postgres_data` - PostgreSQL 数据库文件
-- `./logs` - 应用日志文件
+- `./postgres_data` - PostgreSQL database files
+- `./logs` - Application log files
 
-### 端口配置
+### Port Configuration
 
-修改 `docker-compose.yml` 中的端口映射：
+Change the port mapping in `docker-compose.yml`:
 
 ```yaml
 ports:
-  - "8800:8000"  # 宿主机:容器
+  - "8800:8000"  # host:container
 ```
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 AIFictionForge/
-├── backend/                 # 后端服务
+├── backend/                 # Backend service
 │   ├── app/
-│   │   ├── api/            # API 路由
-│   │   ├── models/         # 数据模型
-│   │   ├── services/       # 业务逻辑
-│   │   ├── middleware/     # 中间件
-│   │   ├── database.py     # 数据库连接
-│   │   └── main.py         # 应用入口
-│   ├── scripts/            # 工具脚本
-│   └── requirements.txt    # Python 依赖
-├── frontend/               # 前端应用
+│   │   ├── api/            # API routes
+│   │   ├── models/         # Data models
+│   │   ├── services/       # Business logic
+│   │   ├── middleware/     # Middleware
+│   │   ├── database.py     # Database connection
+│   │   └── main.py         # Application entry point
+│   ├── scripts/            # Utility scripts
+│   └── requirements.txt    # Python dependencies
+├── frontend/               # Frontend app
 │   ├── src/
-│   │   ├── pages/         # 页面组件
-│   │   ├── components/    # 通用组件
-│   │   ├── services/      # API 服务
-│   │   └── store/         # 状态管理
+│   │   ├── pages/         # Page components
+│   │   ├── components/    # Shared components
+│   │   ├── services/      # API services
+│   │   └── store/         # State management
 │   └── package.json
-├── docker-compose.yml      # Docker Compose 配置
-├── Dockerfile             # Docker 镜像构建
+├── docker-compose.yml      # Docker Compose configuration
+├── Dockerfile             # Docker image build
 └── README.md
 ```
 
-## 🛠️ 技术栈
+## 🛠️ Tech Stack
 
-**后端**: FastAPI • PostgreSQL • SQLAlchemy • OpenAI/Claude/Gemini SDK
+**Backend**: FastAPI • PostgreSQL • SQLAlchemy • OpenAI/Claude/Gemini SDK
 
-**前端**: React 18 • TypeScript • Ant Design • Zustand • Vite
+**Frontend**: React 18 • TypeScript • Ant Design • Zustand • Vite
 
-## 📖 使用指南
+## 📖 Usage Guide
 
-1. **登录系统** - 使用本地账户或 LinuxDO 账户
-2. **创建项目** - 选择"使用向导创建"
-3. **AI 生成** - 输入基本信息，AI 自动生成大纲和角色
-4. **编辑完善** - 管理角色关系，生成和编辑章节
+1. **Sign in** - use a local account or a LinuxDO account
+2. **Create a project** - choose "Create with Wizard"
+3. **AI generation** - enter basic info and the AI automatically generates the outline and characters
+4. **Edit & refine** - manage character relationships, generate and edit chapters
 
-### API 文档
+### API Documentation
 
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-## 📝 许可证
+## 📝 License
 
-本项目采用 [GNU General Public License v3.0](LICENSE)
+This project is licensed under the [GNU General Public License v3.0](LICENSE)
 
-**GPL v3 意味着：**
-- ✅ 可自由使用、修改和分发
-- ✅ 可用于商业目的
-- 📝 必须开源修改版本
-- 📝 必须保留原作者版权
-- 📝 衍生作品必须使用 GPL v3 协议
+**What GPL v3 means:**
+- ✅ Free to use, modify, and distribute
+- ✅ Can be used for commercial purposes
+- 📝 Modified versions must be open source
+- 📝 Original author's copyright must be preserved
+- 📝 Derivative works must be licensed under GPL v3
 
-## 🙏 致谢
+## 🙏 Acknowledgments
 
-- 上游项目 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) 及所有贡献者
-- [FastAPI](https://fastapi.tiangolo.com/) - Python Web 框架
-- [React](https://react.dev/) - 前端框架
-- [Ant Design](https://ant.design/) - UI 组件库
-- [PostgreSQL](https://www.postgresql.org/) - 数据库
+- Upstream project [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) and all its contributors
+- [FastAPI](https://fastapi.tiangolo.com/) - Python web framework
+- [React](https://react.dev/) - Frontend framework
+- [Ant Design](https://ant.design/) - UI component library
+- [PostgreSQL](https://www.postgresql.org/) - Database

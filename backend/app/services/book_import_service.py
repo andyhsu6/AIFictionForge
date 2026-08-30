@@ -1511,6 +1511,39 @@ class BookImportService:
             "goal": goal[:300],
         }
 
+    @staticmethod
+    def _cap_character_target(count: int) -> int:
+        """控制角色/组织单次生成总数上限（#13：过大单次输出易触发网关超时）。"""
+        return max(5, min(count, 10))
+
+    @staticmethod
+    def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = 1800) -> str:
+        """把章节原文构建为 excerpt 文本（Tier2 拆书喂全文）。
+
+        与关系抽取对齐：每章截取前 per_chapter_chars 字符，按章节号正序
+        拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
+        """
+        parts = []
+        for c in sorted(chapters, key=lambda x: x.chapter_number):
+            content = (c.content or "").strip()
+            if not content:
+                continue
+            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _split_character_batches(total: int, batch_size: int = 6) -> list[int]:
+        """把总目标数拆成若干小批次，控制单次 JSON 输出规模。"""
+        if total <= batch_size:
+            return [total]
+        batches = []
+        remaining = total
+        while remaining > 0:
+            take = min(batch_size, remaining)
+            batches.append(take)
+            remaining -= take
+        return batches
+
     def _build_fallback_outline_structure(self, chapter: BookImportChapter) -> dict[str, Any]:
         summary = (chapter.summary or self._build_summary(chapter.content or "") or "").strip()
         if not summary:
@@ -1940,8 +1973,8 @@ class BookImportService:
         await _notify("👥 正在初始化AI服务...", 0.05)
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
-        # 控制数量区间，避免过多生成
-        target_count = max(5, min(count, 20))
+        # 控制数量区间，避免过多生成（上限 10，#13 防单次输出过大）
+        target_count = self._cap_character_target(count)
 
         # 职业上下文：用于提示词约束与后续名称映射
         careers_result = await db.execute(select(Career).where(Career.project_id == project.id))
@@ -1960,6 +1993,22 @@ class BookImportService:
             "请尽量为非组织角色补充 organization_memberships。"
         )
 
+        # Tier2 拆书喂全文：把已入库章节原文 excerpt 注入角色生成，
+        # 让 AI 基于真实剧情生成角色（而非仅世界观摘要）
+        chapters_result = await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project.id)
+            .order_by(Chapter.chapter_number)
+        )
+        chapter_excerpt = self._build_chapter_excerpt(chapters_result.scalars().all())
+        if chapter_excerpt:
+            requirements += (
+                "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
+                "请基于其中真实出现的人物、组织与剧情生成角色，"
+                "避免编造与正文不符的内容。\n"
+                + chapter_excerpt
+            )
+
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
             careers_context += "请为每个非组织角色返回 career_assignment 字段："
@@ -1971,31 +2020,43 @@ class BookImportService:
                 careers_context += "- 可用副职业：" + "、".join([c.name for c in sub_careers]) + "\n"
             requirements += careers_context
 
-        prompt = PromptService.format_prompt(
-            template,
-            count=target_count,
-            time_period=project.world_time_period or "未设定",
-            location=project.world_location or "未设定",
-            atmosphere=project.world_atmosphere or "未设定",
-            rules=project.world_rules or "未设定",
-            theme=project.theme or "未设定",
-            genre=project.genre or "未设定",
-            requirements=requirements,
-        )
+        # 分批生成：控制单次 JSON 输出规模（#13 防网关超时）
+        batches = self._split_character_batches(target_count)
+        generated_entities: list = []
+        total_batches = len(batches)
+        for batch_idx, batch_count in enumerate(batches):
+            batch_prompt = PromptService.format_prompt(
+                template,
+                count=batch_count,
+                time_period=project.world_time_period or "未设定",
+                location=project.world_location or "未设定",
+                atmosphere=project.world_atmosphere or "未设定",
+                rules=project.world_rules or "未设定",
+                theme=project.theme or "未设定",
+                genre=project.genre or "未设定",
+                requirements=requirements,
+            )
+            if total_batches > 1:
+                # 非首批时，提示词补充已生成实体，避免重复生成
+                known_names = "、".join(e.get("name", "") for e in generated_entities if isinstance(e, dict))
+                if known_names:
+                    batch_prompt += f"\n\n【已生成实体】请避免与以下名称重复：{known_names}"
 
-        await _notify("👥 AI正在生成角色与组织...", 0.25)
-        generated_data = await ai_service.call_with_json_retry(
-            prompt=prompt,
-            max_retries=3,
-            expected_type="array",
-        )
+            await _notify(
+                f"👥 AI正在生成角色与组织（第 {batch_idx + 1}/{total_batches} 批）...",
+                0.25 + 0.4 * (batch_idx / max(total_batches, 1)),
+            )
+            batch_data = await ai_service.call_with_json_retry(
+                prompt=batch_prompt,
+                max_retries=3,
+                expected_type="array",
+            )
+            if isinstance(batch_data, dict):
+                generated_entities.append(batch_data)
+            elif isinstance(batch_data, list):
+                generated_entities.extend(batch_data)
+
         await _notify("👥 正在解析角色数据...", 0.7)
-        if isinstance(generated_data, dict):
-            generated_entities = [generated_data]
-        elif isinstance(generated_data, list):
-            generated_entities = generated_data
-        else:
-            generated_entities = []
 
         # 预加载角色/组织，便于去重和兼容 append 场景的名称引用
         existing_chars_result = await db.execute(select(Character).where(Character.project_id == project.id))
