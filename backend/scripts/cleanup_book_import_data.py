@@ -18,6 +18,7 @@
 """
 import argparse
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,20 @@ from app.services.relationship_service import sync_relationship_links  # noqa: E
 
 # "我"角色别名：旧版导入曾把第一人称代词当作角色名创建
 WO_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
+
+# 名称中的括号说明（如"我（男主角）"）——判定别名时整体剥掉，只比对核心名。
+# 与 book_import_service._first_person_core 同口径（脚本独立运行，不跨模块导入）。
+_ALIAS_PAREN_RE = re.compile(r"[（(].*?[)）]")
+
+
+def _first_person_core(name: str) -> str:
+    """剥掉括号说明后取核心名（'我（男主角）'→'我'）；用于别名判定。"""
+    return _ALIAS_PAREN_RE.sub("", str(name or "")).strip()
+
+
+def _is_first_person_alias_name(name: str) -> bool:
+    """名称（含括号变体）是否命中第一人称别名 token（'我'/'我（男主角）'→True）。"""
+    return _first_person_core(name) in WO_ALIAS_TOKENS
 
 # 关系来源白名单（与 book_import_service 合并判定一致）
 # ai/analysis/manual/import 之外来源（如 system）不参与合并
@@ -170,7 +185,7 @@ async def cleanup_project(db: AsyncSession, project_id: str) -> dict:
         wo_chars = [
             c
             for c in chars
-            if c.name in WO_ALIAS_TOKENS
+            if _is_first_person_alias_name(c.name)
             and c.source == "imported"
             and not c.is_organization
             and c.id != protagonist.id

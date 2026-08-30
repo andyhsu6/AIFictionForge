@@ -70,6 +70,20 @@ logger = get_logger(__name__)
 # 第一人称叙事下映射为主角的代词/自称（不含"我们"——复数代词不能等价于主角）
 FIRST_PERSON_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
 
+# 名称中的括号说明（如"我（男主角）"）——判定别名时整体剥掉，只比对核心名
+_ALIAS_PAREN_RE = re.compile(r"[（(].*?[)）]")
+
+
+def _first_person_core(name: str) -> str:
+    """剥掉括号说明后取核心名（'我（男主角）'→'我'）；用于别名判定。"""
+    return _ALIAS_PAREN_RE.sub("", str(name or "")).strip()
+
+
+def _is_first_person_alias_name(name: str) -> bool:
+    """名称（含括号变体）是否命中第一人称别名 token（'我'/'我（男主角）'→True）。"""
+    core = _first_person_core(name)
+    return core in FIRST_PERSON_ALIAS_TOKENS
+
 # 实体名称来源约束（拆书导入）：
 # 角色/组织名必须出现在喂给模型的原文中；编造名不落库为 source=imported，
 # 而是标记为 "AI 补充"（source 字段区分，不加新字段、不改 schema）。
@@ -2278,6 +2292,10 @@ class BookImportService:
             source_text = self._build_import_fulltext(
                 db_chapters, model_name=getattr(ai_service, "default_model", None)
             )
+        # 明确第一人称文本：别名核心名（"我"/"我（男主角）"）不得创建为真实角色
+        is_first_person = bool(db_chapters) and self._is_clear_first_person(
+            "".join((c.content or "") for c in db_chapters)
+        )
 
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
@@ -2374,6 +2392,11 @@ class BookImportService:
 
             raw_name = (item.get("name") or "").strip()
             if not raw_name or raw_name in existing_names:
+                continue
+            # 明确第一人称文本中，别名核心名（"我"/"我（男主角）"等）不是真实角色名，
+            # 跳过创建（不加入 existing_names），避免污染角色列表
+            if is_first_person and _is_first_person_alias_name(raw_name):
+                logger.debug("跳过第一人称别名核心名创建角色: %r", raw_name)
                 continue
 
             is_organization = bool(item.get("is_organization", False))
@@ -2686,7 +2709,8 @@ class BookImportService:
         for rel in relationships:
             rel_by_pair.setdefault(frozenset({rel.character_from_id, rel.character_to_id}), []).append(rel)
 
-        # 主角别名映射：仅当文本为明确第一人称且项目已生成主角时才启用
+        # 主角别名映射：仅当文本为明确第一人称且项目已生成主角时才启用。
+        # 键覆盖别名 token 及其括号变体（"我（男主角）"等），统一经核心名判定。
         protagonist_name: Optional[str] = None
         full_text = "".join((c.content or "") for c in chapters)
         if self._is_clear_first_person(full_text):
@@ -2695,7 +2719,7 @@ class BookImportService:
             )
             if protagonist_char:
                 protagonist_name = protagonist_char.name
-        alias_map = {token: protagonist_name for token in FIRST_PERSON_ALIAS_TOKENS if protagonist_name}
+        alias_map = {name: protagonist_name for name in FIRST_PERSON_ALIAS_TOKENS if protagonist_name}
 
         extracted_count = 0
         created_type_count = 0
@@ -2732,8 +2756,13 @@ class BookImportService:
                 # 第一人称别名映射：仅在明确第一人称且找到主角时启用（alias_map 非空）。
                 # 映射发生在自动补角色之前，保证"我"不会被创建成新角色；
                 # 映射后两端相同的（如"我"-"我"）由下方 char_a == char_b 兜底跳过。
-                char_a = alias_map.get(char_a, char_a)
-                char_b = alias_map.get(char_b, char_b)
+                # 括号变体（"我（男主角）"）经核心名判定映射到主角；映射未启用时保持原名。
+                char_a = alias_map.get(char_a) or (
+                    protagonist_name if protagonist_name and _is_first_person_alias_name(char_a) else char_a
+                )
+                char_b = alias_map.get(char_b) or (
+                    protagonist_name if protagonist_name and _is_first_person_alias_name(char_b) else char_b
+                )
                 if char_a == char_b:
                     continue
 
@@ -2749,9 +2778,9 @@ class BookImportService:
                     continue
 
                 # 自动补角色：只在确实不存在时创建，且受上限保护。
-                # 未映射的别名 token（如第一人称但未找到主角）也不得创建为角色。
+                # 未映射的别名 token 及括号变体（如第一人称但未找到主角）也不得创建为角色。
                 for name in (char_a, char_b):
-                    if name not in char_by_name and name not in FIRST_PERSON_ALIAS_TOKENS and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                    if name not in char_by_name and not _is_first_person_alias_name(name) and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
                         personality = (item.get("evidence") or "").strip() or None
                         relationship_desc = (item.get("description") or "").strip()
                         # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
