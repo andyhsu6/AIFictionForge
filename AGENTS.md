@@ -8,6 +8,7 @@
 - 不确定是否属于重大改动时，先询问用户确认。
 - **分支命名规范**：分支名必须**描述改动内容**，格式 `<type>/<简述>`（如 `fix/524-streaming-timeout`、`feat/chunk-first-principle`、`docs/issue-sync-convention`），type 用 `fix`/`feat`/`docs`/`refactor`/`chore` 等；**禁止**使用无信息量的通用名（如 `local-works`、`dev`、`test`、`work`）。
 - **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
+- **协作语言规范（国际化）**：issue 与 PR 的**标题默认英文**（面向 OpenAI 开源项目申请与国际贡献者），正文可中英双语（英文为主，中文作补充说明）。示例标题：`[Bug] 524 timeout when generating characters in book import`、`fix: streaming JSON generation in call_with_json_retry`。
 
 ## Issues 同步规范
 - **需求（feature）**：新功能或功能改动落地前/后，在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；完成后在 issue 中补充状态与提交引用并关闭。
