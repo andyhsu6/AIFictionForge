@@ -7,9 +7,10 @@ const { useBreakpoint } = Grid;
 
 interface ChangelogFloatingButtonProps {
   defaultVisible?: boolean;
+  onClose?: () => void;
 }
 
-export default function ChangelogFloatingButton({ defaultVisible = false }: ChangelogFloatingButtonProps) {
+export default function ChangelogFloatingButton({ defaultVisible = false, onClose }: ChangelogFloatingButtonProps) {
   const [showChangelog, setShowChangelog] = useState(defaultVisible);
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -36,7 +37,10 @@ export default function ChangelogFloatingButton({ defaultVisible = false }: Chan
 
       <ChangelogModal
         visible={showChangelog}
-        onClose={() => setShowChangelog(false)}
+        onClose={() => {
+          setShowChangelog(false);
+          onClose?.();
+        }}
       />
     </>
   );

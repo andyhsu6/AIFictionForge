@@ -15,3 +15,13 @@ export async function fetchChangelog(): Promise<LocalChangelogEntry[]> {
   const data = await response.json();
   return data.entries || [];
 }
+
+const CHANGELOG_SEEN_KEY = 'changelog_seen_in_session';
+
+export function hasSeenChangelogInSession(): boolean {
+  return sessionStorage.getItem(CHANGELOG_SEEN_KEY) === '1';
+}
+
+export function markChangelogSeenInSession(): void {
+  sessionStorage.setItem(CHANGELOG_SEEN_KEY, '1');
+}
