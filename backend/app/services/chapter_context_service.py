@@ -776,12 +776,14 @@ class OneToManyContextBuilder:
         budget_chars: int = 1000000,
         tail_chapters: int = 30,
     ) -> str:
-        """构建全书注入上下文（Tier3 1M 上下文利用）。
+        """构建全书注入上下文（Tier3 1M 上下文利用，拆分优先，无单章硬截断）。
 
-        双模式：
-        - 全书 ≤ budget_chars → 全量注入（1M 模型直接可用）
-        - 超预算 → 尾部加权（保留最后 tail_chapters 章全文，近期剧情最相关）
-          + 头部保留（第一章设定/伏笔），丢弃中间章节
+        预算内 → 全量注入（单章超长也不截断）。
+        超预算 → 三级：
+        1. head 全文：首章全文（世界观/伏笔，不截断）
+        2. 尾部加权全文：从最新往前选能放下的章节，单章放不下 continue 跳过
+        3. 中间被丢弃章节 → 存量摘要链（Chapter.summary / expansion_plan，零 LLM 调用）
+        单章本身超预算 → 该章改用摘要链条目呈现，不做硬截断。
 
         Args:
             chapters: 按章节号升序的章节列表
@@ -793,31 +795,95 @@ class OneToManyContextBuilder:
         """
         if not chapters:
             return ""
-        ordered = sorted(chapters, key=lambda c: c.chapter_number)
 
         def _render(c: Any) -> str:
             return f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')}"
 
+        ordered = sorted(chapters, key=lambda c: c.chapter_number)
         full_text = "\n\n".join(_render(c) for c in ordered)
         if len(full_text) <= budget_chars:
             return full_text
 
-        # 超预算：尾部加权（最近章节最相关）+ 头部保留（世界观/伏笔）
+        # 超预算：head 全文 + 尾部加权全文，其余章节进摘要链
         head = ordered[0]
-        tail_candidates = ordered[-tail_chapters:] if len(ordered) > tail_chapters else ordered[1:]
+        full_selected = []
+        full_total = 0
+        if len(_render(head)) <= budget_chars:
+            full_selected.append(head)
+            full_total = len(_render(head))
 
-        selected = [head]
-        total = len(_render(head))
-        # 从最新章节往前尝试加入，放不下即停（尾部优先于中间）
+        tail_candidates = ordered[-tail_chapters:] if len(ordered) > tail_chapters else ordered[1:]
+        # 从最新往前尝试加入，单章放不下则跳过继续尝试更早章节（保留更多上下文）
         for c in reversed(tail_candidates):
             part = _render(c)
-            if total + len(part) > budget_chars:
-                break
-            selected.append(c)
-            total += len(part)
+            if full_total + len(part) > budget_chars:
+                continue
+            full_selected.append(c)
+            full_total += len(part)
 
-        selected.sort(key=lambda c: c.chapter_number)
-        return "\n\n".join(_render(c) for c in selected)
+        # 未入选全文的章节（含单章超预算的头章、被 continue 跳过的尾部、
+        # 以及尾部窗口之外的中间章节）→ 存量摘要链
+        selected_nums = {c.chapter_number for c in full_selected}
+        chain_chapters = [c for c in ordered if c.chapter_number not in selected_nums]
+
+        parts = []
+        head_num = head.chapter_number
+        if head_num in selected_nums:
+            parts.append(_render(head))
+        chain = self._build_summary_chain(chain_chapters, max(budget_chars - full_total, 0))
+        if chain:
+            parts.append(chain)
+        tail_full = sorted(
+            (c for c in full_selected if c.chapter_number != head_num),
+            key=lambda c: c.chapter_number,
+        )
+        parts.extend(_render(c) for c in tail_full)
+        return "\n\n".join(parts)
+
+    def _render_summary_entry(self, c: Any) -> str:
+        """单章一行摘要（复用最近章节构建器的摘要模式，纯存量字段，零 LLM 调用）。"""
+        title = c.title or ""
+        summary = (getattr(c, "summary", None) or "").strip()
+        expansion_plan = getattr(c, "expansion_plan", None)
+        if expansion_plan:
+            try:
+                plan = json.loads(expansion_plan)
+                plot_summary = (plan.get("plot_summary") or summary or "").strip()
+                key_events = [str(e) for e in (plan.get("key_events") or []) if e][:3]
+                line = f"第{c.chapter_number}章《{title}》：{plot_summary[:180]}"
+                if key_events:
+                    line += f"（关键事件：{'；'.join(key_events)}）"
+                return line
+            except json.JSONDecodeError:
+                pass
+        if summary:
+            return f"第{c.chapter_number}章《{title}》：{summary[:180]}"
+        return f"第{c.chapter_number}章《{title}》"
+
+    def _build_summary_chain(
+        self,
+        chapters: list[Any],
+        max_chars: int
+    ) -> Optional[str]:
+        """构建中间被丢弃章节的存量摘要链（每章一行，tail 优先）。
+
+        预算内优先保 head + 尾部全文，剩余预算给摘要链；摘要链放不下时
+        保留最近的中间章摘要（tail 优先原则延续）。
+        """
+        if not chapters:
+            return None
+        entries = []
+        total = 0
+        for c in reversed(sorted(chapters, key=lambda cc: cc.chapter_number)):
+            line = self._render_summary_entry(c)
+            if entries and total + len(line) > max_chars:
+                break
+            entries.append(line)
+            total += len(line)
+        if not entries:
+            return None
+        entries.reverse()
+        return "\n".join(["【中间章节摘要链】"] + entries)
 
     async def _get_relevant_memories_enhanced(
         self,
