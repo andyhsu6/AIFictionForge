@@ -42,7 +42,12 @@ from app.schemas.book_import import (
     BookImportWarning,
     ProjectSuggestion,
 )
-from app.services.ai_service import AIService, create_user_ai_service_with_mcp
+from app.services.ai_service import (
+    AIService,
+    create_user_ai_service_with_mcp,
+    detect_context_window,
+    resolve_context_budget_chars,
+)
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -1531,6 +1536,109 @@ class BookImportService:
             parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
         return "\n\n".join(parts)
 
+    def _build_import_fulltext(
+        self,
+        chapters: list[Any],
+        *,
+        model_name: Optional[str] = None,
+        budget_chars: Optional[int] = None,
+    ) -> str:
+        """构建拆书全文本注入（Tier3 拆分优先，无单章硬截断）。
+
+        与 chapter_context_service._build_full_book_context 语义对齐
+        （BookImportChapter 无 expansion_plan，摘要链用 summary / _build_summary）：
+        - 预算内 → 全部章节逐字返回（单章超长也不截断）
+        - 超预算 → 三级：head 全文 + 尾部加权全文（单章放不下 continue 跳过，
+          跳过章进摘要链）+ 中间摘要链（tail 优先，每章一行，零 LLM 调用）
+        - 未知模型（detect_context_window == 32768）且未显式给预算 →
+          退回 `_build_chapter_excerpt`（1800 字符/章），不强制全文本
+        - 显式预算优先于模型推导
+
+        Args:
+            chapters: 章节列表（按 chapter_number 排序）
+            model_name: 用户默认模型名（由调用方传入，本方法不自行获取）
+            budget_chars: 显式字符预算；缺省时按模型上下文窗口推导
+
+        Returns:
+            格式化后的全文本/摘要链/excerpt 文本
+        """
+        if not chapters:
+            return ""
+
+        explicit_budget = budget_chars is not None
+        if not explicit_budget:
+            window = detect_context_window(model_name)
+            if window == 32768:
+                logger.warning(
+                    f"未知模型 {model_name!r}（detect_context_window=32768），"
+                    "拆书全文本注入退回 _build_chapter_excerpt（1800 字符/章）"
+                )
+                return self._build_chapter_excerpt(chapters)
+            budget_chars = resolve_context_budget_chars(model_name)
+
+        def _render(c: Any) -> str:
+            return f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')}"
+
+        ordered = sorted(chapters, key=lambda c: c.chapter_number)
+        full_text = "\n\n".join(_render(c) for c in ordered)
+        if len(full_text) <= budget_chars:
+            return full_text
+
+        # 超预算：head 全文 + 尾部加权全文，其余章节进摘要链
+        head = ordered[0]
+        full_selected = []
+        full_total = 0
+        if len(_render(head)) <= budget_chars:
+            full_selected.append(head)
+            full_total = len(_render(head))
+
+        tail_candidates = ordered[-30:] if len(ordered) > 30 else ordered[1:]
+        # 从最新往前尝试加入，单章放不下则跳过继续尝试更早章节（保留更多上下文）
+        for c in reversed(tail_candidates):
+            part = _render(c)
+            if full_total + len(part) > budget_chars:
+                continue
+            full_selected.append(c)
+            full_total += len(part)
+
+        # 未入选全文的章节（含单章超预算的头章、被 continue 跳过的尾部、
+        # 以及尾部窗口之外的中间章节）→ 存量摘要链
+        selected_nums = {c.chapter_number for c in full_selected}
+        chain_chapters = [c for c in ordered if c.chapter_number not in selected_nums]
+
+        def _render_summary_entry(c: Any) -> str:
+            summary = (c.summary or self._build_summary(c.content or "") or "").strip()
+            if summary:
+                return f"第{c.chapter_number}章《{c.title}》：{summary[:180]}"
+            return f"第{c.chapter_number}章《{c.title}》"
+
+        chain = None
+        if chain_chapters:
+            entries = []
+            total = 0
+            for c in reversed(sorted(chain_chapters, key=lambda cc: cc.chapter_number)):
+                line = _render_summary_entry(c)
+                if entries and total + len(line) > max(budget_chars - full_total, 0):
+                    break
+                entries.append(line)
+                total += len(line)
+            if entries:
+                entries.reverse()
+                chain = "\n".join(["【中间章节摘要链】"] + entries)
+
+        parts = []
+        head_num = head.chapter_number
+        if head_num in selected_nums:
+            parts.append(_render(head))
+        if chain:
+            parts.append(chain)
+        tail_full = sorted(
+            (c for c in full_selected if c.chapter_number != head_num),
+            key=lambda c: c.chapter_number,
+        )
+        parts.extend(_render(c) for c in tail_full)
+        return "\n\n".join(parts)
+
     @staticmethod
     def _split_character_batches(total: int, batch_size: int = 6) -> list[int]:
         """把总目标数拆成若干小批次，控制单次 JSON 输出规模。"""
@@ -2513,7 +2621,7 @@ class BookImportService:
             "created_characters": created_char_count,
         }
 
-    def _build_summary(self, content: str, max_len: int = 120) -> Optional[str]:
+    def _build_summary(self, content: str, max_len: int = 300) -> Optional[str]:
         if not content:
             return None
         normalized = re.sub(r"\s+", " ", content).strip()
