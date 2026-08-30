@@ -102,6 +102,14 @@ class PromptService:
 简介：{description}
 </input>
 
+<full_book_context priority="P1">
+【原文摘录】
+以下为已导入的章节原文（可能为全文、尾章加权节选或摘要链），
+世界观设定必须与正文中的具体地名、势力、事件、氛围保持一致，
+严禁编造与正文冲突的设定。
+{full_book_context}
+</full_book_context>
+
 <guidelines priority="P1">
 【类型指导原则】
 
@@ -2309,8 +2317,8 @@ class PromptService:
 职业体系必须与项目简介中的故事背景和角色设定高度契合。
 
 【数量要求】
-- 主职业：精确生成1个
-- 副职业：精确生成1个
+- 主职业：1-3 个（根据世界观与剧情需要生成，1 到 3 个均可）
+- 副职业：0-2 个（可生成 0 到 2 个，没有合适的副职业可不生成）
 </task>
 
 <worldview priority="P0">
@@ -2327,16 +2335,24 @@ class PromptService:
 世界规则：{rules}
 </worldview>
 
+<full_book_context priority="P1">
+【原文摘录】
+以下为已导入的章节原文（可能为全文、尾章加权节选或摘要链），
+职业体系必须与正文中真实出现的职业、势力、能力体系保持一致，
+如果原文提到特定职业或能力，优先设计相关职业。
+{full_book_context}
+</full_book_context>
+
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）- 必须精确生成1个**
+**1. 主职业（main_careers）- 生成 1 到 3 个**
 - 主职业是角色的核心发展方向
 - 必须严格符合世界观规则和简介中的故事背景
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
 - 职业设计要能支撑简介中描述的故事情节
 
-**2. 副职业（sub_careers）- 必须精确生成1个**
+**2. 副职业（sub_careers）- 生成 0 到 2 个**
 - 副职业包含生产、辅助、特殊技能类
 - 每个副职业的阶段数量可以不同
 - 不要让所有副职业都是相同的阶段数
@@ -2395,13 +2411,14 @@ class PromptService:
 
 <constraints>
 【必须遵守】
-✅ 主职业数量：必须精确生成1个，不多不少
-✅ 副职业数量：必须精确生成1个，不多不少
+✅ 主职业数量：1-3 个（1 到 3 个均可，视世界观与剧情需要）
+✅ 副职业数量：0-2 个（没有合适的副职业可以不生成）
 ✅ 主职业阶段数建议：8-12个
 ✅ 副职业阶段数建议：5-8个
 ✅ stages数组长度必须等于max_stage
 ✅ 确保职业体系与世界观高度契合
 ✅ 职业设计必须支撑项目简介中的故事情节
+✅ 职业体系必须与原文摘录中的内容保持一致
 
 【禁止事项】
 ❌ 所有职业使用相同的阶段数
@@ -2938,7 +2955,7 @@ class PromptService:
                 "name": "世界构建",
                 "category": "世界构建",
                 "description": "用于生成小说世界观设定，包括时间背景、地理位置、氛围基调和世界规则",
-                "parameters": ["title", "theme", "genre", "description"]
+                "parameters": ["title", "theme", "genre", "description", "full_book_context"]
             },
             "BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION": {
                 "name": "拆书导入-反向项目提炼",
@@ -3120,7 +3137,7 @@ class PromptService:
                 "name": "职业体系生成",
                 "category": "世界构建",
                 "description": "根据世界观和项目简介自动生成完整的职业体系，包括主职业和副职业",
-                "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules"]
+                "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules", "full_book_context"]
             },
             "INSPIRATION_TITLE_SYSTEM": {
                 "name": "灵感模式-书名生成(系统提示词)",

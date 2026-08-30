@@ -56,9 +56,13 @@ from app.services.relationship_service import (
     resolve_relationship_type_ids,
     sync_relationship_links,
     MAX_IMPORTED_CHARACTERS_PER_IMPORT,
+    MAX_PROJECT_TYPES_PER_IMPORT,
 )
 
 logger = get_logger(__name__)
+
+# 第一人称叙事下映射为主角的代词/自称（不含"我们"——复数代词不能等价于主角）
+FIRST_PERSON_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
 
 
 @dataclass
@@ -229,6 +233,7 @@ class BookImportService:
                 user_id=user_id,
                 project=project,
                 character_count=max(project.character_count or 0, 8),
+                chapters=chapters_to_import,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -350,6 +355,7 @@ class BookImportService:
                     progress_callback=progress_callback,
                     progress_range=(22, 40),
                     raise_on_error=True,
+                    chapters=chapters_to_import,
                 )
                 statistics["generated_world_building"] = generated_world
                 await _notify("🌍 世界观生成完成", 40)
@@ -372,6 +378,7 @@ class BookImportService:
                     ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(42, 65),
+                    chapters=chapters_to_import,
                 )
                 statistics["generated_careers"] = generated_careers
                 await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
@@ -532,6 +539,20 @@ class BookImportService:
                 if step_name == "world_building":
                     await _notify("🔄 正在重试世界观生成...", step_start_pct)
                     try:
+                        chapters_for_retry = [
+                            BookImportChapter(
+                                title=c.title,
+                                content=c.content or "",
+                                summary=c.summary,
+                                chapter_number=c.chapter_number,
+                                outline_title=None,
+                            )
+                            for c in (
+                                await db.execute(
+                                    select(Chapter).where(Chapter.project_id == project.id)
+                                )
+                            ).scalars().all()
+                        ]
                         result = await self._generate_world_building_from_project(
                             db=db,
                             user_id=user_id,
@@ -540,6 +561,7 @@ class BookImportService:
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                             raise_on_error=True,
+                            chapters=chapters_for_retry,
                         )
                         retry_results["generated_world_building"] = result
                         await _notify("✅ 世界观重试成功", step_end_pct)
@@ -556,6 +578,20 @@ class BookImportService:
                 elif step_name == "career_system":
                     await _notify("🔄 正在重试职业体系生成...", step_start_pct)
                     try:
+                        chapters_for_retry = [
+                            BookImportChapter(
+                                title=c.title,
+                                content=c.content or "",
+                                summary=c.summary,
+                                chapter_number=c.chapter_number,
+                                outline_title=None,
+                            )
+                            for c in (
+                                await db.execute(
+                                    select(Chapter).where(Chapter.project_id == project.id)
+                                )
+                            ).scalars().all()
+                        ]
                         result = await self._generate_career_system_from_project(
                             db=db,
                             user_id=user_id,
@@ -563,6 +599,7 @@ class BookImportService:
                             ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
+                            chapters=chapters_for_retry,
                         )
                         retry_results["generated_careers"] = result
                         await _notify(f"✅ 职业体系重试成功（{result}个）", step_end_pct)
@@ -1736,6 +1773,26 @@ class BookImportService:
             return "第一人称"
         return "第三人称"
 
+    def _is_clear_first_person(self, text: str) -> bool:
+        """第一人称判定需留出更明确的余量，避免临界样本误触发主角别名映射。
+
+        _detect_narrative_perspective 的门槛是 first > third * 1.2，临界文本
+        （对话占比高/人称混杂）可能被误判；别名映射会改写关系端点，误触发代价高，
+        因此这里要求 first > third * 1.5 才视为明确第一人称。
+        """
+        snippet = (text or "")[:6000]
+        first_person_hits = len(re.findall(r"[我咱俺]\S{0,2}", snippet))
+        third_person_hits = len(re.findall(r"[他她它]\S{0,2}", snippet))
+        return first_person_hits >= 20 and first_person_hits > third_person_hits * 1.5
+
+    def _map_first_person_alias(self, name: str, protagonist_name: Optional[str]) -> Optional[str]:
+        """把第一人称代词/自称映射为主角名；未映射（无主角或无命中）返回 None。"""
+        if not name or not protagonist_name:
+            return None
+        if name in FIRST_PERSON_ALIAS_TOKENS:
+            return protagonist_name
+        return None
+
     def _extract_narrative_perspective(self, project_data: Dict[str, Any], fallback: str = "第三人称") -> str:
         """从AI返回中兼容提取叙事视角字段，统一映射到项目参数可接受值。"""
         if not isinstance(project_data, dict):
@@ -1852,6 +1909,8 @@ class BookImportService:
         user_id: str,
         project: Project,
         character_count: int,
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -1864,12 +1923,16 @@ class BookImportService:
             db=db,
             user_id=user_id,
             project=project,
+            chapters=chapters,
+            model_name=model_name,
         )
 
         generated_careers = await self._generate_career_system_from_project(
             db=db,
             user_id=user_id,
             project=project,
+            chapters=chapters,
+            model_name=model_name,
         )
 
         generated_entities = await self._generate_characters_and_organizations_from_project(
@@ -1896,8 +1959,14 @@ class BookImportService:
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
         raise_on_error: bool = False,
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> int:
-        """根据反向生成的项目基础信息，优先生成并写入世界观。"""
+        """根据反向生成的项目基础信息，优先生成并写入世界观。
+
+        拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
+        让世界观基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        """
 
         async def _notify(msg: str, sub: float) -> None:
             if progress_callback:
@@ -1910,12 +1979,18 @@ class BookImportService:
 
             await _notify("🌍 正在准备世界观提示词...", 0.2)
             template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
+            full_book_context = ""
+            if chapters:
+                if not model_name:
+                    model_name = getattr(ai_service, "default_model", None)
+                full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
             prompt = PromptService.format_prompt(
                 template,
                 title=project.title or "拆书导入项目",
                 genre=project.genre or "通用",
                 theme=project.theme or "未设定",
                 description=project.description or "暂无简介",
+                full_book_context=full_book_context,
             )
 
             await _notify("🌍 AI正在生成世界观...", 0.3)
@@ -1964,8 +2039,14 @@ class BookImportService:
         ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> int:
-        """根据项目世界观生成职业体系（3主2副）。"""
+        """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
+
+        拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
+        让职业体系基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        """
 
         async def _notify(msg: str, sub: float) -> None:
             if progress_callback:
@@ -1977,6 +2058,11 @@ class BookImportService:
 
         await _notify("💼 正在准备职业体系提示词...", 0.2)
         template = await PromptService.get_template("CAREER_SYSTEM_GENERATION", user_id, db)
+        full_book_context = ""
+        if chapters:
+            if not model_name:
+                model_name = getattr(ai_service, "default_model", None)
+            full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
         prompt = PromptService.format_prompt(
             template,
             title=project.title,
@@ -1987,6 +2073,7 @@ class BookImportService:
             location=project.world_location or "未设定",
             atmosphere=project.world_atmosphere or "未设定",
             rules=project.world_rules or "未设定",
+            full_book_context=full_book_context,
         )
 
         await _notify("💼 AI正在生成职业体系...", 0.3)

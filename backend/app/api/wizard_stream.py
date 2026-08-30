@@ -82,7 +82,8 @@ async def world_building_generator(
             title=title,
             theme=theme,
             genre=genre or "通用类型",
-            description=description or "暂无简介"
+            description=description or "暂无简介",
+            full_book_context="",
         )
         
         # 设置用户信息以启用MCP
@@ -370,7 +371,8 @@ async def career_system_generator(
             time_period=world_data.get('time_period', '未设定'),
             location=world_data.get('location', '未设定'),
             atmosphere=world_data.get('atmosphere', '未设定'),
-            rules=world_data.get('rules', '未设定')
+            rules=world_data.get('rules', '未设定'),
+            full_book_context="",
         )
         
         estimated_total = 5000
@@ -1581,7 +1583,8 @@ async def world_building_regenerate_generator(
             title=project.title,
             theme=project.theme or "未设定",
             genre=project.genre or "通用",
-            description=project.description or "暂无简介"
+            description=project.description or "暂无简介",
+            full_book_context="",
         )
         
         # 设置用户信息以启用MCP
