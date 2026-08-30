@@ -132,6 +132,17 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                     </Text>
                   </div>
                 )}
+                {character.appearance && (
+                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                    <Text type="secondary" style={{ flexShrink: 0 }}>外貌：</Text>
+                    <Text
+                      style={{ flex: 1, minWidth: 0 }}
+                      ellipsis={{ tooltip: character.appearance }}
+                    >
+                      {character.appearance}
+                    </Text>
+                  </div>
+                )}
                 {character.relationships && (
                   <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>关系：</Text>
