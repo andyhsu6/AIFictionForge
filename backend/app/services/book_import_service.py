@@ -70,6 +70,62 @@ logger = get_logger(__name__)
 # 第一人称叙事下映射为主角的代词/自称（不含"我们"——复数代词不能等价于主角）
 FIRST_PERSON_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
 
+# 实体名称来源约束（拆书导入）：
+# 角色/组织名必须出现在喂给模型的原文中；编造名不落库为 source=imported，
+# 而是标记为 "AI 补充"（source 字段区分，不加新字段、不改 schema）。
+# 复用 Character.source 既有枚举空间外的值（现有值：system/manual/ai/imported，
+# 均无 "ai_augmented" 冲突；String(20) 容纳无压力）。
+SOURCE_AI_AUGMENTED = "ai_augmented"
+
+# 常见称谓后缀：归一化名称时迭代剥离（"林三公子"→"林三"，"三爷"→"三"）。
+# 注意只做名称归一化，不做词干还原——剥离后仍空（纯称谓）不视为命中。
+NAME_TITLE_SUFFIXES = (
+    "公子", "小姐", "少爷", "姑娘", "大人", "夫人", "先生", "娘娘", "老爷",
+    "老太爷", "老太太", "师傅", "师父", "掌门", "长老", "宗主", "家主", "庄主",
+    "王爷", "皇子", "公主", "殿下", "阁下", "娘子", "丞相", "将军",
+    "尚书", "员外", "掌柜", "道长", "法师", "大夫", "郎中", "师太",
+    "师兄", "师姐", "师弟", "师妹", "大哥", "大姐",
+    "爷", "叔", "婶", "伯", "姨", "哥", "姐", "兄", "弟",
+)
+
+# 归一化时剥离的标点/空白（半角+全角），全部移除（含字符串内部）
+_NAME_STRIP_CHARS = " \t\r\n，。、；：？！…—·《》「」『』【】（）()\"'\"'"
+_NAME_STRIP_TABLE = str.maketrans("", "", _NAME_STRIP_CHARS)
+
+
+def _normalize_name_for_source_match(name: str) -> str:
+    """归一化名称用于原文匹配：移除全部标点/空白，迭代剥离常见称谓后缀。"""
+    text = str(name or "").translate(_NAME_STRIP_TABLE)
+    changed = True
+    while changed:
+        changed = False
+        for suffix in NAME_TITLE_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                changed = True
+                break
+    return text
+
+
+def _name_appears_in_source(name: str, source_text: str) -> bool:
+    """名称是否出现在原文中（归一化后精确匹配或子串匹配）。
+
+    - 归一化：剥离标点/空白 + 迭代剥离常见称谓后缀（"林三公子"→"林三"）；
+    - (b) 归一化后的名称是归一化后原文的子串即命中（"三爷" ⊂ "林三爷"）；
+    - 仅当精确与子串都不中才返回 False；剥离后为空（纯称谓）不视为命中。
+    """
+    if not name:
+        return False
+    normalized = _normalize_name_for_source_match(name)
+    if not normalized:
+        return False
+    if not source_text:
+        return False
+    normalized_source = _normalize_name_for_source_match(source_text)
+    if not normalized_source:
+        return False
+    return normalized in normalized_source
+
 
 @dataclass
 class _StepFailure:
@@ -2203,13 +2259,24 @@ class BookImportService:
             .where(Chapter.project_id == project.id)
             .order_by(Chapter.chapter_number)
         )
-        chapter_excerpt = self._build_chapter_excerpt(chapters_result.scalars().all())
+        db_chapters = chapters_result.scalars().all()
+        chapter_excerpt = self._build_chapter_excerpt(db_chapters)
         if chapter_excerpt:
             requirements += (
                 "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
                 "请基于其中真实出现的人物、组织与剧情生成角色，"
                 "避免编造与正文不符的内容。\n"
                 + chapter_excerpt
+            )
+
+        # 名称来源约束：角色/组织名必须出现在喂给模型的原文中。
+        # 用 _build_import_fulltext 构建与模型所见一致的原文（预算内全文 /
+        # head+tail 全文 + 中间摘要链），摘要链压缩的中间章节名称不命中 →
+        # 标记 AI 补充而非删除。无章节（向导/重试等旧调用方）→ 跳过约束。
+        source_text = ""
+        if db_chapters:
+            source_text = self._build_import_fulltext(
+                db_chapters, model_name=getattr(ai_service, "default_model", None)
             )
 
         if main_careers or sub_careers:
@@ -2310,6 +2377,8 @@ class BookImportService:
                 continue
 
             is_organization = bool(item.get("is_organization", False))
+            # 名称来源约束：原文中出现 → imported；编造名 → AI 补充标记
+            source = "imported" if _name_appears_in_source(raw_name, source_text) else SOURCE_AI_AUGMENTED
             character = Character(
                 project_id=project.id,
                 name=raw_name[:100],
@@ -2327,6 +2396,7 @@ class BookImportService:
                     if item.get("organization_members") is not None else None
                 ),
                 traits=json.dumps(item.get("traits", []), ensure_ascii=False) if item.get("traits") else None,
+                source=source,
             )
             db.add(character)
             await db.flush()
@@ -2597,6 +2667,10 @@ class BookImportService:
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
         template = await PromptService.get_template("RELATIONSHIP_EXTRACTION", user_id, db)
 
+        # 名称来源约束：自动补角色名必须出现在原文中，否则标记 AI 补充。
+        # 与模型所见一致：每批喂 1800 字符/章，这里用同一 excerpt 口径做匹配源。
+        source_text = self._build_chapter_excerpt(chapters)
+
         # 预加载角色与关系，便于名称匹配与去重
         chars = (
             await db.execute(select(Character).where(Character.project_id == project.id))
@@ -2688,7 +2762,8 @@ class BookImportService:
                             project_id=project.id,
                             name=name[:100],
                             role_type="supporting",
-                            source="imported",
+                            # 名称来源约束：原文中出现 → imported；编造名 → AI 补充标记
+                            source="imported" if _name_appears_in_source(name, source_text) else SOURCE_AI_AUGMENTED,
                             personality=personality,
                             age=(str(item.get("age")) if item.get("age") is not None else None),
                             gender=item.get("gender"),
