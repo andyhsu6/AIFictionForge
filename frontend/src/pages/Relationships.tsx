@@ -253,16 +253,6 @@ export default function Relationships() {
     return 'red';
   };
 
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, string> = {
-      active: 'green',
-      broken: 'red',
-      past: 'default',
-      complicated: 'orange'
-    };
-    return colors[status] || 'default';
-  };
-
   const getCategoryColor = (category: string) => {
     const colors: Record<string, string> = {
       family: 'magenta',
@@ -315,15 +305,6 @@ export default function Relationships() {
       key: 'intimacy',
       render: (level: number) => (
         <Tag color={getIntimacyColor(level)}>{level}</Tag>
-      ),
-      width: 80,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status: string) => (
-        <Tag color={getStatusColor(status)}>{status}</Tag>
       ),
       width: 80,
     },
@@ -387,7 +368,6 @@ export default function Relationships() {
     character_to_id: rels[0].character_to_id,
     relationship_name: rels.flatMap(r => r.relationship_type_names?.length ? r.relationship_type_names : [r.relationship_name]).join('、'),
     intimacy_level: Math.round(rels.reduce((sum, r) => sum + (r.intimacy_level || 0), 0) / rels.length),
-    status: rels.map(r => r.status).join(' / '),
     source: rels.map(r => r.source).join(' / '),
     children: rels,
   }));
