@@ -6,6 +6,8 @@
 ## 提交规则
 - **重大改动必须提交 PR**：涉及核心架构、数据库 schema、鉴权/安全、跨模块接口或影响用户数据/体验的大改动，不得直接提交或推送主干；应创建 feature 分支、推送远程并提交 PR，评审通过后再合并。
 - 不确定是否属于重大改动时，先询问用户确认。
+- **分支命名规范**：分支名必须**描述改动内容**，格式 `<type>/<简述>`（如 `fix/524-streaming-timeout`、`feat/chunk-first-principle`、`docs/issue-sync-convention`），type 用 `fix`/`feat`/`docs`/`refactor`/`chore` 等；**禁止**使用无信息量的通用名（如 `local-works`、`dev`、`test`、`work`）。
+- **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
 
 ## Issues 同步规范
 - **需求（feature）**：新功能或功能改动落地前/后，在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；完成后在 issue 中补充状态与提交引用并关闭。
