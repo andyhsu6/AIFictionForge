@@ -10,11 +10,15 @@
 - **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
 - **协作语言规范（国际化）**：issue 与 PR 的**标题默认英文**（面向 OpenAI 开源项目申请与国际贡献者），正文可中英双语（英文为主，中文作补充说明）。示例标题：`[Bug] 524 timeout when generating characters in book import`、`fix: streaming JSON generation in call_with_json_retry`。
 
-## Issues 同步规范
-- **需求（feature）**：新功能或功能改动落地前/后，在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；完成后在 issue 中补充状态与提交引用并关闭。
+## Issues 同步规范（全流程自动同步）
+- **需求（feature）**：需求明确后在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；计划确定后把计划要点同步到 issue 评论区；实施中每个 commit 引用 issue 编号（如 `fix: ... closes #21` 或 `feat(...): ... refs #21`）；验收确认后更新 issue 状态（验收结果/PR 链接）并关闭。
 - **Bug**：发现 bug 时先创建 issue（`[Bug]` 前缀，label `bug`）记录复现步骤、预期/实际行为与环境；修复提交时在 commit message 中引用 issue 编号（如 `fix: ... closes #9`），完成后关闭 issue。
 - 批量/历史同步：按功能主题合并建 issue，颗粒度到功能模块而非单个提交。
 - 使用仓库内的中文模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
+
+## 文档目录约定
+- 规划产物默认存 `.omo/`（plans/reports/drafts，已 gitignore）；执行时把对外可见的规划文档同步一份到 `docs/`。
+- 文档文件名避免中文，使用英文或双语文件名，便于 CI/工具链/IDE 直接阅读。
 
 ## 服务管理（aistoryforge.sh）
 项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
