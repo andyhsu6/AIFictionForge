@@ -42,6 +42,109 @@ def normalize_provider(provider: Optional[str]) -> Optional[str]:
     return normalized
 
 
+# 思考型模型默认 token 预算（修复 #13：deepseek 等模型长 JSON 输出时
+# 推理过程会耗尽默认 32000 预算导致正文为空 / 网关 524）
+THINKING_MODEL_DEFAULT_MAX_TOKENS = 64000
+
+
+def is_thinking_model(model: Optional[str], base_url: Optional[str] = None) -> bool:
+    """判断模型是否为思考型模型（推理与正文共享 max_tokens 预算）。
+
+    - 模型名含 deepseek / r1 / reasoning / think 视为思考型；
+    - 网关域名含 commandcode.ai 视为思考型（Command Code 通道）。
+    """
+    model_name = (model or "").lower()
+    url = (base_url or "").lower()
+    if any(k in model_name for k in ("deepseek", "r1", "reasoning", "think")):
+        return True
+    if "commandcode.ai" in url:
+        return True
+    return False
+
+
+def resolve_effective_max_tokens(
+    requested: Optional[int],
+    default: int,
+    model: Optional[str],
+    base_url: Optional[str] = None,
+) -> int:
+    """解析实际使用的 max_tokens。
+
+    规则：
+    - 调用方显式传入 requested → 原样使用（尊重用户/任务意图）；
+    - 未显式传入且模型为思考型、默认预算过低（< THINKING_MODEL_DEFAULT_MAX_TOKENS）
+      → 提升到 THINKING_MODEL_DEFAULT_MAX_TOKENS，避免推理耗尽预算；
+    - 其余情况原样使用 default（用户已配置高预算的不降级）。
+    """
+    if requested is not None:
+        return requested
+    if (
+        is_thinking_model(model, base_url)
+        and default < THINKING_MODEL_DEFAULT_MAX_TOKENS
+    ):
+        return THINKING_MODEL_DEFAULT_MAX_TOKENS
+    return default
+
+
+# 已知模型上下文窗口（D4 模型能力分级；未列出的按保守值处理）
+_KNOWN_CONTEXT_WINDOWS = {
+    "deepseek-v4": 1000000,
+    "deepseek-v3": 1000000,
+    "deepseek-r1": 163840,
+    "gpt-5": 400000,
+    "gpt-4o": 128000,
+    "gpt-4.1": 1047576,
+    "gpt-4-turbo": 128000,
+    "gpt-4": 8192,
+    "gpt-3.5": 16384,
+    "claude-3": 200000,
+    "claude-2": 100000,
+    "gemini-1.5": 2000000,
+    "gemini-2": 1000000,
+    "qwen": 131072,
+    "glm": 131072,
+    "minimax": 200000,
+}
+
+
+def detect_context_window(model: Optional[str]) -> int:
+    """检测模型上下文窗口（token 数）。
+
+    按键长度降序匹配已知表（更具体的键优先，如 gpt-4o 先于 gpt-4），
+    未命中的返回保守值 32K。
+    """
+    name = (model or "").lower()
+    for key, window in sorted(
+        _KNOWN_CONTEXT_WINDOWS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
+        if key in name:
+            return window
+    return 32768
+
+
+# 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
+# 全书注入保留 40% 余量给输出/系统提示词/思考模型推理（0.6 为保守值：
+# 800K 字符 prompt 的 prefill TTFB 未实测，且 1M 窗口需容纳基础上下文栈
+# + 输出预算；或acle 评审 F1 指出单位错配风险，保守化先行）
+_FULL_BOOK_BUDGET_RATIO = 0.6
+_1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入
+
+
+def resolve_context_budget_chars(model: Optional[str]) -> int:
+    """按模型上下文窗口解析全书注入字符预算（Tier3）。
+
+    - 1M 以上窗口 → 全书全量注入预算（≈窗口的 80% 字符）
+    - 128K-1M → 降级为中等预算（摘要+检索为主，不触发全书全量）
+    - 小窗口 → 保守预算（基本不注入全书）
+    """
+    window = detect_context_window(model)
+    if window >= 1000000:
+        return int(window * _FULL_BOOK_BUDGET_RATIO)
+    if window >= 128000:
+        return int(window * 0.3)
+    return int(window * 0.1)
+
+
 class AIService:
     """
     AI服务统一接口
@@ -100,6 +203,7 @@ class AIService:
         self.default_model = default_model or app_settings.default_model
         self.default_temperature = default_temperature or app_settings.default_temperature
         self.default_max_tokens = default_max_tokens or app_settings.default_max_tokens
+        self.base_url = api_base_url or app_settings.openai_base_url
         self.default_system_prompt = default_system_prompt
         self.config = config or default_config
         
@@ -363,7 +467,10 @@ class AIService:
                     prompt=prompt,
                     model=kwargs.get("model") or self.default_model,
                     temperature=kwargs.get("temperature") or self.default_temperature,
-                    max_tokens=kwargs.get("max_tokens") or self.default_max_tokens,
+                    max_tokens=resolve_effective_max_tokens(
+                        kwargs.get("max_tokens"), self.default_max_tokens,
+                        kwargs.get("model") or self.default_model, self.base_url,
+                    ),
                     system_prompt=kwargs.get("system_prompt") or self.default_system_prompt,
                     tools=None if tool_choice == "none" else self._cached_tools,
                     tool_choice=tool_choice,
@@ -456,7 +563,9 @@ class AIService:
                 prompt=prompt,
                 model=model or self.default_model,
                 temperature=temperature or self.default_temperature,
-                max_tokens=max_tokens or self.default_max_tokens,
+                max_tokens=resolve_effective_max_tokens(
+                    max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+                ),
                 system_prompt=system_prompt or self.default_system_prompt,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -556,7 +665,9 @@ class AIService:
                 prompt=prompt,
                 model=model or self.default_model,
                 temperature=temperature or self.default_temperature,
-                max_tokens=max_tokens or self.default_max_tokens,
+                max_tokens=resolve_effective_max_tokens(
+                    max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+                ),
                 system_prompt=system_prompt or self.default_system_prompt,
                 tools=tools_to_use,
                 tool_choice=tool_choice,
@@ -592,6 +703,63 @@ class AIService:
             )
             self._log_call_metrics(metrics)
             raise
+
+    async def generate_text_stream_full(
+        self,
+        prompt: str,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        auto_mcp: bool = True,
+    ) -> Dict[str, Any]:
+        """流式累积生成，返回与 generate_text 相同的完整响应结构。
+
+        用于长回复场景（如创作助手最终回答）：流式输出规避网关单次
+        响应时长上限（Cloudflare 524），同时调用方仍拿到 content、
+        finish_reason、usage 字段。
+        """
+        tools_to_use = None
+        if auto_mcp:
+            tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
+
+        prov = self._get_provider(provider)
+        accumulated: List[str] = []
+        latest_usage = TokenUsage()
+        finish_reason = "stop"
+        async for chunk in prov.generate_stream(
+            prompt=prompt,
+            model=model or self.default_model,
+            temperature=temperature or self.default_temperature,
+            max_tokens=resolve_effective_max_tokens(
+                max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+            ),
+            system_prompt=system_prompt or self.default_system_prompt,
+            tools=tools_to_use,
+            tool_choice="none" if tools_to_use else None,
+            user_id=self.user_id,
+        ):
+            if isinstance(chunk, dict):
+                if chunk.get("usage"):
+                    latest_usage = TokenUsage.from_response({"usage": chunk["usage"]})
+                if chunk.get("finish_reason"):
+                    finish_reason = chunk.get("finish_reason") or finish_reason
+                if chunk.get("content"):
+                    accumulated.append(chunk["content"])
+                continue
+            if chunk:
+                accumulated.append(chunk)
+        return {
+            "content": "".join(accumulated),
+            "tool_calls": None,
+            "finish_reason": finish_reason,
+            "usage": {
+                "prompt_tokens": latest_usage.prompt_tokens,
+                "completion_tokens": latest_usage.completion_tokens,
+                "total_tokens": latest_usage.total_tokens,
+            },
+        }
 
     async def call_with_json_retry(
         self,
@@ -631,14 +799,18 @@ class AIService:
             prompt=prompt,
             auto_mcp=auto_mcp,
             tools_count=0,
-            stream=False,
+            stream=True,
         )
         
         try:
             for attempt in range(1, max_retries + 1):
                 current_prompt = prompt if attempt == 1 else self._add_json_hint(prompt, last_response, attempt)
                 
-                result = await self.generate_text(
+                # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
+                # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
+                accumulated: List[str] = []
+                finish_reason = None
+                async for chunk in self.generate_text_stream(
                     prompt=current_prompt,
                     provider=provider,
                     model=model,
@@ -646,9 +818,19 @@ class AIService:
                     max_tokens=max_tokens,
                     system_prompt=system_prompt,
                     auto_mcp=auto_mcp,
-                    handle_tool_calls=True,
-                )
-                aggregate_usage.add(TokenUsage.from_response(result))
+                ):
+                    if isinstance(chunk, dict):
+                        if chunk.get("finish_reason"):
+                            finish_reason = chunk.get("finish_reason")
+                        if chunk.get("usage"):
+                            aggregate_usage.add(TokenUsage.from_response({"usage": chunk["usage"]}))
+                        continue
+                    if chunk:
+                        accumulated.append(chunk)
+                result = {
+                    "content": "".join(accumulated),
+                    "finish_reason": finish_reason,
+                }
                 metrics.retry_count = attempt
                 metrics.tools_count = max(metrics.tools_count, len(self._cached_tools) if self._cached_tools else 0)
                 
