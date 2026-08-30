@@ -48,6 +48,12 @@ from app.services.ai_service import (
     detect_context_window,
     resolve_context_budget_chars,
 )
+from app.services.import_validators import (
+    validate_career_system,
+    validate_characters_batch,
+    validate_relationships,
+    validate_world_building,
+)
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -1998,6 +2004,7 @@ class BookImportService:
                 prompt=prompt,
                 max_retries=3,
                 expected_type="object",
+                validator=validate_world_building,
             )
             if not isinstance(world_data, dict):
                 return 0
@@ -2081,6 +2088,7 @@ class BookImportService:
             prompt=prompt,
             max_retries=3,
             expected_type="object",
+            validator=validate_career_system,
         )
 
         await _notify("💼 正在解析职业数据...", 0.7)
@@ -2245,6 +2253,7 @@ class BookImportService:
                 prompt=batch_prompt,
                 max_retries=3,
                 expected_type="array",
+                validator=validate_characters_batch,
             )
             if isinstance(batch_data, dict):
                 generated_entities.append(batch_data)
@@ -2635,6 +2644,7 @@ class BookImportService:
                 prompt=prompt,
                 max_retries=2,
                 expected_type="array",
+                validator=validate_relationships,
             )
             items = ai_data if isinstance(ai_data, list) else []
             for item in items:
