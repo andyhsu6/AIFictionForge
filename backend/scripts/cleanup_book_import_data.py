@@ -200,6 +200,14 @@ async def cleanup_project(db: AsyncSession, project_id: str) -> dict:
                 and (r.character_from_id == wo_char.id or r.character_to_id == wo_char.id)
             ]
             for rel in rels_of_wo:
+                # 自环防护：若关系两端都是"我"角色，重指向后会产生
+                # from_id == to_id == protagonist.id 的自环（导入路径有
+                # char_a==char_b 守卫，脚本无）；此时跳过该行（其两端
+                # 都已并入主角，行本身无信息增量）。
+                if rel.character_from_id == wo_char.id and rel.character_to_id == wo_char.id:
+                    await db.delete(rel)
+                    counts["duplicates_merged"] += 1
+                    continue
                 if rel.character_from_id == wo_char.id:
                     rel.character_from_id = protagonist.id
                 if rel.character_to_id == wo_char.id:

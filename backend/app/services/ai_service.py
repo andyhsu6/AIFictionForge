@@ -877,7 +877,12 @@ class AIService:
                 )
                 self._log_call_metrics(metrics, title="AI调用汇总")
                 return data
-            
+
+            if validator_error:
+                # validator 在最后一次尝试失败且未达独立上限（如 max_retries=2、
+                # validator_max_retries=2 时循环耗尽）——优先透出具体校验错误，
+                # 避免用户只看到泛化的"JSON 调用失败"而丢失可纠正的信息。
+                raise ValueError(f"校验失败: {validator_error}")
             raise ValueError("JSON 调用失败")
         except Exception as e:
             metrics.finish(
