@@ -13,7 +13,11 @@ from app.models.outline import Outline
 from app.models.chapter import Chapter
 from app.models.career import Career, CharacterCareer
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
-from app.services.relationship_service import resolve_relationship_type_ids, sync_relationship_links
+from app.services.relationship_service import (
+    find_existing_relationship,
+    resolve_relationship_type_ids,
+    sync_relationship_links,
+)
 from app.models.writing_style import WritingStyle
 from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
@@ -1072,15 +1076,11 @@ async def characters_generator(
                         target_char = character_name_to_obj.get(target_name)
                         
                         if target_char:
-                            # 避免创建重复关系
-                            existing_rel = await db.execute(
-                                select(CharacterRelationship).where(
-                                    CharacterRelationship.project_id == project_id,
-                                    CharacterRelationship.character_from_id == character.id,
-                                    CharacterRelationship.character_to_id == target_char.id
-                                )
+                            # 避免创建重复关系（无视方向，防止方向不稳定产生对称重复）
+                            existing_rel = await find_existing_relationship(
+                                db, project_id, character.id, target_char.id
                             )
-                            if existing_rel.scalar_one_or_none():
+                            if existing_rel:
                                 logger.debug(f"  ℹ️  关系已存在：{character.name} -> {target_name}")
                                 continue
                             

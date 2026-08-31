@@ -93,6 +93,25 @@ def _is_polluted_personality(personality: str) -> bool:
     return len(text) < PERSONALITY_SHORT_MAX_LEN and "关系" in text
 
 
+# 合法关系状态（与 schema 枚举一致）；拼接串修复时只认这些值
+VALID_STATUSES = {"active", "broken", "past", "complicated"}
+
+
+def _normalize_status(raw) -> str:
+    """把可能被旧版前端拼接污染的 status（如 'past / past / past'）修复为合法单值。"""
+    if raw is None:
+        return "active"
+    text = str(raw).strip()
+    if text in VALID_STATUSES:
+        return text
+    # 兼容 ' / ' 拼接与顿号拼接；取第一个合法值
+    for part in re.split(r"[\/、,，]", text):
+        candidate = part.strip()
+        if candidate in VALID_STATUSES:
+            return candidate
+    return "active"
+
+
 def _pair_type_ids(rel: CharacterRelationship, type_ids_by_rel: dict) -> frozenset:
     """关系对的分组键：无视方向 + 该关系关联的类型 ID 集合。"""
     return frozenset(
@@ -131,7 +150,12 @@ async def cleanup_project(db: AsyncSession, project_id: str) -> dict:
     注意：本函数不自行提交/回滚，由调用方控制事务边界
     （脚本 main() 用整段事务包裹；测试用 session 内断言后回滚）。
     """
-    counts = {"duplicates_merged": 0, "personalities_cleared": 0, "wo_characters_merged": 0}
+    counts = {
+        "duplicates_merged": 0,
+        "personalities_cleared": 0,
+        "wo_characters_merged": 0,
+        "statuses_fixed": 0,
+    }
 
     # ---- 1. 重复关系合并 ----
     rels = (
@@ -214,6 +238,17 @@ async def cleanup_project(db: AsyncSession, project_id: str) -> dict:
                     rel.character_to_id = protagonist.id
             await db.delete(wo_char)
             counts["wo_characters_merged"] += 1
+
+    # ---- 4. 关系状态修复 ----
+    # 旧版前端分组父行把多条记录状态 join 成 'past / past / past' 提交，
+    # 污染了单条记录 status；修复为合法单值（仅当非法时改动）。
+    for rel in rels:
+        if rel.id in deleted_rel_ids:
+            continue
+        normalized = _normalize_status(rel.status)
+        if normalized != rel.status:
+            rel.status = normalized
+            counts["statuses_fixed"] += 1
 
     return counts
 
