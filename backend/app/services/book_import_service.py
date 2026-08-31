@@ -1861,14 +1861,6 @@ class BookImportService:
         third_person_hits = len(re.findall(r"[他她它]\S{0,2}", snippet))
         return first_person_hits >= 20 and first_person_hits > third_person_hits * 1.5
 
-    def _map_first_person_alias(self, name: str, protagonist_name: Optional[str]) -> Optional[str]:
-        """把第一人称代词/自称映射为主角名；未映射（无主角或无命中）返回 None。"""
-        if not name or not protagonist_name:
-            return None
-        if name in FIRST_PERSON_ALIAS_TOKENS:
-            return protagonist_name
-        return None
-
     def _extract_narrative_perspective(self, project_data: Dict[str, Any], fallback: str = "第三人称") -> str:
         """从AI返回中兼容提取叙事视角字段，统一映射到项目参数可接受值。"""
         if not isinstance(project_data, dict):
