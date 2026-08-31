@@ -49,6 +49,7 @@ from app.services.ai_service import (
     resolve_context_budget_chars,
 )
 from app.services.import_validators import (
+    _looks_like_pasted_narration,
     validate_career_system,
     validate_characters_batch,
     validate_relationships,
@@ -2851,6 +2852,7 @@ class BookImportService:
                         name not in char_by_name
                         and name not in alias_to_char
                         and not _is_first_person_alias_name(name)
+                        and name not in _GENERIC_PERSON_NAMES
                         and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
                     ):
                         personality = (item.get("evidence") or "").strip() or None
@@ -2858,6 +2860,10 @@ class BookImportService:
                         # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
                         # 或缺失，则不写入 personality，避免关系描述污染性格字段
                         if personality and personality == relationship_desc:
+                            personality = None
+                        # 质量门：粘贴的叙事原文（省略号/长句等）不是性格描写，
+                        # 不写入 personality；无明确描写时留空
+                        if personality and _looks_like_pasted_narration(personality):
                             personality = None
                         new_char = Character(
                             project_id=project.id,
