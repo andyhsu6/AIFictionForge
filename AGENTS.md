@@ -24,7 +24,7 @@
 - **禁止**将用户导入的书/文档原文、章节正文摘录、角色人名、世界观专名等原文数据推送到 GitHub（仓库公开，且可能涉及版权）。
 - 涉及原文内容的验收证据（截图、报告、摘要、角色名单）一律存本地 `.omo/`/`docs/`（gitignore），**不入库、不上传**。
 - issue/PR 正文与评论中提及验收时，用**描述性措辞**替代具体原文数据（如"真实书籍 re-import"、"protagonist"、"角色名 redacted"），不出现书名、人名、原文片段。
-- 本规范为硬约束：任何 issue/PR/commit/文档中出现原文数据，视为违规，需立即脱敏修正。
+- 本规范为硬约束：任何 issue/PR/commit/文档中出现原文数据，视为违规，需立即脱敏修正。规范来源与历史处置见 issue #23（`docs: source-text data desensitization convention for public GitHub`）。
 
 ## 服务管理（aistoryforge.sh）
 项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
