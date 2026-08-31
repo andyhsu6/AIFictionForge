@@ -14,6 +14,7 @@ class Character(Base):
     
     # 基本信息
     name = Column(String(100), nullable=False, comment="角色/组织名称")
+    aliases = Column(String(500), comment="别名/昵称/亲属称谓(JSON数组)")
     age = Column(String(50), comment="年龄")
     gender = Column(String(50), comment="性别")
     is_organization = Column(Boolean, default=False, comment="是否为组织")
