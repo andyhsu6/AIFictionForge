@@ -217,6 +217,31 @@ async def sync_relationship_links(
     relationship.relationship_type_id = unique_ids[0] if unique_ids else None
 
 
+async def find_existing_relationship(
+    db: AsyncSession,
+    project_id: str,
+    character_a_id: str,
+    character_b_id: str,
+) -> Optional[CharacterRelationship]:
+    """按角色对（无视方向）查找已存在的关系记录，用于生成路径去重。
+
+    同一条角色关系无论以 A→B 还是 B→A 写入，都应命中同一条记录，
+    避免 AI 生成方向不稳定时产生对称重复。
+    """
+    if not character_a_id or not character_b_id:
+        return None
+    row = (
+        await db.execute(
+            select(CharacterRelationship).where(
+                CharacterRelationship.project_id == project_id,
+                CharacterRelationship.character_from_id.in_([character_a_id, character_b_id]),
+                CharacterRelationship.character_to_id.in_([character_a_id, character_b_id]),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    return row
+
+
 async def relationship_display_names(
     db: AsyncSession,
     relationship: CharacterRelationship,

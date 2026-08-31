@@ -286,7 +286,7 @@ export default function Relationships() {
             .map(name => <Tag key={name} color="blue">{name}</Tag>)}
         </Space>
       ),
-      width: 120,
+      width: 200,
     },
     {
       title: '角色B',
@@ -354,24 +354,8 @@ export default function Relationships() {
     return acc;
   }, {} as Record<string, RelationshipType[]>);
 
-  const groupedRelationships = relationships.reduce<Record<string, Relationship[]>>((acc, rel) => {
-    const key = [rel.character_from_id, rel.character_to_id].sort().join('|');
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(rel);
-    return acc;
-  }, {});
-
-  const groupedRows = Object.entries(groupedRelationships).map(([key, rels]) => ({
-    key,
-    id: rels[0].id,
-    character_from_id: rels[0].character_from_id,
-    character_to_id: rels[0].character_to_id,
-    relationship_name: rels.flatMap(r => r.relationship_type_names?.length ? r.relationship_type_names : [r.relationship_name]).join('、'),
-    intimacy_level: Math.round(rels.reduce((sum, r) => sum + (r.intimacy_level || 0), 0) / rels.length),
-    source: rels.map(r => r.source).join(' / '),
-    children: rels,
-  }));
-
+  // 每行 = 一条关系记录；同一对角色允许多条记录，各自独立展示与编辑。
+  // 类型以独立 Tag 渲染（一个关系类型一个标签），不再合并成单个字符串。
   const categoryLabels: Record<string, string> = {
     family: '家族关系',
     social: '社交关系',
@@ -418,10 +402,9 @@ export default function Relationships() {
               children: (
                 <Table
                   columns={columns}
-                  dataSource={groupedRows}
-                  rowKey="key"
+                  dataSource={relationships}
+                  rowKey="id"
                   loading={loading}
-                  expandable={{ childrenColumnName: 'children' }}
                   pagination={{
                     current: currentPage,
                     pageSize: isMobile ? 10 : pageSize,
