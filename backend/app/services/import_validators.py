@@ -35,6 +35,31 @@ def _is_nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+# 角色字段质量检查：禁止把正文句子/对话/内心独白原样抄入 personality/background/appearance。
+# 保守启发式，只拦截明确"疑似粘贴原文"的信号，避免误伤正常生成的角色设定。
+PASTED_NARRATION_ELLIPSIS = ("……", "…")
+PASTED_NARRATION_QUOTES = ("「", "」", "『", "』")
+PASTED_NARRATION_FIRST_PERSON_MIN_LEN = 60
+CHARACTER_FIELD_QUALITY_KEYS = ("personality", "background", "appearance")
+
+
+def _looks_like_pasted_narration(text: str) -> bool:
+    """判断字段内容是否疑似从正文抄录的叙述/对话片段（省略号/引号/第一人称长句三个信号）。"""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if any(mark in text for mark in PASTED_NARRATION_ELLIPSIS):
+        return True
+    if any(mark in text for mark in PASTED_NARRATION_QUOTES):
+        return True
+    if (
+        len(text) > PASTED_NARRATION_FIRST_PERSON_MIN_LEN
+        and "，" in text
+        and "我" in text
+    ):
+        return True
+    return False
+
+
 def validate_world_building(data: Any) -> None:
     """世界观：必须是 dict，且 time_period/location/atmosphere/rules 四字段均为非空字符串。"""
     if not isinstance(data, dict):
@@ -121,6 +146,18 @@ def validate_characters_batch(data: Any) -> None:
             )
 
         _validate_age(item.get("age"), idx)
+
+        for field in CHARACTER_FIELD_QUALITY_KEYS:
+            field_value = item.get(field)
+            if field_value is not None and not isinstance(field_value, str):
+                raise ValueError(
+                    f"字段 characters[{idx}].{field} 必须是字符串，实际为 {type(field_value).__name__}"
+                )
+            if _looks_like_pasted_narration(field_value or ""):
+                raise ValueError(
+                    f"字段 characters[{idx}].{field} 疑似抄录原文叙述，"
+                    f"请勿把正文句子/对话/内心独白原样抄入；无明确描写时请输出空字符串"
+                )
 
         if is_organization:
             power_level = item.get("power_level")

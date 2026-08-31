@@ -18,6 +18,69 @@ MAX_RELATIONSHIP_TYPE_NAME = 50
 MAX_PROJECT_TYPES_PER_IMPORT = 50
 MAX_IMPORTED_CHARACTERS_PER_IMPORT = 30
 
+# 非规范称谓 → 规范关系类型名（仅收录语义明确等同的别名，避免过度映射）。
+# 规范名选型：恋人（模板家族关系清单中的首选）、丈夫/妻子、父亲/母亲、哥哥/弟弟。
+RELATIONSHIP_TYPE_SYNONYMS: dict[str, str] = {
+    "情侣": "恋人",
+    "男友": "恋人",
+    "女友": "恋人",
+    "爱人": "恋人",
+    "对象": "恋人",
+    "老公": "丈夫",
+    "老婆": "妻子",
+    "爹": "父亲",
+    "爸": "父亲",
+    "爸爸": "父亲",
+    "娘": "母亲",
+    "妈": "母亲",
+    "妈妈": "母亲",
+    "闺女": "女儿",
+    "兄长": "哥哥",
+    "小弟": "弟弟",
+}
+
+# 层级包含规则：具体类型 → 其上位泛称；两者同时出现时保留具体类型、折叠泛称。
+# 仅收录 血亲 ⊃ 核心直系/手足关系，泛称如 家人/亲属 语义更宽（含姻亲），不做折叠。
+RELATIONSHIP_TYPE_CONTAINED_BY: dict[str, str] = {
+    "父子": "血亲",
+    "父女": "血亲",
+    "母子": "血亲",
+    "母女": "血亲",
+    "兄弟姐妹": "血亲",
+    "姐弟": "血亲",
+    "兄妹": "血亲",
+    "兄弟": "血亲",
+    "姐妹": "血亲",
+    "祖孙": "血亲",
+}
+
+
+def normalize_relationship_type_set(type_names: Iterable[Any]) -> list[str]:
+    """把关系类型集合归并为最小集：同义词折叠 → 层级冗余折叠 → 去重。
+
+    输入按出现顺序保留；仅当两个名称语义完全等同（同义词映射）或存在
+    明确的包含关系（具体 ⊂ 泛称）时才移除冗余项，其余类型原样保留。
+    """
+    names: list[str] = []
+    for raw in type_names or ():
+        name = normalize_relationship_type_name(raw)
+        if not name:
+            continue
+        names.append(RELATIONSHIP_TYPE_SYNONYMS.get(name, name))
+
+    result: list[str] = []
+    covered: set[str] = set()
+    for name in dict.fromkeys(names):
+        if name in covered:
+            continue
+        supertype = RELATIONSHIP_TYPE_CONTAINED_BY.get(name)
+        if supertype and supertype in result:
+            result.remove(supertype)
+        if supertype:
+            covered.add(supertype)
+        result.append(name)
+    return result
+
 
 def normalize_relationship_type_name(raw: Any) -> Optional[str]:
     """归一化关系类型名：空白清理、长度限制、过滤无效值。"""

@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -59,6 +59,7 @@ from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
     is_probably_proper_noun_type,
     normalize_relationship_type_name,
+    normalize_relationship_type_set,
     resolve_relationship_type_ids,
     sync_relationship_links,
     MAX_IMPORTED_CHARACTERS_PER_IMPORT,
@@ -139,6 +140,65 @@ def _name_appears_in_source(name: str, source_text: str) -> bool:
     if not normalized_source:
         return False
     return normalized in normalized_source
+
+
+# 主角色生成路径中无信息量的代词/泛称（不带任何姓名信息，仅指代某人）。
+# 命中则跳过创建（如 AI 把"他"/"男人"当作角色名输出）；角色性描述名
+# （"杂货店老板"/"房东"/"张教练"等）携带身份信息，不在拦截之列。
+_GENERIC_PERSON_NAMES = frozenset({
+    "他", "她", "它", "他们", "她们", "它们",
+    "男人", "女人", "男子", "女子", "男孩", "女孩",
+    "小家伙", "小孩", "孩子", "小孩儿", "孩子他爸", "孩子他妈",
+    "陌生人", "路人", "某人", "小伙", "姑娘", "中年男子", "中年女人",
+    "老人家", "老人", "年轻人",
+})
+
+
+def _parse_character_aliases(aliases: Any) -> list[str]:
+    """解析 Character.aliases（JSON 数组字符串，可能为 None/坏值）为字符串列表。
+
+    兼容并行改造前后两种形态：None → []; 已是 list → 原样；字符串 → JSON 解析，
+    解析失败或非数组 → []（不抛异常，避免坏数据中断导入）。
+    """
+    if aliases is None:
+        return []
+    if isinstance(aliases, list):
+        return [str(a).strip() for a in aliases if isinstance(a, str) and a.strip()]
+    if isinstance(aliases, str):
+        try:
+            parsed = json.loads(aliases)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return [str(a).strip() for a in parsed if isinstance(a, str) and a.strip()]
+        return []
+    return []
+
+
+def _build_alias_to_char_map(chars: Sequence[Character]) -> dict[str, Character]:
+    """把角色列表构建为 别名→角色 精确匹配映射（供关系抽取名称解析）。
+
+    - 键为别名原文（大小写敏感、精确匹配，非子串）；
+    - 跳过长度 < 2 的别名（"姐"/"爸"等单字称谓易误撞，宁可不映射也不误并）；
+    - 同名别名冲突时首个角色胜出（保持确定性）。
+    """
+    alias_to_char: dict[str, Character] = {}
+    for c in chars:
+        for alias in _parse_character_aliases(getattr(c, "aliases", None)):
+            if len(alias) < 2:
+                continue
+            if alias not in alias_to_char:
+                alias_to_char[alias] = c
+    return alias_to_char
+
+
+def _resolve_character_by_name_or_alias(
+    name: str, *, char_by_name: dict[str, Character], alias_to_char: dict[str, Character]
+) -> Optional[Character]:
+    """按名称解析角色：先精确命中 name，再精确命中 aliases；未命中返回 None。"""
+    if not name:
+        return None
+    return char_by_name.get(name) or alias_to_char.get(name)
 
 
 @dataclass
@@ -2385,6 +2445,11 @@ class BookImportService:
             raw_name = (item.get("name") or "").strip()
             if not raw_name or raw_name in existing_names:
                 continue
+            # 无信息量的代词/泛称（"他"/"男人"/"路人"等）不带任何姓名信息，
+            # 跳过创建（不加入 existing_names），避免污染角色列表
+            if raw_name in _GENERIC_PERSON_NAMES:
+                logger.debug("跳过泛称创建角色: %r", raw_name)
+                continue
             # 明确第一人称文本中，别名核心名（"我"/"我（男主角）"等）不是真实角色名，
             # 跳过创建（不加入 existing_names），避免污染角色列表
             if is_first_person and _is_first_person_alias_name(raw_name):
@@ -2411,6 +2476,10 @@ class BookImportService:
                     if item.get("organization_members") is not None else None
                 ),
                 traits=json.dumps(item.get("traits", []), ensure_ascii=False) if item.get("traits") else None,
+                aliases=(
+                    json.dumps(item.get("aliases"), ensure_ascii=False)
+                    if item.get("aliases") else None
+                ),
                 source=source,
             )
             db.add(character)
@@ -2555,6 +2624,7 @@ class BookImportService:
                     name = normalize_relationship_type_name(raw)
                     if name and not is_probably_proper_noun_type(name):
                         type_names.append(name)
+                type_names = normalize_relationship_type_set(type_names)
                 relationship_name = "、".join(type_names) or "未知关系"
                 relationship_name = relationship_name[:100]
                 intimacy_level = max(-100, min(_to_int(rel.get("intimacy_level", 50), 50), 100))
@@ -2691,6 +2761,9 @@ class BookImportService:
             await db.execute(select(Character).where(Character.project_id == project.id))
         ).scalars().all()
         char_by_name: dict[str, Character] = {c.name: c for c in chars}
+        # 别名→角色 精确映射：AI 关系输出用别名（"姐姐"/"小妍"）指代角色时，
+        # 解析到既有角色，而不是新建一个重复角色
+        alias_to_char: dict[str, Character] = _build_alias_to_char_map(chars)
         relationships = (
             await db.execute(
                 select(CharacterRelationship).where(CharacterRelationship.project_id == project.id)
@@ -2766,13 +2839,20 @@ class BookImportService:
                     name = normalize_relationship_type_name(raw)
                     if name and not is_probably_proper_noun_type(name):
                         type_names.append(name)
+                type_names = normalize_relationship_type_set(type_names)
                 if not type_names:
                     continue
 
                 # 自动补角色：只在确实不存在时创建，且受上限保护。
                 # 未映射的别名 token 及括号变体（如第一人称但未找到主角）也不得创建为角色。
+                # 别名命中的名字（alias_to_char 中有映射）视为已有角色，不触发创建。
                 for name in (char_a, char_b):
-                    if name not in char_by_name and not _is_first_person_alias_name(name) and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                    if (
+                        name not in char_by_name
+                        and name not in alias_to_char
+                        and not _is_first_person_alias_name(name)
+                        and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
+                    ):
                         personality = (item.get("evidence") or "").strip() or None
                         relationship_desc = (item.get("description") or "").strip()
                         # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
@@ -2796,8 +2876,12 @@ class BookImportService:
                         char_by_name[name] = new_char
                         created_char_count += 1
 
-                source_char = char_by_name.get(char_a)
-                target_char = char_by_name.get(char_b)
+                source_char = _resolve_character_by_name_or_alias(
+                    char_a, char_by_name=char_by_name, alias_to_char=alias_to_char
+                )
+                target_char = _resolve_character_by_name_or_alias(
+                    char_b, char_by_name=char_by_name, alias_to_char=alias_to_char
+                )
                 if not source_char or not target_char or source_char.is_organization or target_char.is_organization:
                     continue
 
