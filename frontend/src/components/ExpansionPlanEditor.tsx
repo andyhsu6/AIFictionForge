@@ -1,4 +1,4 @@
-import { Modal, Form, Input, InputNumber, Select, Tag, Space, Button, message, Divider } from 'antd';
+import { App, Modal, Form, Input, InputNumber, Select, Tag, Space, Button, Divider } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useState, useEffect, useCallback } from 'react';
 import type { ExpansionPlanData, Character } from '../types';
@@ -23,6 +23,7 @@ export default function ExpansionPlanEditor({
   onSave,
   onCancel
 }: ExpansionPlanEditorProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   

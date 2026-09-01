@@ -4,7 +4,7 @@
  */
 
 import { useCallback } from 'react';
-import { message } from 'antd';
+import { App } from 'antd';
 import { useStore } from './index';
 import { projectApi, outlineApi, characterApi, chapterApi } from '../services/api';
 import type {
@@ -27,6 +27,7 @@ import type {
  * 项目数据同步 Hook
  */
 export function useProjectSync() {
+  const { message } = App.useApp();
   const { setProjects, setLoading, addProject, updateProject, removeProject } = useStore();
 
   // 刷新项目列表
@@ -93,6 +94,7 @@ export function useProjectSync() {
  * 角色数据同步 Hook
  */
 export function useCharacterSync() {
+  const { message } = App.useApp();
   const { currentProject, setCharacters, addCharacter, removeCharacter } = useStore();
 
   // 刷新角色列表
@@ -146,6 +148,7 @@ export function useCharacterSync() {
  * 大纲数据同步 Hook
  */
 export function useOutlineSync() {
+  const { message } = App.useApp();
   const { currentProject, setOutlines, addOutline, updateOutline, removeOutline } = useStore();
 
   // 刷新大纲列表
@@ -226,6 +229,7 @@ export function useOutlineSync() {
  * 章节数据同步 Hook
  */
 export function useChapterSync() {
+  const { message } = App.useApp();
   const { currentProject, setChapters, addChapter, updateChapter, removeChapter } = useStore();
 
   // 刷新章节列表

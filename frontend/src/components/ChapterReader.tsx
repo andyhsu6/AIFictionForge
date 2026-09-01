@@ -3,7 +3,7 @@
  * 提供沉浸式阅读体验，支持主题切换、字体调节、翻页导航等功能
  */
 import { useState, useEffect, useCallback } from 'react';
-import { Modal, Button, Slider, Radio, Space, Typography, Spin, message, theme } from 'antd';
+import { App, Modal, Button, Slider, Radio, Space, Typography, Spin, theme } from 'antd';
 import {
   LeftOutlined,
   RightOutlined,
@@ -79,6 +79,7 @@ export default function ChapterReader({
   onClose, 
   onChapterChange 
 }: ChapterReaderProps) {
+  const { message } = App.useApp();
   const { token } = theme.useToken();
 
   // 阅读器设置

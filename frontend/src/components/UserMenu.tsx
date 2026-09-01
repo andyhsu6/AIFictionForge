@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Dropdown, Avatar, Space, Typography, message, Modal, Form, Input, Button, theme } from 'antd';
+import { App, Dropdown, Avatar, Space, Typography, Modal, Form, Input, Button, theme } from 'antd';
 import { UserOutlined, LogoutOutlined, TeamOutlined, CrownOutlined, LockOutlined } from '@ant-design/icons';
 import { authApi } from '../services/api';
 import type { User } from '../types';
@@ -16,6 +16,7 @@ interface UserMenuProps {
 }
 
 export default function UserMenu({ showFullInfo = false, compact = false }: UserMenuProps) {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);

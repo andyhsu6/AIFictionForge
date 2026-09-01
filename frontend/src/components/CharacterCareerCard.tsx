@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Button, Modal, Form, Select, InputNumber, Input, message, Progress, Tag, Space, Divider, Typography, theme } from 'antd';
+import { App, Card, Button, Modal, Form, Select, InputNumber, Input, Progress, Tag, Space, Divider, Typography, theme } from 'antd';
 import { EditOutlined, PlusOutlined, DeleteOutlined, TrophyOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -44,6 +44,7 @@ export const CharacterCareerCard: React.FC<Props> = ({
     editable = false,
     onUpdate
 }) => {
+    const { message } = App.useApp();
     const { token } = theme.useToken();
     const [mainCareer, setMainCareer] = useState<CareerDetail | null>(null);
     const [subCareers, setSubCareers] = useState<CareerDetail[]>([]);

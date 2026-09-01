@@ -18,6 +18,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import {
+  App,
   Button,
   Collapse,
   Drawer,
@@ -30,7 +31,6 @@ import {
   Tag,
   Tooltip,
   Typography,
-  message,
   theme,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -138,6 +138,7 @@ export default function ProjectAgentPanel({
   onMobileClose,
   onExpandedChange,
 }: ProjectAgentPanelProps) {
+  const { message } = App.useApp();
   const { token } = theme.useToken();
   const location = useLocation();
   const [expanded, setExpanded] = useState(() => localStorage.getItem(EXPANDED_KEY) !== 'false');

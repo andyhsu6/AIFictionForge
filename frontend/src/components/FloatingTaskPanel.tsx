@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Card, List, Button, Space, Badge, Tag, Progress, Popconfirm, Empty, theme, Tooltip, message } from 'antd';
+import { App, Card, List, Button, Space, Badge, Tag, Progress, Popconfirm, Empty, theme, Tooltip } from 'antd';
 import {
   ClockCircleOutlined,
   LoadingOutlined,
@@ -29,6 +29,7 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
   autoRefreshInterval = 3000,
   rightOffset = 23,
 }) => {
+  const { message } = App.useApp();
   const [taskList, setTaskList] = useState<TaskStatus[]>([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(true); // 默认收起

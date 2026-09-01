@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Button, Space, Typography, message, Progress, Modal, theme } from 'antd';
+import { App, Card, Button, Space, Typography, Progress, theme } from 'antd';
 import { CheckCircleOutlined, LoadingOutlined } from '@ant-design/icons';
 import { wizardStreamApi } from '../services/api';
 import type { ApiError } from '../types';
@@ -59,6 +59,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   isMobile = false,
   resumeProjectId
 }) => {
+  const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) =>
@@ -110,7 +111,7 @@ export const AIProjectGenerator: React.FC<AIProjectGeneratorProps> = ({
   };
 
   const handleRestartGeneration = () => {
-    Modal.confirm({
+    modal.confirm({
       title: '确认重新开始生成',
       content: '当前生成进度将被放弃，并返回灵感对话重新配置。已创建的项目数据不会自动删除。',
       okText: '重新开始',

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Modal, Input, Button, Space, Radio, InputNumber, Card, message, Alert, Spin, Typography, Divider, theme } from 'antd';
+import { App, Modal, Input, Button, Space, Radio, InputNumber, Card, Alert, Spin, Typography, Divider, theme } from 'antd';
 import { ThunderboltOutlined, CheckOutlined, ReloadOutlined, EditOutlined, LoadingOutlined } from '@ant-design/icons';
 import { chapterApi } from '../services/api';
 
@@ -33,6 +33,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   onClose,
   onApply,
 }) => {
+  const { message } = App.useApp();
   const { token } = theme.useToken();
   const [userInstructions, setUserInstructions] = useState('');
   const [lengthMode, setLengthMode] = useState<LengthMode>('similar');

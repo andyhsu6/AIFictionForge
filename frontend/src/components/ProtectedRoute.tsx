@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { Spin, message } from 'antd';
+import { App, Spin } from 'antd';
 import { authApi } from '../services/api';
 import { sessionManager } from '../utils/sessionManager';
 
@@ -10,6 +10,7 @@ interface ProtectedRouteProps {
 }
 
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
+  const { message } = App.useApp();
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const location = useLocation();
 

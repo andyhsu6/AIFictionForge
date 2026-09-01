@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { message } from 'antd';
+import { antdMessage } from '../utils/antdApp';
 import { ssePost } from '../utils/sseClient';
 import type { SSEClientOptions } from '../utils/sseClient';
 import type {
@@ -147,7 +147,7 @@ api.interceptors.response.use(
       errorMessage = error.message || '请求失败';
     }
 
-    message.error(errorMessage);
+    antdMessage.error(errorMessage);
     console.error('API Error:', errorMessage, error);
 
     return Promise.reject(error);

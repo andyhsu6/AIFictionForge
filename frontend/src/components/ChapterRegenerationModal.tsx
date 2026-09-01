@@ -10,10 +10,10 @@ import {
   Alert,
   Divider,
   Tag,
-  message,
   Collapse,
   Card,
-  Radio
+  Radio,
+  App
 } from 'antd';
 import {
   ReloadOutlined,
@@ -54,6 +54,7 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
   suggestions = [],
   hasAnalysis
 }) => {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   const [modal, contextHolder] = Modal.useModal();
   const [loading, setLoading] = useState(false);
