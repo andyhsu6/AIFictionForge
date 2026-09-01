@@ -1,15 +1,15 @@
 """FastAPI应用主入口"""
-from fastapi import FastAPI, Request, status, HTTPException, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 import sys
 
 from app.config import settings as config_settings
+from app.core.errors import register_exception_handlers
 from app.database import close_db, _session_stats
 from app.logger import setup_logging, get_logger
 from app.middleware import RequestIDMiddleware
@@ -46,6 +46,15 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(
                 lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
             )
+            # 补齐 i18n 结构化状态列（无迁移框架，旧库 ALTER ADD COLUMN，存量行保持 NULL）
+            from sqlalchemy import text
+            existing_cols = {
+                row[1] for row in await conn.execute(text("PRAGMA table_info(background_tasks)"))
+            }
+            for col, decl in (("status_code", "VARCHAR(100)"), ("status_params", "JSON")):
+                if col not in existing_cols:
+                    await conn.execute(text(f"ALTER TABLE background_tasks ADD COLUMN {col} {decl}"))
+                    logger.info(f"background_tasks 表已补列: {col}")
             interrupted_at = datetime.now()
             await conn.execute(
                 sql_update(BackgroundTask)
@@ -105,29 +114,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """处理请求验证错误"""
-    logger.error(f"请求验证失败: {exc.errors()}")
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "detail": "请求参数验证失败",
-            "errors": exc.errors()
-        }
-    )
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """处理所有未捕获的异常"""
-    logger.error(f"未处理的异常: {type(exc).__name__}: {str(exc)}", exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": "服务器内部错误",
-            "message": str(exc) if config_settings.debug else "请稍后重试"
-        }
-    )
+register_exception_handlers(app)
 
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(AuthMiddleware)

@@ -262,7 +262,9 @@ class SSEResponse:
     async def send_progress(
         message: str,
         progress: int,
-        status: str = "processing"
+        status: str = "processing",
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         发送进度消息
@@ -271,13 +273,19 @@ class SSEResponse:
             message: 进度消息
             progress: 进度百分比(0-100)
             status: 状态(processing/success/error)
+            code: 结构化消息码（可选，i18n 机制；缺省时 payload 形状与旧版完全一致）
+            params: 结构化消息参数（可选，配合 code 供前端模板化翻译）
         """
-        return SSEResponse.format_sse({
+        payload: Dict[str, Any] = {
             "type": "progress",
             "message": message,
             "progress": progress,
             "status": status
-        })
+        }
+        if code is not None:
+            payload["message_code"] = code
+            payload["message_params"] = params or {}
+        return SSEResponse.format_sse(payload)
     
     @staticmethod
     async def send_chunk(content: str) -> str:
@@ -317,19 +325,32 @@ class SSEResponse:
         return SSEResponse.format_sse(data, event=event)
     
     @staticmethod
-    async def send_error(error: str, code: int = 500) -> str:
+    async def send_error(
+        error: Optional[str] = None,
+        code: Any = 500,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """
         发送错误消息
-        
-        Args:
-            error: 错误描述
-            code: 错误码
+
+        双模式（i18n envelope 契约，机制先行，调用点后续 todo 迁移）:
+        - 旧模式: send_error("中文描述", 500) → {type, error, code} 不变
+        - 结构化模式: send_error(code="not_found.chapter", params={...}) →
+          追加 error_code/error_params 字段，同时保留旧字段形状（error 回填默认 detail，
+          code 回填 registry 默认 status），旧客户端不受影响。
         """
-        return SSEResponse.format_sse({
-            "type": "error",
-            "error": error,
-            "code": code
-        })
+        payload: Dict[str, Any] = {"type": "error"}
+        if isinstance(code, str):
+            from app.core.errors import ERROR_REGISTRY
+            default_detail, default_status = ERROR_REGISTRY.get(code, ("", 500))
+            payload["error"] = error if error is not None else default_detail
+            payload["code"] = default_status
+            payload["error_code"] = code
+            payload["error_params"] = params or {}
+        else:
+            payload["error"] = error or ""
+            payload["code"] = code
+        return SSEResponse.format_sse(payload)
     
     @staticmethod
     async def send_done() -> str:
