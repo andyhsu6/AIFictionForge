@@ -1,5 +1,6 @@
 import { Modal, Empty, Spin, Button, Space, Typography } from 'antd';
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import { fetchChangelog, type LocalChangelogEntry } from '../services/changelogService';
 
@@ -11,6 +12,7 @@ interface ChangelogModalProps {
 }
 
 export default function ChangelogModal({ visible, onClose }: ChangelogModalProps) {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<LocalChangelogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +24,7 @@ export default function ChangelogModal({ visible, onClose }: ChangelogModalProps
       const data = await fetchChangelog();
       setEntries(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '获取更新日志失败');
+      setError(err instanceof Error ? err.message : t('changelog.fetchFailed'));
     } finally {
       setLoading(false);
     }
@@ -39,14 +41,14 @@ export default function ChangelogModal({ visible, onClose }: ChangelogModalProps
       title={
         <Space>
           <FileTextOutlined />
-          <span>更新日志</span>
+          <span>{t('changelog.title')}</span>
           <Button
             type="text"
             size="small"
             icon={<ReloadOutlined />}
             onClick={loadChangelog}
             loading={loading}
-            title="刷新"
+            title={t('refresh')}
           />
         </Space>
       }
@@ -78,10 +80,10 @@ export default function ChangelogModal({ visible, onClose }: ChangelogModalProps
 
       {loading && entries.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
-          <Spin size="large" tip="加载更新日志中..." />
+          <Spin size="large" tip={t('changelog.loadingTip')} />
         </div>
       ) : entries.length === 0 ? (
-        <Empty description="暂无更新日志" />
+        <Empty description={t('changelog.empty')} />
       ) : (
         <div>
           {entries.map(entry => (
@@ -109,7 +111,7 @@ export default function ChangelogModal({ visible, onClose }: ChangelogModalProps
         fontSize: '13px',
         color: 'var(--color-primary)',
       }}>
-        <Text>💡 更新日志来自本地 CHANGELOG.md 文件</Text>
+        <Text>{t('changelog.sourceNote')}</Text>
       </div>
     </Modal>
   );

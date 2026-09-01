@@ -1,3 +1,44 @@
 {
-  "placeholder": "Placeholder text"
+  "cancel": "Cancel",
+  "changelog": {
+    "empty": "No changelog entries",
+    "fetchFailed": "Failed to fetch changelog",
+    "loadingTip": "Loading changelog...",
+    "sourceNote": "💡 Changelog comes from the local CHANGELOG.md file",
+    "title": "Changelog",
+    "viewTooltip": "View changelog"
+  },
+  "placeholder": "Placeholder text",
+  "refresh": "Refresh",
+  "stream": {
+    "readFailed": "Unable to read the assistant response stream"
+  },
+  "theme": {
+    "dark": "Dark mode",
+    "light": "Light mode",
+    "system": "Follow system"
+  },
+  "userMenu": {
+    "admin": "Admin",
+    "adminBadge": "👑 Admin",
+    "adminOnly": "Only administrators can access user management",
+    "changePassword": "Change Password",
+    "confirmPassword": "Confirm Password",
+    "confirmPasswordPlaceholder": "Re-enter your new password",
+    "confirmPasswordRequired": "Please confirm your new password",
+    "loggedOut": "Logged out",
+    "logout": "Log Out",
+    "logoutFailed": "Logout failed",
+    "newPassword": "New Password",
+    "newPasswordPlaceholder": "Enter your new password (at least 6 characters)",
+    "newPasswordRequired": "Please enter your new password",
+    "passwordChanged": "Password changed successfully",
+    "passwordChangeFailed": "Password change failed",
+    "passwordMin": "Password must be at least 6 characters",
+    "passwordMismatch": "The two passwords do not match",
+    "submitChanges": "Confirm",
+    "trustLevel": "Trust Level: {{level}}",
+    "trustLevelBadge": "🎖️ Trust Level {{level}}",
+    "userManagement": "User Management"
+  }
 }

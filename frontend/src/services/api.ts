@@ -114,7 +114,7 @@ api.interceptors.response.use(
       }
 
       if (status === 422 && data?.errors) {
-        console.error('验证错误详情:', data.errors);
+        console.error('validation error details:', data.errors);
       }
     } else if (error.request) {
       errorMessage = i18n.t('network.error', { ns: 'errors' });
@@ -1278,7 +1278,7 @@ export const projectAgentApi = {
       }
       throw new Error(mapErrorPayload({ detail, code, params, status: response.status }));
     }
-    if (!response.body) throw new Error('无法读取灵创创作助手响应流');
+    if (!response.body) throw new Error(i18n.t('stream.readFailed'));
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

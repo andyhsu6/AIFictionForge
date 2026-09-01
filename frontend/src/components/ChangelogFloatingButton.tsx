@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { FloatButton, Grid } from 'antd';
+import { useTranslation } from 'react-i18next';
 import { FileTextOutlined } from '@ant-design/icons';
 import ChangelogModal from './ChangelogModal';
 
@@ -11,6 +12,7 @@ interface ChangelogFloatingButtonProps {
 }
 
 export default function ChangelogFloatingButton({ defaultVisible = false, onClose }: ChangelogFloatingButtonProps) {
+  const { t } = useTranslation();
   const [showChangelog, setShowChangelog] = useState(defaultVisible);
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -24,7 +26,7 @@ export default function ChangelogFloatingButton({ defaultVisible = false, onClos
       <FloatButton
         icon={<FileTextOutlined />}
         type="primary"
-        tooltip="查看更新日志"
+        tooltip={t('changelog.viewTooltip')}
         style={{
           right: 24,
           bottom: 100,

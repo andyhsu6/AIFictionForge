@@ -1,0 +1,70 @@
+# Task 6 QA Report — Extract 'common' namespace (global components + service fallbacks)
+# Branch: feat/i18n-internationalization | Issue: #27
+# Date: 2026-09-01 | Worker: implementation (todo 6)
+
+## Files changed
+- frontend/src/locales/zh/common.json            1 → 38 leaf keys (seed 'placeholder' kept)
+- frontend/src/locales/en/common.json            1 → 38 leaf keys (key sets identical to zh)
+- frontend/src/components/UserMenu.tsx           useTranslation(); 21 UI strings → t()
+                                                 (menu labels, logout/password toasts, modal
+                                                 title, form labels/rules/placeholders, buttons);
+                                                 3 console.error labels anglicized (dev-only, not UI)
+- frontend/src/components/ThemeSwitch.tsx        options const moved inside component (was
+                                                 module-level — t() unavailable there);
+                                                 3 tooltips → t('theme.light/dark/system')
+- frontend/src/components/ChangelogModal.tsx     6 strings → t() (title, refresh, loadingTip,
+                                                 empty, fetchFailed fallback, sourceNote)
+- frontend/src/components/ChangelogFloatingButton.tsx  tooltip → t('changelog.viewTooltip')
+- frontend/src/services/api.ts                   non-body stream Error → i18n.t('stream.readFailed')
+                                                 (module already imports default i18n instance;
+                                                 1 console.error label anglicized)
+- frontend/src/types/resources.d.ts              regenerated (npm run i18n:types)
+
+## Audited clean, no changes needed
+- AppFooter.tsx        renders VERSION_INFO (projectName/license = English, buildTime = date);
+                       Chinese only in comments → out of scope (projectFullName in version.ts is
+                       dead: zero references repo-wide, left untouched)
+- ProtectedRoute.tsx   no user-facing strings (Spin only)
+- changelogService.ts  no Chinese string literals
+- backgroundTaskService.ts  all error strings already route through errorMapper (errors ns, todo 5)
+
+## Key counts
+- zh common.json: 38 leaf keys | en common.json: 38 leaf keys | identical: True (python diff)
+- New groups: cancel, refresh, userMenu.* (21), theme.* (3), changelog.* (6), stream.readFailed
+
+## Non-overlap with errors namespace
+No todo-5 passthrough strings re-migrated; stream.readFailed was the only service-level
+Chinese literal not handled by errorMapper. errors.json untouched (extract --ci "No files
+were updated" with HEAD versions of errors.json in place).
+
+## Verification (all inside worktree frontend/)
+1. Bare-Chinese grep on the 9 target files: clean (remaining matches are inline `//` comments only)
+2. npm run build                    → exit 0 (tsc -b + vite build ✓)
+   (one fix during QA: trustLevel interpolation typed as string|number → currentUser?.trust_level ?? 0)
+3. npm run i18n:types + :ci         → exit 0 "TypeScript definitions are up to date."
+4. npm run i18n:extract + :ci       → exit 0 "No files were updated." (zero diff)
+5. zh/en common.json key sets identical (38/38, python recursive compare)
+
+## Manual-QA notes (for F3 browser pass)
+- AppFooter smoke: load app, footer shows "AIFictionForge vX.Y.Z · GPL v3.0 · build-time"
+  (unchanged in both languages — brand data is English source).
+- UserMenu: click avatar → dropdown shows 用户管理(admin)/修改密码/退出登录; switch to en
+  (localStorage lng=en + reload or Settings language selector once todo lands) → User Management /
+  Change Password / Log Out; open 修改密码 modal, submit short/mismatched passwords → messages
+  "密码至少6个字符" / "两次输入的密码不一致" become "Password must be at least 6 characters" /
+  "The two passwords do not match" in en.
+- ThemeSwitch: hover the three segments → tooltips 浅色模式/深色模式/跟随系统 →
+  Light mode / Dark mode / Follow system in en.
+- ChangelogFloatingButton: hover floating button → tooltip 查看更新日志 → "View changelog";
+  open modal → title 更新日志/Changelog, spin tip, empty state, bottom 💡 note all switch.
+- api.ts stream.readFailed: hard to trigger manually (needs missing response.body);
+  code-reviewed; zh string preserved exactly.
+
+## Deviations / incidents
+- Concurrent worker: during this task another process edited the same worktree
+  (backend settings API, pages/Login|AuthCallback|Settings, utils/languageSync.ts,
+  api.ts updatePreferences) — a language-sync todo not assigned here. Its changes were
+  parked (patch: /tmp/foreign-worker.patch, file: /tmp/languageSync.ts.bak) and are to be
+  restored after this commit; this commit contains ONLY the files listed above.
+- errors.json: extractor's key-sorting churn reverted to HEAD to keep the commit minimal;
+  extract --ci passes against HEAD formatting.
