@@ -121,7 +121,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         code = f"errors.validation.{first_type}" if first_type else "validation.error"
         logger.error(f"请求验证失败: {errors}")
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "detail": "请求参数验证失败",
                 "code": code,
