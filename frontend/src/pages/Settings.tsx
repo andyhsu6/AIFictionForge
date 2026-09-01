@@ -6,6 +6,7 @@ import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetCon
 import { eventBus, EventNames } from '../store/eventBus';
 import i18n, { normalizeLanguage } from '../i18n';
 import { parseServerLanguage } from '../utils/languageSync';
+import { useTranslation } from 'react-i18next';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -13,6 +14,7 @@ const { useBreakpoint } = Grid;
 const { TextArea } = Input;
 
 export default function SettingsPage() {
+  const { t } = useTranslation('settings');
   const { token } = theme.useToken();
   const screens = useBreakpoint();
   const isMobile = !screens.md; // md断点是768px
@@ -136,7 +138,7 @@ export default function SettingsPage() {
           ...defaultCoverSettings,
         });
       } else {
-        message.error('加载设置失败');
+        message.error(t('toast.loadFailed'));
       }
     } finally {
       setInitialLoading(false);
@@ -149,12 +151,10 @@ export default function SettingsPage() {
     try {
       await i18n.changeLanguage(lang);
       await settingsApi.updatePreferences({ language: lang });
-      message.success(lang === 'en' ? 'Language updated' : '界面语言已更新');
+      message.success(t('language.updated'));
     } catch (error) {
-      console.error('保存界面语言偏好失败:', error);
-      message.warning(lang === 'en'
-        ? 'Saved locally, but syncing to server failed. It will apply on this browser only.'
-        : '已在本地生效，但同步到服务器失败，仅对本浏览器有效。');
+      console.error('save ui language preference failed:', error);
+      message.warning(t('language.syncFailed'));
     } finally {
       setSavingLanguage(false);
     }
@@ -184,7 +184,7 @@ export default function SettingsPage() {
       }
       
       await settingsApi.saveSettings(normalizedValues);
-      message.success('设置已保存');
+      message.success(t('toast.saved'));
       setHasSettings(true);
       setIsDefaultSettings(false);
       
@@ -203,7 +203,7 @@ export default function SettingsPage() {
         const stillActive = latestPresets.active_preset_id === previousActivePresetId;
         if (!stillActive) {
           setActivePresetId(undefined);
-          message.info('配置已更改，预设激活状态已取消');
+          message.info(t('toast.presetDeactivated'));
         }
       }
       
@@ -219,23 +219,23 @@ export default function SettingsPage() {
           
           if (activePlugins.length > 0) {
             // 禁用所有插件
-            message.loading({ content: '正在禁用 MCP 插件...', key: 'disable_mcp' });
+            message.loading({ content: t('toast.disablingMcp'), key: 'disable_mcp' });
             await Promise.all(activePlugins.map(p => mcpPluginApi.togglePlugin(p.id, false)));
-            message.success({ content: '已禁用所有 MCP 插件', key: 'disable_mcp' });
+            message.success({ content: t('toast.mcpDisabled'), key: 'disable_mcp' });
             
             // 显示提示弹窗
             modal.warning({
               title: (
                 <Space>
                   <WarningOutlined style={{ color: token.colorWarning }} />
-                  <span>API 配置已更改</span>
+                  <span>{t('mcp.configChangedTitle')}</span>
                 </Space>
               ),
               centered: true,
               content: (
                 <div style={{ padding: '8px 0' }}>
                   <Alert
-                    message="检测到您修改了 API 配置（提供商、地址或模型），为确保 MCP 插件正常工作，系统已自动禁用所有插件。"
+                    message={t('mcp.configChangedBody')}
                     type="warning"
                     showIcon
                     style={{ marginBottom: 16 }}
@@ -246,17 +246,17 @@ export default function SettingsPage() {
                     border: `1px solid ${token.colorInfoBorder}`,
                     borderRadius: 8
                   }}>
-                    <Text strong style={{ display: 'block', marginBottom: 8 }}>请完成以下步骤：</Text>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('mcp.stepsLabel')}</Text>
                     <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
-                      <li>前往 MCP 插件管理页面</li>
-                      <li>重新进行"模型能力检查"</li>
-                      <li>确认新模型支持 Function Calling 后再启用插件</li>
+                      <li>{t('mcp.step1')}</li>
+                      <li>{t('mcp.step2')}</li>
+                      <li>{t('mcp.step3')}</li>
                     </ol>
                   </div>
                 </div>
               ),
-              okText: '前往 MCP 页面',
-              cancelText: '稍后处理',
+              okText: t('mcp.goToMcp'),
+              cancelText: t('mcp.later'),
               onOk: () => {
                 eventBus.emit(EventNames.SWITCH_TO_MCP_VIEW);
               },
@@ -267,7 +267,7 @@ export default function SettingsPage() {
         }
       }
     } catch {
-      message.error('保存设置失败');
+      message.error(t('toast.saveFailed'));
     } finally {
       setLoading(false);
     }
@@ -275,11 +275,11 @@ export default function SettingsPage() {
 
   const handleReset = () => {
     modal.confirm({
-      title: '重置设置',
-      content: '确定要重置为默认值吗？',
+      title: t('confirm.resetTitle'),
+      content: t('confirm.resetContent'),
       centered: true,
-      okText: '确定',
-      cancelText: '取消',
+      okText: t('confirm.ok'),
+      cancelText: t('confirm.cancel'),
       onOk: () => {
         form.setFieldsValue({
           api_provider: 'openai',
@@ -291,28 +291,28 @@ export default function SettingsPage() {
           disable_thinking: false,
           ...defaultCoverSettings,
         });
-        message.info('已重置为默认值，请点击保存');
+        message.info(t('toast.resetDone'));
       },
     });
   };
 
   const handleDelete = () => {
     modal.confirm({
-      title: '删除设置',
-      content: '确定要删除所有设置吗？此操作不可恢复。',
+      title: t('confirm.deleteTitle'),
+      content: t('confirm.deleteContent'),
       centered: true,
-      okText: '确定',
-      cancelText: '取消',
+      okText: t('confirm.ok'),
+      cancelText: t('confirm.cancel'),
       okType: 'danger',
       onOk: async () => {
         setLoading(true);
         try {
           await settingsApi.deleteSettings();
-          message.success('设置已删除');
+          message.success(t('toast.deleted'));
           setHasSettings(false);
           form.resetFields();
         } catch {
-          message.error('删除设置失败');
+          message.error(t('toast.deleteFailed'));
         } finally {
           setLoading(false);
         }
@@ -323,7 +323,7 @@ export default function SettingsPage() {
   const xiaomiMimoDefaultUrl = 'https://token-plan-cn.xiaomimimo.com/v1';
   const builtInKeyProviders = ['xiaomi_mimo'];
   const xiaomiMimoDefaultModels = [
-    { value: 'mimo-v2.5', label: 'mimo-v2.5', description: 'Xiaomi MiMo 官方内置推荐模型' },
+    { value: 'mimo-v2.5', label: 'mimo-v2.5', description: t('provider.xiaomiMimoDefaultModelDesc') },
   ];
   const defaultCoverSettings = {
     cover_enabled: false,
@@ -336,7 +336,7 @@ export default function SettingsPage() {
   const apiProviders = [
     {
       value: 'xiaomi_mimo',
-      label: 'Xiaomi MiMo（内置）',
+      label: t('provider.xiaomiMimoBuiltIn'),
       defaultUrl: xiaomiMimoDefaultUrl,
       defaultModel: xiaomiMimoDefaultModels[0].value,
       builtInKey: true,
@@ -400,7 +400,7 @@ export default function SettingsPage() {
     const coverImageModel = form.getFieldValue('cover_image_model');
 
     if (!coverApiProvider || !coverApiKey || !coverImageModel) {
-      message.warning('请先填写完整的封面图片配置信息');
+      message.warning(t('toast.coverConfigIncomplete'));
       return;
     }
 
@@ -415,15 +415,15 @@ export default function SettingsPage() {
       });
       setCoverTestResult(result);
       if (result.success) {
-        message.success('封面图片接口测试成功');
+        message.success(t('toast.coverTestSuccess'));
       } else {
-        message.error(result.message || '封面图片接口测试失败');
+        message.error(result.message || t('toast.coverTestFailed'));
       }
     } catch (error) {
-      console.error('封面图片接口测试失败:', error);
+      console.error('cover api test failed:', error);
       setCoverTestResult({
         success: false,
-        message: '封面图片接口测试失败',
+        message: t('toast.coverTestFailed'),
       });
     } finally {
       setTestingCoverApi(false);
@@ -439,7 +439,7 @@ export default function SettingsPage() {
 
     if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl) {
       if (!silent) {
-        message.warning('请先填写 API 密钥和 API 地址');
+        message.warning(t('toast.fillKeyAndUrl'));
       }
       return;
     }
@@ -455,11 +455,11 @@ export default function SettingsPage() {
       setModelOptions(response.models);
       setModelsFetched(true);
       if (!silent) {
-        message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
+        message.success(t('toast.modelsFetched', { n: response.count || response.models.length }));
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || '获取模型列表失败';
+      const errorMsg = error?.response?.data?.detail || t('toast.modelsFetchFailed');
       if (!silent) {
         message.error(errorMsg);
       }
@@ -488,7 +488,7 @@ export default function SettingsPage() {
     const isBuiltInKeyProvider = builtInKeyProviders.includes(provider);
 
     if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl || !provider || !modelName) {
-      message.warning('请先填写完整的配置信息');
+      message.warning(t('toast.configIncomplete'));
       return;
     }
 
@@ -509,20 +509,20 @@ export default function SettingsPage() {
       setShowTestResult(true);
 
       if (result.success) {
-        message.success(`测试成功！响应时间: ${result.response_time_ms}ms`);
+        message.success(t('toast.testSuccess', { ms: result.response_time_ms ?? 0 }));
       } else {
-        message.error('API 测试失败，请查看详细信息');
+        message.error(t('toast.testFailedSeeDetails'));
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || '测试请求失败';
+      const errorMsg = error?.response?.data?.detail || t('toast.testRequestFailed');
       message.error(errorMsg);
       setTestResult({
         success: false,
-        message: '测试请求失败',
+        message: t('toast.testRequestFailed'),
         error: errorMsg,
         error_type: 'RequestError',
-        suggestions: ['请检查网络连接', '请确认后端服务是否正常运行']
+        suggestions: [t('toast.checkNetwork'), t('toast.checkBackend')]
       });
       setShowTestResult(true);
     } finally {
@@ -540,7 +540,7 @@ export default function SettingsPage() {
       setActivePresetId(response.active_preset_id);
       setChapterAnalysisPresetId(response.chapter_analysis_preset_id);
     } catch (error) {
-      message.error('加载预设失败');
+      message.error(t('toast.presetsLoadFailed'));
       console.error(error);
     } finally {
       setPresetsLoading(false);
@@ -592,7 +592,7 @@ export default function SettingsPage() {
 
     if ((!apiKey && !isBuiltInKeyProvider) || !apiBaseUrl) {
       if (!silent) {
-        message.warning('请先填写 API 密钥和 API 地址');
+        message.warning(t('toast.fillKeyAndUrl'));
       }
       return;
     }
@@ -608,11 +608,11 @@ export default function SettingsPage() {
       setPresetModelOptions(response.models);
       setPresetModelsFetched(true);
       if (!silent) {
-        message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
+        message.success(t('toast.modelsFetched', { n: response.count || response.models.length }));
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      const errorMsg = error?.response?.data?.detail || '获取模型列表失败';
+      const errorMsg = error?.response?.data?.detail || t('toast.modelsFetchFailed');
       if (!silent) {
         message.error(errorMsg);
       }
@@ -669,7 +669,7 @@ export default function SettingsPage() {
           description: values.description,
           config,
         });
-        message.success('预设已更新');
+        message.success(t('toast.presetUpdated'));
       } else {
         const request: PresetCreateRequest = {
           name: values.name,
@@ -677,13 +677,13 @@ export default function SettingsPage() {
           config,
         };
         await settingsApi.createPreset(request);
-        message.success('预设已创建');
+        message.success(t('toast.presetCreated'));
       }
 
       handlePresetCancel();
       loadPresets();
     } catch (error) {
-      console.error('保存失败:', error);
+      console.error('save preset failed:', error);
     }
   };
 
@@ -693,11 +693,11 @@ export default function SettingsPage() {
       const normalizedPresetId = presetId || undefined;
       await settingsApi.setChapterAnalysisPresetSelection(normalizedPresetId);
       setChapterAnalysisPresetId(normalizedPresetId);
-      message.success(normalizedPresetId ? '已设置章节内容分析专用API配置' : '章节内容分析已恢复使用默认API配置');
+      message.success(normalizedPresetId ? t('toast.chapterAnalysisPresetSet') : t('toast.chapterAnalysisPresetReset'));
       loadPresets();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '设置章节内容分析API配置失败');
+      message.error(error.response?.data?.detail || t('toast.chapterAnalysisPresetFailed'));
       console.error(error);
     } finally {
       setSavingChapterAnalysisPreset(false);
@@ -707,11 +707,11 @@ export default function SettingsPage() {
   const handlePresetDelete = async (presetId: string) => {
     try {
       await settingsApi.deletePreset(presetId);
-      message.success('预设已删除');
+      message.success(t('toast.presetDeleted'));
       loadPresets();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '删除失败');
+      message.error(error.response?.data?.detail || t('toast.deleteFailedShort'));
       console.error(error);
     }
   };
@@ -722,7 +722,7 @@ export default function SettingsPage() {
       const preset = presets.find(p => p.id === presetId);
       
       await settingsApi.activatePreset(presetId);
-      message.success(`已激活预设: ${presetName}`);
+      message.success(t('toast.presetActivated', { name: presetName }));
       
       // 激活预设后清除当前配置Tab的测试结果
       setTestResult(null);
@@ -767,23 +767,23 @@ export default function SettingsPage() {
             
             if (activePlugins.length > 0) {
               // 禁用所有插件
-              message.loading({ content: '正在禁用 MCP 插件...', key: 'disable_mcp' });
+              message.loading({ content: t('toast.disablingMcp'), key: 'disable_mcp' });
               await Promise.all(activePlugins.map(p => mcpPluginApi.togglePlugin(p.id, false)));
-              message.success({ content: '已禁用所有 MCP 插件', key: 'disable_mcp' });
+              message.success({ content: t('toast.mcpDisabled'), key: 'disable_mcp' });
               
               // 显示提示弹窗
               modal.warning({
                 title: (
                   <Space>
                     <WarningOutlined style={{ color: token.colorWarning }} />
-                    <span>API 配置已更改</span>
+                    <span>{t('mcp.configChangedTitle')}</span>
                   </Space>
                 ),
                 centered: true,
                 content: (
                   <div style={{ padding: '8px 0' }}>
                     <Alert
-                      message={`切换到预设「${presetName}」后，API 配置发生了变化。为确保 MCP 插件正常工作，系统已自动禁用所有插件。`}
+                      message={t('mcp.configChangedPresetBody', { name: presetName })}
                       type="warning"
                       showIcon
                       style={{ marginBottom: 16 }}
@@ -794,17 +794,17 @@ export default function SettingsPage() {
                       border: `1px solid ${token.colorInfoBorder}`,
                       borderRadius: 8
                     }}>
-                      <Text strong style={{ display: 'block', marginBottom: 8 }}>请完成以下步骤：</Text>
+                      <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('mcp.stepsLabel')}</Text>
                       <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
-                        <li>前往 MCP 插件管理页面</li>
-                        <li>重新进行"模型能力检查"</li>
-                        <li>确认新模型支持 Function Calling 后再启用插件</li>
+                        <li>{t('mcp.step1')}</li>
+                        <li>{t('mcp.step2')}</li>
+                        <li>{t('mcp.step3')}</li>
                       </ol>
                     </div>
                   </div>
                 ),
-                okText: '前往 MCP 页面',
-                cancelText: '稍后处理',
+                okText: t('mcp.goToMcp'),
+                cancelText: t('mcp.later'),
                 onOk: () => {
                   eventBus.emit(EventNames.SWITCH_TO_MCP_VIEW);
                 },
@@ -816,7 +816,7 @@ export default function SettingsPage() {
         }
       }
     } catch (error) {
-      message.error('激活失败');
+      message.error(t('toast.activateFailed'));
       console.error(error);
     }
   };
@@ -827,14 +827,14 @@ export default function SettingsPage() {
       const result = await settingsApi.testPreset(presetId);
       if (result.success) {
         modal.success({
-          title: '测试成功',
+          title: t('presets.testSuccessTitle'),
           centered: true,
           width: isMobile ? '90%' : 600,
           content: (
             <div style={{ padding: '8px 0' }}>
               <div style={{ marginBottom: 24, padding: 16, background: token.colorSuccessBg, border: `1px solid ${token.colorSuccessBorder}`, borderRadius: 8 }}>
                 <Typography.Text strong style={{ color: token.colorSuccess }}>
-                  ✓ API 连接正常
+                  {t('presets.connectionOk')}
                 </Typography.Text>
               </div>
 
@@ -845,23 +845,23 @@ export default function SettingsPage() {
                 marginBottom: 16
               }}>
                 <div style={{ marginBottom: 8, fontSize: 14 }}>
-                  <Text type="secondary">提供商：</Text>
+                  <Text type="secondary">{t('presets.providerLabel')}</Text>
                   <Text strong>{result.provider?.toUpperCase() || 'N/A'}</Text>
                 </div>
                 <div style={{ marginBottom: 8, fontSize: 14 }}>
-                  <Text type="secondary">模型：</Text>
+                  <Text type="secondary">{t('presets.modelLabel')}</Text>
                   <Text strong>{result.model || 'N/A'}</Text>
                 </div>
                 {result.response_time_ms !== undefined && (
                   <div style={{ fontSize: 14 }}>
-                    <Text type="secondary">响应时间：</Text>
+                    <Text type="secondary">{t('presets.responseTimeLabel')}</Text>
                     <Text strong>{result.response_time_ms}ms</Text>
                   </div>
                 )}
               </div>
 
               <Alert
-                message="预设配置测试通过，可以正常使用"
+                message={t('presets.testPassAlert')}
                 type="success"
                 showIcon
               />
@@ -870,14 +870,14 @@ export default function SettingsPage() {
         });
       } else {
         modal.error({
-          title: '测试失败',
+          title: t('presets.testFailedTitle'),
           centered: true,
           width: isMobile ? '90%' : 600,
           content: (
             <div style={{ padding: '8px 0' }}>
               <div style={{ marginBottom: 16 }}>
                 <Alert
-                  message={result.message || 'API 测试失败'}
+                  message={result.message || t('presets.apiTestFailed')}
                   type="error"
                   showIcon
                 />
@@ -891,7 +891,7 @@ export default function SettingsPage() {
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>错误信息:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('presets.errorLabel')}</Text>
                   <Text style={{ fontSize: 13, color: token.colorError, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {result.error}
                   </Text>
@@ -906,7 +906,7 @@ export default function SettingsPage() {
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>💡 建议:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('presets.suggestionsLabel')}</Text>
                   <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
                     {result.suggestions.map((s, i) => (
                       <li key={i} style={{ marginBottom: 4 }}>{s}</li>
@@ -916,7 +916,7 @@ export default function SettingsPage() {
               )}
 
               <Alert
-                message="预设配置存在问题，请检查后重试"
+                message={t('presets.testProblemAlert')}
                 type="warning"
                 showIcon
               />
@@ -925,7 +925,7 @@ export default function SettingsPage() {
         });
       }
     } catch (error) {
-      message.error('测试失败');
+      message.error(t('toast.testFailed'));
       console.error(error);
     } finally {
       setTestingPresetId(null);
@@ -962,13 +962,13 @@ export default function SettingsPage() {
     <Spin spinning={presetsLoading}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text type="secondary">管理你的API配置预设，快速切换不同的配置</Text>
+          <Text type="secondary">{t('presets.manageHint')}</Text>
           <Space>
             <Button icon={<CopyOutlined />} onClick={handleCreateFromCurrent}>
-              从当前创建
+              {t('presets.createFromCurrent')}
             </Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => showPresetModal()}>
-              新建预设
+              {t('presets.createNew')}
             </Button>
           </Space>
         </div>
@@ -977,14 +977,14 @@ export default function SettingsPage() {
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Space wrap align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
               <Space direction="vertical" size={2}>
-                <Text strong>章节内容分析 API 配置</Text>
+                <Text strong>{t('presets.chapterAnalysisTitle')}</Text>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  指定章节内容分析使用的预设；未选择时使用默认的文本模型配置。
+                  {t('presets.chapterAnalysisDesc')}
                 </Text>
               </Space>
               <Select
                 allowClear
-                placeholder="默认API配置"
+                placeholder={t('presets.defaultOption')}
                 value={chapterAnalysisPresetId}
                 loading={savingChapterAnalysisPreset}
                 disabled={presetsLoading || savingChapterAnalysisPreset}
@@ -999,7 +999,7 @@ export default function SettingsPage() {
             <Alert
               showIcon
               type="info"
-              message={chapterAnalysisPresetId ? '章节内容分析将优先使用所选预设。' : '当前未指定章节内容分析预设，将使用默认API配置。'}
+              message={chapterAnalysisPresetId ? t('presets.chapterAnalysisPreferred') : t('presets.chapterAnalysisDefault')}
               style={{ padding: '6px 10px' }}
             />
           </Space>
@@ -1007,12 +1007,12 @@ export default function SettingsPage() {
 
         {presets.length === 0 ? (
           <Empty
-            description="暂无预设配置"
+            description={t('presets.emptyText')}
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             style={{ margin: '40px 0' }}
           >
             <Button type="primary" icon={<PlusOutlined />} onClick={() => showPresetModal()}>
-              创建第一个预设
+              {t('presets.createFirst')}
             </Button>
           </Empty>
         ) : (
@@ -1036,7 +1036,7 @@ export default function SettingsPage() {
                         type="link"
                         onClick={() => handlePresetActivate(preset.id, preset.name)}
                       >
-                        激活
+                        {t('presets.activate')}
                       </Button>
                     ),
                     <Button
@@ -1046,21 +1046,21 @@ export default function SettingsPage() {
                       loading={testingPresetId === preset.id}
                       onClick={() => handlePresetTest(preset.id)}
                     >
-                      测试
+                      {t('presets.test')}
                     </Button>,
                     <Button
                       type="link"
                       icon={<EditOutlined />}
                       onClick={() => showPresetModal(preset)}
                     >
-                      编辑
+                      {t('presets.edit')}
                     </Button>,
                     <Popconfirm
-                      title="确定删除此预设吗？"
+                      title={t('presets.deleteConfirm')}
                       onConfirm={() => handlePresetDelete(preset.id)}
                       disabled={isActive}
-                      okText="确定"
-                      cancelText="取消"
+                      okText={t('confirm.ok')}
+                      cancelText={t('confirm.cancel')}
                     >
                       <Button
                         type="link"
@@ -1068,7 +1068,7 @@ export default function SettingsPage() {
                         icon={<DeleteOutlined />}
                         disabled={isActive}
                       >
-                        删除
+                        {t('buttons.delete')}
                       </Button>
                     </Popconfirm>,
                   ].filter(Boolean)}
@@ -1084,8 +1084,8 @@ export default function SettingsPage() {
                     title={
                       <Space>
                         <span style={{ fontWeight: 'bold' }}>{preset.name}</span>
-                        {isActive && <Tag color="success">激活中</Tag>}
-                        {preset.id === chapterAnalysisPresetId && <Tag color="processing">章节分析</Tag>}
+                        {isActive && <Tag color="success">{t('presets.activeTag')}</Tag>}
+                        {preset.id === chapterAnalysisPresetId && <Tag color="processing">{t('presets.chapterAnalysisTag')}</Tag>}
                       </Space>
                     }
                     description={
@@ -1098,11 +1098,11 @@ export default function SettingsPage() {
                             {preset.config.api_provider.toUpperCase()}
                           </Tag>
                           <Tag>{preset.config.llm_model}</Tag>
-                          <Tag>温度: {preset.config.temperature}</Tag>
+                          <Tag>{t('presets.temperatureTag', { value: preset.config.temperature })}</Tag>
                           <Tag>Tokens: {preset.config.max_tokens}</Tag>
                         </Space>
                         <div style={{ fontSize: '12px', color: token.colorTextTertiary }}>
-                          创建于: {new Date(preset.created_at).toLocaleString()}
+                          {t('presets.createdPrefix')} {new Date(preset.created_at).toLocaleString()}
                         </div>
                       </Space>
                     }
@@ -1156,10 +1156,10 @@ export default function SettingsPage() {
               <Col xs={24} sm={12}>
                 <Space direction="vertical" size={4}>
                   <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: token.colorWhite, textShadow: `0 2px 4px ${token.colorBgMask}` }}>
-                    AI API 设置
+                    {t('title')}
                   </Title>
                   <Text style={{ fontSize: isMobile ? 12 : 14, color: token.colorTextLightSolid, marginLeft: isMobile ? 40 : 48, opacity: 0.85 }}>
-                    配置AI接口参数，管理多个API配置预设
+                    {t('subtitle')}
                   </Text>
                 </Space>
               </Col>
@@ -1181,9 +1181,9 @@ export default function SettingsPage() {
             <Row align="middle" justify="space-between" gutter={[16, 12]}>
               <Col xs={24} sm={12}>
                 <Space direction="vertical" size={2}>
-                  <Text strong>界面语言 / Interface language</Text>
+                  <Text strong>{t('language.label')}</Text>
                   <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
-                    切换后立即生效并保存；登录后以账号偏好为准
+                    {t('language.description')}
                   </Text>
                 </Space>
               </Col>
@@ -1194,8 +1194,8 @@ export default function SettingsPage() {
                   loading={savingLanguage}
                   style={{ minWidth: 160 }}
                   options={[
-                    { value: 'zh', label: '简体中文' },
-                    { value: 'en', label: 'English' },
+                    { value: 'zh', label: t('language.zhLabel') },
+                    { value: 'en', label: t('language.enLabel') },
                   ]}
                 />
               </Col>
@@ -1223,21 +1223,21 @@ export default function SettingsPage() {
               items={[
                 {
                   key: 'current',
-                  label: <Space size={6}><ThunderboltOutlined />文本模型配置</Space>,
+                  label: <Space size={6}><ThunderboltOutlined />{t('tabs.current')}</Space>,
                   children: (
                     <Space direction="vertical" size={isMobile ? 'middle' : 'large'} style={{ width: '100%' }}>
 
                       {/* 默认配置提示 */}
                       {isDefaultSettings && (
                         <Alert
-                          message="使用 .env 文件中的默认配置"
+                          message={t('defaultAlert.message')}
                           description={
                             <div style={{ fontSize: isMobile ? '12px' : '14px' }}>
                               <p style={{ margin: '8px 0' }}>
-                                当前显示的是从服务器 <code>.env</code> 文件读取的默认配置。
+                                {t('defaultAlert.descFromEnv')}<code>.env</code>{t('defaultAlert.descSuffix')}
                               </p>
                               <p style={{ margin: '8px 0 0 0' }}>
-                                点击"保存设置"后，配置将保存到数据库并同步更新到 <code>.env</code> 文件。
+                                {t('defaultAlert.saveNote')}<code>.env</code>{t('defaultAlert.saveNoteSuffix')}
                               </p>
                             </div>
                           }
@@ -1250,7 +1250,7 @@ export default function SettingsPage() {
                       {/* 已保存配置提示 */}
                       {hasSettings && !isDefaultSettings && (
                         <Alert
-                          message="使用已保存的个人配置"
+                          message={t('defaultAlert.savedMessage')}
                           type="success"
                           showIcon
                           style={{ marginBottom: isMobile ? 12 : 16 }}
@@ -1268,15 +1268,15 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>API 提供商</span>
+                                <span>{t('form.apiProvider')}</span>
                                 <InfoCircleOutlined
-                                  title="选择你的AI服务提供商"
+                                  title={t('form.apiProviderTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
                             name="api_provider"
-                            rules={[{ required: true, message: '请选择API提供商' }]}
+                            rules={[{ required: true, message: t('validation.providerRequired') }]}
                           >
                             <Select size={isMobile ? 'middle' : 'large'} onChange={handleProviderChange}>
                               {apiProviders.map(provider => (
@@ -1291,8 +1291,8 @@ export default function SettingsPage() {
                             <Alert
                               type="info"
                               showIcon
-                              message="Xiaomi MiMo 内置适配器"
-                              description="使用 OpenAI 兼容格式与内置服务地址。真实 Key 仅由后端环境变量提供，前端和数据库不会保存该 Key。"
+                              message={t('provider.xiaomiMimoAdapter')}
+                              description={t('provider.xiaomiMimoBuiltInDesc')}
                               style={{ marginBottom: 16 }}
                             />
                           )}
@@ -1300,19 +1300,19 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>API 密钥</span>
+                                <span>{t('form.apiKey')}</span>
                                 <InfoCircleOutlined
-                                  title="你的API密钥，将加密存储"
+                                  title={t('form.apiKeyTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
                             name="api_key"
-                            rules={builtInKeyProviders.includes(selectedProvider) ? [] : [{ required: true, message: '请输入API密钥' }]}
+                            rules={builtInKeyProviders.includes(selectedProvider) ? [] : [{ required: true, message: t('validation.apiKeyRequired') }]}
                           >
                             <Input.Password
                               size={isMobile ? 'middle' : 'large'}
-                              placeholder={builtInKeyProviders.includes(selectedProvider) ? '使用后端内置密钥' : 'sk-...'}
+                              placeholder={builtInKeyProviders.includes(selectedProvider) ? t('placeholder.apiKeyBuiltIn') : 'sk-...'}
                               autoComplete="new-password"
                               disabled={builtInKeyProviders.includes(selectedProvider)}
                             />
@@ -1321,17 +1321,17 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>API 地址</span>
+                                <span>{t('form.apiBaseUrl')}</span>
                                 <InfoCircleOutlined
-                                  title="API的基础URL地址"
+                                  title={t('form.apiBaseUrlTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
                             name="api_base_url"
                             rules={[
-                              { required: true, message: '请输入API地址' },
-                              { type: 'url', message: '请输入有效的URL' }
+                              { required: true, message: t('validation.baseUrlRequired') },
+                              { type: 'url', message: t('validation.urlInvalid') }
                             ]}
                           >
                             <Input
@@ -1343,20 +1343,20 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>模型名称</span>
+                                <span>{t('form.llmModel')}</span>
                                 <InfoCircleOutlined
-                                  title="AI模型的名称，如 gpt-4, gpt-3.5-turbo"
+                                  title={t('form.llmModelTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
                             name="llm_model"
-                            rules={[{ required: true, message: '请输入或选择模型名称' }]}
+                            rules={[{ required: true, message: t('validation.modelRequired') }]}
                           >
                             <Select
                               size={isMobile ? 'middle' : 'large'}
                               showSearch
-                              placeholder={isMobile ? "输入或选择模型" : "输入模型名称或点击获取"}
+                              placeholder={isMobile ? t('placeholder.modelMobile') : t('presetModal.modelPlaceholder')}
                               optionFilterProp="label"
                               loading={fetchingModels}
                               onFocus={handleModelSelectFocus}
@@ -1374,17 +1374,17 @@ export default function SettingsPage() {
                                   {menu}
                                   {fetchingModels && (
                                     <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                      <Spin size="small" /> 正在获取模型列表...
+                                      <Spin size="small" /> {t('modelSelect.fetching')}
                                     </div>
                                   )}
                                   {!fetchingModels && modelOptions.length === 0 && modelsFetched && !modelSearchText && (
                                     <div style={{ padding: '8px 12px', color: token.colorError, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                      未能获取到模型列表，可直接输入模型名称
+                                      {t('modelSelect.fetchEmpty')}
                                     </div>
                                   )}
                                   {!fetchingModels && modelOptions.length === 0 && !modelsFetched && !modelSearchText && (
                                     <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                      点击输入框自动获取，或直接输入模型名称
+                                      {t('modelSelect.clickToFetch')}
                                     </div>
                                   )}
                                 </>
@@ -1392,7 +1392,7 @@ export default function SettingsPage() {
                               notFoundContent={
                                 fetchingModels ? (
                                   <div style={{ padding: '8px 12px', textAlign: 'center', fontSize: isMobile ? '12px' : '14px' }}>
-                                    <Spin size="small" /> 加载中...
+                                    <Spin size="small" /> {t('modelSelect.loading')}
                                   </div>
                                 ) : null
                               }
@@ -1414,7 +1414,7 @@ export default function SettingsPage() {
                                       height: '100%',
                                       marginRight: -8
                                     }}
-                                    title="重新获取模型列表"
+                                    title={t('modelSelect.refreshTooltip')}
                                   >
                                     <Button
                                       type="text"
@@ -1423,7 +1423,7 @@ export default function SettingsPage() {
                                       loading={fetchingModels}
                                       style={{ pointerEvents: 'none' }}
                                     >
-                                      刷新
+                                      {t('buttons.refresh')}
                                     </Button>
                                   </div>
                                 ) : undefined
@@ -1447,7 +1447,7 @@ export default function SettingsPage() {
                                   opts.unshift({
                                     value: modelSearchText,
                                     label: modelSearchText,
-                                    description: '手动输入的模型名称'
+                                    description: t('modelSelect.manualDesc')
                                   });
                                 }
                                 return opts;
@@ -1455,14 +1455,14 @@ export default function SettingsPage() {
                               optionRender={(option) => (
                                 <div>
                                   <div style={{ fontWeight: 500, fontSize: isMobile ? '13px' : '14px' }}>
-                                    {option.data.description === '手动输入的模型名称' ? (
+                                    {option.data.description === t('modelSelect.manualDesc') ? (
                                       <Space size={4}>
                                         <EditOutlined style={{ color: token.colorPrimary }} />
-                                        <span>使用 "{option.data.label}"</span>
+                                        <span>{t('modelSelect.useTyped', { name: option.data.label })}</span>
                                       </Space>
                                     ) : option.data.label}
                                   </div>
-                                  {option.data.description && option.data.description !== '手动输入的模型名称' && (
+                                  {option.data.description && option.data.description !== t('modelSelect.manualDesc') && (
                                     <div style={{ fontSize: isMobile ? '11px' : '12px', color: token.colorTextTertiary, marginTop: '2px' }}>
                                       {option.data.description}
                                     </div>
@@ -1475,9 +1475,9 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>温度参数</span>
+                                <span>{t('form.temperature')}</span>
                                 <InfoCircleOutlined
-                                  title="控制输出的随机性，值越高越随机（0.0-2.0）"
+                                  title={t('form.temperatureTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
@@ -1500,17 +1500,17 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>最大 Token 数</span>
+                                <span>{t('form.maxTokens')}</span>
                                 <InfoCircleOutlined
-                                  title="单次请求的最大token数量"
+                                  title={t('form.maxTokensTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
                             }
                             name="max_tokens"
                             rules={[
-                              { required: true, message: '请输入最大token数' },
-                              { type: 'number', min: 1, message: '请输入大于0的数字' }
+                              { required: true, message: t('validation.maxTokensRequired') },
+                              { type: 'number', min: 1, message: t('validation.positiveNumber') }
                             ]}
                           >
                             <InputNumber
@@ -1524,9 +1524,9 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>关闭模型思考</span>
+                                <span>{t('form.disableThinking')}</span>
                                 <InfoCircleOutlined
-                                  title="适用于思考型模型：开启后模型跳过思考阶段直接输出正文，可显著减少等待时间与token消耗；对不支持此选项的服务无影响"
+                                  title={t('form.disableThinkingTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
@@ -1540,9 +1540,9 @@ export default function SettingsPage() {
                           <Form.Item
                             label={
                               <Space size={4}>
-                                <span>系统提示词</span>
+                                <span>{t('form.systemPrompt')}</span>
                                 <InfoCircleOutlined
-                                  title="设置全局系统提示词，每次AI调用时都会自动使用。可用于设定AI的角色、语言风格等"
+                                  title={t('form.systemPromptTooltip')}
                                   style={{ color: token.colorTextSecondary, fontSize: isMobile ? '12px' : '14px' }}
                                 />
                               </Space>
@@ -1551,7 +1551,7 @@ export default function SettingsPage() {
                           >
                             <TextArea
                               rows={4}
-                              placeholder="例如：你是一个专业的小说创作助手，请用生动、细腻的文字进行创作..."
+                              placeholder={t('placeholder.systemPrompt')}
                               maxLength={10000}
                               showCount
                               style={{ fontSize: isMobile ? '13px' : '14px' }}
@@ -1579,7 +1579,7 @@ export default function SettingsPage() {
                                     <Space direction="vertical" size="small" style={{ width: '100%' }}>
                                       {testResult.response_time_ms && (
                                         <div style={{ fontSize: isMobile ? '12px' : '14px' }}>
-                                          ⚡ 响应时间: <strong>{testResult.response_time_ms} ms</strong>
+                                          {t('testResult.responseTime')} <strong>{testResult.response_time_ms} ms</strong>
                                         </div>
                                       )}
                                       {testResult.response_preview && (
@@ -1591,12 +1591,12 @@ export default function SettingsPage() {
                                           border: `1px solid ${token.colorSuccessBorder}`,
                                           marginTop: '8px'
                                         }}>
-                                          <div style={{ marginBottom: '4px', fontWeight: 500 }}>AI 响应预览:</div>
+                                          <div style={{ marginBottom: '4px', fontWeight: 500 }}>{t('testResult.previewLabel')}</div>
                                           <div style={{ color: token.colorTextSecondary }}>{testResult.response_preview}</div>
                                         </div>
                                       )}
                                       <div style={{ color: token.colorSuccess, fontSize: isMobile ? '12px' : '13px', marginTop: '4px' }}>
-                                        ✓ API 配置正确，可以正常使用
+                                        {t('testResult.configOk')}
                                       </div>
                                     </Space>
                                   ) : (
@@ -1610,18 +1610,18 @@ export default function SettingsPage() {
                                           border: `1px solid ${token.colorErrorBorder}`,
                                           color: token.colorError
                                         }}>
-                                          <strong>错误信息:</strong> {testResult.error}
+                                          <strong>{t('presets.errorLabel')}</strong> {testResult.error}
                                         </div>
                                       )}
                                       {testResult.error_type && (
                                         <div style={{ fontSize: isMobile ? '11px' : '12px', color: token.colorTextSecondary }}>
-                                          错误类型: {testResult.error_type}
+                                          {t('testResult.errorType')} {testResult.error_type}
                                         </div>
                                       )}
                                       {testResult.suggestions && testResult.suggestions.length > 0 && (
                                         <div style={{ marginTop: '8px' }}>
                                           <div style={{ fontSize: isMobile ? '12px' : '13px', fontWeight: 500, marginBottom: '4px' }}>
-                                            💡 解决建议:
+                                            {t('testResult.suggestionsLabel')}
                                           </div>
                                           <ul style={{
                                             margin: 0,
@@ -1664,7 +1664,7 @@ export default function SettingsPage() {
                                     height: '44px'
                                   }}
                                 >
-                                  保存设置
+                                  {t('buttons.saveSettings')}
                                 </Button>
                                 <Button
                                   size="large"
@@ -1679,7 +1679,7 @@ export default function SettingsPage() {
                                     height: '44px'
                                   }}
                                 >
-                                  {testingApi ? '测试中...' : '测试连接'}
+                                  {testingApi ? t('buttons.testing') : t('buttons.testConnection')}
                                 </Button>
                                 <Space size="middle" style={{ width: '100%' }}>
                                   <Button
@@ -1688,7 +1688,7 @@ export default function SettingsPage() {
                                     onClick={handleReset}
                                     style={{ flex: 1, height: '44px' }}
                                   >
-                                    重置
+                                    {t('buttons.reset')}
                                   </Button>
                                   {hasSettings && (
                                     <Button
@@ -1699,7 +1699,7 @@ export default function SettingsPage() {
                                       loading={loading}
                                       style={{ flex: 1, height: '44px' }}
                                     >
-                                      删除
+                                      {t('buttons.delete')}
                                     </Button>
                                   )}
                                 </Space>
@@ -1725,7 +1725,7 @@ export default function SettingsPage() {
                                       minWidth: '100px'
                                     }}
                                   >
-                                    删除配置
+                                    {t('buttons.deleteConfig')}
                                   </Button>
                                 ) : (
                                   <div /> // 占位符，保持右侧按钮位置
@@ -1745,7 +1745,7 @@ export default function SettingsPage() {
                                       minWidth: '100px'
                                     }}
                                   >
-                                    {testingApi ? '测试中...' : '测试'}
+                                    {testingApi ? t('buttons.testing') : t('buttons.test')}
                                   </Button>
                                   <Button
                                     size="large"
@@ -1755,7 +1755,7 @@ export default function SettingsPage() {
                                       minWidth: '100px'
                                     }}
                                   >
-                                    重置
+                                    {t('buttons.reset')}
                                   </Button>
                                   <Button
                                     type="primary"
@@ -1770,7 +1770,7 @@ export default function SettingsPage() {
                                       fontWeight: 500
                                     }}
                                   >
-                                    保存
+                                    {t('buttons.save')}
                                   </Button>
                                 </Space>
                               </div>
@@ -1783,23 +1783,23 @@ export default function SettingsPage() {
                 },
                 {
                   key: 'cover',
-                  label: <Space size={6}><PictureOutlined />图片模型配置</Space>,
+                  label: <Space size={6}><PictureOutlined />{t('tabs.cover')}</Space>,
                   children: (
                     <Spin spinning={initialLoading}>
                       <Form form={form} layout="vertical" onFinish={handleSave} autoComplete="off">
 
-                        <Form.Item label="封面图片生成功能" name="cover_enabled" style={{ marginBottom: 16 }}>
+                        <Form.Item label={t('cover.enabledLabel')} name="cover_enabled" style={{ marginBottom: 16 }}>
                           <Select
                             size={isMobile ? 'middle' : 'large'}
                             onChange={() => setCoverTestResult(null)}
                             options={[
-                              { value: true, label: '启用封面图片生成' },
-                              { value: false, label: '停用封面图片生成' },
+                              { value: true, label: t('cover.enableOption') },
+                              { value: false, label: t('cover.disableOption') },
                             ]}
                           />
                         </Form.Item>
 
-                        <Form.Item label="封面图片 Provider" name="cover_api_provider" rules={[{ required: true, message: '请选择封面图片 Provider' }]}>
+                        <Form.Item label={t('cover.providerLabel')} name="cover_api_provider" rules={[{ required: true, message: t('cover.providerRequired') }]}>
                           <Select size={isMobile ? 'middle' : 'large'} onChange={handleCoverProviderChange}>
                             {coverApiProviders.map(provider => (
                               <Option key={provider.value} value={provider.value}>{provider.label}</Option>
@@ -1807,15 +1807,15 @@ export default function SettingsPage() {
                           </Select>
                         </Form.Item>
 
-                        <Form.Item label="封面图片 API Key" name="cover_api_key" rules={[{ required: true, message: '请输入封面图片 API Key' }]}>
-                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder="输入封面图片 API Key" autoComplete="new-password" />
+                        <Form.Item label={t('cover.apiKeyLabel')} name="cover_api_key" rules={[{ required: true, message: t('cover.apiKeyRequired') }]}>
+                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder={t('cover.apiKeyPlaceholder')} autoComplete="new-password" />
                         </Form.Item>
 
-                        <Form.Item label="封面图片 API 地址" name="cover_api_base_url" rules={[{ type: 'url', message: '请输入有效的URL' }]}>
+                        <Form.Item label={t('cover.baseUrlLabel')} name="cover_api_base_url" rules={[{ type: 'url', message: t('validation.urlInvalid') }]}>
                           <Input size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'grok' ? 'https://api.x.ai/v1' : 'https://generativelanguage.googleapis.com/v1beta'} />
                         </Form.Item>
 
-                        <Form.Item label="封面图片模型" name="cover_image_model" rules={[{ required: true, message: '请输入封面图片模型名称' }]}>
+                        <Form.Item label={t('cover.modelLabel')} name="cover_image_model" rules={[{ required: true, message: t('cover.modelRequired') }]}>
                           <Input
                             size={isMobile ? 'middle' : 'large'}
                             placeholder={selectedCoverProvider === 'grok'
@@ -1843,11 +1843,11 @@ export default function SettingsPage() {
                                 loading={testingCoverApi}
                                 style={{ borderColor: token.colorSuccess, color: token.colorSuccess, fontWeight: 500 }}
                               >
-                                {testingCoverApi ? '测试中...' : '测试封面接口'}
+                                {testingCoverApi ? t('buttons.testing') : t('cover.testButton')}
                               </Button>
-                              <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>
+                              <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('buttons.reset')}</Button>
                             </Space>
-                            <Button type="primary" icon={<SaveOutlined />} htmlType="submit" loading={loading}>保存封面配置</Button>
+                            <Button type="primary" icon={<SaveOutlined />} htmlType="submit" loading={loading}>{t('cover.saveButton')}</Button>
                           </Space>
                         </Form.Item>
                       </Form>
@@ -1856,7 +1856,7 @@ export default function SettingsPage() {
                 },
                 {
                   key: 'presets',
-                  label: <Space size={6}><CopyOutlined />配置预设</Space>,
+                  label: <Space size={6}><CopyOutlined />{t('tabs.presets')}</Space>,
                   children: renderPresetsList(),
                 },
               ]}
@@ -1866,14 +1866,14 @@ export default function SettingsPage() {
 
         {/* 预设编辑对话框 */}
         <Modal
-          title={editingPreset ? '编辑预设' : '创建预设'}
+          title={editingPreset ? t('presetModal.editTitle') : t('presetModal.createTitle')}
           open={isPresetModalVisible}
           onOk={handlePresetSave}
           onCancel={handlePresetCancel}
           width={isMobile ? '95%' : 640}
           centered
-          okText="保存"
-          cancelText="取消"
+          okText={t('buttons.save')}
+          cancelText={t('confirm.cancel')}
           styles={{
             body: {
               padding: isMobile ? '16px' : '20px 24px'
@@ -1890,25 +1890,25 @@ export default function SettingsPage() {
               <Col xs={24} sm={16}>
                 <Form.Item
                   name="name"
-                  label="预设名称"
+                  label={t('presetModal.nameLabel')}
                   rules={[
-                    { required: true, message: '请输入预设名称' },
-                    { max: 50, message: '名称不能超过50个字符' },
+                    { required: true, message: t('presetModal.nameRequired') },
+                    { max: 50, message: t('presetModal.nameMax') },
                   ]}
                   style={{ marginBottom: 16 }}
                 >
-                  <Input placeholder="例如：工作账号-GPT4" />
+                  <Input placeholder={t('presetModal.namePlaceholder')} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={8}>
                 <Form.Item
                   name="api_provider"
-                  label="API 提供商"
-                  rules={[{ required: true, message: '请选择' }]}
+                  label={t('form.apiProvider')}
+                  rules={[{ required: true, message: t('presetModal.providerRequired') }]}
                   style={{ marginBottom: 16 }}
                 >
-                  <Select placeholder="选择提供商" onChange={handlePresetProviderChange}>
-                    <Select.Option value="xiaomi_mimo">Xiaomi MiMo（内置）</Select.Option>
+                  <Select placeholder={t('presetModal.providerPlaceholder')} onChange={handlePresetProviderChange}>
+                    <Select.Option value="xiaomi_mimo">{t('provider.xiaomiMimoBuiltIn')}</Select.Option>
                     <Select.Option value="openai">OpenAI</Select.Option>
                     <Select.Option value="gemini">Google Gemini</Select.Option>
                   </Select>
@@ -1918,8 +1918,8 @@ export default function SettingsPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="Xiaomi MiMo 内置适配器"
-                    description="使用后端内置 Key 和 OpenAI 兼容接口地址，预设中不会保存真实 Key。"
+                    message={t('provider.xiaomiMimoAdapter')}
+                    description={t('provider.xiaomiMimoPresetDesc')}
                     style={{ marginBottom: 16 }}
                   />
                 )}
@@ -1928,11 +1928,11 @@ export default function SettingsPage() {
 
             <Form.Item
               name="description"
-              label="预设描述"
-              rules={[{ max: 200, message: '描述不能超过200个字符' }]}
+              label={t('presetModal.descriptionLabel')}
+              rules={[{ max: 200, message: t('presetModal.descriptionMax') }]}
               style={{ marginBottom: 16 }}
             >
-              <Input placeholder="例如：用于日常写作任务（可选）" />
+              <Input placeholder={t('presetModal.descriptionPlaceholder')} />
             </Form.Item>
 
             {/* API 配置 */}
@@ -1941,11 +1941,11 @@ export default function SettingsPage() {
                 <Form.Item
                   name="api_key"
                   label="API Key"
-                  rules={builtInKeyProviders.includes(selectedPresetProvider) ? [] : [{ required: true, message: '请输入API Key' }]}
+                  rules={builtInKeyProviders.includes(selectedPresetProvider) ? [] : [{ required: true, message: t('presetModal.apiKeyRequired') }]}
                   style={{ marginBottom: 16 }}
                 >
                   <Input.Password
-                    placeholder={builtInKeyProviders.includes(selectedPresetProvider) ? '使用后端内置密钥（不会暴露）' : 'sk-...'}
+                    placeholder={builtInKeyProviders.includes(selectedPresetProvider) ? t('presetModal.apiKeyBuiltInPlaceholder') : 'sk-...'}
                     disabled={builtInKeyProviders.includes(selectedPresetProvider)}
                   />
                 </Form.Item>
@@ -1968,19 +1968,19 @@ export default function SettingsPage() {
                   name="llm_model"
                   label={
                     <Space size={4}>
-                      <span>模型名称</span>
+                      <span>{t('form.llmModel')}</span>
                       <InfoCircleOutlined
-                        title="AI模型的名称，点击下拉框自动获取可用模型"
+                        title={t('presetModal.modelTooltip')}
                         style={{ color: token.colorTextSecondary, fontSize: '12px' }}
                       />
                     </Space>
                   }
-                  rules={[{ required: true, message: '请选择或输入模型名称' }]}
+                  rules={[{ required: true, message: t('presetModal.modelRequired') }]}
                   style={{ marginBottom: 16 }}
                 >
                   <Select
                     showSearch
-                    placeholder="输入模型名称或点击获取"
+                    placeholder={t('presetModal.modelPlaceholder')}
                     optionFilterProp="label"
                     loading={fetchingPresetModels}
                     onFocus={handlePresetModelSelectFocus}
@@ -1998,17 +1998,17 @@ export default function SettingsPage() {
                         {menu}
                         {fetchingPresetModels && (
                           <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: '12px' }}>
-                            <Spin size="small" /> 正在获取模型列表...
+                            <Spin size="small" /> {t('modelSelect.fetching')}
                           </div>
                         )}
                         {!fetchingPresetModels && presetModelOptions.length === 0 && presetModelsFetched && !presetModelSearchText && (
                           <div style={{ padding: '8px 12px', color: token.colorError, textAlign: 'center', fontSize: '12px' }}>
-                            未能获取到模型列表，可直接输入模型名称
+                            {t('modelSelect.fetchEmpty')}
                           </div>
                         )}
                         {!fetchingPresetModels && presetModelOptions.length === 0 && !presetModelsFetched && !presetModelSearchText && (
                           <div style={{ padding: '8px 12px', color: token.colorTextSecondary, textAlign: 'center', fontSize: '12px' }}>
-                            点击输入框自动获取，或直接输入模型名称
+                            {t('modelSelect.clickToFetch')}
                           </div>
                         )}
                       </>
@@ -2016,7 +2016,7 @@ export default function SettingsPage() {
                     notFoundContent={
                       fetchingPresetModels ? (
                         <div style={{ padding: '8px 12px', textAlign: 'center', fontSize: '12px' }}>
-                          <Spin size="small" /> 加载中...
+                          <Spin size="small" /> {t('modelSelect.loading')}
                         </div>
                       ) : null
                     }
@@ -2037,7 +2037,7 @@ export default function SettingsPage() {
                           height: '100%',
                           marginRight: -8
                         }}
-                        title="获取模型列表"
+                        title={t('presetModal.fetchTooltip')}
                       >
                         <Button
                           type="text"
@@ -2046,7 +2046,7 @@ export default function SettingsPage() {
                           loading={fetchingPresetModels}
                           style={{ pointerEvents: 'none' }}
                         >
-                          获取
+                          {t('buttons.fetch')}
                         </Button>
                       </div>
                     }
@@ -2069,7 +2069,7 @@ export default function SettingsPage() {
                         opts.unshift({
                           value: presetModelSearchText,
                           label: presetModelSearchText,
-                          description: '手动输入的模型名称'
+                          description: t('modelSelect.manualDesc')
                         });
                       }
                       return opts;
@@ -2077,14 +2077,14 @@ export default function SettingsPage() {
                     optionRender={(option) => (
                       <div>
                         <div style={{ fontWeight: 500, fontSize: '13px' }}>
-                          {option.data.description === '手动输入的模型名称' ? (
+                          {option.data.description === t('modelSelect.manualDesc') ? (
                             <Space size={4}>
                               <EditOutlined style={{ color: token.colorPrimary }} />
-                              <span>使用 "{option.data.label}"</span>
+                              <span>{t('modelSelect.useTyped', { name: option.data.label })}</span>
                             </Space>
                           ) : option.data.label}
                         </div>
-                        {option.data.description && option.data.description !== '手动输入的模型名称' && (
+                        {option.data.description && option.data.description !== t('modelSelect.manualDesc') && (
                           <div style={{ fontSize: '11px', color: token.colorTextTertiary, marginTop: '2px' }}>
                             {option.data.description}
                           </div>
@@ -2097,8 +2097,8 @@ export default function SettingsPage() {
               <Col xs={12} sm={6}>
                 <Form.Item
                   name="temperature"
-                  label="温度"
-                  rules={[{ required: true, message: '必填' }]}
+                  label={t('presetModal.temperatureLabel')}
+                  rules={[{ required: true, message: t('presetModal.required') }]}
                   style={{ marginBottom: 16 }}
                 >
                   <InputNumber
@@ -2113,8 +2113,8 @@ export default function SettingsPage() {
               <Col xs={12} sm={6}>
                 <Form.Item
                   name="max_tokens"
-                  label="最大Tokens"
-                  rules={[{ required: true, message: '必填' }]}
+                  label={t('presetModal.maxTokensLabel')}
+                  rules={[{ required: true, message: t('presetModal.required') }]}
                   style={{ marginBottom: 16 }}
                 >
                   <InputNumber
@@ -2129,12 +2129,12 @@ export default function SettingsPage() {
 
             <Form.Item
               name="system_prompt"
-              label="系统提示词"
+              label={t('form.systemPrompt')}
               style={{ marginBottom: 0 }}
             >
               <TextArea
                 rows={isMobile ? 2 : 3}
-                placeholder="例如：你是一个专业的小说创作助手...（可选）"
+                placeholder={t('presetModal.systemPromptPlaceholder')}
                 maxLength={10000}
                 showCount
               />

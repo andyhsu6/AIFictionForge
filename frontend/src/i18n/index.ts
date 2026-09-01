@@ -11,7 +11,7 @@ i18n
   .init({
     fallbackLng: 'zh',
     supportedLngs: ['zh', 'en'],
-    ns: ['common', 'errors'],
+    ns: ['common', 'errors', 'characters', 'settings'],
     defaultNS: 'common',
     resources,
     detection: {

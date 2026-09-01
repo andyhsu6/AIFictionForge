@@ -1,0 +1,168 @@
+{
+  "buttons": {
+    "addSubCareer": "+ Add Sub-Career",
+    "aiGenerateCharacter": "AI Generate Character",
+    "aiGenerateOrganization": "AI Generate Organization",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createCharacter": "Create Character",
+    "createOrganization": "Create Organization",
+    "delete": "Delete",
+    "exportBatch": "Export Selected ({{n}})",
+    "generate": "Generate",
+    "import": "Import",
+    "save": "Save"
+  },
+  "createModal": {
+    "characterTitle": "Create Character",
+    "organizationTitle": "Create Organization"
+  },
+  "editModal": {
+    "characterTitle": "Edit Character",
+    "organizationTitle": "Edit Organization"
+  },
+  "empty": {
+    "noCharacters": "No characters yet",
+    "noData": "No data",
+    "none": "No characters or organizations yet. Start creating!",
+    "noOrganizations": "No organizations yet"
+  },
+  "form": {
+    "age": "Age",
+    "appearance": "Appearance",
+    "backgroundCharacter": "Character Background",
+    "backgroundOrganization": "Organization Background",
+    "backgroundSetting": "Background",
+    "careerInfo": "Career Info",
+    "careerInfoOptional": "Career Info (Optional)",
+    "careerMaxStage": " (max stage {{stage}})",
+    "color": "Signature Color",
+    "currentStage": "Current Stage",
+    "currentStageTooltip": "Current stage reached in the main career",
+    "gender": "Gender",
+    "location": "Location",
+    "mainCareer": "Main Career",
+    "mainCareerTooltip": "The character's primary cultivation career",
+    "membersEmpty": "No members yet. Add them in Organization management.",
+    "membersHint": "💡 Go to the \"Organizations\" page to add or manage members",
+    "membersTooltip": "Member info is maintained by the Organization module; shown here read-only",
+    "motto": "Motto / Slogan",
+    "nameCharacter": "Character Name",
+    "nameOrganization": "Organization Name",
+    "organizationMembers": "Key Members",
+    "organizationPurpose": "Purpose",
+    "organizationType": "Organization Type",
+    "personality": "Personality",
+    "powerLevel": "Power Level",
+    "powerLevelTooltip": "A value from 0 to 100",
+    "relationshipsReadonly": "Relationships (managed in Relationships)",
+    "requirements": "Other Requirements",
+    "roleType": "Role Type",
+    "subCareers": "Sub-Careers"
+  },
+  "gender": {
+    "female": "Female",
+    "male": "Male",
+    "other": "Other"
+  },
+  "generateModal": {
+    "characterTitle": "AI Generate Character",
+    "organizationTitle": "AI Generate Organization"
+  },
+  "import": {
+    "charactersCount": "Characters: {{n}}",
+    "charactersLabel": "Characters:",
+    "confirmImport": "Confirm Import",
+    "doneTitle": "Import Complete",
+    "failedCount": "❌ Failed: {{n}}",
+    "fileVersion": "File version:",
+    "organizationsCount": "Organizations: {{n}}",
+    "organizationsLabel": "Organizations:",
+    "previewTitle": "Import Preview",
+    "skippedCount": "⚠️ Skipped: {{n}}",
+    "successCount": "✅ Imported: {{n}}",
+    "validateFailed": "File validation failed",
+    "warningsLabel": "⚠️ Warnings:",
+    "willImport": "Will import:"
+  },
+  "importModal": {
+    "description": "Select a previously exported JSON file of characters/organizations to import",
+    "noteIgnoreCareers": "Career info will be ignored if it does not exist",
+    "noteJsonFormat": "Only .json character/organization files are supported",
+    "noteSkipDuplicates": "Entries with duplicate names will be skipped",
+    "notesTitle": "Notes:",
+    "selectFile": "Choose File",
+    "title": "Import Characters / Organizations"
+  },
+  "placeholder": {
+    "age": "e.g. 25",
+    "appearance": "Describe the character's appearance...",
+    "backgroundCharacter": "Describe the character's backstory...",
+    "backgroundForGen": "Briefly describe the character's background and setting...",
+    "backgroundOrganization": "Describe the organization's backstory...",
+    "color": "e.g. gold",
+    "gender": "Gender",
+    "location": "Headquarters location",
+    "motto": "The organization's mission, motto or slogan",
+    "nameCharacter": "Character name",
+    "nameCharacterOptional": "e.g. John Doe (optional, AI will generate)",
+    "nameOrganization": "Organization name",
+    "nameOrganizationOptional": "e.g. Shadow Guild (optional, AI will generate)",
+    "organizationBackgroundForGen": "Briefly describe the organization's background and setting...",
+    "organizationPurpose": "Describe the organization's mission and goals...",
+    "organizationType": "e.g. sect, guild",
+    "organizationTypeForGen": "e.g. sect, gang, company, academy (optional, AI will match the world setting)",
+    "personality": "Describe the character's personality...",
+    "requirements": "Other special requirements...",
+    "selectMainCareer": "Select main career",
+    "selectRoleType": "Select role type",
+    "selectSubCareer": "Select sub-career",
+    "stage": "Stage"
+  },
+  "role": {
+    "antagonist": "Antagonist",
+    "protagonist": "Protagonist",
+    "supporting": "Supporting"
+  },
+  "tabs": {
+    "all": "All ({{n}})",
+    "characters": "Characters ({{n}})",
+    "organizations": "Organizations ({{n}})"
+  },
+  "title": "Characters & Organizations",
+  "toast": {
+    "aiCharacterSuccess": "Character generated by AI",
+    "aiGenerateFailed": "AI generation failed",
+    "aiOrganizationSuccess": "Organization generated by AI",
+    "characterCreated": "Character created",
+    "createFailed": "Create failed",
+    "deleteFailed": "Delete failed",
+    "deleteSuccess": "Deleted successfully",
+    "exportCountSuccess": "Exported {{n}} characters/organizations",
+    "exportFailed": "Export failed",
+    "exportSuccess": "Exported successfully",
+    "generateFailed": "Generation failed: {{error}}",
+    "importFailed": "Import failed",
+    "organizationCreated": "Organization created",
+    "progressComplete": "Generation complete!",
+    "progressPrepareCharacter": "Preparing to generate character...",
+    "progressPrepareOrganization": "Preparing to generate organization...",
+    "selectForExport": "Select at least one character or organization",
+    "updateFailed": "Update failed",
+    "updateSuccess": "Updated successfully"
+  },
+  "toolbar": {
+    "clearSelection": "Clear Selection",
+    "selectAll": "Select All",
+    "selected": "{{n}} selected"
+  },
+  "validation": {
+    "nameCharacterRequired": "Please enter the character name",
+    "nameOrganizationRequired": "Please enter the organization name",
+    "organizationPurposeRequired": "Please enter the organization's purpose",
+    "organizationTypeRequired": "Please enter the organization type",
+    "roleTypeRequired": "Please select a role type",
+    "stageRequired": "Stage",
+    "subCareerRequired": "Please select a sub-career"
+  }
+}

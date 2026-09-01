@@ -1,0 +1,168 @@
+{
+  "buttons": {
+    "addSubCareer": "+ 添加副职业",
+    "aiGenerateCharacter": "AI生成角色",
+    "aiGenerateOrganization": "AI生成组织",
+    "cancel": "取消",
+    "create": "创建",
+    "createCharacter": "创建角色",
+    "createOrganization": "创建组织",
+    "delete": "删除",
+    "exportBatch": "批量导出 ({{n}})",
+    "generate": "生成",
+    "import": "导入",
+    "save": "保存"
+  },
+  "createModal": {
+    "characterTitle": "创建角色",
+    "organizationTitle": "创建组织"
+  },
+  "editModal": {
+    "characterTitle": "编辑角色",
+    "organizationTitle": "编辑组织"
+  },
+  "empty": {
+    "noCharacters": "暂无角色",
+    "noData": "暂无数据",
+    "none": "还没有角色或组织，开始创建吧！",
+    "noOrganizations": "暂无组织"
+  },
+  "form": {
+    "age": "年龄",
+    "appearance": "外貌描写",
+    "backgroundCharacter": "角色背景",
+    "backgroundOrganization": "组织背景",
+    "backgroundSetting": "背景设定",
+    "careerInfo": "职业信息",
+    "careerInfoOptional": "职业信息（可选）",
+    "careerMaxStage": "（最高{{stage}}阶）",
+    "color": "代表颜色",
+    "currentStage": "当前阶段",
+    "currentStageTooltip": "主职业当前修炼到的阶段",
+    "gender": "性别",
+    "location": "所在地",
+    "mainCareer": "主职业",
+    "mainCareerTooltip": "角色的主要修炼职业",
+    "membersEmpty": "暂无成员，请在组织管理中添加",
+    "membersHint": "💡 请前往「组织管理」页面添加或管理组织成员",
+    "membersTooltip": "成员信息由组织管理模块维护，此处仅展示",
+    "motto": "格言/口号",
+    "nameCharacter": "角色名称",
+    "nameOrganization": "组织名称",
+    "organizationMembers": "主要成员",
+    "organizationPurpose": "组织目的",
+    "organizationType": "组织类型",
+    "personality": "性格特点",
+    "powerLevel": "势力等级",
+    "powerLevelTooltip": "0-100的数值",
+    "relationshipsReadonly": "人际关系（由关系管理维护）",
+    "requirements": "其他要求",
+    "roleType": "角色定位",
+    "subCareers": "副职业"
+  },
+  "gender": {
+    "female": "女",
+    "male": "男",
+    "other": "其他"
+  },
+  "generateModal": {
+    "characterTitle": "AI生成角色",
+    "organizationTitle": "AI生成组织"
+  },
+  "import": {
+    "charactersCount": "角色: {{n}} 个",
+    "charactersLabel": "角色:",
+    "confirmImport": "确认导入",
+    "doneTitle": "导入完成",
+    "failedCount": "❌ 失败: {{n}} 个",
+    "fileVersion": "文件版本:",
+    "organizationsCount": "组织: {{n}} 个",
+    "organizationsLabel": "组织:",
+    "previewTitle": "导入预览",
+    "skippedCount": "⚠️ 跳过: {{n}} 个",
+    "successCount": "✅ 成功导入: {{n}} 个",
+    "validateFailed": "文件验证失败",
+    "warningsLabel": "⚠️ 警告:",
+    "willImport": "将要导入:"
+  },
+  "importModal": {
+    "description": "选择之前导出的角色/组织JSON文件进行导入",
+    "noteIgnoreCareers": "职业信息如不存在将被忽略",
+    "noteJsonFormat": "支持导入.json格式的角色/组织文件",
+    "noteSkipDuplicates": "重复名称的角色/组织将被跳过",
+    "notesTitle": "说明：",
+    "selectFile": "选择文件",
+    "title": "导入角色/组织"
+  },
+  "placeholder": {
+    "age": "如：25岁",
+    "appearance": "描述角色的外貌特征...",
+    "backgroundCharacter": "描述角色的背景故事...",
+    "backgroundForGen": "简要描述角色背景和故事环境...",
+    "backgroundOrganization": "描述组织的背景故事...",
+    "color": "如：金色",
+    "gender": "性别",
+    "location": "总部位置",
+    "motto": "组织的宗旨、格言或口号",
+    "nameCharacter": "角色名称",
+    "nameCharacterOptional": "如：张三、李四（可选，AI会自动生成）",
+    "nameOrganization": "组织名称",
+    "nameOrganizationOptional": "如：天剑门、黑龙会（可选，AI会自动生成）",
+    "organizationBackgroundForGen": "简要描述组织的背景和环境...",
+    "organizationPurpose": "描述组织的宗旨和目标...",
+    "organizationType": "如：门派、帮派",
+    "organizationTypeForGen": "如：门派、帮派、公司、学院（可选，AI会根据世界观生成）",
+    "personality": "描述角色的性格特点...",
+    "requirements": "其他特殊要求...",
+    "selectMainCareer": "选择主职业",
+    "selectRoleType": "选择角色定位",
+    "selectSubCareer": "选择副职业",
+    "stage": "阶段"
+  },
+  "role": {
+    "antagonist": "反派",
+    "protagonist": "主角",
+    "supporting": "配角"
+  },
+  "tabs": {
+    "all": "全部 ({{n}})",
+    "characters": "角色 ({{n}})",
+    "organizations": "组织 ({{n}})"
+  },
+  "title": "角色与组织管理",
+  "toast": {
+    "aiCharacterSuccess": "AI生成角色成功",
+    "aiGenerateFailed": "AI生成失败",
+    "aiOrganizationSuccess": "AI生成组织成功",
+    "characterCreated": "角色创建成功",
+    "createFailed": "创建失败",
+    "deleteFailed": "删除失败",
+    "deleteSuccess": "删除成功",
+    "exportCountSuccess": "成功导出 {{n}} 个角色/组织",
+    "exportFailed": "导出失败",
+    "exportSuccess": "导出成功",
+    "generateFailed": "生成失败: {{error}}",
+    "importFailed": "导入失败",
+    "organizationCreated": "组织创建成功",
+    "progressComplete": "生成完成！",
+    "progressPrepareCharacter": "准备生成角色...",
+    "progressPrepareOrganization": "准备生成组织...",
+    "selectForExport": "请至少选择一个角色或组织",
+    "updateFailed": "更新失败",
+    "updateSuccess": "更新成功"
+  },
+  "toolbar": {
+    "clearSelection": "取消选择",
+    "selectAll": "全选",
+    "selected": "已选 {{n}} 个"
+  },
+  "validation": {
+    "nameCharacterRequired": "请输入角色名称",
+    "nameOrganizationRequired": "请输入组织名称",
+    "organizationPurposeRequired": "请输入组织目的",
+    "organizationTypeRequired": "请输入组织类型",
+    "roleTypeRequired": "请选择角色定位",
+    "stageRequired": "阶段",
+    "subCareerRequired": "请选择副职业"
+  }
+}

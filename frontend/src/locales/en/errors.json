@@ -1,49 +1,49 @@
 {
-  "unknown": "Unknown error",
-  "requestFailed": "Request failed",
-  "http_error": "{{detail}}",
-  "dynamic_detail": "The request could not be processed. Please try again later.",
   "auth": {
     "unauthorized": "Not logged in"
-  },
-  "not_found": {
-    "chapter": "Chapter not found",
-    "project": "Project not found",
-    "outline": "Outline not found"
-  },
-  "validation": {
-    "failed": "Request parameter validation failed",
-    "error": "Request parameter validation failed",
-    "config": "Configuration data format error"
-  },
-  "internal": {
-    "error": "Internal server error"
   },
   "conflict": {
     "error": "Resource conflict"
   },
+  "dynamic_detail": "The request could not be processed. Please try again later.",
   "http": {
     "badRequest": "Bad request parameters",
-    "unauthorized": "Session expired, please log in again",
+    "errorWithStatus": "Request failed ({{status}})",
     "forbidden": "You do not have permission to access this resource",
     "notFound": "The requested resource does not exist",
     "serviceUnavailable": "Service temporarily unavailable, please retry later",
-    "errorWithStatus": "Request failed ({{status}})"
+    "unauthorized": "Session expired, please log in again"
+  },
+  "http_error": "{{detail}}",
+  "internal": {
+    "error": "Internal server error"
   },
   "network": {
     "error": "Network error, please check your connection"
   },
+  "not_found": {
+    "chapter": "Chapter not found",
+    "outline": "Outline not found",
+    "project": "Project not found"
+  },
+  "requestFailed": "Request failed",
   "task": {
-    "failed": "Task failed",
-    "cancelled": "Task cancelled",
-    "queryStatusFailed": "Failed to query task status",
-    "listFailed": "Failed to fetch task list",
     "batchListFailed": "Failed to fetch batch generation tasks",
     "cancelBatchFailed": "Failed to cancel batch generation task",
     "cancelFailed": "Failed to cancel task",
+    "cancelled": "Task cancelled",
     "clearFailed": "Failed to clear task records",
-    "deleteFailed": "Failed to delete task",
+    "createChapterFailed": "Failed to create chapter generation task",
     "createFailed": "Failed to create task",
-    "createChapterFailed": "Failed to create chapter generation task"
+    "deleteFailed": "Failed to delete task",
+    "failed": "Task failed",
+    "listFailed": "Failed to fetch task list",
+    "queryStatusFailed": "Failed to query task status"
+  },
+  "unknown": "Unknown error",
+  "validation": {
+    "config": "Configuration data format error",
+    "error": "Request parameter validation failed",
+    "failed": "Request parameter validation failed"
   }
 }
