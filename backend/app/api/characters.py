@@ -24,7 +24,11 @@ from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
 from app.services.relationship_service import relationship_display_name
-from app.services.relationship_service import resolve_relationship_type_ids, sync_relationship_links
+from app.services.relationship_service import (
+    find_existing_relationship,
+    resolve_relationship_type_ids,
+    sync_relationship_links,
+)
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
@@ -1214,15 +1218,11 @@ async def generate_character_stream(
                             target_char = target_result.scalar_one_or_none()
                             
                             if target_char:
-                                # 检查是否已存在相同关系
-                                existing_rel = await db.execute(
-                                    select(CharacterRelationship).where(
-                                        CharacterRelationship.project_id == request.project_id,
-                                        CharacterRelationship.character_from_id == character.id,
-                                        CharacterRelationship.character_to_id == target_char.id
-                                    )
+                                # 检查是否已存在相同关系（无视方向，防止对称重复）
+                                existing_rel = await find_existing_relationship(
+                                    db, request.project_id, character.id, target_char.id
                                 )
-                                if existing_rel.scalar_one_or_none():
+                                if existing_rel:
                                     logger.debug(f"  ℹ️  关系已存在：{character.name} -> {target_name}")
                                     continue
                                 

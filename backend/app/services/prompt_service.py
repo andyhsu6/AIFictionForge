@@ -102,6 +102,14 @@ class PromptService:
 简介：{description}
 </input>
 
+<full_book_context priority="P1">
+【原文摘录】
+以下为已导入的章节原文（可能为全文、尾章加权节选或摘要链），
+世界观设定必须与正文中的具体地名、势力、事件、氛围保持一致，
+严禁编造与正文冲突的设定。
+{full_book_context}
+</full_book_context>
+
 <guidelines priority="P1">
 【类型指导原则】
 
@@ -236,13 +244,14 @@ class PromptService:
 **角色对象**：
 {{
   "name": "角色姓名",
+  "aliases": ["别名1", "别名2"],
   "age": 25,
   "gender": "男/女/其他",
   "is_organization": false,
   "role_type": "protagonist/supporting/antagonist",
-  "personality": "性格特点（100-200字）：核心性格、优缺点、特殊习惯",
-  "background": "背景故事（100-200字）：家庭背景、成长经历、重要转折",
-  "appearance": "外貌描述（50-100字）：身高、体型、面容、着装风格",
+  "personality": "性格特点（有明确描写时写 50-150 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文句子/对话/叙述）",
+  "background": "背景故事（有明确描写时写 50-150 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文叙述）",
+  "appearance": "外貌描述（有明确描写时写 30-100 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文叙述）",
   "traits": ["特长1", "特长2", "特长3"],
   "relationships_array": [
     {{
@@ -262,14 +271,16 @@ class PromptService:
   ]
 }}
 
+aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称谓）。例如 主角 李四 的 aliases 为 ["四哥","小李"]；女主角 王芳 的 aliases 为 ["小芳","姐姐","王老师"]。若没有别名给空数组 []。
+
 **组织对象**：
 {{
   "name": "组织名称",
   "is_organization": true,
   "role_type": "supporting",
-  "personality": "组织特性（100-200字）：运作方式、核心理念、行事风格",
-  "background": "组织背景（100-200字）：建立历史、发展历程、重要事件",
-  "appearance": "外在表现（50-100字）：总部位置、标志性建筑",
+  "personality": "组织特性（有明确描写时写 50-150 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文句子/对话/叙述）",
+  "background": "组织背景（有明确描写时写 50-150 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文叙述）",
+  "appearance": "外在表现（有明确描写时写 30-100 字；正文未明确描写则输出空字符串 \"\"，严禁抄录原文叙述）",
   "organization_type": "组织类型",
   "organization_purpose": "组织目的",
   "organization_members": ["成员1", "成员2"],
@@ -300,12 +311,17 @@ class PromptService:
 ✅ 有深度：性格和背景要立体
 ✅ 关系网络：角色间形成合理关系
 ✅ 组织合理：组织是推动剧情的关键力量
+✅ 性格/外貌/背景只写正文有明确依据的内容；正文无描写时输出空字符串 ""；严禁把正文句子/对话/内心独白原样抄入这些字段
 
 【关系约束】
 ✅ relationships_array只能引用本批次已出现的角色
 ✅ organization_memberships只能引用本批次的组织
 ✅ 第一个角色的relationships_array必须为空[]
 ✅ 禁止幻觉：不引用不存在的角色或组织
+
+【实体唯一性约束】
+✅ 同一实体（同一人物）只生成一条记录：name用正文中最正式/最常见的名字，其余称呼（昵称、亲属称谓如"姐姐/妈妈/爸"、职业称谓）放入aliases，禁止把同一人物拆成多条
+✅ 禁止使用无信息量的代词/泛称（他/她/男人/女人/小家伙/陌生人）作为name——若正文未给出明确人名，宁可不生成该角色
 
 【格式约束】
 ✅ 纯JSON数组输出，无markdown标记
@@ -2309,8 +2325,8 @@ class PromptService:
 职业体系必须与项目简介中的故事背景和角色设定高度契合。
 
 【数量要求】
-- 主职业：精确生成1个
-- 副职业：精确生成1个
+- 主职业：1-3 个（根据世界观与剧情需要生成，1 到 3 个均可）
+- 副职业：0-2 个（可生成 0 到 2 个，没有合适的副职业可不生成）
 </task>
 
 <worldview priority="P0">
@@ -2327,16 +2343,24 @@ class PromptService:
 世界规则：{rules}
 </worldview>
 
+<full_book_context priority="P1">
+【原文摘录】
+以下为已导入的章节原文（可能为全文、尾章加权节选或摘要链），
+职业体系必须与正文中真实出现的职业、势力、能力体系保持一致，
+如果原文提到特定职业或能力，优先设计相关职业。
+{full_book_context}
+</full_book_context>
+
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）- 必须精确生成1个**
+**1. 主职业（main_careers）- 生成 1 到 3 个**
 - 主职业是角色的核心发展方向
 - 必须严格符合世界观规则和简介中的故事背景
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
 - 职业设计要能支撑简介中描述的故事情节
 
-**2. 副职业（sub_careers）- 必须精确生成1个**
+**2. 副职业（sub_careers）- 生成 0 到 2 个**
 - 副职业包含生产、辅助、特殊技能类
 - 每个副职业的阶段数量可以不同
 - 不要让所有副职业都是相同的阶段数
@@ -2395,13 +2419,14 @@ class PromptService:
 
 <constraints>
 【必须遵守】
-✅ 主职业数量：必须精确生成1个，不多不少
-✅ 副职业数量：必须精确生成1个，不多不少
+✅ 主职业数量：1-3 个（1 到 3 个均可，视世界观与剧情需要）
+✅ 副职业数量：0-2 个（没有合适的副职业可以不生成）
 ✅ 主职业阶段数建议：8-12个
 ✅ 副职业阶段数建议：5-8个
 ✅ stages数组长度必须等于max_stage
 ✅ 确保职业体系与世界观高度契合
 ✅ 职业设计必须支撑项目简介中的故事情节
+✅ 职业体系必须与原文摘录中的内容保持一致
 
 【禁止事项】
 ❌ 所有职业使用相同的阶段数
@@ -2938,7 +2963,7 @@ class PromptService:
                 "name": "世界构建",
                 "category": "世界构建",
                 "description": "用于生成小说世界观设定，包括时间背景、地理位置、氛围基调和世界规则",
-                "parameters": ["title", "theme", "genre", "description"]
+                "parameters": ["title", "theme", "genre", "description", "full_book_context"]
             },
             "BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION": {
                 "name": "拆书导入-反向项目提炼",
@@ -3120,7 +3145,7 @@ class PromptService:
                 "name": "职业体系生成",
                 "category": "世界构建",
                 "description": "根据世界观和项目简介自动生成完整的职业体系，包括主职业和副职业",
-                "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules"]
+                "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules", "full_book_context"]
             },
             "INSPIRATION_TITLE_SYSTEM": {
                 "name": "灵感模式-书名生成(系统提示词)",
