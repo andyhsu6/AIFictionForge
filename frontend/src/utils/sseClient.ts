@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { mapErrorPayload, mapSSEError, mapSSEProgressMessage } from '../services/errorMapper';
+
 export interface SSEMessage {
   type: 'progress' | 'chunk' | 'result' | 'error' | 'done';
   message?: string;
+  message_code?: string;
+  message_params?: Record<string, unknown>;
   progress?: number;
   word_count?: number;
   status?: 'processing' | 'success' | 'error' | 'warning';
@@ -9,6 +13,8 @@ export interface SSEMessage {
   data?: any;
   error?: string;
   code?: number;
+  error_code?: string;
+  error_params?: Record<string, unknown>;
 }
 
 export interface SSEClientOptions {
@@ -66,7 +72,7 @@ export class SSEClient {
       case 'progress':
         if (this.options.onProgress && message.progress !== undefined) {
           this.options.onProgress(
-            message.message || '',
+            mapSSEProgressMessage(message),
             message.progress,
             message.status || 'processing',
             message.word_count
@@ -91,10 +97,10 @@ export class SSEClient {
 
       case 'error':
         if (this.options.onError) {
-          this.options.onError(message.error || '未知错误', message.code);
+          this.options.onError(mapSSEError(message), message.code);
         }
         this.close();
-        reject(new Error(message.error || '未知错误'));
+        reject(new Error(mapSSEError(message)));
         break;
 
       case 'done':
@@ -168,7 +174,21 @@ export class SSEPostClient {
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          // Non-2xx SSE POST carries the {detail, code, params} envelope.
+          let body: any = null;
+          try {
+            body = await response.json();
+          } catch {
+            // Non-JSON body → status fallback below.
+          }
+          throw new Error(
+            mapErrorPayload({
+              detail: typeof body?.detail === 'string' ? body.detail : null,
+              code: typeof body?.code === 'string' ? body.code : null,
+              params: body?.params && typeof body.params === 'object' ? body.params : null,
+              status: response.status,
+            })
+          );
         }
 
         const reader = response.body?.getReader();
@@ -219,7 +239,7 @@ export class SSEPostClient {
         } else {
           console.error('SSE POST请求失败:', error);
           if (this.options.onError) {
-            this.options.onError(error.message || '请求失败');
+            this.options.onError(mapErrorPayload({ detail: error.message, status: null }));
           }
           reject(error);
         }
@@ -236,7 +256,7 @@ export class SSEPostClient {
       case 'progress':
         if (this.options.onProgress && message.progress !== undefined) {
           this.options.onProgress(
-            message.message || '',
+            mapSSEProgressMessage(message),
             message.progress,
             message.status || 'processing',
             message.word_count
@@ -262,9 +282,9 @@ export class SSEPostClient {
 
       case 'error':
         if (this.options.onError) {
-          this.options.onError(message.error || '未知错误', message.code);
+          this.options.onError(mapSSEError(message), message.code);
         }
-        reject(new Error(message.error || '未知错误'));
+        reject(new Error(mapSSEError(message)));
         break;
 
       case 'done':

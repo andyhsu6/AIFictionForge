@@ -1,0 +1,77 @@
+# Task 5 QA Report — Frontend consumes backend error envelope {detail, code, params}
+# Branch: feat/i18n-internationalization | Issue: #27
+# Date: 2026-09-01 | Worker: implementation (todo 5)
+
+## Files changed
+- frontend/src/services/errorMapper.ts        (NEW)  error-code → i18n mapping helper
+- frontend/src/services/errorMapper.test.mjs  (NEW)  standalone unit test (node, no vitest)
+- frontend/src/locales/zh/errors.json              expanded 1 → 31 flat keys
+- frontend/src/locales/en/errors.json              expanded 1 → 31 flat keys (identical key set)
+- frontend/src/services/api.ts                     axios interceptor: envelope parse via mapErrorPayload;
+                                                   401-branch hardcoded unauthenticatedDetails Chinese array
+                                                   REMOVED → isUnauthenticatedError(code, status);
+                                                   projectAgentApi.chatStream manual SSE parser uses mapSSEError
+- frontend/src/utils/sseClient.ts                  SSEMessage gains message_code/message_params/
+                                                   error_code/error_params; error + progress events mapped
+                                                   via mapSSEError / mapSSEProgressMessage; SSE POST
+                                                   non-2xx envelope parsed + mapped
+- frontend/src/services/backgroundTaskService.ts   TaskStatus gains status_code/status_params (optional);
+                                                   all fetch failure paths route {detail,code,params,status}
+                                                   through mapErrorPayload with localized action prefixes;
+                                                   poll loop failure path uses mapTaskStatusMessage
+- frontend/src/i18n/index.ts                       registers app i18n instance into errorMapper seam
+- frontend/src/types/resources.d.ts                regenerated (npm run i18n:types)
+
+## Error-mapping helper signatures (unit-testable, no React)
+mapErrorPayload(payload: { detail?, code?, params?, status? }): string
+mapSSEError({ error?, error_code?, error_params? }): string
+mapSSEProgressMessage({ message?, message_code?, message_params? }): string
+mapTaskStatusMessage({ status_message?, status_code?, status_params? }): string
+isUnauthenticatedError(code?, status?): boolean
+normalizeErrorCode(code: string): string          // 'errors.validation.string' → 'validation.errors.validation.string'
+setErrorTranslator(t)                             // DI seam; src/i18n/index.ts injects the app instance
+
+Resolution order in mapErrorPayload:
+1. code='dynamic_detail' → raw detail (runtime text wins)
+2. code='http_error' → errors:http_error template '{{detail}}' (raw preserved)
+3. known code → errors:<normalized key>, params interpolated
+4. unknown code → raw detail (NEVER dropped — hard backward-compat rule)
+5. no code/detail → per-status fallback key (http.badRequest…http.errorWithStatus) → errors:unknown
+
+## Verification outputs (inside worktree frontend/)
+1. npm run build (tsc -b && vite build)            → exit 0, "✓ built in 4.27s"
+2. npm run i18n:types                              → "TypeScript definitions generated successfully"
+   npm run i18n:types:ci                           → "✅ TypeScript definitions are up to date." exit 0
+3. zh/en errors.json key sets                       → identical (31 flat keys each, diff empty)
+4. grep api.ts unauthenticatedDetails              → 0 matches (Chinese array removed)
+5. node src/services/errorMapper.test.mjs          → 23/23 assertions passed
+   node src/i18n/normalize.test.mjs                → 5/5 (regression, untouched)
+
+## Manual-QA notes (for F3 browser QA)
+Simulated 401 → errors namespace:
+  a) clear cookies / expire session, trigger any authed request (e.g. open /projects)
+  b) backend returns {detail:"未登录", code:"auth.unauthorized", params:{}} (todo-4 registry hit)
+  c) with lng=en the antd toast must read "Not logged in" and redirect to /login
+  d) unregistered 401 variants (detail "需要登录" → code http_error): toast shows raw detail,
+     redirect still fires (status===401 path)
+Unknown code → raw detail fallback:
+  a) point frontend at a mocked 400 body {detail:"自定义后端文案", code:"weird.some_code"}
+  b) toast must show "自定义后端文案" verbatim (never dropped, never "unknown")
+Old background rows (status_code NULL):
+  a) task list of a pre-migration DB shows legacy status_message text unchanged
+SSE error event with error_code=not_found.chapter → localized "Chapter not found" (en) / "章节不存在" (zh);
+legacy error-only payload (no error_code) → shows raw error string.
+Language toggle (zh ↔ en) re-translates subsequent error toasts (runtime lookup, not build-time).
+
+## Deviations
+- errors.json key shape uses nesting groups (auth/unauthorized → "auth.unauthorized") which is what
+  the i18next-cli types generator flattens into typed keys; http_error/dynamic_detail/unknown stay
+  flat leaf keys (contain underscores, valid as literal keys).
+- errorMapper uses an injection seam (setErrorTranslator) instead of importing src/i18n directly,
+  so the standalone .mjs unit test can run without DOM/browser init order issues (same pattern as
+  todo 1's normalize.test.mjs).
+- SSE POST non-2xx path now parses the JSON envelope (was: bare `HTTP error! status: N`).
+- api.ts toast call kept on `antdMessage.error` (the App-context bridge introduced by the
+  concurrent todo-2 antd static-API migration, commit 206198e) — no other business files touched.
+- build emits assets to ../backend/static (pre-existing vite outDir; build output gitignored,
+  no backend source touched).

@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { antdMessage } from '../utils/antdApp';
+import i18n from '../i18n';
 import { ssePost } from '../utils/sseClient';
+import { mapErrorPayload, mapSSEError, isUnauthenticatedError } from './errorMapper';
 import type { SSEClientOptions } from '../utils/sseClient';
 import type {
   User,
@@ -93,58 +95,31 @@ api.interceptors.response.use(
     return response.data;
   },
   (error) => {
-    let errorMessage = '请求失败';
+    let errorMessage: string;
 
     if (error.response) {
-      const status = error.response.status;
+      const status: number = error.response.status;
       const data = error.response.data;
+      // Envelope {detail, code, params}; unknown code → raw detail (never dropped).
+      errorMessage = mapErrorPayload({
+        detail: typeof data?.detail === 'string' ? data.detail : (typeof data?.message === 'string' ? data.message : null),
+        code: typeof data?.code === 'string' ? data.code : null,
+        params: data?.params && typeof data.params === 'object' ? data.params : null,
+        status,
+      });
 
-      switch (status) {
-        case 400:
-          errorMessage = data?.detail || '请求参数错误';
-          break;
-        case 401: {
-          const backendDetail = data?.detail || data?.message;
-          const unauthenticatedDetails = [
-            '未登录',
-            '需要登录',
-            '未登录或用户ID缺失',
-            '未登录，无法刷新会话',
-          ];
-          const isUnauthenticated = unauthenticatedDetails.includes(backendDetail);
+      // 401 by code/status, not by matching raw Chinese text.
+      if (isUnauthenticatedError(data?.code, status) && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
 
-          errorMessage = backendDetail || '登录状态已失效，请重新登录';
-
-          if (isUnauthenticated && window.location.pathname !== '/login') {
-            window.location.href = '/login';
-          }
-          break;
-        }
-        case 403:
-          errorMessage = data?.detail || '没有权限访问';
-          break;
-        case 404:
-          errorMessage = data?.detail || '请求的资源不存在';
-          break;
-        case 422:
-          errorMessage = data?.detail || '请求参数验证失败';
-          if (data?.errors) {
-            console.error('验证错误详情:', data.errors);
-          }
-          break;
-        case 500:
-          errorMessage = data?.detail || '服务器内部错误';
-          break;
-        case 503:
-          errorMessage = '服务暂时不可用，请稍后重试';
-          break;
-        default:
-          errorMessage = data?.detail || data?.message || `请求失败 (${status})`;
+      if (status === 422 && data?.errors) {
+        console.error('验证错误详情:', data.errors);
       }
     } else if (error.request) {
-      errorMessage = '网络错误，请检查网络连接';
+      errorMessage = i18n.t('network.error', { ns: 'errors' });
     } else {
-      errorMessage = error.message || '请求失败';
+      errorMessage = error.message || i18n.t('requestFailed', { ns: 'errors' });
     }
 
     antdMessage.error(errorMessage);
@@ -1290,14 +1265,18 @@ export const projectAgentApi = {
       signal,
     });
     if (!response.ok) {
-      let detail = `请求失败 (${response.status})`;
+      let detail: string | null = null;
+      let code: string | null = null;
+      let params: Record<string, unknown> | null = null;
       try {
         const body = await response.json();
-        detail = body.detail || detail;
+        detail = typeof body?.detail === 'string' ? body.detail : null;
+        code = typeof body?.code === 'string' ? body.code : null;
+        params = body?.params && typeof body.params === 'object' ? body.params : null;
       } catch {
-        // 保留 HTTP 状态错误。
+        // 响应非 JSON 时按状态码兜底。
       }
-      throw new Error(detail);
+      throw new Error(mapErrorPayload({ detail, code, params, status: response.status }));
     }
     if (!response.body) throw new Error('无法读取灵创创作助手响应流');
 
@@ -1325,8 +1304,9 @@ export const projectAgentApi = {
         else if (event.type === 'final_done') callbacks.onFinalDone?.(event.data);
         else if (event.type === 'result') callbacks.onResult?.(event.data);
         else if (event.type === 'error') {
-          callbacks.onError?.(event.error || '灵创创作助手执行失败');
-          throw new Error(event.error || '灵创创作助手执行失败');
+          const mapped = mapSSEError(event);
+          callbacks.onError?.(mapped);
+          throw new Error(mapped);
         }
       }
     }

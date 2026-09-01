@@ -3,6 +3,7 @@ import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import { resources } from './resources';
 import { normalizeLanguage } from './normalize';
+import { setErrorTranslator } from '../services/errorMapper';
 
 i18n
   .use(LanguageDetector)
@@ -26,6 +27,8 @@ i18n
       escapeValue: false,
     },
   });
+
+setErrorTranslator(i18n);
 
 export { i18n, normalizeLanguage };
 export default i18n;

@@ -4,6 +4,52 @@ export default interface Resources {
     "placeholder": "占位文本"
   },
   "errors": {
-    "unknown": "未知错误"
+    "auth": {
+      "unauthorized": "未登录"
+    },
+    "conflict": {
+      "error": "资源冲突"
+    },
+    "dynamic_detail": "请求处理失败，请稍后重试",
+    "http": {
+      "badRequest": "请求参数错误",
+      "errorWithStatus": "请求失败 ({{status}})",
+      "forbidden": "没有权限访问",
+      "notFound": "请求的资源不存在",
+      "serviceUnavailable": "服务暂时不可用，请稍后重试",
+      "unauthorized": "登录状态已失效，请重新登录"
+    },
+    "http_error": "{{detail}}",
+    "internal": {
+      "error": "服务器内部错误"
+    },
+    "network": {
+      "error": "网络错误，请检查网络连接"
+    },
+    "not_found": {
+      "chapter": "章节不存在",
+      "outline": "大纲不存在",
+      "project": "项目不存在"
+    },
+    "requestFailed": "请求失败",
+    "task": {
+      "batchListFailed": "获取批量生成任务失败",
+      "cancelBatchFailed": "取消批量生成任务失败",
+      "cancelFailed": "取消任务失败",
+      "cancelled": "任务已取消",
+      "clearFailed": "清理任务记录失败",
+      "createChapterFailed": "创建章节生成任务失败",
+      "createFailed": "创建任务失败",
+      "deleteFailed": "删除任务失败",
+      "failed": "任务失败",
+      "listFailed": "获取任务列表失败",
+      "queryStatusFailed": "查询任务状态失败"
+    },
+    "unknown": "未知错误",
+    "validation": {
+      "config": "配置数据格式错误",
+      "error": "请求参数验证失败",
+      "failed": "请求参数验证失败"
+    }
   }
 }
