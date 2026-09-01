@@ -30,6 +30,7 @@ import {
 import { authApi } from '../services/api';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import ThemeSwitch from '../components/ThemeSwitch';
+import { syncLanguageWithServer } from '../utils/languageSync';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -153,6 +154,7 @@ export default function Login() {
 
   const handleLoginSuccess = () => {
     message.success('登录成功！');
+    syncLanguageWithServer();
     const redirect = searchParams.get('redirect') || '/';
     navigate(redirect);
   };

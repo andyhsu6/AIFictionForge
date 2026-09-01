@@ -20,7 +20,8 @@ from app.schemas.settings import (
     APIKeyPreset, APIKeyPresetConfig, PresetCreateRequest,
     PresetUpdateRequest, PresetResponse, PresetListResponse,
     ChapterAnalysisPresetSelectionRequest,
-    SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
+    SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest,
+    PreferencesUpdate
 )
 from app.user_manager import User
 from app.logger import get_logger, safe_preview
@@ -602,6 +603,37 @@ async def update_settings(
     logger.info(f"用户 {user.user_id} 更新设置")
     
     return settings
+
+
+@router.put("/preferences")
+async def update_preferences(
+    data: PreferencesUpdate,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    更新当前用户的偏好设置（preferences JSON 列，无独立数据库字段）。
+
+    当前支持 language（界面语言，zh/en）。采用增量合并：仅覆盖请求中显式提供的键，
+    保留 preferences 中的其他既有键（如 api_presets）。
+    language 为空时不写该项；GET /settings 的 preferences 原样返回供前端读取。
+    """
+    settings = await get_user_settings(user.user_id, db)
+    prefs = _safe_load_preferences(settings.preferences)
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "language" in update_data:
+        if update_data["language"] is None:
+            prefs.pop("language", None)
+        else:
+            prefs["language"] = update_data["language"]
+
+    settings.preferences = json.dumps(prefs, ensure_ascii=False)
+    await db.commit()
+    await db.refresh(settings)
+    logger.info(f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')}")
+
+    return {"message": "偏好设置已更新", "preferences": settings.preferences}
 
 
 @router.delete("")

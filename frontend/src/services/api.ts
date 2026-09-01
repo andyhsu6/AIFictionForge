@@ -207,6 +207,9 @@ export const settingsApi = {
   updateSettings: (data: SettingsUpdate) =>
     api.put<unknown, Settings>('/settings', data),
 
+  updatePreferences: (data: { language?: 'zh' | 'en' | null }) =>
+    api.put<unknown, { message: string; preferences: string }>('/settings/preferences', data),
+
   deleteSettings: () => api.delete<unknown, { message: string; user_id: string }>('/settings'),
 
   getAvailableModels: (params: { api_key?: string; api_base_url?: string; provider: string }) =>

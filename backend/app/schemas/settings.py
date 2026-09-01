@@ -44,6 +44,17 @@ class SettingsResponse(SettingsBase):
     updated_at: datetime
 
 
+class PreferencesUpdate(BaseModel):
+    """用户偏好设置更新请求模型（写入 preferences JSON 列，非独立数据库字段）"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    language: Optional[str] = Field(
+        default=None,
+        pattern=r"^(zh|en)$",
+        description="界面语言，仅接受标准化短码 zh / en；为 None 表示不更新该项",
+    )
+
+
 class SystemSMTPSettingsBase(BaseModel):
     """系统 SMTP 设置基础模型"""
     model_config = ConfigDict(protected_namespaces=())

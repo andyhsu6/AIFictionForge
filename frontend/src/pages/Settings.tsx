@@ -4,6 +4,8 @@ import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, Check
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
+import i18n, { normalizeLanguage } from '../i18n';
+import { parseServerLanguage } from '../utils/languageSync';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -45,6 +47,8 @@ export default function SettingsPage() {
 
   // 预设相关状态
   const [activeTab, setActiveTab] = useState('current');
+  const [uiLanguage, setUiLanguage] = useState<'zh' | 'en'>(() => (normalizeLanguage(i18n.language) === 'en' ? 'en' : 'zh'));
+  const [savingLanguage, setSavingLanguage] = useState(false);
   const [presets, setPresets] = useState<APIKeyPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(false);
   const [activePresetId, setActivePresetId] = useState<string | undefined>();
@@ -89,6 +93,15 @@ export default function SettingsPage() {
     setInitialLoading(true);
     try {
       const settings = await settingsApi.getSettings();
+
+      const serverLang = parseServerLanguage(settings.preferences);
+      if (serverLang && normalizeLanguage(i18n.language) !== serverLang) {
+        await i18n.changeLanguage(serverLang);
+      }
+      if (serverLang) {
+        setUiLanguage(serverLang);
+      }
+
       form.setFieldsValue({
         ...defaultCoverSettings,
         ...settings,
@@ -127,6 +140,23 @@ export default function SettingsPage() {
       }
     } finally {
       setInitialLoading(false);
+    }
+  };
+
+  const handleLanguageChange = async (lang: 'zh' | 'en') => {
+    setUiLanguage(lang);
+    setSavingLanguage(true);
+    try {
+      await i18n.changeLanguage(lang);
+      await settingsApi.updatePreferences({ language: lang });
+      message.success(lang === 'en' ? 'Language updated' : '界面语言已更新');
+    } catch (error) {
+      console.error('保存界面语言偏好失败:', error);
+      message.warning(lang === 'en'
+        ? 'Saved locally, but syncing to server failed. It will apply on this browser only.'
+        : '已在本地生效，但同步到服务器失败，仅对本浏览器有效。');
+    } finally {
+      setSavingLanguage(false);
     }
   };
 
@@ -1135,6 +1165,39 @@ export default function SettingsPage() {
               </Col>
               <Col xs={24} sm={12}>
                 {/* 按钮区域预留 */}
+              </Col>
+            </Row>
+          </Card>
+
+          <Card
+            variant="borderless"
+            style={{
+              background: token.colorBgContainer,
+              borderRadius: isMobile ? 12 : 16,
+              boxShadow: token.boxShadowSecondary,
+              marginBottom: isMobile ? 20 : 24,
+            }}
+          >
+            <Row align="middle" justify="space-between" gutter={[16, 12]}>
+              <Col xs={24} sm={12}>
+                <Space direction="vertical" size={2}>
+                  <Text strong>界面语言 / Interface language</Text>
+                  <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
+                    切换后立即生效并保存；登录后以账号偏好为准
+                  </Text>
+                </Space>
+              </Col>
+              <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
+                <Select
+                  value={uiLanguage}
+                  onChange={handleLanguageChange}
+                  loading={savingLanguage}
+                  style={{ minWidth: 160 }}
+                  options={[
+                    { value: 'zh', label: '简体中文' },
+                    { value: 'en', label: 'English' },
+                  ]}
+                />
               </Col>
             </Row>
           </Card>

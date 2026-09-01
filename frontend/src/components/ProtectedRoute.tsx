@@ -4,6 +4,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { App, Spin } from 'antd';
 import { authApi } from '../services/api';
 import { sessionManager } from '../utils/sessionManager';
+import { syncLanguageWithServer } from '../utils/languageSync';
 
 interface ProtectedRouteProps {
   children: ReactNode;
@@ -19,6 +20,7 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
       try {
         await authApi.getCurrentUser();
         setIsAuthenticated(true);
+        syncLanguageWithServer();
         sessionManager.setWarningCallback((msg) => {
           message.warning({ content: msg, duration: 10 });
         });
