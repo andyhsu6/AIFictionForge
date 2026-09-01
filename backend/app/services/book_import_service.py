@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -42,18 +42,164 @@ from app.schemas.book_import import (
     BookImportWarning,
     ProjectSuggestion,
 )
-from app.services.ai_service import AIService, create_user_ai_service_with_mcp
+from app.services.ai_service import (
+    AIService,
+    create_user_ai_service_with_mcp,
+    detect_context_window,
+    resolve_context_budget_chars,
+)
+from app.services.import_validators import (
+    _looks_like_pasted_narration,
+    validate_career_system,
+    validate_characters_batch,
+    validate_relationships,
+    validate_world_building,
+)
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
     is_probably_proper_noun_type,
     normalize_relationship_type_name,
+    normalize_relationship_type_set,
     resolve_relationship_type_ids,
     sync_relationship_links,
     MAX_IMPORTED_CHARACTERS_PER_IMPORT,
+    MAX_PROJECT_TYPES_PER_IMPORT,
 )
 
 logger = get_logger(__name__)
+
+# 第一人称叙事下映射为主角的代词/自称（不含"我们"——复数代词不能等价于主角）
+FIRST_PERSON_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
+
+# 名称中的括号说明（如"我（男主角）"）——判定别名时整体剥掉，只比对核心名
+_ALIAS_PAREN_RE = re.compile(r"[（(].*?[)）]")
+
+
+def _first_person_core(name: str) -> str:
+    """剥掉括号说明后取核心名（'我（男主角）'→'我'）；用于别名判定。"""
+    return _ALIAS_PAREN_RE.sub("", str(name or "")).strip()
+
+
+def _is_first_person_alias_name(name: str) -> bool:
+    """名称（含括号变体）是否命中第一人称别名 token（'我'/'我（男主角）'→True）。"""
+    core = _first_person_core(name)
+    return core in FIRST_PERSON_ALIAS_TOKENS
+
+# 实体名称来源约束（拆书导入）：
+# 角色/组织名必须出现在喂给模型的原文中；编造名不落库为 source=imported，
+# 而是标记为 "AI 补充"（source 字段区分，不加新字段、不改 schema）。
+# 复用 Character.source 既有枚举空间外的值（现有值：system/manual/ai/imported，
+# 均无 "ai_augmented" 冲突；String(20) 容纳无压力）。
+SOURCE_AI_AUGMENTED = "ai_augmented"
+
+# 常见称谓后缀：归一化名称时迭代剥离（"林三公子"→"林三"，"三爷"→"三"）。
+# 注意只做名称归一化，不做词干还原——剥离后仍空（纯称谓）不视为命中。
+NAME_TITLE_SUFFIXES = (
+    "公子", "小姐", "少爷", "姑娘", "大人", "夫人", "先生", "娘娘", "老爷",
+    "老太爷", "老太太", "师傅", "师父", "掌门", "长老", "宗主", "家主", "庄主",
+    "王爷", "皇子", "公主", "殿下", "阁下", "娘子", "丞相", "将军",
+    "尚书", "员外", "掌柜", "道长", "法师", "大夫", "郎中", "师太",
+    "师兄", "师姐", "师弟", "师妹", "大哥", "大姐",
+    "爷", "叔", "婶", "伯", "姨", "哥", "姐", "兄", "弟",
+)
+
+# 归一化时剥离的标点/空白（半角+全角），全部移除（含字符串内部）
+_NAME_STRIP_CHARS = " \t\r\n，。、；：？！…—·《》「」『』【】（）()\"'\"'"
+_NAME_STRIP_TABLE = str.maketrans("", "", _NAME_STRIP_CHARS)
+
+
+def _normalize_name_for_source_match(name: str) -> str:
+    """归一化名称用于原文匹配：移除全部标点/空白，迭代剥离常见称谓后缀。"""
+    text = str(name or "").translate(_NAME_STRIP_TABLE)
+    changed = True
+    while changed:
+        changed = False
+        for suffix in NAME_TITLE_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                changed = True
+                break
+    return text
+
+
+def _name_appears_in_source(name: str, source_text: str) -> bool:
+    """名称是否出现在原文中（归一化后精确匹配或子串匹配）。
+
+    - 归一化：剥离标点/空白 + 迭代剥离常见称谓后缀（"林三公子"→"林三"）；
+    - (b) 归一化后的名称是归一化后原文的子串即命中（"三爷" ⊂ "林三爷"）；
+    - 仅当精确与子串都不中才返回 False；剥离后为空（纯称谓）不视为命中。
+    """
+    if not name:
+        return False
+    normalized = _normalize_name_for_source_match(name)
+    if not normalized:
+        return False
+    if not source_text:
+        return False
+    normalized_source = _normalize_name_for_source_match(source_text)
+    if not normalized_source:
+        return False
+    return normalized in normalized_source
+
+
+# 主角色生成路径中无信息量的代词/泛称（不带任何姓名信息，仅指代某人）。
+# 命中则跳过创建（如 AI 把"他"/"男人"当作角色名输出）；角色性描述名
+# （"杂货店老板"/"房东"/"张教练"等）携带身份信息，不在拦截之列。
+_GENERIC_PERSON_NAMES = frozenset({
+    "他", "她", "它", "他们", "她们", "它们",
+    "男人", "女人", "男子", "女子", "男孩", "女孩",
+    "小家伙", "小孩", "孩子", "小孩儿", "孩子他爸", "孩子他妈",
+    "陌生人", "路人", "某人", "小伙", "姑娘", "中年男子", "中年女人",
+    "老人家", "老人", "年轻人",
+})
+
+
+def _parse_character_aliases(aliases: Any) -> list[str]:
+    """解析 Character.aliases（JSON 数组字符串，可能为 None/坏值）为字符串列表。
+
+    兼容并行改造前后两种形态：None → []; 已是 list → 原样；字符串 → JSON 解析，
+    解析失败或非数组 → []（不抛异常，避免坏数据中断导入）。
+    """
+    if aliases is None:
+        return []
+    if isinstance(aliases, list):
+        return [str(a).strip() for a in aliases if isinstance(a, str) and a.strip()]
+    if isinstance(aliases, str):
+        try:
+            parsed = json.loads(aliases)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return [str(a).strip() for a in parsed if isinstance(a, str) and a.strip()]
+        return []
+    return []
+
+
+def _build_alias_to_char_map(chars: Sequence[Character]) -> dict[str, Character]:
+    """把角色列表构建为 别名→角色 精确匹配映射（供关系抽取名称解析）。
+
+    - 键为别名原文（大小写敏感、精确匹配，非子串）；
+    - 跳过长度 < 2 的别名（"姐"/"爸"等单字称谓易误撞，宁可不映射也不误并）；
+    - 同名别名冲突时首个角色胜出（保持确定性）。
+    """
+    alias_to_char: dict[str, Character] = {}
+    for c in chars:
+        for alias in _parse_character_aliases(getattr(c, "aliases", None)):
+            if len(alias) < 2:
+                continue
+            if alias not in alias_to_char:
+                alias_to_char[alias] = c
+    return alias_to_char
+
+
+def _resolve_character_by_name_or_alias(
+    name: str, *, char_by_name: dict[str, Character], alias_to_char: dict[str, Character]
+) -> Optional[Character]:
+    """按名称解析角色：先精确命中 name，再精确命中 aliases；未命中返回 None。"""
+    if not name:
+        return None
+    return char_by_name.get(name) or alias_to_char.get(name)
 
 
 @dataclass
@@ -224,6 +370,7 @@ class BookImportService:
                 user_id=user_id,
                 project=project,
                 character_count=max(project.character_count or 0, 8),
+                chapters=chapters_to_import,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -345,6 +492,7 @@ class BookImportService:
                     progress_callback=progress_callback,
                     progress_range=(22, 40),
                     raise_on_error=True,
+                    chapters=chapters_to_import,
                 )
                 statistics["generated_world_building"] = generated_world
                 await _notify("🌍 世界观生成完成", 40)
@@ -367,6 +515,7 @@ class BookImportService:
                     ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(42, 65),
+                    chapters=chapters_to_import,
                 )
                 statistics["generated_careers"] = generated_careers
                 await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
@@ -527,6 +676,20 @@ class BookImportService:
                 if step_name == "world_building":
                     await _notify("🔄 正在重试世界观生成...", step_start_pct)
                     try:
+                        chapters_for_retry = [
+                            BookImportChapter(
+                                title=c.title,
+                                content=c.content or "",
+                                summary=c.summary,
+                                chapter_number=c.chapter_number,
+                                outline_title=None,
+                            )
+                            for c in (
+                                await db.execute(
+                                    select(Chapter).where(Chapter.project_id == project.id)
+                                )
+                            ).scalars().all()
+                        ]
                         result = await self._generate_world_building_from_project(
                             db=db,
                             user_id=user_id,
@@ -535,6 +698,7 @@ class BookImportService:
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                             raise_on_error=True,
+                            chapters=chapters_for_retry,
                         )
                         retry_results["generated_world_building"] = result
                         await _notify("✅ 世界观重试成功", step_end_pct)
@@ -551,6 +715,20 @@ class BookImportService:
                 elif step_name == "career_system":
                     await _notify("🔄 正在重试职业体系生成...", step_start_pct)
                     try:
+                        chapters_for_retry = [
+                            BookImportChapter(
+                                title=c.title,
+                                content=c.content or "",
+                                summary=c.summary,
+                                chapter_number=c.chapter_number,
+                                outline_title=None,
+                            )
+                            for c in (
+                                await db.execute(
+                                    select(Chapter).where(Chapter.project_id == project.id)
+                                )
+                            ).scalars().all()
+                        ]
                         result = await self._generate_career_system_from_project(
                             db=db,
                             user_id=user_id,
@@ -558,6 +736,7 @@ class BookImportService:
                             ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
+                            chapters=chapters_for_retry,
                         )
                         retry_results["generated_careers"] = result
                         await _notify(f"✅ 职业体系重试成功（{result}个）", step_end_pct)
@@ -1531,6 +1710,109 @@ class BookImportService:
             parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
         return "\n\n".join(parts)
 
+    def _build_import_fulltext(
+        self,
+        chapters: list[Any],
+        *,
+        model_name: Optional[str] = None,
+        budget_chars: Optional[int] = None,
+    ) -> str:
+        """构建拆书全文本注入（Tier3 拆分优先，无单章硬截断）。
+
+        与 chapter_context_service._build_full_book_context 语义对齐
+        （BookImportChapter 无 expansion_plan，摘要链用 summary / _build_summary）：
+        - 预算内 → 全部章节逐字返回（单章超长也不截断）
+        - 超预算 → 三级：head 全文 + 尾部加权全文（单章放不下 continue 跳过，
+          跳过章进摘要链）+ 中间摘要链（tail 优先，每章一行，零 LLM 调用）
+        - 未知模型（detect_context_window == 32768）且未显式给预算 →
+          退回 `_build_chapter_excerpt`（1800 字符/章），不强制全文本
+        - 显式预算优先于模型推导
+
+        Args:
+            chapters: 章节列表（按 chapter_number 排序）
+            model_name: 用户默认模型名（由调用方传入，本方法不自行获取）
+            budget_chars: 显式字符预算；缺省时按模型上下文窗口推导
+
+        Returns:
+            格式化后的全文本/摘要链/excerpt 文本
+        """
+        if not chapters:
+            return ""
+
+        explicit_budget = budget_chars is not None
+        if not explicit_budget:
+            window = detect_context_window(model_name)
+            if window == 32768:
+                logger.warning(
+                    f"未知模型 {model_name!r}（detect_context_window=32768），"
+                    "拆书全文本注入退回 _build_chapter_excerpt（1800 字符/章）"
+                )
+                return self._build_chapter_excerpt(chapters)
+            budget_chars = resolve_context_budget_chars(model_name)
+
+        def _render(c: Any) -> str:
+            return f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')}"
+
+        ordered = sorted(chapters, key=lambda c: c.chapter_number)
+        full_text = "\n\n".join(_render(c) for c in ordered)
+        if len(full_text) <= budget_chars:
+            return full_text
+
+        # 超预算：head 全文 + 尾部加权全文，其余章节进摘要链
+        head = ordered[0]
+        full_selected = []
+        full_total = 0
+        if len(_render(head)) <= budget_chars:
+            full_selected.append(head)
+            full_total = len(_render(head))
+
+        tail_candidates = ordered[-30:] if len(ordered) > 30 else ordered[1:]
+        # 从最新往前尝试加入，单章放不下则跳过继续尝试更早章节（保留更多上下文）
+        for c in reversed(tail_candidates):
+            part = _render(c)
+            if full_total + len(part) > budget_chars:
+                continue
+            full_selected.append(c)
+            full_total += len(part)
+
+        # 未入选全文的章节（含单章超预算的头章、被 continue 跳过的尾部、
+        # 以及尾部窗口之外的中间章节）→ 存量摘要链
+        selected_nums = {c.chapter_number for c in full_selected}
+        chain_chapters = [c for c in ordered if c.chapter_number not in selected_nums]
+
+        def _render_summary_entry(c: Any) -> str:
+            summary = (c.summary or self._build_summary(c.content or "") or "").strip()
+            if summary:
+                return f"第{c.chapter_number}章《{c.title}》：{summary[:180]}"
+            return f"第{c.chapter_number}章《{c.title}》"
+
+        chain = None
+        if chain_chapters:
+            entries = []
+            total = 0
+            for c in reversed(sorted(chain_chapters, key=lambda cc: cc.chapter_number)):
+                line = _render_summary_entry(c)
+                if entries and total + len(line) > max(budget_chars - full_total, 0):
+                    break
+                entries.append(line)
+                total += len(line)
+            if entries:
+                entries.reverse()
+                chain = "\n".join(["【中间章节摘要链】"] + entries)
+
+        parts = []
+        head_num = head.chapter_number
+        if head_num in selected_nums:
+            parts.append(_render(head))
+        if chain:
+            parts.append(chain)
+        tail_full = sorted(
+            (c for c in full_selected if c.chapter_number != head_num),
+            key=lambda c: c.chapter_number,
+        )
+        parts.extend(_render(c) for c in tail_full)
+        return "\n\n".join(parts)
+
     @staticmethod
     def _split_character_batches(total: int, batch_size: int = 6) -> list[int]:
         """把总目标数拆成若干小批次，控制单次 JSON 输出规模。"""
@@ -1627,6 +1909,18 @@ class BookImportService:
         if first_person_hits >= 20 and first_person_hits > third_person_hits * 1.2:
             return "第一人称"
         return "第三人称"
+
+    def _is_clear_first_person(self, text: str) -> bool:
+        """第一人称判定需留出更明确的余量，避免临界样本误触发主角别名映射。
+
+        _detect_narrative_perspective 的门槛是 first > third * 1.2，临界文本
+        （对话占比高/人称混杂）可能被误判；别名映射会改写关系端点，误触发代价高，
+        因此这里要求 first > third * 1.5 才视为明确第一人称。
+        """
+        snippet = (text or "")[:6000]
+        first_person_hits = len(re.findall(r"[我咱俺]\S{0,2}", snippet))
+        third_person_hits = len(re.findall(r"[他她它]\S{0,2}", snippet))
+        return first_person_hits >= 20 and first_person_hits > third_person_hits * 1.5
 
     def _extract_narrative_perspective(self, project_data: Dict[str, Any], fallback: str = "第三人称") -> str:
         """从AI返回中兼容提取叙事视角字段，统一映射到项目参数可接受值。"""
@@ -1744,6 +2038,8 @@ class BookImportService:
         user_id: str,
         project: Project,
         character_count: int,
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -1756,12 +2052,16 @@ class BookImportService:
             db=db,
             user_id=user_id,
             project=project,
+            chapters=chapters,
+            model_name=model_name,
         )
 
         generated_careers = await self._generate_career_system_from_project(
             db=db,
             user_id=user_id,
             project=project,
+            chapters=chapters,
+            model_name=model_name,
         )
 
         generated_entities = await self._generate_characters_and_organizations_from_project(
@@ -1788,8 +2088,14 @@ class BookImportService:
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
         raise_on_error: bool = False,
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> int:
-        """根据反向生成的项目基础信息，优先生成并写入世界观。"""
+        """根据反向生成的项目基础信息，优先生成并写入世界观。
+
+        拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
+        让世界观基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        """
 
         async def _notify(msg: str, sub: float) -> None:
             if progress_callback:
@@ -1802,12 +2108,18 @@ class BookImportService:
 
             await _notify("🌍 正在准备世界观提示词...", 0.2)
             template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
+            full_book_context = ""
+            if chapters:
+                if not model_name:
+                    model_name = getattr(ai_service, "default_model", None)
+                full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
             prompt = PromptService.format_prompt(
                 template,
                 title=project.title or "拆书导入项目",
                 genre=project.genre or "通用",
                 theme=project.theme or "未设定",
                 description=project.description or "暂无简介",
+                full_book_context=full_book_context,
             )
 
             await _notify("🌍 AI正在生成世界观...", 0.3)
@@ -1815,6 +2127,7 @@ class BookImportService:
                 prompt=prompt,
                 max_retries=3,
                 expected_type="object",
+                validator=validate_world_building,
             )
             if not isinstance(world_data, dict):
                 return 0
@@ -1856,8 +2169,14 @@ class BookImportService:
         ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
+        chapters: Optional[list] = None,
+        model_name: Optional[str] = None,
     ) -> int:
-        """根据项目世界观生成职业体系（3主2副）。"""
+        """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
+
+        拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
+        让职业体系基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        """
 
         async def _notify(msg: str, sub: float) -> None:
             if progress_callback:
@@ -1869,6 +2188,11 @@ class BookImportService:
 
         await _notify("💼 正在准备职业体系提示词...", 0.2)
         template = await PromptService.get_template("CAREER_SYSTEM_GENERATION", user_id, db)
+        full_book_context = ""
+        if chapters:
+            if not model_name:
+                model_name = getattr(ai_service, "default_model", None)
+            full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
         prompt = PromptService.format_prompt(
             template,
             title=project.title,
@@ -1879,6 +2203,7 @@ class BookImportService:
             location=project.world_location or "未设定",
             atmosphere=project.world_atmosphere or "未设定",
             rules=project.world_rules or "未设定",
+            full_book_context=full_book_context,
         )
 
         await _notify("💼 AI正在生成职业体系...", 0.3)
@@ -1886,6 +2211,7 @@ class BookImportService:
             prompt=prompt,
             max_retries=3,
             expected_type="object",
+            validator=validate_career_system,
         )
 
         await _notify("💼 正在解析职业数据...", 0.7)
@@ -2000,7 +2326,8 @@ class BookImportService:
             .where(Chapter.project_id == project.id)
             .order_by(Chapter.chapter_number)
         )
-        chapter_excerpt = self._build_chapter_excerpt(chapters_result.scalars().all())
+        db_chapters = chapters_result.scalars().all()
+        chapter_excerpt = self._build_chapter_excerpt(db_chapters)
         if chapter_excerpt:
             requirements += (
                 "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
@@ -2008,6 +2335,20 @@ class BookImportService:
                 "避免编造与正文不符的内容。\n"
                 + chapter_excerpt
             )
+
+        # 名称来源约束：角色/组织名必须出现在喂给模型的原文中。
+        # 用 _build_import_fulltext 构建与模型所见一致的原文（预算内全文 /
+        # head+tail 全文 + 中间摘要链），摘要链压缩的中间章节名称不命中 →
+        # 标记 AI 补充而非删除。无章节（向导/重试等旧调用方）→ 跳过约束。
+        source_text = ""
+        if db_chapters:
+            source_text = self._build_import_fulltext(
+                db_chapters, model_name=getattr(ai_service, "default_model", None)
+            )
+        # 明确第一人称文本：别名核心名（"我"/"我（男主角）"）不得创建为真实角色
+        is_first_person = bool(db_chapters) and self._is_clear_first_person(
+            "".join((c.content or "") for c in db_chapters)
+        )
 
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
@@ -2050,6 +2391,7 @@ class BookImportService:
                 prompt=batch_prompt,
                 max_retries=3,
                 expected_type="array",
+                validator=validate_characters_batch,
             )
             if isinstance(batch_data, dict):
                 generated_entities.append(batch_data)
@@ -2104,8 +2446,20 @@ class BookImportService:
             raw_name = (item.get("name") or "").strip()
             if not raw_name or raw_name in existing_names:
                 continue
+            # 无信息量的代词/泛称（"他"/"男人"/"路人"等）不带任何姓名信息，
+            # 跳过创建（不加入 existing_names），避免污染角色列表
+            if raw_name in _GENERIC_PERSON_NAMES:
+                logger.debug("跳过泛称创建角色: %r", raw_name)
+                continue
+            # 明确第一人称文本中，别名核心名（"我"/"我（男主角）"等）不是真实角色名，
+            # 跳过创建（不加入 existing_names），避免污染角色列表
+            if is_first_person and _is_first_person_alias_name(raw_name):
+                logger.debug("跳过第一人称别名核心名创建角色: %r", raw_name)
+                continue
 
             is_organization = bool(item.get("is_organization", False))
+            # 名称来源约束：原文中出现 → imported；编造名 → AI 补充标记
+            source = "imported" if _name_appears_in_source(raw_name, source_text) else SOURCE_AI_AUGMENTED
             character = Character(
                 project_id=project.id,
                 name=raw_name[:100],
@@ -2123,6 +2477,11 @@ class BookImportService:
                     if item.get("organization_members") is not None else None
                 ),
                 traits=json.dumps(item.get("traits", []), ensure_ascii=False) if item.get("traits") else None,
+                aliases=(
+                    json.dumps(item.get("aliases"), ensure_ascii=False)
+                    if item.get("aliases") else None
+                ),
+                source=source,
             )
             db.add(character)
             await db.flush()
@@ -2266,6 +2625,7 @@ class BookImportService:
                     name = normalize_relationship_type_name(raw)
                     if name and not is_probably_proper_noun_type(name):
                         type_names.append(name)
+                type_names = normalize_relationship_type_set(type_names)
                 relationship_name = "、".join(type_names) or "未知关系"
                 relationship_name = relationship_name[:100]
                 intimacy_level = max(-100, min(_to_int(rel.get("intimacy_level", 50), 50), 100))
@@ -2292,6 +2652,7 @@ class BookImportService:
                     project.id,
                     type_names,
                     source="import",
+                    max_auto_types=MAX_PROJECT_TYPES_PER_IMPORT,
                 )
                 await sync_relationship_links(db, rel_obj, type_ids)
                 relationship_pairs.add(pair)
@@ -2392,16 +2753,39 @@ class BookImportService:
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
         template = await PromptService.get_template("RELATIONSHIP_EXTRACTION", user_id, db)
 
+        # 名称来源约束：自动补角色名必须出现在原文中，否则标记 AI 补充。
+        # 与模型所见一致：每批喂 1800 字符/章，这里用同一 excerpt 口径做匹配源。
+        source_text = self._build_chapter_excerpt(chapters)
+
         # 预加载角色与关系，便于名称匹配与去重
         chars = (
             await db.execute(select(Character).where(Character.project_id == project.id))
         ).scalars().all()
         char_by_name: dict[str, Character] = {c.name: c for c in chars}
+        # 别名→角色 精确映射：AI 关系输出用别名（"姐姐"/"小妍"）指代角色时，
+        # 解析到既有角色，而不是新建一个重复角色
+        alias_to_char: dict[str, Character] = _build_alias_to_char_map(chars)
         relationships = (
             await db.execute(
                 select(CharacterRelationship).where(CharacterRelationship.project_id == project.id)
             )
         ).scalars().all()
+        # 关系对索引：无视方向（A→B 与 B→A 视为同一对），用于合并判定
+        rel_by_pair: dict[frozenset, list[CharacterRelationship]] = {}
+        for rel in relationships:
+            rel_by_pair.setdefault(frozenset({rel.character_from_id, rel.character_to_id}), []).append(rel)
+
+        # 主角别名映射：仅当文本为明确第一人称且项目已生成主角时才启用。
+        # 键覆盖别名 token 及其括号变体（"我（男主角）"等），统一经核心名判定。
+        protagonist_name: Optional[str] = None
+        full_text = "".join((c.content or "") for c in chapters)
+        if self._is_clear_first_person(full_text):
+            protagonist_char = next(
+                (c for c in chars if c.role_type == "protagonist" and not c.is_organization), None
+            )
+            if protagonist_char:
+                protagonist_name = protagonist_char.name
+        alias_map = {name: protagonist_name for name in FIRST_PERSON_ALIAS_TOKENS if protagonist_name}
 
         extracted_count = 0
         created_type_count = 0
@@ -2424,6 +2808,7 @@ class BookImportService:
                 prompt=prompt,
                 max_retries=2,
                 expected_type="array",
+                validator=validate_relationships,
             )
             items = ai_data if isinstance(ai_data, list) else []
             for item in items:
@@ -2431,7 +2816,20 @@ class BookImportService:
                     continue
                 char_a = (item.get("character_a") or "").strip()
                 char_b = (item.get("character_b") or "").strip()
-                if not char_a or not char_b or char_a == char_b:
+                if not char_a or not char_b:
+                    continue
+
+                # 第一人称别名映射：仅在明确第一人称且找到主角时启用（alias_map 非空）。
+                # 映射发生在自动补角色之前，保证"我"不会被创建成新角色；
+                # 映射后两端相同的（如"我"-"我"）由下方 char_a == char_b 兜底跳过。
+                # 括号变体（"我（男主角）"）经核心名判定映射到主角；映射未启用时保持原名。
+                char_a = alias_map.get(char_a) or (
+                    protagonist_name if protagonist_name and _is_first_person_alias_name(char_a) else char_a
+                )
+                char_b = alias_map.get(char_b) or (
+                    protagonist_name if protagonist_name and _is_first_person_alias_name(char_b) else char_b
+                )
+                if char_a == char_b:
                     continue
 
                 type_names_raw = item.get("relationship_types")
@@ -2442,26 +2840,54 @@ class BookImportService:
                     name = normalize_relationship_type_name(raw)
                     if name and not is_probably_proper_noun_type(name):
                         type_names.append(name)
+                type_names = normalize_relationship_type_set(type_names)
                 if not type_names:
                     continue
 
-                # 自动补角色：只在确实不存在时创建，且受上限保护
+                # 自动补角色：只在确实不存在时创建，且受上限保护。
+                # 未映射的别名 token 及括号变体（如第一人称但未找到主角）也不得创建为角色。
+                # 别名命中的名字（alias_to_char 中有映射）视为已有角色，不触发创建。
                 for name in (char_a, char_b):
-                    if name not in char_by_name and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT:
+                    if (
+                        name not in char_by_name
+                        and name not in alias_to_char
+                        and not _is_first_person_alias_name(name)
+                        and name not in _GENERIC_PERSON_NAMES
+                        and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
+                    ):
+                        personality = (item.get("evidence") or "").strip() or None
+                        relationship_desc = (item.get("description") or "").strip()
+                        # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
+                        # 或缺失，则不写入 personality，避免关系描述污染性格字段
+                        if personality and personality == relationship_desc:
+                            personality = None
+                        # 质量门：粘贴的叙事原文（省略号/长句等）不是性格描写，
+                        # 不写入 personality；无明确描写时留空
+                        if personality and _looks_like_pasted_narration(personality):
+                            personality = None
                         new_char = Character(
                             project_id=project.id,
                             name=name[:100],
                             role_type="supporting",
-                            source="imported",
-                            personality=item.get("description"),
+                            # 名称来源约束：原文中出现 → imported；编造名 → AI 补充标记
+                            source="imported" if _name_appears_in_source(name, source_text) else SOURCE_AI_AUGMENTED,
+                            personality=personality,
+                            age=(str(item.get("age")) if item.get("age") is not None else None),
+                            gender=item.get("gender"),
+                            background=item.get("background"),
+                            appearance=item.get("appearance"),
                         )
                         db.add(new_char)
                         await db.flush()
                         char_by_name[name] = new_char
                         created_char_count += 1
 
-                source_char = char_by_name.get(char_a)
-                target_char = char_by_name.get(char_b)
+                source_char = _resolve_character_by_name_or_alias(
+                    char_a, char_by_name=char_by_name, alias_to_char=alias_to_char
+                )
+                target_char = _resolve_character_by_name_or_alias(
+                    char_b, char_by_name=char_by_name, alias_to_char=alias_to_char
+                )
                 if not source_char or not target_char or source_char.is_organization or target_char.is_organization:
                     continue
 
@@ -2470,24 +2896,29 @@ class BookImportService:
                     project.id,
                     type_names,
                     source="import",
+                    max_auto_types=MAX_PROJECT_TYPES_PER_IMPORT,
                 )
                 created_type_count += len(type_ids)
 
-                # 合并规则：同对 + 相同类型集合 + 同来源批次才合并；否则新增关系
-                merged = False
-                for rel in relationships:
-                    if (
-                        rel.character_from_id == source_char.id
-                        and rel.character_to_id == target_char.id
-                        and rel.source in ("ai", "analysis", "manual")
-                    ):
-                        await sync_relationship_links(db, rel, list({rel.relationship_type_id, *type_ids}))
+                # 合并规则：同一对角色（无视方向）且来源在白名单内（含 import）即合并，
+                # 并集类型链接；但已有的 manual 关系不可被覆盖——只并类型、不追加描述。
+                pair = frozenset({source_char.id, target_char.id})
+                matched: Optional[CharacterRelationship] = None
+                for rel in rel_by_pair.get(pair, []):
+                    if rel.source in ("ai", "analysis", "manual", "import"):
+                        matched = rel
+                        break
+
+                if matched:
+                    await sync_relationship_links(db, matched, list({matched.relationship_type_id, *type_ids}))
+                    if matched.source != "manual":
                         note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
                         if note:
-                            rel.description = (rel.description + "\n" + note).strip()
-                        merged = True
-                        extracted_count += 1
-                        break
+                            matched.description = (matched.description + "\n" + note).strip()
+                    merged = True
+                    extracted_count += 1
+                else:
+                    merged = False
 
                 if not merged:
                     rel = CharacterRelationship(
@@ -2504,6 +2935,7 @@ class BookImportService:
                     await db.flush()
                     await sync_relationship_links(db, rel, type_ids)
                     relationships.append(rel)
+                    rel_by_pair.setdefault(pair, []).append(rel)
                     extracted_count += 1
 
         await db.flush()
@@ -2513,7 +2945,7 @@ class BookImportService:
             "created_characters": created_char_count,
         }
 
-    def _build_summary(self, content: str, max_len: int = 120) -> Optional[str]:
+    def _build_summary(self, content: str, max_len: int = 300) -> Optional[str]:
         if not content:
             return None
         normalized = re.sub(r"\s+", " ", content).strip()

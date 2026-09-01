@@ -5,7 +5,7 @@
 - 如果有启用的MCP插件且有可用工具，自动发送tools
 - 通过 auto_mcp 参数控制是否启用自动工具加载
 """
-from typing import Optional, AsyncGenerator, List, Dict, Any, Union
+from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable
 
 from app.config import settings as app_settings
 from app.logger import get_logger
@@ -772,6 +772,8 @@ class AIService:
         model: Optional[str] = None,
         expected_type: Optional[str] = None,
         auto_mcp: bool = True,
+        validator: Optional[Callable[[Any], None]] = None,
+        validator_max_retries: int = 2,
     ) -> Union[Dict, List]:
         """
         带重试的 JSON 调用（自动支持MCP工具）
@@ -786,6 +788,10 @@ class AIService:
             model: 模型名称
             expected_type: 期望的返回类型（"object"或"array"）
             auto_mcp: 是否自动加载MCP工具
+            validator: 可选 schema 校验器，解析出的数据在返回前调用；
+                抛 ValueError 视为可重试失败，错误信息注入重试提示
+            validator_max_retries: validator 独立重试上限（不消耗 max_retries），
+                超过后抛 ValueError("校验失败: ...")
             
         Returns:
             解析后的JSON数据
@@ -803,8 +809,12 @@ class AIService:
         )
         
         try:
+            validator_retries = 0
+            validator_error = None
             for attempt in range(1, max_retries + 1):
-                current_prompt = prompt if attempt == 1 else self._add_json_hint(prompt, last_response, attempt)
+                current_prompt = prompt if attempt == 1 else self._add_json_hint(
+                    prompt, last_response, attempt, extra_error=validator_error
+                )
                 
                 # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
                 # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
@@ -842,20 +852,37 @@ class AIService:
                         raise ValueError("期望对象")
                     if expected_type == "array" and not isinstance(data, list):
                         raise ValueError("期望数组")
-                    metrics.json_parse_success = True
-                    metrics.finish(
-                        success=True,
-                        response_length=len(last_response),
-                        finish_reason=result.get("finish_reason"),
-                        usage=aggregate_usage,
-                    )
-                    self._log_call_metrics(metrics, title="AI调用汇总")
-                    return data
                 except Exception as e:
                     metrics.json_parse_success = False
                     if attempt == max_retries:
                         raise ValueError(f"JSON 解析失败: {e}")
-            
+                    continue
+
+                if validator is not None:
+                    try:
+                        validator(data)
+                    except ValueError as ve:
+                        validator_error = str(ve)
+                        if validator_retries < validator_max_retries:
+                            validator_retries += 1
+                            continue
+                        raise ValueError(f"校验失败: {validator_error}")
+
+                metrics.json_parse_success = True
+                metrics.finish(
+                    success=True,
+                    response_length=len(last_response),
+                    finish_reason=result.get("finish_reason"),
+                    usage=aggregate_usage,
+                )
+                self._log_call_metrics(metrics, title="AI调用汇总")
+                return data
+
+            if validator_error:
+                # validator 在最后一次尝试失败且未达独立上限（如 max_retries=2、
+                # validator_max_retries=2 时循环耗尽）——优先透出具体校验错误，
+                # 避免用户只看到泛化的"JSON 调用失败"而丢失可纠正的信息。
+                raise ValueError(f"校验失败: {validator_error}")
             raise ValueError("JSON 调用失败")
         except Exception as e:
             metrics.finish(
@@ -868,8 +895,11 @@ class AIService:
             raise
 
     @staticmethod
-    def _add_json_hint(prompt: str, failed: str, attempt: int) -> str:
-        return f"{prompt}\n\n⚠️ 第{attempt}次重试，请返回纯JSON，不要markdown包裹。上次错误: {failed[:200]}..."
+    def _add_json_hint(prompt: str, failed: str, attempt: int, extra_error: Optional[str] = None) -> str:
+        hint = f"{prompt}\n\n⚠️ 第{attempt}次重试，请返回纯JSON，不要markdown包裹。上次错误: {failed[:200]}..."
+        if extra_error:
+            hint += f"\n\n校验提示: {extra_error}"
+        return hint
 
     @staticmethod
     def _clean_json_response(text: str) -> str:

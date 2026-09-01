@@ -14,7 +14,7 @@ interface Relationship {
   relationship_name: string;
   relationship_type_names?: string[];
   intimacy_level: number;
-  status: string;
+  status?: string;
   description?: string;
   source: string;
 }
@@ -126,7 +126,7 @@ export default function Relationships() {
       character_to_id: record.character_to_id,
       relationship_type_names: record.relationship_type_names || (record.relationship_name ? [record.relationship_name] : []),
       intimacy_level: record.intimacy_level,
-      status: record.status,
+      status: record.status || 'active',
       description: record.description,
     });
     setIsModalOpen(true);
@@ -253,16 +253,6 @@ export default function Relationships() {
     return 'red';
   };
 
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, string> = {
-      active: 'green',
-      broken: 'red',
-      past: 'default',
-      complicated: 'orange'
-    };
-    return colors[status] || 'default';
-  };
-
   const getCategoryColor = (category: string) => {
     const colors: Record<string, string> = {
       family: 'magenta',
@@ -296,7 +286,7 @@ export default function Relationships() {
             .map(name => <Tag key={name} color="blue">{name}</Tag>)}
         </Space>
       ),
-      width: 120,
+      width: 200,
     },
     {
       title: '角色B',
@@ -315,15 +305,6 @@ export default function Relationships() {
       key: 'intimacy',
       render: (level: number) => (
         <Tag color={getIntimacyColor(level)}>{level}</Tag>
-      ),
-      width: 80,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status: string) => (
-        <Tag color={getStatusColor(status)}>{status}</Tag>
       ),
       width: 80,
     },
@@ -373,25 +354,8 @@ export default function Relationships() {
     return acc;
   }, {} as Record<string, RelationshipType[]>);
 
-  const groupedRelationships = relationships.reduce<Record<string, Relationship[]>>((acc, rel) => {
-    const key = [rel.character_from_id, rel.character_to_id].sort().join('|');
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(rel);
-    return acc;
-  }, {});
-
-  const groupedRows = Object.entries(groupedRelationships).map(([key, rels]) => ({
-    key,
-    id: rels[0].id,
-    character_from_id: rels[0].character_from_id,
-    character_to_id: rels[0].character_to_id,
-    relationship_name: rels.flatMap(r => r.relationship_type_names?.length ? r.relationship_type_names : [r.relationship_name]).join('、'),
-    intimacy_level: Math.round(rels.reduce((sum, r) => sum + (r.intimacy_level || 0), 0) / rels.length),
-    status: rels.map(r => r.status).join(' / '),
-    source: rels.map(r => r.source).join(' / '),
-    children: rels,
-  }));
-
+  // 每行 = 一条关系记录；同一对角色允许多条记录，各自独立展示与编辑。
+  // 类型以独立 Tag 渲染（一个关系类型一个标签），不再合并成单个字符串。
   const categoryLabels: Record<string, string> = {
     family: '家族关系',
     social: '社交关系',
@@ -438,10 +402,9 @@ export default function Relationships() {
               children: (
                 <Table
                   columns={columns}
-                  dataSource={groupedRows}
-                  rowKey="key"
+                  dataSource={relationships}
+                  rowKey="id"
                   loading={loading}
-                  expandable={{ childrenColumnName: 'children' }}
                   pagination={{
                     current: currentPage,
                     pageSize: isMobile ? 10 : pageSize,
