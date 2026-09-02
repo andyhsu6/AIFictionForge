@@ -1,4 +1,5 @@
 import React, { useMemo, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card, Tag, Badge, Empty, Collapse, Divider, theme } from 'antd';
 import {
   FireOutlined,
@@ -17,25 +18,25 @@ interface MemorySidebarProps {
   scrollToAnnotation?: string;
 }
 
-// 类型配置
+// 类型配置：label 为 i18n 完整 key 路径
 const TYPE_CONFIG = {
   hook: {
-    label: '钩子',
+    label: 'memorySidebar.typeLabels.hook',
     icon: <FireOutlined />,
   },
   foreshadow: {
-    label: '伏笔',
+    label: 'memorySidebar.typeLabels.foreshadow',
     icon: <StarOutlined />,
   },
   plot_point: {
-    label: '情节点',
+    label: 'memorySidebar.typeLabels.plotPoint',
     icon: <ThunderboltOutlined />,
   },
   character_event: {
-    label: '角色事件',
+    label: 'memorySidebar.typeLabels.characterEvent',
     icon: <UserOutlined />,
   },
-};
+} as const;
 
 /**
  * 记忆侧边栏组件
@@ -48,6 +49,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
   scrollToAnnotation,
 }) => {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const typeColors: Record<keyof typeof TYPE_CONFIG, string> = {
     hook: token.colorError,
@@ -165,7 +167,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
         {/* 特殊元数据 */}
         {annotation.metadata.strength && (
           <div style={{ marginTop: 4, fontSize: 11, color: token.colorTextTertiary }}>
-            强度: {annotation.metadata.strength}/10
+            {t('memorySidebar.strength', { value: annotation.metadata.strength })}
           </div>
         )}
         {annotation.metadata.foreshadowType && (
@@ -173,7 +175,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
             color={annotation.metadata.foreshadowType === 'planted' ? 'blue' : 'green'}
             style={{ marginTop: 4 }}
           >
-            {annotation.metadata.foreshadowType === 'planted' ? '已埋下' : '已回收'}
+            {annotation.metadata.foreshadowType === 'planted' ? t('memorySidebar.planted') : t('memorySidebar.resolved')}
           </Tag>
         )}
         </Card>
@@ -184,7 +186,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
   if (annotations.length === 0) {
     return (
       <div style={{ padding: 24 }}>
-        <Empty description="暂无分析数据" />
+        <Empty description={t('memorySidebar.empty')} />
       </div>
     );
   }
@@ -193,28 +195,28 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
     <div style={{ height: '100%', overflowY: 'auto', padding: '16px' }}>
       {/* 统计概览 */}
       <Card size="small" style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>📊 分析概览</div>
+        <div style={{ fontWeight: 600, marginBottom: 12 }}>{t('memorySidebar.overview')}</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <div>
-            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>钩子</div>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('memorySidebar.typeLabels.hook')}</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.hook }}>
               {stats.hooks}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>伏笔</div>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('memorySidebar.typeLabels.foreshadow')}</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.foreshadow }}>
               {stats.foreshadows}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>情节点</div>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('memorySidebar.typeLabels.plotPoint')}</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: typeColors.plot_point }}>
               {stats.plotPoints}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>角色事件</div>
+            <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('memorySidebar.typeLabels.characterEvent')}</div>
             <div
               style={{ fontSize: 20, fontWeight: 600, color: typeColors.character_event }}
             >
@@ -238,7 +240,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
               key={type}
               header={
                 <span style={{ fontWeight: 600 }}>
-                  {config.icon} {config.label} ({items.length})
+                  {config.icon} {t(config.label)} ({items.length})
                 </span>
               }
             >

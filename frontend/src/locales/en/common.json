@@ -1,5 +1,13 @@
 {
+  "aiGenerating": "AI generating...",
+  "annotatedText": {
+    "multipleAnnotations": "{{count}} annotations here",
+    "multipleAnnotations_one": "annotatedText.multipleAnnotations",
+    "multipleAnnotations_other": "annotatedText.multipleAnnotations"
+  },
+  "back": "Back",
   "cancel": "Cancel",
+  "cancelTask": "Cancel Task",
   "changelog": {
     "empty": "No changelog entries",
     "fetchFailed": "Failed to fetch changelog",
@@ -8,8 +16,47 @@
     "title": "Changelog",
     "viewTooltip": "View changelog"
   },
+  "close": "Close",
+  "doNotClosePage": "Please do not close the page; generation may take some time",
+  "indexPanel": {
+    "chapterItem": "Chapter {{number}}: {{title}}",
+    "noMatch": "No matching chapters found",
+    "searchPlaceholder": "Search chapter titles",
+    "title": "Chapter Directory"
+  },
+  "loading": "Loading...",
+  "markdown": {
+    "announceImage": "Announcement image",
+    "emptyContent": "No content"
+  },
+  "memorySidebar": {
+    "empty": "No analysis data",
+    "overview": "📊 Analysis Overview",
+    "planted": "Planted",
+    "resolved": "Resolved",
+    "strength": "Strength: {{value}}/10",
+    "typeLabels": {
+      "characterEvent": "Character Event",
+      "foreshadow": "Foreshadow",
+      "hook": "Hook",
+      "plotPoint": "Plot Point"
+    }
+  },
+  "partialToolbar": {
+    "aiRewrite": "AI Rewrite",
+    "rewriteTooltip": "AI rewrite selected content: \"{{text}}\"",
+    "selectedChars": "{{count}} chars selected",
+    "selectedChars_one": "partialToolbar.selectedChars",
+    "selectedChars_other": "partialToolbar.selectedChars"
+  },
   "placeholder": "Placeholder text",
+  "preparing": "Preparing to generate...",
   "refresh": "Refresh",
+  "saving": "Saving...",
+  "springFestival": {
+    "toggleOff": "Disable Spring Festival decoration",
+    "toggleOn": "Enable Spring Festival decoration"
+  },
   "stream": {
     "readFailed": "Unable to read the assistant response stream"
   },
@@ -18,6 +65,7 @@
     "light": "Light mode",
     "system": "Follow system"
   },
+  "unknownError": "Unknown error",
   "userMenu": {
     "admin": "Admin",
     "adminBadge": "👑 Admin",

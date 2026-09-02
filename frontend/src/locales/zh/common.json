@@ -1,5 +1,11 @@
 {
+  "aiGenerating": "AI生成中...",
+  "annotatedText": {
+    "multipleAnnotations": "此处有 {{count}} 个标注"
+  },
+  "back": "返回",
   "cancel": "取消",
+  "cancelTask": "取消任务",
   "changelog": {
     "empty": "暂无更新日志",
     "fetchFailed": "获取更新日志失败",
@@ -8,8 +14,45 @@
     "title": "更新日志",
     "viewTooltip": "查看更新日志"
   },
+  "close": "关闭",
+  "doNotClosePage": "请勿关闭页面，生成过程需要一定时间",
+  "indexPanel": {
+    "chapterItem": "第{{number}}章: {{title}}",
+    "noMatch": "没有找到匹配的章节",
+    "searchPlaceholder": "搜索章节标题",
+    "title": "章节目录"
+  },
+  "loading": "加载中...",
+  "markdown": {
+    "announceImage": "公告图片",
+    "emptyContent": "暂无内容"
+  },
+  "memorySidebar": {
+    "empty": "暂无分析数据",
+    "overview": "📊 分析概览",
+    "planted": "已埋下",
+    "resolved": "已回收",
+    "strength": "强度: {{value}}/10",
+    "typeLabels": {
+      "characterEvent": "角色事件",
+      "foreshadow": "伏笔",
+      "hook": "钩子",
+      "plotPoint": "情节点"
+    }
+  },
+  "partialToolbar": {
+    "aiRewrite": "AI重写",
+    "rewriteTooltip": "AI重写选中内容: \"{{text}}\"",
+    "selectedChars": "已选 {{count}} 字"
+  },
   "placeholder": "占位文本",
+  "preparing": "准备生成...",
   "refresh": "刷新",
+  "saving": "保存中...",
+  "springFestival": {
+    "toggleOff": "关闭春节装饰",
+    "toggleOn": "开启春节装饰"
+  },
   "stream": {
     "readFailed": "无法读取灵创创作助手响应流"
   },
@@ -18,6 +61,7 @@
     "light": "浅色模式",
     "system": "跟随系统"
   },
+  "unknownError": "未知错误",
   "userMenu": {
     "admin": "管理员",
     "adminBadge": "👑 管理员",

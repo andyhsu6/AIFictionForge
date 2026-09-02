@@ -1,0 +1,178 @@
+{
+  "alert": {
+    "autoSync": "伏笔数据会在章节分析完成后自动同步，无需手动操作",
+    "overdueDesc": "请尽快在后续章节中回收这些伏笔，或调整计划回收章节",
+    "overdueMsg": "有 {{num}} 个伏笔已超期未回收"
+  },
+  "category": {
+    "ability": "能力",
+    "event": "事件",
+    "identity": "身世",
+    "item": "物品",
+    "mystery": "悬念",
+    "prophecy": "预言",
+    "relationship": "关系"
+  },
+  "chapter": {
+    "chapterN": "第{{num}}章",
+    "chapterWithTitle": "第{{num}}章 - {{title}}"
+  },
+  "col": {
+    "actions": "操作",
+    "category": "分类",
+    "importance": "重要性",
+    "planResolve": "计划回收",
+    "plantChapter": "埋入章节",
+    "source": "来源",
+    "status": "状态",
+    "title": "标题"
+  },
+  "common": {
+    "empty": "暂无伏笔，点击右上角添加"
+  },
+  "confirm": {
+    "abandon": "确定要废弃这个伏笔吗？",
+    "delete": "确定要删除这个伏笔吗？"
+  },
+  "detail": {
+    "actualResolveLabel": "实际回收：",
+    "close": "关闭",
+    "contentLabel": "伏笔内容：",
+    "edit": "编辑",
+    "hintLabel": "暗示文本：",
+    "importanceLabel": "重要性：",
+    "longTermTag": "长线伏笔",
+    "notesLabel": "备注：",
+    "notSet": "未设定",
+    "planResolveLabel": "计划回收：",
+    "plantChapterLabel": "埋入章节：",
+    "relatedCharsLabel": "关联角色：",
+    "revealLabel": "揭示文本：",
+    "sourceAnalysis": "章节分析提取",
+    "sourceLabel": "来源：",
+    "sourceManual": "手动添加",
+    "strengthLabel": "强度：",
+    "subtletyLabel": "隐藏度：",
+    "title": "伏笔详情"
+  },
+  "filter": {
+    "categoryPlaceholder": "分类筛选",
+    "sourcePlaceholder": "来源筛选",
+    "statusPlaceholder": "状态筛选"
+  },
+  "form": {
+    "aiSettingsDivider": "AI辅助设置",
+    "autoRemindLabel": "自动提醒",
+    "categoryLabel": "分类",
+    "categoryPlaceholder": "选择分类",
+    "chapterPlaceholder": "章节号",
+    "charWithRole": "({{role}})",
+    "complete": "完全",
+    "contentLabel": "伏笔内容",
+    "contentPlaceholder": "详细描述伏笔的内容和意图",
+    "contentRequired": "请输入内容",
+    "hintLabel": "暗示文本",
+    "hintOptional": "暗示文本（可选）",
+    "hintPlaceholder": "埋伏笔时使用的暗示性描写",
+    "importanceLabel": "重要性 (0-1)",
+    "includeInContextLabel": "包含在生成上下文",
+    "longTermLabel": "长线伏笔",
+    "no": "否",
+    "notesLabel": "备注",
+    "notesPlaceholder": "创作备注（仅作者可见）",
+    "off": "关",
+    "on": "开",
+    "partial": "部分",
+    "partialResolveLabel": "是否部分回收",
+    "planResolveLabel": "计划回收",
+    "plantChapterLabel": "计划埋入",
+    "plantHintPlaceholder": "记录埋伏笔时使用的暗示性描写",
+    "relatedCharsLabel": "关联角色",
+    "relatedCharsPlaceholder": "选择关联角色",
+    "remindChaptersLabel": "提前几章提醒",
+    "resolveHintPlaceholder": "记录回收伏笔时的揭示内容",
+    "resolveTextOptional": "揭示文本（可选）",
+    "strengthLabel": "强度 (1-10)",
+    "subtletyLabel": "隐藏度 (1-10)",
+    "titleAdd": "添加伏笔",
+    "titleEdit": "编辑伏笔",
+    "titleLabel": "伏笔标题",
+    "titlePlaceholder": "简洁描述伏笔内容",
+    "titleRequired": "请输入标题",
+    "yes": "是"
+  },
+  "more": {
+    "button": "更多",
+    "syncItem": "手动同步分析伏笔"
+  },
+  "pagination": {
+    "total": "共 {{total}} 条"
+  },
+  "plant": {
+    "selectChapter": "选择埋入章节",
+    "selectPlaceholder": "选择章节",
+    "selectRequired": "请选择章节",
+    "title": "标记伏笔埋入"
+  },
+  "resolve": {
+    "selectChapter": "选择回收章节",
+    "selectPlaceholder": "选择章节",
+    "selectRequired": "请选择章节",
+    "title": "标记伏笔回收"
+  },
+  "source": {
+    "analysis": "分析",
+    "manual": "手动"
+  },
+  "stat": {
+    "longTerm": "长线伏笔",
+    "overdue": "超期未回收",
+    "pending": "待埋入",
+    "planted": "已埋入",
+    "resolved": "已回收",
+    "total": "总计"
+  },
+  "status": {
+    "abandoned": "已废弃",
+    "partiallyResolved": "部分回收",
+    "pending": "待埋入",
+    "planted": "已埋入",
+    "resolved": "已回收"
+  },
+  "sync": {
+    "alertDesc": "通常情况下，章节分析完成后伏笔会自动同步到伏笔管理中。此功能用于手动补充同步可能遗漏的伏笔。",
+    "alertTitle": "提示",
+    "body": "此操作将从已完成的章节分析结果中提取伏笔信息，同步到伏笔管理表。",
+    "bullet1": "已存在的伏笔记录不会被覆盖",
+    "bullet2": "新同步的伏笔将自动设置为\"已埋入\"状态",
+    "bullet3": "同步完成后可在列表中查看和编辑",
+    "okText": "开始同步",
+    "title": "手动同步分析伏笔"
+  },
+  "tag": {
+    "longTerm": "长线",
+    "longTermForeshadow": "长线伏笔"
+  },
+  "toast": {
+    "abandonedSuccess": "伏笔已标记为废弃",
+    "createSuccess": "伏笔创建成功",
+    "deleteSuccess": "伏笔删除成功",
+    "plantedSuccess": "伏笔已标记为埋入",
+    "resolvedSuccess": "伏笔已标记为回收",
+    "syncSuccess": "同步完成: 新增{{added}}个伏笔, 跳过{{skipped}}个",
+    "updateSuccess": "伏笔更新成功"
+  },
+  "tooltip": {
+    "abandon": "废弃",
+    "delete": "删除",
+    "edit": "编辑",
+    "plant": "标记埋入",
+    "refresh": "刷新列表",
+    "resolve": "标记回收",
+    "viewDetail": "查看详情"
+  },
+  "urgency": {
+    "overdue": "已超期{{num}}章",
+    "remaining": "还剩{{num}}章"
+  }
+}

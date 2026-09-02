@@ -1,0 +1,178 @@
+{
+  "alert": {
+    "autoSync": "Foreshadow data will automatically sync after chapter analysis completes; no manual action needed",
+    "overdueDesc": "Please resolve these foreshadows in upcoming chapters soon, or adjust the planned resolution chapters",
+    "overdueMsg": "{{num}} foreshadows are overdue and unresolved"
+  },
+  "category": {
+    "ability": "Ability",
+    "event": "Event",
+    "identity": "Identity",
+    "item": "Item",
+    "mystery": "Mystery",
+    "prophecy": "Prophecy",
+    "relationship": "Relationship"
+  },
+  "chapter": {
+    "chapterN": "Chapter {{num}}",
+    "chapterWithTitle": "Chapter {{num}} - {{title}}"
+  },
+  "col": {
+    "actions": "Actions",
+    "category": "Category",
+    "importance": "Importance",
+    "planResolve": "Planned resolve",
+    "plantChapter": "Planted in chapter",
+    "source": "Source",
+    "status": "Status",
+    "title": "Title"
+  },
+  "common": {
+    "empty": "No foreshadows yet. Click the top-right button to add one"
+  },
+  "confirm": {
+    "abandon": "Are you sure you want to discard this foreshadow?",
+    "delete": "Are you sure you want to delete this foreshadow?"
+  },
+  "detail": {
+    "actualResolveLabel": "Actual resolution:",
+    "close": "Close",
+    "contentLabel": "Content:",
+    "edit": "Edit",
+    "hintLabel": "Hint text:",
+    "importanceLabel": "Importance:",
+    "longTermTag": "Long-term foreshadow",
+    "notesLabel": "Notes:",
+    "notSet": "Not set",
+    "planResolveLabel": "Planned resolution:",
+    "plantChapterLabel": "Planted in chapter:",
+    "relatedCharsLabel": "Related characters:",
+    "revealLabel": "Revelation text:",
+    "sourceAnalysis": "Extracted from chapter analysis",
+    "sourceLabel": "Source:",
+    "sourceManual": "Added manually",
+    "strengthLabel": "Strength:",
+    "subtletyLabel": "Subtlety:",
+    "title": "Foreshadow Details"
+  },
+  "filter": {
+    "categoryPlaceholder": "Filter by category",
+    "sourcePlaceholder": "Filter by source",
+    "statusPlaceholder": "Filter by status"
+  },
+  "form": {
+    "aiSettingsDivider": "AI-Assisted Settings",
+    "autoRemindLabel": "Auto remind",
+    "categoryLabel": "Category",
+    "categoryPlaceholder": "Select category",
+    "chapterPlaceholder": "Chapter number",
+    "charWithRole": "({{role}})",
+    "complete": "Full",
+    "contentLabel": "Foreshadow content",
+    "contentPlaceholder": "Describe the foreshadow content and intent in detail",
+    "contentRequired": "Please enter content",
+    "hintLabel": "Hint text",
+    "hintOptional": "Hint text (optional)",
+    "hintPlaceholder": "The suggestive description used when planting the foreshadow",
+    "importanceLabel": "Importance (0-1)",
+    "includeInContextLabel": "Include in generation context",
+    "longTermLabel": "Long-term foreshadow",
+    "no": "No",
+    "notesLabel": "Notes",
+    "notesPlaceholder": "Creation notes (author only)",
+    "off": "Off",
+    "on": "On",
+    "partial": "Partial",
+    "partialResolveLabel": "Partial resolution?",
+    "planResolveLabel": "Planned resolve",
+    "plantChapterLabel": "Planned plant",
+    "plantHintPlaceholder": "Record the suggestive description used when planting the foreshadow",
+    "relatedCharsLabel": "Related characters",
+    "relatedCharsPlaceholder": "Select related characters",
+    "remindChaptersLabel": "Remind N chapters ahead",
+    "resolveHintPlaceholder": "Record the revelation content when resolving the foreshadow",
+    "resolveTextOptional": "Revelation text (optional)",
+    "strengthLabel": "Strength (1-10)",
+    "subtletyLabel": "Subtlety (1-10)",
+    "titleAdd": "Add Foreshadow",
+    "titleEdit": "Edit Foreshadow",
+    "titleLabel": "Foreshadow title",
+    "titlePlaceholder": "Briefly describe the foreshadow content",
+    "titleRequired": "Please enter a title",
+    "yes": "Yes"
+  },
+  "more": {
+    "button": "More",
+    "syncItem": "Manually sync analysis foreshadows"
+  },
+  "pagination": {
+    "total": "Total {{total}} items"
+  },
+  "plant": {
+    "selectChapter": "Select the chapter to plant in",
+    "selectPlaceholder": "Select chapter",
+    "selectRequired": "Please select a chapter",
+    "title": "Mark Foreshadow as Planted"
+  },
+  "resolve": {
+    "selectChapter": "Select the chapter to resolve in",
+    "selectPlaceholder": "Select chapter",
+    "selectRequired": "Please select a chapter",
+    "title": "Mark Foreshadow as Resolved"
+  },
+  "source": {
+    "analysis": "Analysis",
+    "manual": "Manual"
+  },
+  "stat": {
+    "longTerm": "Long-term foreshadows",
+    "overdue": "Overdue unresolved",
+    "pending": "Pending",
+    "planted": "Planted",
+    "resolved": "Resolved",
+    "total": "Total"
+  },
+  "status": {
+    "abandoned": "Abandoned",
+    "partiallyResolved": "Partially resolved",
+    "pending": "Pending",
+    "planted": "Planted",
+    "resolved": "Resolved"
+  },
+  "sync": {
+    "alertDesc": "Normally, foreshadows automatically sync to management after chapter analysis completes. This function is for manually supplementing any foreshadows that may have been missed.",
+    "alertTitle": "Tip",
+    "body": "This operation extracts foreshadow information from completed chapter analysis results and syncs them to the foreshadow management table.",
+    "bullet1": "Existing foreshadow records will not be overwritten",
+    "bullet2": "Newly synced foreshadows will automatically be set to \"planted\" status",
+    "bullet3": "After syncing, you can view and edit them in the list",
+    "okText": "Start Sync",
+    "title": "Manually Sync Analysis Foreshadows"
+  },
+  "tag": {
+    "longTerm": "Long-term",
+    "longTermForeshadow": "Long-term foreshadow"
+  },
+  "toast": {
+    "abandonedSuccess": "Foreshadow marked as abandoned",
+    "createSuccess": "Foreshadow created successfully",
+    "deleteSuccess": "Foreshadow deleted successfully",
+    "plantedSuccess": "Foreshadow marked as planted",
+    "resolvedSuccess": "Foreshadow marked as resolved",
+    "syncSuccess": "Sync completed: {{added}} added, {{skipped}} skipped",
+    "updateSuccess": "Foreshadow updated successfully"
+  },
+  "tooltip": {
+    "abandon": "Discard",
+    "delete": "Delete",
+    "edit": "Edit",
+    "plant": "Mark as planted",
+    "refresh": "Refresh list",
+    "resolve": "Mark as resolved",
+    "viewDetail": "View details"
+  },
+  "urgency": {
+    "overdue": "Overdue by {{num}} chapters",
+    "remaining": "{{num}} chapters left"
+  }
+}

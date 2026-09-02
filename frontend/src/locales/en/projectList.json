@@ -1,0 +1,121 @@
+{
+  "date": {
+    "daysAgo": "{{days}}d ago",
+    "today": "Today",
+    "yesterday": "Yesterday"
+  },
+  "export": {
+    "includeCareers": "Career System",
+    "includeGenerationHistory": "Generation History",
+    "includeGenerationHistoryTip": "Includes generation history records; the file may be large",
+    "includeMemories": "Story Memories",
+    "includeMemoriesTip": "Includes story memory data; the file may be large",
+    "includePlotAnalysis": "Plot Analysis",
+    "includePlotAnalysisTip": "Includes AI plot analysis data",
+    "includeWritingStyles": "Writing Styles",
+    "optionsTitle": "Export Options",
+    "selectAll": "Select All",
+    "selectProjects": "Select projects ({{count}})",
+    "selectProjects_one": "export.selectProjects",
+    "selectProjects_other": "export.selectProjects"
+  },
+  "import": {
+    "desc": "Choose a previously exported project file in JSON format",
+    "projectName": "Project name:",
+    "selectFileBtn": "Select File",
+    "validating": "Validating file...",
+    "validFail": "✗ File validation failed",
+    "validOk": "✓ File validation passed"
+  },
+  "modal": {
+    "cancel": "Cancel",
+    "deleteContent": "Deleting a project will also delete all related data. This cannot be undone. Are you sure you want to delete it?",
+    "deleteTitle": "Confirm Delete",
+    "exportOk": "Export",
+    "exportOkCount": "Export ({{count}})",
+    "exportOkCount_one": "modal.exportOkCount",
+    "exportOkCount_other": "modal.exportOkCount",
+    "exportTitle": "Export Project",
+    "importOk": "Import",
+    "importTitle": "Import Project",
+    "ok": "OK"
+  },
+  "sidebar": {
+    "apiSettings": "API Settings",
+    "bookImport": "Import Book",
+    "bookshelf": "My Bookshelf",
+    "createTools": "Creation Tools",
+    "mcpPlugins": "MCP Plugins",
+    "promptManage": "Prompt Management",
+    "systemSettings": "System Settings"
+  },
+  "stat": {
+    "careers": "Careers: {{n}}",
+    "chapters": "Chapters: {{n}}",
+    "characterCareers": "Career Links: {{n}}",
+    "characters": "Characters: {{n}}",
+    "error": "Error:",
+    "generationHistory": "Generation History: {{n}}",
+    "hasDefaultStyle": "Has default style",
+    "hint": "Tip:",
+    "organizations": "Organizations: {{n}}",
+    "outlines": "Outlines: {{n}}",
+    "plotAnalysis": "Plot Analysis: {{n}}",
+    "relationships": "Relationships: {{n}}",
+    "statLabel": "Statistics:",
+    "storyMemories": "Story Memories: {{n}}",
+    "writingStyles": "Writing Styles: {{n}}"
+  },
+  "stats": {
+    "completed": "Completed",
+    "creating": "In Progress",
+    "totalWords": "Total Words",
+    "unitBook": "book(s)",
+    "unitWord": "words"
+  },
+  "status": {
+    "completed": "Completed",
+    "planning": "Planning",
+    "revising": "Revising",
+    "writing": "Writing"
+  },
+  "theme": {
+    "dark": "Dark",
+    "light": "Light",
+    "modeTitle": "Theme mode: {{mode}} (click to switch)",
+    "system": "System",
+    "title": "Theme Mode"
+  },
+  "toast": {
+    "coverDownloadFailed": "Failed to download the cover",
+    "coverDownloading": "Cover download started for \"{{title}}\"",
+    "coverFailed": "Failed to generate a cover for \"{{title}}\"",
+    "coverGenerated": "Cover generated successfully for \"{{title}}\"",
+    "coverGenerating": "Generating a cover for \"{{title}}\"...",
+    "deleteFailed": "Failed to delete the project",
+    "deleteSuccess": "Project deleted successfully",
+    "exportDoneResult": "Export complete: {{success}} succeeded, {{fail}} failed",
+    "exportFailedRetry": "Export failed, please try again",
+    "exportSuccess": "Project \"{{title}}\" exported successfully",
+    "exportSuccessCount": "Successfully exported {{count}} project(s)",
+    "exportSuccessCount_one": "toast.exportSuccessCount",
+    "exportSuccessCount_other": "toast.exportSuccessCount",
+    "importFailed": "Import failed",
+    "importFailedRetry": "Import failed, please try again",
+    "importSuccess": "Project imported successfully! {{message}}",
+    "selectAtLeastOne": "Please select at least one project",
+    "selectValidFile": "Please select a valid import file",
+    "validateFailed": "File validation failed"
+  },
+  "unit": {
+    "words": "words"
+  },
+  "viewTitle": {
+    "apiSettings": "API Settings",
+    "bookImport": "Import Book",
+    "bookshelf": "My Bookshelf",
+    "mcp": "MCP Plugins",
+    "promptTemplates": "Prompt Templates",
+    "systemSettings": "System Settings"
+  }
+}

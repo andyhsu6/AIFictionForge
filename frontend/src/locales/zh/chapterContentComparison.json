@@ -1,0 +1,23 @@
+{
+  "analysisStarted": "章节分析已开始，请稍后查看结果",
+  "analysisTriggerFailed": "章节分析触发失败，您可以手动触发分析",
+  "applyButton": "应用新内容",
+  "applyError": "应用失败",
+  "applyFailed": "应用新内容失败",
+  "cancel": "取消",
+  "changePercent": "变化比例",
+  "contentApplied": "新内容已应用！",
+  "discardButton": "放弃新内容",
+  "discardConfirmContent": "确定要放弃新生成的内容吗？此操作不可恢复。",
+  "discardConfirmOk": "确定放弃",
+  "discardConfirmTitle": "确认放弃",
+  "discarded": "已放弃新内容",
+  "newContent": "新内容",
+  "newWordCount": "新内容字数",
+  "originalContent": "原内容",
+  "originalWordCount": "原内容字数",
+  "title": "内容对比 - {{title}}",
+  "toggleView": "切换视图",
+  "wordCountChange": "字数变化",
+  "wordSuffix": "字"
+}

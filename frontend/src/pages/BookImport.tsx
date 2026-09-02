@@ -33,6 +33,7 @@ import type {
   BookImportStepFailure,
   BookImportTask,
 } from '../types';
+import { useTranslation } from 'react-i18next';
 
 const { Text, Title } = Typography;
 const { Dragger } = Upload;
@@ -111,6 +112,7 @@ function isNotFoundError(error: unknown): boolean {
 
 export default function BookImport() {
   const navigate = useNavigate();
+  const { t } = useTranslation('bookImport');
   const { token } = theme.useToken();
   const isMobile = window.innerWidth <= 768;
   const [file, setFile] = useState<File | null>(null);
@@ -186,12 +188,12 @@ export default function BookImport() {
   const rangeLocked = Boolean(taskId || taskStatus || preview || creatingTask || applying || retrying);
 
   const stepItems = [
-    { title: '上传文件' },
-    { title: '解析中' },
-    { title: '预览修改' },
-    { title: '生成导入' },
+    { title: t('step.upload') },
+    { title: t('step.parsing') },
+    { title: t('step.preview') },
+    { title: t('step.generate') },
   ];
-  const currentStepText = stepItems[currentStep]?.title || '上传文件';
+  const currentStepText = stepItems[currentStep]?.title || t('step.upload');
 
   useEffect(() => {
     const cache = loadBookImportCache();
@@ -214,10 +216,10 @@ export default function BookImport() {
         setTailChapterCount(cache.tailChapterCount ?? 10);
         setApplyMessage(
           cache.applyMessage || (cache.applyProgress > 0 && !cache.isApplyComplete
-            ? '已恢复页面缓存，请重新点击“确认导入”继续。'
+            ? t('msg.restoreHint')
             : '')
         );
-        message.info('已恢复拆书导入页面缓存');
+        message.info(t('toast.cacheRestored'));
       }
     }
     setCacheReady(true);
@@ -292,7 +294,7 @@ export default function BookImport() {
           setApplyMessage('');
           setApplyError(null);
           setIsApplyComplete(false);
-          message.warning('拆书任务已失效（可能因服务重启），请重新上传TXT并开始解析');
+          message.warning(t('toast.taskInvalid'));
         }
       }
     }, 1500);
@@ -320,9 +322,9 @@ export default function BookImport() {
           setApplyMessage('');
           setApplyError(null);
           setIsApplyComplete(false);
-          message.warning('拆书任务预览不存在（可能因服务重启），已清空缓存，请重新上传TXT');
+          message.warning(t('toast.previewMissing'));
         } else {
-          message.error('获取预览失败');
+          message.error(t('toast.previewFailed'));
         }
       } finally {
         setLoadingPreview(false);
@@ -334,7 +336,7 @@ export default function BookImport() {
 
   const startTask = async () => {
     if (!file) {
-      message.warning('请先选择 TXT 文件');
+      message.warning(t('toast.selectFile'));
       return;
     }
 
@@ -353,10 +355,10 @@ export default function BookImport() {
       });
 
       setTaskId(response.task_id);
-      message.success('拆书任务已创建');
+      message.success(t('toast.taskCreated'));
     } catch (error) {
       console.error('创建任务失败:', error);
-      message.error('创建拆书任务失败');
+      message.error(t('toast.createTaskFailed'));
     } finally {
       setCreatingTask(false);
     }
@@ -378,7 +380,7 @@ export default function BookImport() {
         setApplyMessage('');
         setApplyError(null);
         setIsApplyComplete(false);
-        message.warning('任务不存在，已清空本地缓存，请重新创建拆书任务');
+        message.warning(t('toast.taskNotFound'));
       }
     }
   };
@@ -387,11 +389,11 @@ export default function BookImport() {
     if (!taskId) return;
     try {
       await bookImportApi.cancelTask(taskId);
-      message.success('任务已取消');
+      message.success(t('toast.taskCancelled'));
       await refreshStatus();
     } catch (error) {
       console.error('取消任务失败:', error);
-      message.error('取消任务失败');
+      message.error(t('toast.cancelTaskFailed'));
     }
   };
 
@@ -408,7 +410,7 @@ export default function BookImport() {
     try {
       setApplying(true);
       setApplyProgress(0);
-      setApplyMessage('准备导入...');
+      setApplyMessage(t('msg.preparing'));
       setApplyError(null);
       setIsApplyComplete(false);
       setFailedSteps([]);
@@ -446,13 +448,13 @@ export default function BookImport() {
             setTimeout(() => {
               setFailedSteps(prev => {
                 if (prev.length === 0) {
-                  message.success(`导入成功：已生成职业${generatedCareers}个，角色/组织${generatedEntities}个`);
+                  message.success(t('toast.importSuccess', { careers: generatedCareers, entities: generatedEntities }));
                   clearBookImportCache();
                   setTimeout(() => {
                     navigate(`/project/${result.project_id}/chapters`);
                   }, 1000);
                 } else {
-                  message.warning(`导入完成，但有 ${prev.length} 个生成步骤失败，可点击重试`);
+                  message.warning(t('toast.importPartial', { count: prev.length }));
                 }
                 return prev;
               });
@@ -460,20 +462,20 @@ export default function BookImport() {
           },
           onError: (error) => {
             console.error('导入过程发生错误:', error);
-            setApplyError(`导入失败: ${error}`);
-            message.error(`导入失败: ${error}`);
+            setApplyError(t('toast.importError', { error }));
+            message.error(t('toast.importError', { error }));
             setApplying(false);
           },
           onComplete: () => {
             setApplyProgress(100);
-            setApplyMessage('导入完成！');
+            setApplyMessage(t('msg.importDone'));
           }
         }
       );
     } catch (error) {
       console.error('确认导入失败:', error);
-      setApplyError('确认导入失败，无法连接到服务器');
-      message.error('确认导入失败');
+      setApplyError(t('msg.importFailedServer'));
+      message.error(t('toast.confirmImportFailed'));
       setApplying(false);
     }
   };
@@ -486,7 +488,7 @@ export default function BookImport() {
     try {
       setRetrying(true);
       setRetryProgress(0);
-      setRetryMessage('正在重试失败的生成步骤...');
+      setRetryMessage(t('msg.retrying'));
 
       await bookImportApi.retryFailedStepsStream(
         taskId,
@@ -510,10 +512,10 @@ export default function BookImport() {
           onResult: (result) => {
             if (result.still_failed && result.still_failed.length > 0) {
               setFailedSteps(result.still_failed);
-              message.warning(`重试完成，仍有 ${result.still_failed.length} 个步骤失败`);
+              message.warning(t('toast.retryStillFailed', { count: result.still_failed.length }));
             } else {
               setFailedSteps([]);
-              message.success('所有步骤重试成功！');
+              message.success(t('toast.retryAllSuccess'));
               clearBookImportCache();
               const projectId = result.project_id || importedProjectId.current;
               if (projectId) {
@@ -525,18 +527,18 @@ export default function BookImport() {
           },
           onError: (error) => {
             console.error('重试失败:', error);
-            message.error(`重试失败: ${error}`);
+            message.error(t('toast.retryFailed', { error }));
           },
           onComplete: () => {
             setRetrying(false);
             setRetryProgress(100);
-            setRetryMessage('重试完成');
+            setRetryMessage(t('msg.retryDone'));
           }
         }
       );
     } catch (error) {
       console.error('重试请求失败:', error);
-      message.error('重试请求失败，无法连接到服务器');
+      message.error(t('toast.retryRequestFailed'));
       setRetrying(false);
     }
   }, [taskId, failedSteps, navigate]);
@@ -546,7 +548,7 @@ export default function BookImport() {
     clearBookImportCache();
     const projectId = importedProjectId.current;
     if (projectId) {
-      message.info('已跳过失败步骤，正在跳转到项目...');
+      message.info(t('toast.skippedSteps'));
       navigate(`/project/${projectId}/chapters`);
     }
   }, [navigate]);
@@ -575,7 +577,7 @@ export default function BookImport() {
     setExtractMode('tail');
     setTailChapterCount(10);
 
-    message.success('已重新开始，请重新上传 TXT 并解析');
+    message.success(t('toast.restarted'));
   }, []);
 
   const updateChapter = (index: number, patch: Partial<BookImportPreview['chapters'][number]>) => {
@@ -617,10 +619,10 @@ export default function BookImport() {
               <Space direction="vertical" size={4}>
                 <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: token.colorWhite, textShadow: `0 2px 4px ${token.colorBgMask}` }}>
                   <InboxOutlined style={{ color: token.colorWhite, opacity: 0.9, marginRight: 8 }} />
-                  拆书导入
+                  {t('header.title')}
                 </Title>
                 <Text style={{ fontSize: isMobile ? 12 : 14, color: token.colorTextLightSolid, opacity: 0.85, marginLeft: isMobile ? 40 : 48 }}>
-                  上传TXT并自动解析为章节、预览并导入项目
+                  {t('header.subtitle')}
                 </Text>
               </Space>
             </Col>
@@ -644,14 +646,14 @@ export default function BookImport() {
                     paddingInline: 10,
                   }}
                 >
-                  当前进度：{currentStepText}
+                  {t('header.currentProgress', { step: currentStepText })}
                 </Tag>
                 <Popconfirm
-                  title="确认重新开始？"
-                  description="将清空当前拆书任务与缓存，并回到上传文件步骤。"
+                  title={t('restart.confirmTitle')}
+                  description={t('restart.confirmDesc')}
                   onConfirm={restartImport}
-                  okText="重新开始"
-                  cancelText="取消"
+                  okText={t('restart.ok')}
+                  cancelText={t('modal.cancel')}
                   disabled={!canRestart}
                 >
                   <Button
@@ -661,7 +663,7 @@ export default function BookImport() {
                     disabled={!canRestart}
                     style={{ boxShadow: '0 6px 16px rgba(0, 0, 0, 0.2)', borderRadius: 10 }}
                   >
-                    重新开始
+                    {t('restart.button')}
                   </Button>
                 </Popconfirm>
               </Space>
@@ -684,7 +686,7 @@ export default function BookImport() {
         </Card>
 
       {currentStep === 0 && (
-      <Card title="上传 TXT 并开始解析" style={{ marginBottom: 16 }}>
+      <Card title={t('upload.cardTitle')} style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           <Dragger
             accept=".txt"
@@ -712,26 +714,26 @@ export default function BookImport() {
             <p className="ant-upload-drag-icon">
               <InboxOutlined />
             </p>
-            <p className="ant-upload-text">点击或拖拽 TXT 文件到此区域</p>
-            <p className="ant-upload-hint">首版仅支持 .txt，建议不超过 50MB</p>
+            <p className="ant-upload-text">{t('upload.dragText')}</p>
+            <p className="ant-upload-hint">{t('upload.hint')}</p>
           </Dragger>
 
-          <Card size="small" title="解析范围设置">
+          <Card size="small" title={t('upload.rangeTitle')}>
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               {rangeLocked && (
                 <Alert
                   type="warning"
                   showIcon
-                  message="当前任务的解析范围已锁定"
-                  description="拆书任务会按创建任务时的解析范围执行。若需修改范围，请点击上方“重新开始”后重新上传并解析。"
+                  message={t('upload.rangeLockedMsg')}
+                  description={t('upload.rangeLockedDesc')}
                 />
               )}
               <Select
                 value={extractMode}
                 onChange={(value) => setExtractMode(value)}
                 options={[
-                  { label: '截取末 x 章反向生成', value: 'tail' },
-                  { label: '整本反向生成', value: 'full' },
+                  { label: t('upload.modeTail'), value: 'tail' },
+                  { label: t('upload.modeFull'), value: 'full' },
                 ]}
                 style={{ width: '100%' }}
                 disabled={rangeLocked}
@@ -744,15 +746,15 @@ export default function BookImport() {
                 value={tailChapterCount}
                 disabled={rangeLocked || extractMode !== 'tail'}
                 onChange={(value) => setTailChapterCount(typeof value === 'number' ? value : 10)}
-                addonBefore="末尾章节数"
+                addonBefore={t('upload.tailCountLabel')}
                 style={{ width: '100%' }}
               />
               <Text type="secondary">
                 {effectiveExtractMode === 'tail'
-                  ? `当前将截取末 ${normalizedTailChapterCount} 章进行反向生成；章节数必须为 5 的倍数，最多 50 章。`
+                  ? t('range.hintTail', { count: normalizedTailChapterCount })
                   : extractMode === 'tail' && tailChapterCount > 50
-                    ? '当前输入已超过 50 章，将自动按整本拆处理。'
-                    : '当前将基于整本内容进行反向生成，适合完整拆书但耗时可能更长。'}
+                    ? t('range.hintAutoFull')
+                    : t('range.hintFull')}
               </Text>
             </Space>
           </Card>
@@ -760,22 +762,17 @@ export default function BookImport() {
           <Alert
             type="info"
             showIcon
-            message="支持的拆书 TXT 格式要求"
+            message={t('format.alertMsg')}
             description={
               <div style={{ lineHeight: 1.8 }}>
-                <div>1. 仅支持 <strong>.txt</strong> 文件，建议每章使用单独的章节标题行。</div>
-                <div>2. 推荐格式：<strong>第1章 标题</strong>，下一行开始写正文内容。</div>
-                <div>3. 正文建议按自然段换行，首行可缩进两个字符。</div>
-                <div>4. 章节之间保留空行即可，不要添加多余的分割线、全文完、导出时间等干扰内容。</div>
+                <div>{t('format.line1Prefix')}<strong>.txt</strong>{t('format.line1Suffix')}</div>
+                <div>{t('format.line2Prefix')}<strong>{t('format.line2Strong')}</strong>{t('format.line2Suffix')}</div>
+                <div>{t('format.line3')}</div>
+                <div>{t('format.line4')}</div>
                 <div style={{ marginTop: 8 }}>
-                  示例：
+                  {t('format.exampleLabel')}
                   <pre style={{ margin: '8px 0 0', padding: 12, borderRadius: 8, background: token.colorFillAlter, whiteSpace: 'pre-wrap' }}>
-{`第1章 初入江湖
-这里是第1章正文第一段。
-这里是第1章正文第二段。
-
-第2章 雨夜追踪
-这里是第2章正文内容。`}
+{t('format.example')}
                   </pre>
                 </div>
               </div>
@@ -789,10 +786,10 @@ export default function BookImport() {
               loading={creatingTask}
               onClick={startTask}
             >
-              开始解析
+              {t('upload.startParse')}
             </Button>
             {taskId && (
-              <Tag color="blue">任务ID: {taskId}</Tag>
+              <Tag color="blue">{t('upload.taskIdLabel', { id: taskId })}</Tag>
             )}
           </Space>
         </Space>
@@ -800,9 +797,9 @@ export default function BookImport() {
       )}
 
       {currentStep === 1 && (
-      <Card title="解析任务状态" style={{ marginBottom: 16 }}>
+      <Card title={t('parse.cardTitle')} style={{ marginBottom: 16 }}>
         {!taskId ? (
-          <Empty description="尚未创建任务" />
+          <Empty description={t('parse.empty')} />
         ) : (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <Progress
@@ -816,11 +813,11 @@ export default function BookImport() {
             />
             <div style={{ marginTop: 24 }}>
               <Text strong style={{ fontSize: 16 }}>
-                {taskStatus?.status === 'pending' && '等待调度...'}
-                {taskStatus?.status === 'running' && '正在解析TXT文件...'}
-                {taskStatus?.status === 'completed' && '解析完成！正在生成预览...'}
-                {taskStatus?.status === 'failed' && '解析失败'}
-                {taskStatus?.status === 'cancelled' && '已取消'}
+                {taskStatus?.status === 'pending' && t('parse.statusPending')}
+                {taskStatus?.status === 'running' && t('parse.statusRunning')}
+                {taskStatus?.status === 'completed' && t('parse.statusCompleted')}
+                {taskStatus?.status === 'failed' && t('parse.statusFailed')}
+                {taskStatus?.status === 'cancelled' && t('parse.statusCancelled')}
               </Text>
               {taskStatus?.message && (
                 <div style={{ marginTop: 8 }}>
@@ -834,9 +831,9 @@ export default function BookImport() {
             )}
 
             <Space style={{ marginTop: 24 }}>
-              <Button icon={<ReloadOutlined />} onClick={refreshStatus}>刷新状态</Button>
+              <Button icon={<ReloadOutlined />} onClick={refreshStatus}>{t('parse.refresh')}</Button>
               {taskStatus && ['pending', 'running'].includes(taskStatus.status) && (
-                <Button danger icon={<StopOutlined />} onClick={cancelTask}>取消任务</Button>
+                <Button danger icon={<StopOutlined />} onClick={cancelTask}>{t('parse.cancel')}</Button>
               )}
             </Space>
           </div>
@@ -847,7 +844,7 @@ export default function BookImport() {
       {currentStep === 2 && (
       <>
       <Card
-        title="预览修正"
+        title={t('preview.cardTitle')}
         extra={
           <Button
             type="primary"
@@ -855,14 +852,14 @@ export default function BookImport() {
             disabled={!preview}
             onClick={applyImport}
           >
-            确认导入
+            {t('preview.confirmImport')}
           </Button>
         }
         style={{ marginBottom: 16 }}
       >
         <Spin spinning={loadingPreview}>
           {!preview ? (
-            <Empty description="解析完成后将显示预览数据" />
+            <Empty description={t('preview.empty')} />
           ) : (
             <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 8 }}>
               <Space direction="vertical" style={{ width: '100%' }} size={16}>
@@ -870,7 +867,7 @@ export default function BookImport() {
                 <Alert
                   type="warning"
                   showIcon
-                  message="检测到告警"
+                  message={t('preview.warnings')}
                   description={
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {preview.warnings.map((w, idx) => (
@@ -883,11 +880,11 @@ export default function BookImport() {
 
               <Card
                 size="small"
-                title="项目信息"
+                title={t('preview.projectInfo')}
               >
                 <Row gutter={12}>
                   <Col xs={24} md={12}>
-                    <Text>标题</Text>
+                    <Text>{t('preview.labelTitle')}</Text>
                     <Input
                       value={preview.project_suggestion.title}
                       onChange={(e) =>
@@ -899,7 +896,7 @@ export default function BookImport() {
                     />
                   </Col>
                   <Col xs={24} md={12}>
-                    <Text>类型</Text>
+                    <Text>{t('preview.labelGenre')}</Text>
                     <Input
                       value={preview.project_suggestion.genre}
                       onChange={(e) =>
@@ -911,7 +908,7 @@ export default function BookImport() {
                     />
                   </Col>
                   <Col xs={24}>
-                    <Text>主题</Text>
+                    <Text>{t('preview.labelTheme')}</Text>
                     <TextArea
                       rows={3}
                       value={preview.project_suggestion.theme}
@@ -924,7 +921,7 @@ export default function BookImport() {
                     />
                   </Col>
                   <Col xs={24}>
-                    <Text>简介</Text>
+                    <Text>{t('preview.labelDescription')}</Text>
                     <TextArea
                       rows={3}
                       value={preview.project_suggestion.description}
@@ -937,7 +934,7 @@ export default function BookImport() {
                     />
                   </Col>
                   <Col xs={24} md={12}>
-                    <Text>叙事角度</Text>
+                    <Text>{t('preview.labelPerspective')}</Text>
                     <Select
                       style={{ width: '100%' }}
                       value={preview.project_suggestion.narrative_perspective}
@@ -948,14 +945,14 @@ export default function BookImport() {
                         }) : prev)
                       }
                       options={[
-                        { value: '第一人称', label: '第一人称' },
-                        { value: '第三人称', label: '第三人称' },
-                        { value: '全知视角', label: '全知视角' },
+                        { value: '第一人称', label: t('preview.narrativeFirst') },
+                        { value: '第三人称', label: t('preview.narrativeThird') },
+                        { value: '全知视角', label: t('preview.narrativeOmniscient') },
                       ]}
                     />
                   </Col>
                   <Col xs={24} md={12}>
-                    <Text>目标字数</Text>
+                    <Text>{t('preview.labelTargetWords')}</Text>
                     <InputNumber
                       style={{ width: '100%' }}
                       min={1000}
@@ -975,28 +972,28 @@ export default function BookImport() {
                 </Row>
               </Card>
 
-              <Card size="small" title={`章节（${preview.chapters.length}）`}>
+              <Card size="small" title={t('preview.chaptersTitle', { count: preview.chapters.length })}>
                 <Collapse
                   items={preview.chapters.map((ch, idx) => ({
                     key: String(idx),
-                    label: `第 ${ch.chapter_number} 章 · ${ch.title}`,
+                    label: t('preview.chapterLabel', { number: ch.chapter_number, title: ch.title }),
                     children: (
                       <Space direction="vertical" style={{ width: '100%' }}>
                         <Input
                           value={ch.title}
-                          addonBefore="标题"
+                          addonBefore={t('preview.addonTitle')}
                           onChange={(e) => updateChapter(idx, { title: e.target.value })}
                         />
                         <TextArea
                           rows={2}
                           value={ch.summary}
-                          placeholder="章节摘要"
+                          placeholder={t('preview.phSummary')}
                           onChange={(e) => updateChapter(idx, { summary: e.target.value })}
                         />
                         <TextArea
                           rows={8}
                           value={ch.content}
-                          placeholder="章节正文"
+                          placeholder={t('preview.phContent')}
                           onChange={(e) => updateChapter(idx, { content: e.target.value })}
                         />
                       </Space>
@@ -1015,10 +1012,10 @@ export default function BookImport() {
       )}
 
       {currentStep === 3 && (
-      <Card title="生成导入进度" style={{ marginBottom: 16 }}>
+      <Card title={t('progress.cardTitle')} style={{ marginBottom: 16 }}>
         <div style={{ textAlign: 'center', padding: '40px 20px', maxWidth: 600, margin: '0 auto' }}>
           <Typography.Title level={4} style={{ marginBottom: 32 }}>
-            {retrying ? '正在重试失败的生成步骤' : (failedSteps.length > 0 && isApplyComplete ? '导入完成，部分步骤需要重试' : '正在为您生成并导入项目内容')}
+            {retrying ? t('progress.titleRetrying') : (failedSteps.length > 0 && isApplyComplete ? t('progress.titlePartialRetry') : t('progress.titleGenerating'))}
           </Typography.Title>
           
           <Progress
@@ -1051,7 +1048,7 @@ export default function BookImport() {
           {applyError && (
             <Alert
               type="error"
-              message="导入出错"
+              message={t('progress.error')}
               description={applyError}
               showIcon
               style={{ textAlign: 'left', marginBottom: 24 }}
@@ -1065,11 +1062,11 @@ export default function BookImport() {
                 type="warning"
                 icon={<WarningOutlined />}
                 showIcon
-                message={`${failedSteps.length} 个生成步骤失败`}
+                message={t('progress.failedStepsCount', { count: failedSteps.length })}
                 description={
                   <div>
                     <Typography.Paragraph style={{ marginBottom: 12, color: 'rgba(0,0,0,0.65)' }}>
-                      以下AI生成步骤未能完成，但基础数据（章节、大纲）已成功导入。您可以选择重试或跳过。
+                      {t('progress.retryDesc')}
                     </Typography.Paragraph>
                     <List
                       size="small"
@@ -1084,7 +1081,7 @@ export default function BookImport() {
                               <Space>
                                 <Tag color="error">{item.step_label}</Tag>
                                 {(item.retry_count ?? 0) > 0 && (
-                                  <Tag color="orange">已重试 {item.retry_count} 次</Tag>
+                                  <Tag color="orange">{t('progress.retriedCount', { count: item.retry_count ?? 0 })}</Tag>
                                 )}
                               </Space>
                             }
@@ -1104,10 +1101,10 @@ export default function BookImport() {
                         onClick={retryFailedSteps}
                         loading={retrying}
                       >
-                        智能重试全部失败步骤
+                        {t('progress.retryAll')}
                       </Button>
                       <Button onClick={skipFailedSteps}>
-                        跳过，直接进入项目
+                        {t('progress.skip')}
                       </Button>
                     </Space>
                   </div>
@@ -1124,7 +1121,7 @@ export default function BookImport() {
                 <Alert
                   type="info"
                   showIcon
-                  message="正在重试..."
+                  message={t('progress.retrying')}
                   description={retryMessage}
                   style={{ textAlign: 'left' }}
                 />
@@ -1141,11 +1138,11 @@ export default function BookImport() {
               marginTop: 32
             }}>
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                导入过程中，AI会自动帮您补全：<br />
-                • 世界观设定（时间、地点、氛围、规则）<br />
-                • 职业体系（主职业与副职业）<br />
-                • 核心角色与相关组织<br />
-                {isApplyComplete ? '所有步骤已完成，即将自动跳转。' : '请耐心等待，完成后将自动跳转。'}
+                {t('progress.autoInfo1')}<br />
+                {t('progress.autoInfo2')}<br />
+                {t('progress.autoInfo3')}<br />
+                {t('progress.autoInfo4')}<br />
+                {isApplyComplete ? t('progress.autoDone') : t('progress.autoWait')}
               </Typography.Text>
             </div>
           )}

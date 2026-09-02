@@ -1,0 +1,79 @@
+{
+  "aiMessage": {
+    "confirmContent": "OK! Creating your project now, this may take a few minutes...",
+    "confirmCreate": "Confirm creation",
+    "feedback": "💭 {{feedback}}"
+  },
+  "confirm": {
+    "cancel": "Cancel",
+    "content": "Are you sure you want to restart? The current conversation progress will be lost.",
+    "ok": "Confirm",
+    "title": "Confirm restart"
+  },
+  "error": {
+    "descError": "Error generating description: {{msg}}",
+    "generateFailed": "Generation failed, please retry",
+    "genreError": "Error generating genre: {{msg}}",
+    "invalidOptions": "Generated options are not in the correct format (at least 3 valid options needed)",
+    "optimizeFailed": "Optimization failed, please retry",
+    "processFailed": "Processing failed, please retry",
+    "promptContinuation": "\n\nYou can choose:",
+    "retryFailed": "Retry failed, please try again later",
+    "themeError": "Error generating theme: {{msg}}",
+    "titleError": "Error generating title: {{msg}}"
+  },
+  "greeting": {
+    "restart": "OK, let's start over!\n\nTell me, what kind of novel do you want to write?",
+    "welcome": "Hello! I'm your AI creative assistant. Let's create a wonderful novel together!\n\nTell me, what kind of novel do you want to write?"
+  },
+  "mode": {
+    "oneToMany": "One-to-many mode",
+    "oneToOne": "One-to-one mode"
+  },
+  "prompt": {
+    "chooseDesc": "Please choose a description, or type your own:",
+    "chooseGenre": "Please choose genre tags (multi-select):",
+    "chooseOption": "Please choose an option, or type your own:",
+    "choosePerspective": "Great! Next, please choose the narrative perspective of the novel:",
+    "chooseTheme": "Please choose a theme, or type your own:",
+    "chooseTitle": "Please choose a title, or type your own:",
+    "outlineMode": "Great! Now please choose your desired outline mode:\n\n📋 一对一模式: traditional mode, one outline corresponds to one chapter, suitable for novels with a clear structure and independent chapters.\n\n📚 一对多模式: detailed mode, one outline can expand into multiple chapters, suitable for novels that need detailed plot expansion.\n\nPlease choose:",
+    "placeholderIdea": "e.g. I want to write a sci-fi novel about time travel...",
+    "placeholderOther": "Type custom content, or click an option card above..."
+  },
+  "refine": {
+    "prompt": "Based on your feedback, I regenerated some {{type}} options:",
+    "success": "Option regeneration based on your feedback is complete",
+    "typeDesc": "description",
+    "typeGenre": "genre",
+    "typeTheme": "theme",
+    "typeTitle": "title"
+  },
+  "summary": {
+    "block": "Great! Your novel setup is complete, please confirm:\n\n📖 Title: {{title}}\n📝 Description: {{description}}\n🎯 Theme: {{theme}}\n🏷️ Genre: {{genre}}\n👁️ Perspective: {{perspective}}\n📋 Outline mode: {{mode}}\n\nPlease choose the next step:"
+  },
+  "toast": {
+    "enterContent": "Please enter content",
+    "enterFeedback": "Please enter your feedback",
+    "restored": "Previous conversation progress restored",
+    "selectGenre": "Please select at least one genre",
+    "selectOutlineMode": "Please choose an outline mode from the options",
+    "selfInput": "Please enter your content in the input box below"
+  },
+  "ui": {
+    "cancel": "Cancel",
+    "confirmSelection": "Confirm selection ({{num}})",
+    "feedbackPrompt": "💡 Not satisfied? Tell me what you think",
+    "refineGenerate": "Generate from feedback",
+    "refinePlaceholder": "e.g. I want a more tragic theme, make it shorter, prefer ancient style...",
+    "restart": "Restart",
+    "restartShort": "Restart",
+    "return": "Back",
+    "returnHome": "Back to home",
+    "send": "Send",
+    "spinRefining": "Regenerating based on your feedback...",
+    "spinThinking": "AI thinking...",
+    "tip": "💡 Tip: Press Enter to send, Shift+Enter for a new line",
+    "title": "✨ Inspiration Mode"
+  }
+}

@@ -25,6 +25,19 @@ import zhSystemSettings from '../locales/zh/systemSettings.json';
 import zhUserManagement from '../locales/zh/userManagement.json';
 import zhWorldSetting from '../locales/zh/worldSetting.json';
 import zhWritingStyles from '../locales/zh/writingStyles.json';
+import zhBookImport from '../locales/zh/bookImport.json';
+import zhProjectList from '../locales/zh/projectList.json';
+import zhForeshadows from '../locales/zh/foreshadows.json';
+import zhInspiration from '../locales/zh/inspiration.json';
+import zhMcpPlugins from '../locales/zh/mcpPlugins.json';
+import zhAiProjectGenerator from '../locales/zh/aiProjectGenerator.json';
+import zhChapterContentComparison from '../locales/zh/chapterContentComparison.json';
+import zhChapterRegenerationModal from '../locales/zh/chapterRegenerationModal.json';
+import zhCharacterCard from '../locales/zh/characterCard.json';
+import zhCharacterCareerCard from '../locales/zh/characterCareerCard.json';
+import zhExpansionPlanEditor from '../locales/zh/expansionPlanEditor.json';
+import zhFloatingTaskPanel from '../locales/zh/floatingTaskPanel.json';
+import zhPartialRegenerateModal from '../locales/zh/partialRegenerateModal.json';
 import enCommon from '../locales/en/common.json';
 import enErrors from '../locales/en/errors.json';
 import enChapters from '../locales/en/chapters.json';
@@ -48,6 +61,19 @@ import enSystemSettings from '../locales/en/systemSettings.json';
 import enUserManagement from '../locales/en/userManagement.json';
 import enWorldSetting from '../locales/en/worldSetting.json';
 import enWritingStyles from '../locales/en/writingStyles.json';
+import enBookImport from '../locales/en/bookImport.json';
+import enProjectList from '../locales/en/projectList.json';
+import enForeshadows from '../locales/en/foreshadows.json';
+import enInspiration from '../locales/en/inspiration.json';
+import enMcpPlugins from '../locales/en/mcpPlugins.json';
+import enAiProjectGenerator from '../locales/en/aiProjectGenerator.json';
+import enChapterContentComparison from '../locales/en/chapterContentComparison.json';
+import enChapterRegenerationModal from '../locales/en/chapterRegenerationModal.json';
+import enCharacterCard from '../locales/en/characterCard.json';
+import enCharacterCareerCard from '../locales/en/characterCareerCard.json';
+import enExpansionPlanEditor from '../locales/en/expansionPlanEditor.json';
+import enFloatingTaskPanel from '../locales/en/floatingTaskPanel.json';
+import enPartialRegenerateModal from '../locales/en/partialRegenerateModal.json';
 
 export const resources = {
   zh: {
@@ -74,6 +100,19 @@ export const resources = {
     userManagement: zhUserManagement,
     worldSetting: zhWorldSetting,
     writingStyles: zhWritingStyles,
+    bookImport: zhBookImport,
+    projectList: zhProjectList,
+    foreshadows: zhForeshadows,
+    inspiration: zhInspiration,
+    mcpPlugins: zhMcpPlugins,
+    aiProjectGenerator: zhAiProjectGenerator,
+    chapterContentComparison: zhChapterContentComparison,
+    chapterRegenerationModal: zhChapterRegenerationModal,
+    characterCard: zhCharacterCard,
+    characterCareerCard: zhCharacterCareerCard,
+    expansionPlanEditor: zhExpansionPlanEditor,
+    floatingTaskPanel: zhFloatingTaskPanel,
+    partialRegenerateModal: zhPartialRegenerateModal,
   },
   en: {
     common: enCommon,
@@ -99,5 +138,18 @@ export const resources = {
     userManagement: enUserManagement,
     worldSetting: enWorldSetting,
     writingStyles: enWritingStyles,
+    bookImport: enBookImport,
+    projectList: enProjectList,
+    foreshadows: enForeshadows,
+    inspiration: enInspiration,
+    mcpPlugins: enMcpPlugins,
+    aiProjectGenerator: enAiProjectGenerator,
+    chapterContentComparison: enChapterContentComparison,
+    chapterRegenerationModal: enChapterRegenerationModal,
+    characterCard: enCharacterCard,
+    characterCareerCard: enCharacterCareerCard,
+    expansionPlanEditor: enExpansionPlanEditor,
+    floatingTaskPanel: enFloatingTaskPanel,
+    partialRegenerateModal: enPartialRegenerateModal,
   },
 } as const;

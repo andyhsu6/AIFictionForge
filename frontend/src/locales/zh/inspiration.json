@@ -1,0 +1,79 @@
+{
+  "aiMessage": {
+    "confirmContent": "好的！正在为你创建项目，这可能需要几分钟时间...",
+    "confirmCreate": "确认创建",
+    "feedback": "💭 {{feedback}}"
+  },
+  "confirm": {
+    "cancel": "取消",
+    "content": "确定要重新开始吗？当前的对话进度将会丢失。",
+    "ok": "确认",
+    "title": "确认重新开始"
+  },
+  "error": {
+    "descError": "生成简介时出错：{{msg}}",
+    "generateFailed": "生成失败，请重试",
+    "genreError": "生成类型时出错：{{msg}}",
+    "invalidOptions": "生成的选项格式不正确（至少需要3个有效选项）",
+    "optimizeFailed": "优化失败，请重试",
+    "processFailed": "处理失败，请重试",
+    "promptContinuation": "\n\n你可以选择：",
+    "retryFailed": "重试失败，请稍后再试",
+    "themeError": "生成主题时出错：{{msg}}",
+    "titleError": "生成书名时出错：{{msg}}"
+  },
+  "greeting": {
+    "restart": "好的，让我们重新开始！\n\n请告诉我，你想写一本什么样的小说？",
+    "welcome": "你好！我是你的AI创作助手。让我们一起创作一部精彩的小说吧！\n\n请告诉我，你想写一本什么样的小说？"
+  },
+  "mode": {
+    "oneToMany": "一对多模式",
+    "oneToOne": "一对一模式"
+  },
+  "prompt": {
+    "chooseDesc": "请选择一个简介，或者输入你自己的：",
+    "chooseGenre": "请选择类型标签（可多选）：",
+    "chooseOption": "请选择一个选项，或者输入你自己的：",
+    "choosePerspective": "很好！接下来，请选择小说的叙事视角：",
+    "chooseTheme": "请选择一个主题，或者输入你自己的：",
+    "chooseTitle": "请选择一个书名，或者输入你自己的：",
+    "outlineMode": "很好！现在请选择你想要的大纲模式：\n\n📋 一对一模式：传统模式，一个大纲对应一个章节，适合结构清晰、章节独立的小说。\n\n📚 一对多模式：细化模式，一个大纲可以展开成多个章节，适合需要详细展开情节的小说。\n\n请选择：",
+    "placeholderIdea": "例如：我想写一本关于时间旅行的科幻小说...",
+    "placeholderOther": "输入自定义内容，或点击上方选项卡片..."
+  },
+  "refine": {
+    "prompt": "根据您的反馈，我重新生成了一些{{type}}选项：",
+    "success": "已根据您的反馈重新生成选项",
+    "typeDesc": "简介",
+    "typeGenre": "类型",
+    "typeTheme": "主题",
+    "typeTitle": "书名"
+  },
+  "summary": {
+    "block": "太棒了！你的小说设定已完成，请确认：\n\n📖 书名：{{title}}\n📝 简介：{{description}}\n🎯 主题：{{theme}}\n🏷️ 类型：{{genre}}\n👁️ 视角：{{perspective}}\n📋 大纲模式：{{mode}}\n\n请选择下一步操作："
+  },
+  "toast": {
+    "enterContent": "请输入内容",
+    "enterFeedback": "请输入您的反馈意见",
+    "restored": "已恢复上次的对话进度",
+    "selectGenre": "请至少选择一个类型",
+    "selectOutlineMode": "请从选项中选择一个大纲模式",
+    "selfInput": "请在下方输入框中输入您的内容"
+  },
+  "ui": {
+    "cancel": "取消",
+    "confirmSelection": "确认选择 ({{num}})",
+    "feedbackPrompt": "💡 不太满意？告诉我你的想法",
+    "refineGenerate": "根据反馈生成",
+    "refinePlaceholder": "例如：我想要更悲剧的主题、能不能更简短一些、偏向古风...",
+    "restart": "重新开始",
+    "restartShort": "重新",
+    "return": "返回",
+    "returnHome": "返回首页",
+    "send": "发送",
+    "spinRefining": "正在根据您的反馈重新生成...",
+    "spinThinking": "AI思考中...",
+    "tip": "💡 提示：按 Enter 发送，Shift+Enter 换行",
+    "title": "✨ 灵感模式"
+  }
+}

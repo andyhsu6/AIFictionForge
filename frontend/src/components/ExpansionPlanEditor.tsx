@@ -1,4 +1,5 @@
 import { App, Modal, Form, Input, InputNumber, Select, Tag, Space, Button, Divider } from 'antd';
+import { useTranslation } from 'react-i18next';
 import { PlusOutlined } from '@ant-design/icons';
 import { useState, useEffect, useCallback } from 'react';
 import type { ExpansionPlanData, Character } from '../types';
@@ -24,6 +25,7 @@ export default function ExpansionPlanEditor({
   onCancel
 }: ExpansionPlanEditorProps) {
   const { message } = App.useApp();
+  const { t } = useTranslation('expansionPlanEditor');
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   
@@ -55,7 +57,7 @@ export default function ExpansionPlanEditor({
         }
       } else {
         console.error('角色API返回格式异常:', response);
-        message.warning('角色数据格式异常');
+        message.warning(t('dataFormatError'));
       }
       
       setAvailableCharacters(chars);
@@ -64,7 +66,7 @@ export default function ExpansionPlanEditor({
       console.error('加载角色列表失败:', error);
       setAvailableCharacters([]);
       const err = error as Error;
-      message.error('加载角色列表失败: ' + (err?.message || '未知错误'));
+      message.error(t('loadCharactersFailed', { error: err?.message || t('unknownError') }));
     } finally {
       setLoadingCharacters(false);
     }
@@ -120,14 +122,14 @@ export default function ExpansionPlanEditor({
       
       // 验证至少有一个关键事件
       if (keyEvents.length === 0) {
-        message.warning('请至少添加一个关键事件');
+        message.warning(t('keyEventRequired'));
         setLoading(false);
         return;
       }
       
       // 验证至少有一个角色
       if (characters.length === 0) {
-        message.warning('请至少添加一个涉及角色');
+        message.warning(t('characterRequired'));
         setLoading(false);
         return;
       }
@@ -147,7 +149,7 @@ export default function ExpansionPlanEditor({
       // message.success('规划信息保存成功');
     } catch (error) {
       console.error('保存失败:', error);
-      message.error('保存失败，请重试');
+      message.error(t('saveFailed'));
     } finally {
       setLoading(false);
     }
@@ -163,17 +165,17 @@ export default function ExpansionPlanEditor({
 
   return (
     <Modal
-      title="编辑章节规划"
+      title={t('title')}
       open={visible}
       onCancel={handleCancel}
       width={700}
       centered
       footer={[
         <Button key="cancel" onClick={handleCancel} disabled={loading}>
-          取消
+          {t('cancel')}
         </Button>,
         <Button key="submit" type="primary" loading={loading} onClick={handleSubmit}>
-          保存
+          {t('save')}
         </Button>
       ]}
     >
@@ -181,37 +183,37 @@ export default function ExpansionPlanEditor({
         form={form}
         layout="vertical"
         initialValues={{
-          emotional_tone: '紧张激烈',
-          conflict_type: '人物冲突',
+          emotional_tone: t('defaultEmotionalTone'),
+          conflict_type: t('defaultConflictType'),
           estimated_words: 3000
         }}
       >
         {/* 情节概要 */}
         <Form.Item
-          label="情节概要"
+          label={t('summaryLabel')}
           name="summary"
-          tooltip="简要描述本章的主要情节和故事走向"
+          tooltip={t('summaryTooltip')}
         >
           <TextArea
             rows={3}
-            placeholder="简要描述本章的主要情节，例如：主角遇到意外事件，开始了一段新的冒险..."
+            placeholder={t('summaryPlaceholder')}
             maxLength={500}
             showCount
           />
         </Form.Item>
 
-        <Divider orientation="left">详细规划</Divider>
+        <Divider orientation="left">{t('detailedPlan')}</Divider>
 
         {/* 关键事件 */}
         <Form.Item
-          label="关键事件"
-          tooltip="至少添加一个关键事件"
+          label={t('keyEventsLabel')}
+          tooltip={t('keyEventsTooltip')}
           required
         >
           <Space direction="vertical" style={{ width: '100%' }}>
             <Space.Compact style={{ width: '100%' }}>
               <Input
-                placeholder="输入关键事件后按回车或点击添加"
+                placeholder={t('keyEventPlaceholder')}
                 value={keyEventInput}
                 onChange={(e) => setKeyEventInput(e.target.value)}
                 onPressEnter={handleAddKeyEvent}
@@ -221,7 +223,7 @@ export default function ExpansionPlanEditor({
                 icon={<PlusOutlined />}
                 onClick={handleAddKeyEvent}
               >
-                添加
+                {t('add')}
               </Button>
             </Space.Compact>
             <Space wrap>
@@ -246,13 +248,13 @@ export default function ExpansionPlanEditor({
 
         {/* 涉及角色 */}
         <Form.Item
-          label="涉及角色"
-          tooltip="从项目现有角色中选择"
+          label={t('charactersLabel')}
+          tooltip={t('charactersTooltip')}
           required
         >
           <Space direction="vertical" style={{ width: '100%' }}>
             <Select
-              placeholder="选择角色"
+              placeholder={t('selectCharacterPlaceholder')}
               style={{ width: '100%' }}
               loading={loadingCharacters}
               onChange={handleAddCharacter}
@@ -271,10 +273,10 @@ export default function ExpansionPlanEditor({
                     }))
                 : []}
               notFoundContent={
-                loadingCharacters ? '加载中...' :
-                !Array.isArray(availableCharacters) ? '加载角色失败' :
-                availableCharacters.length === 0 ? '暂无角色，请先在角色管理中创建' :
-                '所有角色已添加'
+                loadingCharacters ? t('loading') :
+                !Array.isArray(availableCharacters) ? t('loadCharactersError') :
+                availableCharacters.length === 0 ? t('noCharacters') :
+                t('allCharactersAdded')
               }
             />
             <Space wrap>
@@ -294,55 +296,55 @@ export default function ExpansionPlanEditor({
 
         {/* 情感基调 */}
         <Form.Item
-          label="情感基调"
+          label={t('emotionalToneLabel')}
           name="emotional_tone"
-          rules={[{ required: true, message: '请输入情感基调' }]}
-          tooltip="例如：紧张激烈、温馨感人、悬疑惊悚等"
+          rules={[{ required: true, message: t('emotionalToneRequired') }]}
+          tooltip={t('emotionalToneTooltip')}
         >
           <Input
-            placeholder="输入情感基调，例如：紧张激烈、温馨感人等"
+            placeholder={t('emotionalTonePlaceholder')}
             maxLength={20}
           />
         </Form.Item>
 
         {/* 冲突类型 */}
         <Form.Item
-          label="冲突类型"
+          label={t('conflictTypeLabel')}
           name="conflict_type"
-          rules={[{ required: true, message: '请输入冲突类型' }]}
-          tooltip="例如：人物冲突、内心冲突、环境冲突等"
+          rules={[{ required: true, message: t('conflictTypeRequired') }]}
+          tooltip={t('conflictTypeTooltip')}
         >
           <Input
-            placeholder="输入冲突类型，例如：人物冲突、内心冲突等"
+            placeholder={t('conflictTypePlaceholder')}
             maxLength={20}
           />
         </Form.Item>
 
         {/* 预估字数 */}
         <Form.Item
-          label="预估字数"
+          label={t('estimatedWordsLabel')}
           name="estimated_words"
-          rules={[{ required: true, message: '请输入预估字数' }]}
+          rules={[{ required: true, message: t('estimatedWordsRequired') }]}
         >
           <InputNumber
             min={500}
             max={10000}
             step={100}
             style={{ width: '100%' }}
-            formatter={(value) => `${value} 字`}
-            parser={(value) => Number(value?.replace(' 字', '')) as 500 | 10000}
+            formatter={(value) => t('wordCountFormat', { value: value ?? 0 })}
+            parser={(value) => Number((value || '').replace(/[^\d]/g, '')) as 500 | 10000}
           />
         </Form.Item>
 
         {/* 叙事目标 */}
         <Form.Item
-          label="叙事目标"
+          label={t('narrativeGoalLabel')}
           name="narrative_goal"
-          rules={[{ required: true, message: '请输入叙事目标' }]}
+          rules={[{ required: true, message: t('narrativeGoalRequired') }]}
         >
           <TextArea
             rows={3}
-            placeholder="描述本章要达成的叙事目标，例如：推进主线剧情、深化角色关系、揭示重要信息等..."
+            placeholder={t('narrativeGoalPlaceholder')}
             maxLength={500}
             showCount
           />
