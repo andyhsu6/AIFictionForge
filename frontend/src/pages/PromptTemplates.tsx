@@ -29,7 +29,7 @@ import {
 } from '@ant-design/icons';
 import axios from 'axios';
 import { promptTemplateCardStyles, promptTemplateCardHoverHandlers, promptTemplateGridConfig } from '../components/CardStyles';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Title, Text, Paragraph } = Typography;
@@ -356,10 +356,10 @@ export default function PromptTemplates() {
             description={
               <div>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block', marginBottom: 8 }}>
-                  {t('usage.item1Prefix')}<strong>{t('usage.item1Bold')}</strong>{t('usage.item1Suffix')}
+                  <Trans ns="promptTemplates" i18nKey="usage.item1" components={{ strong: <strong /> }} />
                 </Text>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block' }}>
-                  {t('usage.item2Prefix')}<strong>{t('usage.item2Bold')}</strong>{t('usage.item2Mid')} <Text code>{'{variable_name}'}</Text> {t('usage.item2Suffix')}
+                  <Trans ns="promptTemplates" i18nKey="usage.item2" components={{ strong: <strong />, code: <Text code /> }} />
                 </Text>
               </div>
             }

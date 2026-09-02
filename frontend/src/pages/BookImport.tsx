@@ -33,7 +33,7 @@ import type {
   BookImportStepFailure,
   BookImportTask,
 } from '../types';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { Text, Title } = Typography;
 const { Dragger } = Upload;
@@ -765,8 +765,8 @@ export default function BookImport() {
             message={t('format.alertMsg')}
             description={
               <div style={{ lineHeight: 1.8 }}>
-                <div>{t('format.line1Prefix')}<strong>.txt</strong>{t('format.line1Suffix')}</div>
-                <div>{t('format.line2Prefix')}<strong>{t('format.line2Strong')}</strong>{t('format.line2Suffix')}</div>
+                <div><Trans ns="bookImport" i18nKey="format.line1" components={{ strong: <strong /> }} /></div>
+                <div><Trans ns="bookImport" i18nKey="format.line2" components={{ strong: <strong /> }} /></div>
                 <div>{t('format.line3')}</div>
                 <div>{t('format.line4')}</div>
                 <div style={{ marginTop: 8 }}>
@@ -1138,11 +1138,7 @@ export default function BookImport() {
               marginTop: 32
             }}>
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                {t('progress.autoInfo1')}<br />
-                {t('progress.autoInfo2')}<br />
-                {t('progress.autoInfo3')}<br />
-                {t('progress.autoInfo4')}<br />
-                {isApplyComplete ? t('progress.autoDone') : t('progress.autoWait')}
+                <><Trans ns="bookImport" i18nKey="progress.autoInfo" components={{ br: <br /> }} />{isApplyComplete ? t('progress.autoDone') : t('progress.autoWait')}</>
               </Typography.Text>
             </div>
           )}

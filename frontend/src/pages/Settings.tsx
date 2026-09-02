@@ -6,7 +6,7 @@ import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetCon
 import { eventBus, EventNames } from '../store/eventBus';
 import i18n, { normalizeLanguage } from '../i18n';
 import { parseServerLanguage } from '../utils/languageSync';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -1234,10 +1234,10 @@ export default function SettingsPage() {
                           description={
                             <div style={{ fontSize: isMobile ? '12px' : '14px' }}>
                               <p style={{ margin: '8px 0' }}>
-                                {t('defaultAlert.descFromEnv')}<code>.env</code>{t('defaultAlert.descSuffix')}
+                                <Trans ns="settings" i18nKey="defaultAlert.desc" components={{ code: <code /> }} />
                               </p>
                               <p style={{ margin: '8px 0 0 0' }}>
-                                {t('defaultAlert.saveNote')}<code>.env</code>{t('defaultAlert.saveNoteSuffix')}
+                                <Trans ns="settings" i18nKey="defaultAlert.saveNoteFull" components={{ code: <code /> }} />
                               </p>
                             </div>
                           }

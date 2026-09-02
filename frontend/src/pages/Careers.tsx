@@ -5,7 +5,7 @@ import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import SSEProgressModal from '../components/SSEProgressModal';
 import { eventBus, EventNames } from '../store/eventBus';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Title, Text, Paragraph } = Typography;
@@ -453,9 +453,7 @@ export default function Careers() {
             >
                 <Form form={aiForm} layout="vertical" onFinish={handleAIGenerate}>
                     <Paragraph type="secondary">
-                        {t('ai.modalDesc1')}
-                        <br />
-                        {t('ai.modalDesc2')}
+                        <Trans ns="careers" i18nKey="ai.modalDesc" components={{ br: <br /> }} />
                     </Paragraph>
                     <Divider style={{ margin: '12px 0' }} />
                     <Form.Item label={t('ai.mainCount')} name="main_career_count" initialValue={3}>

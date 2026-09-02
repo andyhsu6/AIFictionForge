@@ -35,12 +35,10 @@
     "testButton": "Test Cover API"
   },
   "defaultAlert": {
-    "descFromEnv": "Currently showing the default configuration read from the server ",
-    "descSuffix": " file.",
+    "desc": "Currently showing the default configuration read from the server <code>.env</code> file.",
     "message": "Using default configuration from the .env file",
     "savedMessage": "Using your saved personal configuration",
-    "saveNote": "After clicking \"Save Settings\", the configuration will be saved to the database and synced to ",
-    "saveNoteSuffix": " file."
+    "saveNoteFull": "After clicking \"Save Settings\", the configuration will be saved to the database and synced to <code>.env</code> file."
   },
   "form": {
     "apiBaseUrl": "API Base URL",

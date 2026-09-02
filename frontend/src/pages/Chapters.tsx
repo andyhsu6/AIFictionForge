@@ -14,7 +14,7 @@ import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 import ChapterReader from '../components/ChapterReader';
 import PartialRegenerateToolbar from '../components/PartialRegenerateToolbar';
 import PartialRegenerateModal from '../components/PartialRegenerateModal';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 
@@ -1521,7 +1521,7 @@ export default function Chapters() {
             content: (
               <div>
                 <p style={{ marginBottom: 12 }}>
-                  {t('conflict.existsPrefix')}<strong>{values.chapter_number}</strong>{t('conflict.existsSuffix')}
+                  <Trans ns="chapters" i18nKey="conflict.exists" components={{ strong: <strong /> }} values={{ chapterNumber: values.chapter_number }} />
                 </p>
                 <div style={{
                   padding: 12,

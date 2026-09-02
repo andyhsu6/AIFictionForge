@@ -8,7 +8,7 @@ import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
 import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
 import type { ApiError, Character, OutlineImportMode, OutlineImportPreview } from '../types';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -853,7 +853,7 @@ export default function Outline() {
             title: t('manual.conflictTitle'),
             content: (
               <div>
-                <p>{t('manual.conflictUsedPrefix')}<strong>{values.order_index}</strong>{t('manual.conflictUsedSuffix')}</p>
+                <p><Trans ns="outline" i18nKey="manual.conflictUsed" components={{ strong: <strong /> }} values={{ order: values.order_index }} /></p>
                 <div style={{
                   padding: 12,
                   background: token.colorWarningBg,
@@ -869,7 +869,7 @@ export default function Outline() {
                   </div>
                 </div>
                 <p style={{ marginTop: 12, color: token.colorTextSecondary }}>
-                  {t('manual.suggestIndex')}<strong>{nextOrderIndex}</strong>{t('manual.suggestIndexSuffix')}
+                  <Trans ns="outline" i18nKey="manual.suggestIndex" components={{ strong: <strong /> }} values={{ order: nextOrderIndex }} />
                 </p>
               </div>
             ),
@@ -1145,7 +1145,7 @@ export default function Outline() {
                 centered: true,
                 content: (
                   <div>
-                    <p>{t('existing.confirmContentP1', { title: outlineTitle })}<strong>{data.chapter_count}</strong>{t('existing.confirmContentP2')}</p>
+                    <p><Trans ns="outline" i18nKey="existing.confirmContent" components={{ strong: <strong /> }} values={{ title: outlineTitle, chapters: data.chapter_count }} /></p>
                     <p style={{ color: token.colorPrimary, marginTop: 8 }}>
                       {t('existing.confirmNote')}
                     </p>

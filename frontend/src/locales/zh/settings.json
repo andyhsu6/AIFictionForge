@@ -35,12 +35,10 @@
     "testButton": "测试封面接口"
   },
   "defaultAlert": {
-    "descFromEnv": "当前显示的是从服务器 ",
-    "descSuffix": " 文件读取的默认配置。",
+    "desc": "当前显示的是从服务器 <code>.env</code> 文件读取的默认配置。",
     "message": "使用 .env 文件中的默认配置",
     "savedMessage": "使用已保存的个人配置",
-    "saveNote": "点击\"保存设置\"后，配置将保存到数据库并同步更新到 ",
-    "saveNoteSuffix": " 文件。"
+    "saveNoteFull": "点击\"保存设置\"后，配置将保存到数据库并同步更新到 <code>.env</code> 文件。"
   },
   "form": {
     "apiBaseUrl": "API 地址",
