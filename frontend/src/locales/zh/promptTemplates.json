@@ -1,0 +1,81 @@
+{
+  "actions": {
+    "edit": "编辑",
+    "export": "导出配置",
+    "import": "导入配置",
+    "reset": "重置"
+  },
+  "card": {
+    "templateKey": "模板键"
+  },
+  "editor": {
+    "cancel": "取消",
+    "contentLabel": "模板内容",
+    "contentPlaceholder": "输入提示词模板内容...",
+    "descLabel": "描述",
+    "descPlaceholder": "简要描述模板用途",
+    "nameLabel": "模板名称",
+    "namePlaceholder": "输入模板名称",
+    "save": "保存",
+    "title": "编辑模板: {{name}}",
+    "variableHint": "提示：使用 {variable_name} 格式表示变量占位符"
+  },
+  "empty": {
+    "noTemplates": "暂无模板数据"
+  },
+  "import": {
+    "convertedListTitle": "以下模板内容与系统默认不一致，已转为自定义：",
+    "convertedToCustom": "• 检测到修改（已转为自定义）：{{n}} 个",
+    "createdOrUpdated": "• 创建/更新自定义：{{n}} 个",
+    "doneTitle": "导入完成",
+    "keptSystemDefault": "• 保持系统默认：{{n}} 个",
+    "ok": "确定",
+    "successPrefix": "导入成功！"
+  },
+  "page": {
+    "subtitle": "按账户隔离自定义AI生成提示词",
+    "title": "提示词模板管理"
+  },
+  "resetConfirm": {
+    "cancel": "取消",
+    "content": "确定要删除当前账户的自定义副本并恢复系统默认吗？这不会影响其他账户。",
+    "ok": "确定",
+    "title": "确认重置"
+  },
+  "status": {
+    "alwaysEnabled": "始终启用",
+    "disabled": "已禁用",
+    "enabled": "已启用"
+  },
+  "tabs": {
+    "all": "全部 ({{n}})"
+  },
+  "tag": {
+    "customized": "已自定义",
+    "noDescription": "暂无描述",
+    "systemDefault": "系统默认"
+  },
+  "toast": {
+    "actionFailed": "操作失败",
+    "exportFailed": "导出失败",
+    "exportStats": "成功导出 {{total}} 个提示词配置（{{customized}} 个自定义，{{systemDefault}} 个系统默认）",
+    "exportSuccess": "导出成功",
+    "importFailed": "导入失败",
+    "loadFailed": "加载失败",
+    "resetFailed": "重置失败",
+    "resetSuccess": "已重置为系统默认",
+    "savedAsCustomCopy": "已保存为当前账户的自定义副本",
+    "saveFailed": "保存失败",
+    "saveSuccess": "保存成功"
+  },
+  "usage": {
+    "item1Bold": "系统默认模板",
+    "item1Prefix": "• ",
+    "item1Suffix": "（灰色头部）：始终启用，无需手动开关。点击\"编辑\"后将创建仅当前账户生效的自定义副本。",
+    "item2Bold": "已自定义模板",
+    "item2Mid": "（紫色头部）：仅当前账户生效，可通过开关控制启用/禁用，使用",
+    "item2Prefix": "• ",
+    "item2Suffix": "格式表示变量占位符。点击\"重置\"可恢复为系统默认。",
+    "title": "使用说明"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "actions": {
+    "cardTitle": "操作",
+    "reload": "重新加载",
+    "save": "保存系统设置",
+    "sendTest": "发送测试邮件"
+  },
+  "loadFailed": "加载系统设置失败",
+  "mail": {
+    "cardTitle": "邮件服务配置",
+    "fromEmail": "发件人邮箱",
+    "fromEmailPlaceholder": "默认可与用户名一致",
+    "fromName": "发件人名称",
+    "fromNameRequired": "请输入发件人名称",
+    "host": "SMTP 主机",
+    "hostPlaceholder": "例如：smtp.qq.com",
+    "hostRequired": "请输入 SMTP 主机",
+    "password": "SMTP 密码 / 授权码",
+    "passwordPlaceholder": "QQ 邮箱请填写授权码",
+    "passwordRequired": "请输入 SMTP 授权码",
+    "port": "SMTP 端口",
+    "portRequired": "请输入 SMTP 端口",
+    "provider": "邮件服务商",
+    "providerCustom": "自定义 SMTP",
+    "providerQQ": "QQ 邮箱",
+    "providerRequired": "请选择邮件服务商",
+    "qqNoteDesc": "如果选择 QQ 邮箱，请使用完整 QQ 邮箱地址作为用户名，密码处填写 SMTP 授权码，而不是 QQ 登录密码。默认推荐 smtp.qq.com + SSL 465。",
+    "qqNoteTitle": "QQ 邮箱配置说明",
+    "username": "SMTP 用户名",
+    "usernamePlaceholder": "完整邮箱地址",
+    "usernameRequired": "请输入 SMTP 用户名",
+    "useSsl": "启用 SSL",
+    "useTls": "启用 TLS"
+  },
+  "noAccess": {
+    "desc": "只有管理员可以访问系统设置。",
+    "title": "无权限访问"
+  },
+  "page": {
+    "subtitle": "仅管理员可见，用于维护 SMTP 发信能力与邮箱注册参数。",
+    "title": "系统设置"
+  },
+  "register": {
+    "cardTitle": "注册与验证码策略",
+    "codeTtl": "验证码有效期（分钟）",
+    "codeTtlRequired": "请输入验证码有效期",
+    "emailAuth": "启用邮箱认证",
+    "emailRegister": "启用邮箱注册",
+    "resendInterval": "验证码重发间隔（秒）",
+    "resendIntervalRequired": "请输入验证码重发间隔"
+  },
+  "saveFailed": "保存系统设置失败",
+  "saveSuccess": "系统 SMTP 设置已保存",
+  "test": {
+    "error": "测试 SMTP 配置失败",
+    "failed": "SMTP 测试失败",
+    "fillTargetFirst": "请先填写测试目标邮箱",
+    "targetPlaceholder": "请输入测试目标邮箱，如 123456@qq.com",
+    "tipDesc": "先保存 SMTP 配置，再填写测试目标邮箱，点击“发送测试邮件”后由后端通过 SMTP 实际发信。",
+    "tipTitle": "建议使用 QQ 默认配置"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "buttons": {
+    "cancel": "Cancel",
+    "create": "Create",
+    "save": "Save"
+  },
+  "createModal": {
+    "title": "Create Custom Style"
+  },
+  "deleteConfirm": {
+    "cancel": "Cancel",
+    "defaultWarning": "This is the default style; a new default must be set after deletion",
+    "ok": "Confirm",
+    "title": "Delete this style?"
+  },
+  "editModal": {
+    "title": "Edit Writing Style"
+  },
+  "empty": {
+    "noStyles": "No style data yet"
+  },
+  "form": {
+    "description": "Style Description",
+    "descriptionPlaceholder": "Briefly describe this style's characteristics...",
+    "name": "Style Name",
+    "namePlaceholderCreate": "e.g. Wuxia, Sci-Fi",
+    "namePlaceholderEdit": "Enter style name",
+    "nameRequired": "Please enter the style name",
+    "promptContent": "Prompt Content",
+    "promptPlaceholderCreate": "Enter the style prompt used to guide AI to generate content in this style...",
+    "promptPlaceholderEdit": "Enter the style prompt...",
+    "promptRequired": "Please enter the prompt content"
+  },
+  "page": {
+    "createButton": "Create Custom Style",
+    "title": "Writing Style Management"
+  },
+  "tag": {
+    "default": "Default"
+  },
+  "toast": {
+    "createFailed": "Creation failed",
+    "createSuccess": "Created successfully",
+    "deleteFailed": "Deletion failed",
+    "deleteSuccess": "Deleted successfully",
+    "loadFailed": "Failed to load style list",
+    "selectProjectFirst": "Please select a project first",
+    "setDefaultFailed": "Failed to set",
+    "setDefaultSuccess": "Default style set successfully",
+    "updateFailed": "Update failed",
+    "updateSuccess": "Updated successfully"
+  },
+  "type": {
+    "custom": "Custom",
+    "preset": "Preset"
+  }
+}

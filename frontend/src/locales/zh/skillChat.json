@@ -1,0 +1,25 @@
+{
+  "chat": {
+    "back": "返回",
+    "inputPlaceholder": "输入你的需求...",
+    "selectedSkill": "已选择「{{name}}」",
+    "startHint": "输入你的需求开始对话，或直接使用触发词：{{triggers}}",
+    "thinking": "思考中..."
+  },
+  "error": {
+    "generateFailed": "生成失败",
+    "readStreamFailed": "无法读取响应流",
+    "requestFailed": "请求失败",
+    "requestFailedCheckAI": "请求失败，请检查 AI 配置"
+  },
+  "list": {
+    "skillCount": "{{n}} 个 Skill"
+  },
+  "page": {
+    "subtitle": "选择一个 Skill 开始创作对话。每个 Skill 都有专业的写作工作流和知识库。",
+    "title": "Skill 工具箱"
+  },
+  "toast": {
+    "loadSkillsFailed": "加载 Skill 列表失败"
+  }
+}

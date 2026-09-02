@@ -1,0 +1,102 @@
+{
+  "actions": {
+    "edit": "编辑",
+    "remove": "移除"
+  },
+  "addMember": {
+    "character": "选择角色",
+    "characterPlaceholder": "选择要加入的角色",
+    "characterRequired": "请选择角色",
+    "initialLoyalty": "初始忠诚度",
+    "title": "添加组织成员"
+  },
+  "buttons": {
+    "add": "添加",
+    "cancel": "取消",
+    "save": "保存"
+  },
+  "editMember": {
+    "notes": "备注",
+    "notesPlaceholder": "成员相关的备注信息",
+    "title": "编辑成员信息"
+  },
+  "editOrg": {
+    "colorPlaceholder": "如：深红色、金色、黑色等",
+    "locationPlaceholder": "组织的主要活动区域或总部位置",
+    "mottoPlaceholder": "组织的宗旨、格言或口号",
+    "powerRequired": "请输入势力等级",
+    "powerTooltip": "0-100的数值，表示组织的影响力",
+    "title": "编辑组织信息"
+  },
+  "memberForm": {
+    "joinedAt": "加入时间",
+    "joinedAtPlaceholder": "如：开山大典时、三年前、建立之初等",
+    "position": "职位",
+    "positionPlaceholder": "如：掌门、长老、弟子",
+    "positionRequired": "请输入职位",
+    "rank": "职位等级",
+    "rankTooltip": "数字越大等级越高",
+    "status": "状态"
+  },
+  "members": {
+    "add": "添加成员",
+    "titleWithCount": "组织成员 ({{n}})",
+    "total": "共 {{n}} 名成员"
+  },
+  "memberStatus": {
+    "active": "在职",
+    "deceased": "已故",
+    "expelled": "除名",
+    "retired": "退休"
+  },
+  "memberTable": {
+    "actions": "操作",
+    "contribution": "贡献度",
+    "joinedAt": "加入时间",
+    "loyalty": "忠诚度",
+    "name": "姓名",
+    "position": "职位",
+    "rankSuffix": "(级别 {{rank}})",
+    "status": "状态"
+  },
+  "orgDetail": {
+    "color": "代表颜色",
+    "location": "所在地",
+    "memberCount": "成员数量",
+    "motto": "格言/口号",
+    "name": "组织名称",
+    "powerLevel": "势力等级",
+    "purpose": "组织目的",
+    "title": "组织详情",
+    "type": "类型"
+  },
+  "orgList": {
+    "empty": "暂无组织",
+    "listButton": "列表",
+    "select": "选择组织",
+    "selectHint": "请选择一个组织查看详情",
+    "summary": "成员: {{members}} | 势力: {{power}}",
+    "title": "组织列表",
+    "titleWithCount": "组织列表 ({{n}})"
+  },
+  "page": {
+    "title": "组织管理"
+  },
+  "removeConfirm": {
+    "cancel": "取消",
+    "content": "确定要移除该成员吗？",
+    "ok": "移除",
+    "title": "确认移除"
+  },
+  "toast": {
+    "loadMembersFailed": "加载成员列表失败",
+    "loadOrgFailed": "加载组织列表失败",
+    "memberAdded": "成员添加成功",
+    "memberAddFailed": "添加成员失败",
+    "memberRemoved": "成员移除成功",
+    "memberRemoveFailed": "移除失败",
+    "memberUpdated": "成员信息更新成功",
+    "orgUpdated": "组织信息更新成功",
+    "updateFailed": "更新失败"
+  }
+}

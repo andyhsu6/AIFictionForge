@@ -1,0 +1,25 @@
+{
+  "chat": {
+    "back": "Back",
+    "inputPlaceholder": "Enter your request...",
+    "selectedSkill": "Selected \"{{name}}\"",
+    "startHint": "Type your request to start the conversation, or use a trigger word: {{triggers}}",
+    "thinking": "Thinking..."
+  },
+  "error": {
+    "generateFailed": "Generation failed",
+    "readStreamFailed": "Unable to read response stream",
+    "requestFailed": "Request failed",
+    "requestFailedCheckAI": "Request failed, please check the AI configuration"
+  },
+  "list": {
+    "skillCount": "{{n}} Skills"
+  },
+  "page": {
+    "subtitle": "Pick a Skill to start a creative conversation. Each Skill has a professional writing workflow and knowledge base.",
+    "title": "Skill Toolbox"
+  },
+  "toast": {
+    "loadSkillsFailed": "Failed to load Skill list"
+  }
+}

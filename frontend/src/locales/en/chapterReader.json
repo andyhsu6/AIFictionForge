@@ -1,0 +1,51 @@
+{
+  "actions": {
+    "analyze": "Analyze",
+    "back": "Back",
+    "showAnnotations": "Show Annotations"
+  },
+  "analyze": {
+    "analyzing": "Analyzing...",
+    "done": "Analysis complete!",
+    "failed": "Analysis failed: {{error}}",
+    "inProgress": "Analyzing chapter...",
+    "reanalyze": "Re-analyze",
+    "starting": "Starting chapter analysis...",
+    "timeout": "Analysis timed out, refresh later to see results",
+    "triggerFailed": "Failed to trigger analysis",
+    "unknownError": "Unknown error"
+  },
+  "drawer": {
+    "title": "Chapter Analysis"
+  },
+  "empty": {
+    "noAnalysisDesc": "This chapter has not been AI-analyzed yet, so memory annotations cannot be shown.",
+    "noAnalysisTitle": "No analysis data"
+  },
+  "error": {
+    "chapterNotFound": "Chapter not found",
+    "invalidChapterData": "Invalid chapter data: content missing",
+    "loadFailed": "Load failed"
+  },
+  "nav": {
+    "chapterLabel": "Chapter {{n}}: {{title}}",
+    "firstChapter": "This is the first chapter",
+    "lastChapter": "This is the last chapter",
+    "next": "Next",
+    "nextFull": "Next: Chapter {{n}} {{title}}",
+    "nextTitle": "Next: {{title}}",
+    "prevFull": "Previous: Chapter {{n}} {{title}}",
+    "previous": "Previous",
+    "prevTitle": "Previous: {{title}}"
+  },
+  "status": {
+    "loadingChapter": "Loading chapter..."
+  },
+  "summary": {
+    "characterEvents": " 👤{{n}} character events",
+    "foreshadows": " 🌟{{n}} foreshadows",
+    "hooks": " 🎣{{n}} hooks",
+    "plotPoints": " 💎{{n}} plot points",
+    "total": "Total {{n}} annotations:"
+  }
+}

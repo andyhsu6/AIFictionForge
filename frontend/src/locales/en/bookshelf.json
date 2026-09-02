@@ -1,0 +1,39 @@
+{
+  "card": {
+    "noDescription": "No description...",
+    "progress": "Progress",
+    "target": "Target Words",
+    "uncategorized": "Uncategorized",
+    "written": "Words Written"
+  },
+  "cover": {
+    "actions": "Cover Actions",
+    "backToDetails": "Back to Details",
+    "download": "Download Cover",
+    "failed": "Cover generation failed",
+    "generate": "Generate Cover",
+    "generating": "Cover is generating, please wait...",
+    "generatingShort": "Generating...",
+    "noneAvailable": "No cover available yet",
+    "regenerate": "Regenerate",
+    "regenerating": "Regenerating...",
+    "retryLater": "Please retry later",
+    "viewCover": "View Cover"
+  },
+  "header": {
+    "export": "Export Projects",
+    "import": "Import Project",
+    "subtitle": "Click a book to enter the project and review progress, word counts and status.",
+    "title": "My Bookshelf"
+  },
+  "newProject": {
+    "inspiration": "Inspiration Mode",
+    "quickStart": "Quick Start",
+    "tagline": "Begin a new creative journey"
+  },
+  "welcome": {
+    "description": "Before you start writing, configure your AI provider (OpenAI / Anthropic supported).",
+    "goConfigure": "Configure",
+    "title": "Welcome to AIFictionForge"
+  }
+}

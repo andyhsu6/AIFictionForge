@@ -1,0 +1,116 @@
+{
+  "alert": {
+    "loginNotes": "alert.loginNotes",
+    "noAuthMethod": "alert.noAuthMethod",
+    "noAuthMethodDesc": "alert.noAuthMethodDesc",
+    "registerClosed": "alert.registerClosed",
+    "registerClosedDesc": "alert.registerClosedDesc"
+  },
+  "email": {
+    "address": "email.address",
+    "addressRequired": "email.addressRequired",
+    "codeLength": "email.codeLength",
+    "codeLogin": "email.codeLogin",
+    "forgotPassword": "email.forgotPassword",
+    "invalidEmail": "email.invalidEmail",
+    "loginCode": "email.loginCode",
+    "loginCodePlaceholder": "email.loginCodePlaceholder",
+    "loginCodeRequired": "email.loginCodeRequired",
+    "passwordMin": "email.passwordMin",
+    "registeredPlaceholder": "email.registeredPlaceholder",
+    "registerEmail": "email.registerEmail",
+    "registerEmailPlaceholder": "email.registerEmailPlaceholder",
+    "registerEmailRequired": "email.registerEmailRequired",
+    "resendIn": "email.resendIn",
+    "sendCode": "email.sendCode"
+  },
+  "features": {
+    "chapters": {
+      "desc": "features.chapters.desc",
+      "title": "features.chapters.title"
+    },
+    "characters": {
+      "desc": "features.characters.desc",
+      "title": "features.characters.title"
+    },
+    "multiModel": {
+      "desc": "features.multiModel.desc",
+      "title": "features.multiModel.title"
+    },
+    "wizard": {
+      "desc": "features.wizard.desc",
+      "title": "features.wizard.title"
+    }
+  },
+  "hero": {
+    "description": "hero.description",
+    "line1": "hero.line1",
+    "line2": "hero.line2"
+  },
+  "linuxdo": {
+    "login": "linuxdo.login"
+  },
+  "local": {
+    "password": "local.password",
+    "passwordPlaceholder": "local.passwordPlaceholder",
+    "passwordRequired": "local.passwordRequired",
+    "submit": "local.submit",
+    "thirdParty": "local.thirdParty",
+    "username": "local.username",
+    "usernamePlaceholder": "local.usernamePlaceholder",
+    "usernameRequired": "local.usernameRequired"
+  },
+  "panel": {
+    "subtitle": "panel.subtitle",
+    "welcomeBack": "panel.welcomeBack"
+  },
+  "register": {
+    "codePlaceholder": "register.codePlaceholder",
+    "confirmPassword": "register.confirmPassword",
+    "confirmPasswordPlaceholder": "register.confirmPasswordPlaceholder",
+    "confirmPasswordRequired": "register.confirmPasswordRequired",
+    "emailCode": "register.emailCode",
+    "emailCodeRequired": "register.emailCodeRequired",
+    "hint": "register.hint",
+    "nickname": "register.nickname",
+    "nicknameMax": "register.nicknameMax",
+    "nicknamePlaceholder": "register.nicknamePlaceholder",
+    "password": "register.password",
+    "passwordMismatch": "register.passwordMismatch",
+    "passwordPlaceholder": "register.passwordPlaceholder",
+    "passwordRequired": "register.passwordRequired",
+    "submit": "register.submit"
+  },
+  "reset": {
+    "backToCodeLogin": "reset.backToCodeLogin",
+    "codeLabel": "reset.codeLabel",
+    "codePlaceholder": "reset.codePlaceholder",
+    "codeRequired": "reset.codeRequired",
+    "confirmNewPassword": "reset.confirmNewPassword",
+    "confirmNewPasswordPlaceholder": "reset.confirmNewPasswordPlaceholder",
+    "confirmNewPasswordRequired": "reset.confirmNewPasswordRequired",
+    "newPassword": "reset.newPassword",
+    "newPasswordPlaceholder": "reset.newPasswordPlaceholder",
+    "newPasswordRequired": "reset.newPasswordRequired",
+    "passwordMismatch": "reset.passwordMismatch",
+    "submit": "reset.submit",
+    "title": "reset.title"
+  },
+  "tabs": {
+    "emailLogin": "tabs.emailLogin",
+    "emailRegister": "tabs.emailRegister",
+    "local": "tabs.local"
+  },
+  "tips": {
+    "emailResetPassword": "tips.emailResetPassword",
+    "linuxdoFirstLogin": "tips.linuxdoFirstLogin",
+    "localDefaultAccount": "tips.localDefaultAccount"
+  },
+  "toast": {
+    "authUrlFailed": "toast.authUrlFailed",
+    "codeSent": "toast.codeSent",
+    "loginSuccess": "toast.loginSuccess",
+    "registerSuccess": "toast.registerSuccess",
+    "resetSuccess": "toast.resetSuccess"
+  }
+}

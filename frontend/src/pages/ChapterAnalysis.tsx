@@ -14,6 +14,7 @@ import api from '../services/api';
 import AnnotatedText, { type MemoryAnnotation } from '../components/AnnotatedText';
 import MemorySidebar from '../components/MemorySidebar';
 import { eventBus, EventNames } from '../store/eventBus';
+import { useTranslation } from 'react-i18next';
 
 interface ChapterItem {
   id: string;
@@ -63,6 +64,7 @@ interface NavigationData {
  * 显示章节列表和带标注的章节内容
  */
 const ChapterAnalysis: React.FC = () => {
+  const { t } = useTranslation('chapterAnalysis');
   const { projectId } = useParams<{ projectId: string }>();
   
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
@@ -110,7 +112,7 @@ const ChapterAnalysis: React.FC = () => {
         }
       } catch (error) {
         console.error('加载章节列表失败:', error);
-        message.error('加载章节列表失败');
+        message.error(t('toast.loadListFailed'));
       } finally {
         setLoading(false);
       }
@@ -136,7 +138,7 @@ const ChapterAnalysis: React.FC = () => {
       setNavigation(navigationResponse ? (navigationResponse.data || navigationResponse) : null);
     } catch (error) {
       console.error('加载章节内容失败:', error);
-      message.error('加载章节内容失败');
+      message.error(t('toast.loadContentFailed'));
     } finally {
       setContentLoading(false);
     }
@@ -199,7 +201,7 @@ const ChapterAnalysis: React.FC = () => {
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: '100px 0' }}>
-        <Spin size="large" tip="加载章节中..." />
+        <Spin size="large" tip={t('status.loadingChapters')} />
       </div>
     );
   }
@@ -215,7 +217,7 @@ const ChapterAnalysis: React.FC = () => {
         }}>
           <h2 style={{ margin: 0, fontSize: 24 }}>
             <FundOutlined style={{ marginRight: 8 }} />
-            剧情分析
+            {t('page.title')}
           </h2>
         </div>
       )}
@@ -230,12 +232,12 @@ const ChapterAnalysis: React.FC = () => {
         {/* 左侧章节列表 - 桌面端 */}
         {!isMobile && (
         <Card
-          title="章节列表"
+          title={t('list.title')}
           style={{ width: 280, height: '100%', overflow: 'hidden' }}
           bodyStyle={{ padding: 0, height: 'calc(100% - 57px)', overflow: 'auto' }}
         >
           {chapters.length === 0 ? (
-            <Empty description="暂无章节" style={{ marginTop: 60 }} />
+            <Empty description={t('list.empty')} style={{ marginTop: 60 }} />
           ) : (
             <List
               dataSource={chapters}
@@ -253,13 +255,13 @@ const ChapterAnalysis: React.FC = () => {
                   <List.Item.Meta
                     title={
                       <span style={{ fontSize: 14, fontWeight: selectedChapter?.id === chapter.id ? 600 : 400 }}>
-                        第{chapter.chapter_number}章: {chapter.title}
+                        {t('list.chapterLabel', { n: chapter.chapter_number, title: chapter.title })}
                       </span>
                     }
                     description={
                       <Space size={4}>
                         <Tag color={chapter.content && chapter.content.trim() !== '' ? 'success' : 'default'}>
-                          {chapter.word_count || 0}字
+                          {t('list.wordCount', { n: chapter.word_count || 0 })}
                         </Tag>
                       </Space>
                     }
@@ -274,7 +276,7 @@ const ChapterAnalysis: React.FC = () => {
         {/* 移动端章节列表抽屉 */}
       {isMobile && (
         <Drawer
-          title="章节列表"
+          title={t('list.title')}
           placement="left"
           onClose={() => setChapterListVisible(false)}
           open={chapterListVisible}
@@ -282,7 +284,7 @@ const ChapterAnalysis: React.FC = () => {
           styles={{ body: { padding: 0 } }}
         >
           {chapters.length === 0 ? (
-            <Empty description="暂无章节" style={{ marginTop: 60 }} />
+            <Empty description={t('list.empty')} style={{ marginTop: 60 }} />
           ) : (
             <List
               dataSource={chapters}
@@ -300,13 +302,13 @@ const ChapterAnalysis: React.FC = () => {
                   <List.Item.Meta
                     title={
                       <span style={{ fontSize: 14, fontWeight: selectedChapter?.id === chapter.id ? 600 : 400 }}>
-                        第{chapter.chapter_number}章: {chapter.title}
+                        {t('list.chapterLabel', { n: chapter.chapter_number, title: chapter.title })}
                       </span>
                     }
                     description={
                       <Space size={4}>
                         <Tag color={chapter.content && chapter.content.trim() !== '' ? 'success' : 'default'}>
-                          {chapter.word_count || 0}字
+                          {t('list.wordCount', { n: chapter.word_count || 0 })}
                         </Tag>
                       </Space>
                     }
@@ -322,7 +324,7 @@ const ChapterAnalysis: React.FC = () => {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
         {!selectedChapter ? (
           <Card style={{ height: '100%' }}>
-            <Empty description="请从左侧选择一个章节查看" style={{ marginTop: 100 }} />
+            <Empty description={t('empty.selectChapter')} style={{ marginTop: 100 }} />
           </Card>
         ) : (
           <>
@@ -342,7 +344,7 @@ const ChapterAnalysis: React.FC = () => {
                       icon={<LeftOutlined />}
                       onClick={handlePreviousChapter}
                       disabled={!navigation?.previous}
-                      title={navigation?.previous ? `上一章: ${navigation.previous.title}` : '已是第一章'}
+                      title={navigation?.previous ? t('nav.prevTitle', { title: navigation.previous.title }) : t('nav.firstChapter')}
                       size="small"
                     />
                     <span style={{
@@ -355,13 +357,13 @@ const ChapterAnalysis: React.FC = () => {
                       textOverflow: 'ellipsis',
                       padding: '0 8px'
                     }}>
-                      第{selectedChapter.chapter_number}章: {selectedChapter.title}
+                      {t('nav.chapterLabel', { n: selectedChapter.chapter_number, title: selectedChapter.title })}
                     </span>
                     <Button
                       icon={<RightOutlined />}
                       onClick={handleNextChapter}
                       disabled={!navigation?.next}
-                      title={navigation?.next ? `下一章: ${navigation.next.title}` : '已是最后一章'}
+                      title={navigation?.next ? t('nav.nextTitle', { title: navigation.next.title }) : t('nav.lastChapter')}
                       size="small"
                     />
                   </div>
@@ -378,7 +380,7 @@ const ChapterAnalysis: React.FC = () => {
                       onClick={() => setChapterListVisible(true)}
                       size="small"
                     >
-                      章节
+                      {t('nav.chapters')}
                     </Button>
 
                     {hasAnnotations && (
@@ -401,7 +403,7 @@ const ChapterAnalysis: React.FC = () => {
                           onClick={() => setSidebarVisible(true)}
                           size="small"
                         >
-                          分析
+                          {t('actions.analyze')}
                         </Button>
                       </>
                     )}
@@ -419,20 +421,20 @@ const ChapterAnalysis: React.FC = () => {
                       icon={<LeftOutlined />}
                       onClick={handlePreviousChapter}
                       disabled={!navigation?.previous}
-                      title={navigation?.previous ? `上一章: ${navigation.previous.title}` : '已是第一章'}
+                      title={navigation?.previous ? t('nav.prevTitle', { title: navigation.previous.title }) : t('nav.firstChapter')}
                     >
-                      上一章
+                      {t('nav.previous')}
                     </Button>
                     <span style={{ fontSize: 16, fontWeight: 600 }}>
-                      第{selectedChapter.chapter_number}章: {selectedChapter.title}
+                      {t('nav.chapterLabel', { n: selectedChapter.chapter_number, title: selectedChapter.title })}
                     </span>
                     <Button
                       icon={<RightOutlined />}
                       onClick={handleNextChapter}
                       disabled={!navigation?.next}
-                      title={navigation?.next ? `下一章: ${navigation.next.title}` : '已是最后一章'}
+                      title={navigation?.next ? t('nav.nextTitle', { title: navigation.next.title }) : t('nav.lastChapter')}
                     >
-                      下一章
+                      {t('nav.next')}
                     </Button>
                   </Space>
 
@@ -445,7 +447,7 @@ const ChapterAnalysis: React.FC = () => {
                           checkedChildren={<EyeOutlined />}
                           unCheckedChildren={<EyeInvisibleOutlined />}
                         />
-                        <span style={{ fontSize: 13, color: token.colorTextSecondary }}>显示标注</span>
+                        <span style={{ fontSize: 13, color: token.colorTextSecondary }}>{t('actions.showAnnotations')}</span>
                       </>
                     )}
                   </Space>
@@ -459,14 +461,14 @@ const ChapterAnalysis: React.FC = () => {
                   color: token.colorTextTertiary,
                   lineHeight: 1.5
                 }}>
-                  共有 {annotationsData.summary.total_annotations} 个标注：
-                  {annotationsData.summary.hooks > 0 && ` 🎣${annotationsData.summary.hooks}个钩子`}
+                  {t('summary.total', { n: annotationsData.summary.total_annotations })}
+                  {annotationsData.summary.hooks > 0 && t('summary.hooks', { n: annotationsData.summary.hooks })}
                   {annotationsData.summary.foreshadows > 0 &&
-                    ` 🌟${annotationsData.summary.foreshadows}个伏笔`}
+                    t('summary.foreshadows', { n: annotationsData.summary.foreshadows })}
                   {annotationsData.summary.plot_points > 0 &&
-                    ` 💎${annotationsData.summary.plot_points}个情节点`}
+                    t('summary.plotPoints', { n: annotationsData.summary.plot_points })}
                   {annotationsData.summary.character_events > 0 &&
-                    ` 👤${annotationsData.summary.character_events}个角色事件`}
+                    t('summary.characterEvents', { n: annotationsData.summary.character_events })}
                 </div>
               )}
             </Card>
@@ -488,8 +490,8 @@ const ChapterAnalysis: React.FC = () => {
                   <>
                     {!hasAnnotations && (
                       <Alert
-                        message="暂无分析数据"
-                        description="该章节尚未进行AI分析，无法显示记忆标注。"
+                        message={t('empty.noAnalysisTitle')}
+                        description={t('empty.noAnalysisDesc')}
                         type="info"
                         showIcon
                         style={{ marginBottom: 24 }}
@@ -543,7 +545,7 @@ const ChapterAnalysis: React.FC = () => {
             {/* 移动端抽屉 */}
             {hasAnnotations && annotationsData && (
               <Drawer
-                title="章节分析"
+                title={t('drawer.title')}
                 placement="right"
                 onClose={() => setSidebarVisible(false)}
                 open={sidebarVisible}

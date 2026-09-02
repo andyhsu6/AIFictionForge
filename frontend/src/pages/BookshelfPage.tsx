@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import type { Project } from '../types';
 import { bookshelfCardStyles, bookshelfCardHoverHandlers } from '../components/CardStyles';
 import { useThemeMode } from '../theme/useThemeMode';
+import { useTranslation } from 'react-i18next';
 
 const { Paragraph } = Typography;
 
@@ -54,6 +55,7 @@ export default function BookshelfPage({
   getDisplayStatus,
   formatDate,
 }: BookshelfPageProps) {
+  const { t } = useTranslation('bookshelf');
   const { token } = theme.useToken();
   const { resolvedMode } = useThemeMode();
   const isDark = resolvedMode === 'dark';
@@ -184,7 +186,7 @@ export default function BookshelfPage({
               }}
             >
               <BookOutlined style={{ opacity: 0.92 }} />
-              我的书架
+              {t('header.title')}
             </div>
             <div
               style={{
@@ -193,7 +195,7 @@ export default function BookshelfPage({
                 color: alphaColor(token.colorWhite, 0.9),
               }}
             >
-              点击书本即可进入项目，统一查看进度、字数与状态。
+              {t('header.subtitle')}
             </div>
           </div>
 
@@ -203,7 +205,7 @@ export default function BookshelfPage({
               onClick={onOpenImportModal}
               style={{ borderRadius: 10 }}
             >
-              导入项目
+              {t('header.import')}
             </Button>
             <Button
               icon={<DownloadOutlined />}
@@ -211,7 +213,7 @@ export default function BookshelfPage({
               disabled={exportableProjectsCount === 0}
               style={{ borderRadius: 10 }}
             >
-              导出项目
+              {t('header.export')}
             </Button>
           </Space>
         </div>
@@ -219,7 +221,7 @@ export default function BookshelfPage({
 
       {showApiTip && projects.length === 0 && (
         <Alert
-          message="欢迎使用 AIFictionForge"
+          message={t('welcome.title')}
           description={
             <div style={{
               display: 'flex',
@@ -229,7 +231,7 @@ export default function BookshelfPage({
               justifyContent: 'space-between'
             }}>
               <span style={{ fontSize: isMobile ? 12 : 14 }}>
-                在开始创作之前，请先配置您的AI接口（支持 OpenAI / Anthropic）。
+                {t('welcome.description')}
               </span>
               <Button
                 size="small"
@@ -237,7 +239,7 @@ export default function BookshelfPage({
                 onClick={onGoSettings}
                 style={{ flexShrink: 0 }}
               >
-                去配置
+                {t('welcome.goConfigure')}
               </Button>
             </div>
           }
@@ -322,7 +324,7 @@ export default function BookshelfPage({
                     }}
                     block
                   >
-                    快速开始
+                    {t('newProject.quickStart')}
                   </Button>
                   <Button
                     size={isMobile ? 'middle' : 'large'}
@@ -338,7 +340,7 @@ export default function BookshelfPage({
                     }}
                     block
                   >
-                    灵感模式
+                    {t('newProject.inspiration')}
                   </Button>
                 </div>
 
@@ -352,7 +354,7 @@ export default function BookshelfPage({
                   color: token.colorTextTertiary,
                   letterSpacing: 0.5,
                 }}>
-                  开始一个新的创作旅程
+                  {t('newProject.tagline')}
                 </div>
               </div>
             </Card>
@@ -468,7 +470,7 @@ export default function BookshelfPage({
                           border: '1px solid rgba(255,255,255,0.22)',
                         } : undefined}
                       >
-                        {showCoverFace ? '切换回详情' : (coverReady ? '查看封面' : '封面操作')}
+                        {showCoverFace ? t('cover.backToDetails') : (coverReady ? t('cover.viewCover') : t('cover.actions'))}
                       </Button>
                     </div>
 
@@ -538,7 +540,7 @@ export default function BookshelfPage({
                                 fontWeight: 500,
                                 backdropFilter: 'blur(8px)',
                               }}>
-                                未分类
+                                {t('card.uncategorized')}
                               </Tag>
                             )}
                           </div>
@@ -569,7 +571,7 @@ export default function BookshelfPage({
                               fontSize: isMobile ? 11 : 12,
                               color: 'rgba(255,255,255,0.82)',
                             }}>
-                              <span>完成进度</span>
+                              <span>{t('card.progress')}</span>
                               <span style={{ color: token.colorWhite, fontWeight: 700 }}>{progress}%</span>
                             </div>
                             <div style={{
@@ -604,7 +606,7 @@ export default function BookshelfPage({
                                   color: 'rgba(255,255,255,0.72)',
                                   marginTop: 4,
                                 }}>
-                                  已写字数
+                                  {t('card.written')}
                                 </div>
                               </div>
                               <div style={{
@@ -627,7 +629,7 @@ export default function BookshelfPage({
                                   color: 'rgba(255,255,255,0.72)',
                                   marginTop: 4,
                                 }}>
-                                  目标字数
+                                  {t('card.target')}
                                 </div>
                               </div>
                             </div>
@@ -661,7 +663,7 @@ export default function BookshelfPage({
                                   backdropFilter: 'blur(8px)',
                                 }}
                               >
-                                下载封面
+                                {t('cover.download')}
                               </Button>
                               <Button
                                 size="small"
@@ -675,7 +677,7 @@ export default function BookshelfPage({
                                   backdropFilter: 'blur(8px)',
                                 }}
                               >
-                                {coverActionLoading ? '重新生成中...' : '重新生成'}
+                                {coverActionLoading ? t('cover.regenerating') : t('cover.regenerate')}
                               </Button>
                             </Space>
                           </div>
@@ -686,13 +688,13 @@ export default function BookshelfPage({
                         {isFlipped && coverGenerating ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 0, width: '100%' }}>
                             <LoadingOutlined spin style={{ fontSize: 28, color: token.colorPrimary }} />
-                            <div style={{ color: token.colorTextSecondary }}>封面生成中，请稍候...</div>
+                            <div style={{ color: token.colorTextSecondary }}>{t('cover.generating')}</div>
                           </div>
                         ) : isFlipped && coverFailed ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, textAlign: 'center', minHeight: 0 }}>
                             <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
-                            <div style={{ color: token.colorError }}>封面生成失败</div>
-                            <div style={{ color: token.colorTextSecondary, fontSize: 12 }}>{project.cover_error || '请稍后重试'}</div>
+                            <div style={{ color: token.colorError }}>{t('cover.failed')}</div>
+                            <div style={{ color: token.colorTextSecondary, fontSize: 12 }}>{project.cover_error || t('cover.retryLater')}</div>
                             <Button
                               type="primary"
                               icon={<ReloadOutlined />}
@@ -700,13 +702,13 @@ export default function BookshelfPage({
                               onClick={(e) => void handleGenerateCoverClick(e, project, true)}
                               style={coverButtonStyle}
                             >
-                              {coverActionLoading ? '重新生成中...' : '重新生成'}
+                              {coverActionLoading ? t('cover.regenerating') : t('cover.regenerate')}
                             </Button>
                           </div>
                         ) : isFlipped && !coverReady ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, textAlign: 'center', minHeight: 0 }}>
                             <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
-                            <div style={{ color: token.colorTextSecondary }}>当前暂无可用封面</div>
+                            <div style={{ color: token.colorTextSecondary }}>{t('cover.noneAvailable')}</div>
                             <Button
                               type="primary"
                               icon={<PictureOutlined />}
@@ -714,7 +716,7 @@ export default function BookshelfPage({
                               onClick={(e) => void handleGenerateCoverClick(e, project, true)}
                               style={coverButtonStyle}
                             >
-                              {coverActionLoading ? '生成中...' : '生成封面'}
+                              {coverActionLoading ? t('cover.generatingShort') : t('cover.generate')}
                             </Button>
                           </div>
                         ) : (
@@ -782,7 +784,7 @@ export default function BookshelfPage({
                                     lineHeight: isMobile ? '18px' : '20px',
                                     fontWeight: 500,
                                   }}>
-                                    未分类
+                                    {t('card.uncategorized')}
                                   </Tag>
                                 )}
                               </div>
@@ -798,7 +800,7 @@ export default function BookshelfPage({
                                 flexGrow: 1,
                               }}
                             >
-                              {project.description || '暂无描述...'}
+                              {project.description || t('card.noDescription')}
                             </Paragraph>
 
                             <div style={{ marginBottom: isMobile ? 14 : 18 }}>
@@ -809,7 +811,7 @@ export default function BookshelfPage({
                                 marginBottom: 6,
                                 fontSize: isMobile ? 11 : 12,
                               }}>
-                                <span style={{ color: token.colorTextTertiary }}>完成进度</span>
+                                <span style={{ color: token.colorTextTertiary }}>{t('card.progress')}</span>
                                 <span style={{ color: progressColor, fontWeight: 700 }}>{progress}%</span>
                               </div>
                               <div style={{
@@ -853,7 +855,7 @@ export default function BookshelfPage({
                                     color: token.colorTextTertiary,
                                     marginTop: 4,
                                   }}>
-                                    已写字数
+                                    {t('card.written')}
                                   </div>
                                 </div>
                                 <div style={{
@@ -876,7 +878,7 @@ export default function BookshelfPage({
                                     color: token.colorTextTertiary,
                                     marginTop: 4,
                                   }}>
-                                    目标字数
+                                    {t('card.target')}
                                   </div>
                                 </div>
                               </div>
@@ -909,7 +911,7 @@ export default function BookshelfPage({
                                       minWidth: isMobile ? 112 : 124,
                                     }}
                                   >
-                                    {coverActionLoading ? '生成中...' : '生成封面'}
+                                    {coverActionLoading ? t('cover.generatingShort') : t('cover.generate')}
                                   </Button>
                                 )}
                               </div>

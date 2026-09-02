@@ -1,0 +1,81 @@
+{
+  "ai": {
+    "doneMessage": "AI新职业生成完成！",
+    "generateFailed": "生成失败",
+    "mainCount": "本次新增主职业数量",
+    "modalDesc1": "AI将分析当前世界观和已有职业，智能生成新的补充职业。",
+    "modalDesc2": "💡 可以多次生成，逐步完善职业体系，不会替换已有职业。",
+    "modalTitle": "AI生成新职业（增量式）",
+    "progressTitle": "AI生成新职业中...",
+    "requestFailed": "请求失败: {{status}}",
+    "start": "开始生成",
+    "startFailed": "启动生成失败",
+    "startMessage": "开始生成新职业...",
+    "subCount": "本次新增副职业数量",
+    "userRequirements": "职业要求",
+    "userRequirementsExtra": "可选。可描述希望新增的职业方向、能力侧重、限制条件或希望避开的职业类型，AI会结合世界观与已有职业综合生成。",
+    "userRequirementsMax": "额外要求最多500字",
+    "userRequirementsPlaceholder": "例如：希望新增一个偏情报收集与潜伏渗透的主职业；副职业偏医术、经营或制造方向；避免再出现纯正面战斗型职业。"
+  },
+  "buttons": {
+    "cancel": "取消",
+    "create": "创建",
+    "update": "更新"
+  },
+  "card": {
+    "moreStages": "...还有{{n}}个阶段",
+    "noDescription": "暂无描述",
+    "specialAbilities": "特殊能力：",
+    "stageSystem": "阶段体系（共{{n}}个）："
+  },
+  "delete": {
+    "content": "确定要删除这个职业吗？如果有角色使用了该职业，将无法删除。",
+    "title": "确认删除"
+  },
+  "empty": {
+    "main": "还没有主职业",
+    "sub": "还没有副职业"
+  },
+  "form": {
+    "addTitle": "新增职业",
+    "category": "职业分类",
+    "categoryPlaceholder": "如：战斗系、生产系、辅助系",
+    "description": "职业描述",
+    "descriptionPlaceholder": "描述这个职业...",
+    "editTitle": "编辑职业",
+    "name": "职业名称",
+    "namePlaceholder": "如：剑修、炼丹师",
+    "requirements": "职业要求",
+    "requirementsPlaceholder": "需要什么条件才能修炼...",
+    "specialAbilities": "特殊能力",
+    "specialAbilitiesPlaceholder": "这个职业的特殊能力...",
+    "stages": "职业阶段",
+    "stagesPlaceholder": "示例：\n1. 炼气期 - 初窥门径\n2. 筑基期 - 根基稳固\n3. 金丹期 - 凝结金丹",
+    "stagesTooltip": "每行一个阶段，格式：1. 阶段名 - 描述",
+    "type": "类型",
+    "typeMain": "主职业",
+    "typeSub": "副职业",
+    "worldviewRules": "世界观规则",
+    "worldviewRulesPlaceholder": "如何融入世界观..."
+  },
+  "page": {
+    "addCareer": "新增职业",
+    "aiGenerate": "AI生成新职业",
+    "title": "职业管理"
+  },
+  "tabs": {
+    "main": "主职业 ({{n}})",
+    "sub": "副职业 ({{n}})"
+  },
+  "tag": {
+    "aiGenerated": "AI生成",
+    "manual": "手动创建"
+  },
+  "toast": {
+    "actionFailed": "操作失败",
+    "createSuccess": "职业创建成功",
+    "deleteFailed": "删除失败",
+    "deleteSuccess": "职业删除成功",
+    "updateSuccess": "职业更新成功"
+  }
+}

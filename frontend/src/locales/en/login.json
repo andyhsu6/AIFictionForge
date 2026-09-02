@@ -1,0 +1,116 @@
+{
+  "alert": {
+    "loginNotes": "",
+    "noAuthMethod": "",
+    "noAuthMethodDesc": "",
+    "registerClosed": "",
+    "registerClosedDesc": ""
+  },
+  "email": {
+    "address": "",
+    "addressRequired": "",
+    "codeLength": "",
+    "codeLogin": "",
+    "forgotPassword": "",
+    "invalidEmail": "",
+    "loginCode": "",
+    "loginCodePlaceholder": "",
+    "loginCodeRequired": "",
+    "passwordMin": "",
+    "registeredPlaceholder": "",
+    "registerEmail": "",
+    "registerEmailPlaceholder": "",
+    "registerEmailRequired": "",
+    "resendIn": "",
+    "sendCode": ""
+  },
+  "features": {
+    "chapters": {
+      "desc": "",
+      "title": ""
+    },
+    "characters": {
+      "desc": "",
+      "title": ""
+    },
+    "multiModel": {
+      "desc": "",
+      "title": ""
+    },
+    "wizard": {
+      "desc": "",
+      "title": ""
+    }
+  },
+  "hero": {
+    "description": "",
+    "line1": "",
+    "line2": ""
+  },
+  "linuxdo": {
+    "login": ""
+  },
+  "local": {
+    "password": "",
+    "passwordPlaceholder": "",
+    "passwordRequired": "",
+    "submit": "",
+    "thirdParty": "",
+    "username": "",
+    "usernamePlaceholder": "",
+    "usernameRequired": ""
+  },
+  "panel": {
+    "subtitle": "",
+    "welcomeBack": ""
+  },
+  "register": {
+    "codePlaceholder": "",
+    "confirmPassword": "",
+    "confirmPasswordPlaceholder": "",
+    "confirmPasswordRequired": "",
+    "emailCode": "",
+    "emailCodeRequired": "",
+    "hint": "",
+    "nickname": "",
+    "nicknameMax": "",
+    "nicknamePlaceholder": "",
+    "password": "",
+    "passwordMismatch": "",
+    "passwordPlaceholder": "",
+    "passwordRequired": "",
+    "submit": ""
+  },
+  "reset": {
+    "backToCodeLogin": "",
+    "codeLabel": "",
+    "codePlaceholder": "",
+    "codeRequired": "",
+    "confirmNewPassword": "",
+    "confirmNewPasswordPlaceholder": "",
+    "confirmNewPasswordRequired": "",
+    "newPassword": "",
+    "newPasswordPlaceholder": "",
+    "newPasswordRequired": "",
+    "passwordMismatch": "",
+    "submit": "",
+    "title": ""
+  },
+  "tabs": {
+    "emailLogin": "",
+    "emailRegister": "",
+    "local": ""
+  },
+  "tips": {
+    "emailResetPassword": "",
+    "linuxdoFirstLogin": "",
+    "localDefaultAccount": ""
+  },
+  "toast": {
+    "authUrlFailed": "",
+    "codeSent": "",
+    "loginSuccess": "",
+    "registerSuccess": "",
+    "resetSuccess": ""
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "buttons": {
+    "cancel": "取消",
+    "create": "创建",
+    "save": "保存"
+  },
+  "createModal": {
+    "title": "创建自定义风格"
+  },
+  "deleteConfirm": {
+    "cancel": "取消",
+    "defaultWarning": "这是默认风格，删除后需要设置新的默认风格",
+    "ok": "确定",
+    "title": "确定删除这个风格吗？"
+  },
+  "editModal": {
+    "title": "编辑写作风格"
+  },
+  "empty": {
+    "noStyles": "暂无风格数据"
+  },
+  "form": {
+    "description": "风格描述",
+    "descriptionPlaceholder": "简要描述这个风格的特点...",
+    "name": "风格名称",
+    "namePlaceholderCreate": "如：武侠风、科幻风",
+    "namePlaceholderEdit": "输入风格名称",
+    "nameRequired": "请输入风格名称",
+    "promptContent": "提示词内容",
+    "promptPlaceholderCreate": "输入风格的提示词，用于引导AI生成符合该风格的内容...",
+    "promptPlaceholderEdit": "输入风格的提示词...",
+    "promptRequired": "请输入提示词内容"
+  },
+  "page": {
+    "createButton": "创建自定义风格",
+    "title": "写作风格管理"
+  },
+  "tag": {
+    "default": "默认"
+  },
+  "toast": {
+    "createFailed": "创建失败",
+    "createSuccess": "创建成功",
+    "deleteFailed": "删除失败",
+    "deleteSuccess": "删除成功",
+    "loadFailed": "加载风格列表失败",
+    "selectProjectFirst": "请先选择项目",
+    "setDefaultFailed": "设置失败",
+    "setDefaultSuccess": "设置默认风格成功",
+    "updateFailed": "更新失败",
+    "updateSuccess": "更新成功"
+  },
+  "type": {
+    "custom": "自定义",
+    "preset": "预设"
+  }
+}

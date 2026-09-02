@@ -1,0 +1,47 @@
+{
+  "actions": {
+    "analyze": "分析",
+    "showAnnotations": "显示标注"
+  },
+  "drawer": {
+    "title": "章节分析"
+  },
+  "empty": {
+    "noAnalysisDesc": "该章节尚未进行AI分析，无法显示记忆标注。",
+    "noAnalysisTitle": "暂无分析数据",
+    "selectChapter": "请从左侧选择一个章节查看"
+  },
+  "list": {
+    "chapterLabel": "第{{n}}章: {{title}}",
+    "empty": "暂无章节",
+    "title": "章节列表",
+    "wordCount": "{{n}}字"
+  },
+  "nav": {
+    "chapterLabel": "第{{n}}章: {{title}}",
+    "chapters": "章节",
+    "firstChapter": "已是第一章",
+    "lastChapter": "已是最后一章",
+    "next": "下一章",
+    "nextTitle": "下一章: {{title}}",
+    "previous": "上一章",
+    "prevTitle": "上一章: {{title}}"
+  },
+  "page": {
+    "title": "剧情分析"
+  },
+  "status": {
+    "loadingChapters": "加载章节中..."
+  },
+  "summary": {
+    "characterEvents": " 👤{{n}}个角色事件",
+    "foreshadows": " 🌟{{n}}个伏笔",
+    "hooks": " 🎣{{n}}个钩子",
+    "plotPoints": " 💎{{n}}个情节点",
+    "total": "共有 {{n}} 个标注："
+  },
+  "toast": {
+    "loadContentFailed": "加载章节内容失败",
+    "loadListFailed": "加载章节列表失败"
+  }
+}

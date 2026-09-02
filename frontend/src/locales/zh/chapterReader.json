@@ -1,0 +1,51 @@
+{
+  "actions": {
+    "analyze": "分析",
+    "back": "返回",
+    "showAnnotations": "显示标注"
+  },
+  "analyze": {
+    "analyzing": "分析中...",
+    "done": "分析完成！",
+    "failed": "分析失败：{{error}}",
+    "inProgress": "正在分析章节...",
+    "reanalyze": "重新分析",
+    "starting": "开始分析章节...",
+    "timeout": "分析超时，请稍后刷新查看结果",
+    "triggerFailed": "触发分析失败",
+    "unknownError": "未知错误"
+  },
+  "drawer": {
+    "title": "章节分析"
+  },
+  "empty": {
+    "noAnalysisDesc": "该章节尚未进行AI分析，无法显示记忆标注。",
+    "noAnalysisTitle": "暂无分析数据"
+  },
+  "error": {
+    "chapterNotFound": "章节不存在",
+    "invalidChapterData": "章节数据无效：缺少内容",
+    "loadFailed": "加载失败"
+  },
+  "nav": {
+    "chapterLabel": "第{{n}}章: {{title}}",
+    "firstChapter": "已是第一章",
+    "lastChapter": "已是最后一章",
+    "next": "下一章",
+    "nextFull": "下一章: 第{{n}}章 {{title}}",
+    "nextTitle": "下一章: {{title}}",
+    "prevFull": "上一章: 第{{n}}章 {{title}}",
+    "previous": "上一章",
+    "prevTitle": "上一章: {{title}}"
+  },
+  "status": {
+    "loadingChapter": "加载章节中..."
+  },
+  "summary": {
+    "characterEvents": " 👤{{n}}个角色事件",
+    "foreshadows": " 🌟{{n}}个伏笔",
+    "hooks": " 🎣{{n}}个钩子",
+    "plotPoints": " 💎{{n}}个情节点",
+    "total": "共有 {{n}} 个标注："
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "actions": {
+    "cardTitle": "Operations",
+    "reload": "Reload",
+    "save": "Save System Settings",
+    "sendTest": "Send Test Email"
+  },
+  "loadFailed": "Failed to load system settings",
+  "mail": {
+    "cardTitle": "Email Service Configuration",
+    "fromEmail": "Sender Email",
+    "fromEmailPlaceholder": "Defaults to the username",
+    "fromName": "Sender Name",
+    "fromNameRequired": "Please enter the sender name",
+    "host": "SMTP Host",
+    "hostPlaceholder": "e.g. smtp.qq.com",
+    "hostRequired": "Please enter the SMTP host",
+    "password": "SMTP Password / Authorization Code",
+    "passwordPlaceholder": "For QQ Mail, enter the authorization code",
+    "passwordRequired": "Please enter the SMTP authorization code",
+    "port": "SMTP Port",
+    "portRequired": "Please enter the SMTP port",
+    "provider": "Email Provider",
+    "providerCustom": "Custom SMTP",
+    "providerQQ": "QQ Mail",
+    "providerRequired": "Please select an email provider",
+    "qqNoteDesc": "If you choose QQ Mail, use your full QQ email address as the username, and enter the SMTP authorization code (not your QQ login password) as the password. smtp.qq.com + SSL 465 is recommended by default.",
+    "qqNoteTitle": "QQ Mail Configuration Notes",
+    "username": "SMTP Username",
+    "usernamePlaceholder": "Full email address",
+    "usernameRequired": "Please enter the SMTP username",
+    "useSsl": "Enable SSL",
+    "useTls": "Enable TLS"
+  },
+  "noAccess": {
+    "desc": "Only administrators can access system settings.",
+    "title": "Access Denied"
+  },
+  "page": {
+    "subtitle": "Admins only. Manage SMTP sending capability and email registration parameters.",
+    "title": "System Settings"
+  },
+  "register": {
+    "cardTitle": "Registration & Verification Policy",
+    "codeTtl": "Code Validity (minutes)",
+    "codeTtlRequired": "Please enter the code validity period",
+    "emailAuth": "Enable Email Authentication",
+    "emailRegister": "Enable Email Registration",
+    "resendInterval": "Resend Interval (seconds)",
+    "resendIntervalRequired": "Please enter the resend interval"
+  },
+  "saveFailed": "Failed to save system settings",
+  "saveSuccess": "System SMTP settings saved",
+  "test": {
+    "error": "Failed to test SMTP configuration",
+    "failed": "SMTP test failed",
+    "fillTargetFirst": "Please fill in the test target email first",
+    "targetPlaceholder": "Enter test target email, e.g. 123456@qq.com",
+    "tipDesc": "Save the SMTP configuration first, then fill in the test target email and click \"Send Test Email\" — the backend will actually send via SMTP.",
+    "tipTitle": "QQ default configuration recommended"
+  }
+}

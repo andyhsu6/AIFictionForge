@@ -1,0 +1,170 @@
+{
+  "actions": {
+    "add": "新增",
+    "addRelationship": "添加关系",
+    "delete": "删除",
+    "edit": "编辑"
+  },
+  "buttons": {
+    "cancel": "取消",
+    "create": "创建",
+    "save": "保存",
+    "update": "更新"
+  },
+  "careerNode": {
+    "description": "职业节点用于展示主/副职业分组及其与角色的关联关系，不显示角色详情卡。",
+    "title": "职业节点"
+  },
+  "careers": {
+    "main": "主职业",
+    "mainGroup": "主职业分组",
+    "notSet": "未设置",
+    "stage": "第{{n}}阶",
+    "stageSuffix": "阶{{n}}",
+    "sub": "副职业",
+    "subGroup": "副职业分组",
+    "system": "职业体系",
+    "unknownMain": "未知职业",
+    "unknownSub": "未知副职业"
+  },
+  "category": {
+    "family": "家族关系",
+    "hostile": "敌对关系",
+    "professional": "职业关系",
+    "social": "社交关系"
+  },
+  "delete": {
+    "cancel": "取消",
+    "content": "确定要删除这条关系吗？",
+    "ok": "删除",
+    "title": "确认删除",
+    "typeContent": "确定要删除关系类型「{{name}}」吗？"
+  },
+  "detail": {
+    "ageSuffix": "{{age}}岁",
+    "appearance": "外貌特征",
+    "background": "背景故事",
+    "characterTitle": "角色详情",
+    "location": "所在地",
+    "motto": "组织格言",
+    "organizationTitle": "组织详情",
+    "orgMembers": "组织成员",
+    "orgPurpose": "组织目的",
+    "orgType": "组织类型",
+    "personality": "性格特点",
+    "powerLevel": "势力等级",
+    "traits": "特征标签"
+  },
+  "edgeModal": {
+    "title": "关系详情"
+  },
+  "form": {
+    "characterA": "角色A",
+    "characterARequired": "请选择角色A",
+    "characterB": "角色B",
+    "characterBRequired": "请选择角色B",
+    "description": "关系描述",
+    "descriptionPlaceholder": "描述这段关系的细节...",
+    "intimacy": "亲密度",
+    "selectCharacter": "选择角色",
+    "status": "状态",
+    "typeNames": "关系类型（可多选）",
+    "typeNamesPlaceholder": "选择已有类型或输入新类型",
+    "typeNamesRequired": "请至少选择一个关系类型",
+    "typeProjectSuffix": "（项目）"
+  },
+  "graph": {
+    "back": "返回",
+    "categoryRelation": "{{category}}关系",
+    "edge": {
+      "careerGroup": "职业分类",
+      "careerMain": "主职业关联",
+      "careerSub": "副职业关联",
+      "default": "其他关系",
+      "family": "亲属关系",
+      "hostile": "敌对关系",
+      "organization": "组织成员",
+      "professional": "职业关系",
+      "social": "社交关系"
+    },
+    "edgeOptionLabel": "{{label}}（{{count}}）",
+    "edgeVisibility": "连线显示：",
+    "legend": {
+      "character": "角色（圆形）",
+      "organization": "组织（方形）"
+    },
+    "loadDetailFailed": "加载详情失败",
+    "loadFailed": "加载关系图谱失败",
+    "organization": "组织",
+    "stats": "{{nodes}} 节点 / {{links}} 关系",
+    "title": "关系图谱"
+  },
+  "modal": {
+    "addTitle": "添加关系",
+    "editTitle": "编辑关系"
+  },
+  "page": {
+    "graph": "关系图谱",
+    "title": "关系管理"
+  },
+  "role": {
+    "antagonist": "反派",
+    "protagonist": "主角",
+    "supporting": "配角"
+  },
+  "source": {
+    "ai": "AI生成",
+    "manual": "手动创建"
+  },
+  "status": {
+    "active": "活跃",
+    "broken": "破裂",
+    "complicated": "复杂",
+    "past": "过去"
+  },
+  "table": {
+    "actions": "操作",
+    "characterA": "角色A",
+    "characterB": "角色B",
+    "intimacy": "亲密度",
+    "relationship": "关系",
+    "source": "来源",
+    "total": "共 {{n}} 条"
+  },
+  "tabs": {
+    "list": "关系列表 ({{n}})",
+    "types": "关系类型 ({{n}})"
+  },
+  "toast": {
+    "createFailed": "创建关系失败",
+    "createSuccess": "关系创建成功",
+    "deleteFailed": "删除失败",
+    "deleteSuccess": "关系删除成功",
+    "loadDataFailed": "加载数据失败",
+    "saveTypeFailed": "保存关系类型失败",
+    "typeCreated": "关系类型已创建",
+    "typeDeleteSuccess": "关系类型删除成功",
+    "typeUpdated": "关系类型已更新",
+    "updateFailed": "更新关系失败",
+    "updateSuccess": "关系更新成功"
+  },
+  "type": {
+    "project": "项目"
+  },
+  "typeModal": {
+    "addTitle": "新增关系类型",
+    "catCustom": "自定义",
+    "category": "分类",
+    "catFamily": "家族关系",
+    "catHostile": "敌对关系",
+    "catProfessional": "职业关系",
+    "catSocial": "社交关系",
+    "description": "描述",
+    "editTitle": "编辑关系类型",
+    "icon": "图标",
+    "name": "类型名称",
+    "nameRequired": "请输入类型名称",
+    "reverseName": "反向名称"
+  },
+  "unknown": "未知"
+}

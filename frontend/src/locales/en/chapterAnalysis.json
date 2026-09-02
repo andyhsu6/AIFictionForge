@@ -1,0 +1,47 @@
+{
+  "actions": {
+    "analyze": "Analyze",
+    "showAnnotations": "Show Annotations"
+  },
+  "drawer": {
+    "title": "Chapter Analysis"
+  },
+  "empty": {
+    "noAnalysisDesc": "This chapter has not been AI-analyzed yet, so memory annotations cannot be shown.",
+    "noAnalysisTitle": "No analysis data",
+    "selectChapter": "Select a chapter from the left to view"
+  },
+  "list": {
+    "chapterLabel": "Chapter {{n}}: {{title}}",
+    "empty": "No chapters yet",
+    "title": "Chapter List",
+    "wordCount": "{{n}} words"
+  },
+  "nav": {
+    "chapterLabel": "Chapter {{n}}: {{title}}",
+    "chapters": "Chapters",
+    "firstChapter": "This is the first chapter",
+    "lastChapter": "This is the last chapter",
+    "next": "Next",
+    "nextTitle": "Next: {{title}}",
+    "previous": "Previous",
+    "prevTitle": "Previous: {{title}}"
+  },
+  "page": {
+    "title": "Plot Analysis"
+  },
+  "status": {
+    "loadingChapters": "Loading chapters..."
+  },
+  "summary": {
+    "characterEvents": " 👤{{n}} character events",
+    "foreshadows": " 🌟{{n}} foreshadows",
+    "hooks": " 🎣{{n}} hooks",
+    "plotPoints": " 💎{{n}} plot points",
+    "total": "Total {{n}} annotations:"
+  },
+  "toast": {
+    "loadContentFailed": "Failed to load chapter content",
+    "loadListFailed": "Failed to load chapter list"
+  }
+}

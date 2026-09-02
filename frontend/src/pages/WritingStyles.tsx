@@ -25,11 +25,13 @@ import {
 import { useStore } from '../store';
 import { writingStyleApi } from '../services/api';
 import type { WritingStyle, WritingStyleCreate, WritingStyleUpdate } from '../types';
+import { useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
 
 export default function WritingStyles() {
+  const { t } = useTranslation('writingStyles');
   const { currentProject } = useStore();
   const [styles, setStyles] = useState<WritingStyle[]>([]);
   const [loading, setLoading] = useState(false);
@@ -79,7 +81,7 @@ export default function WritingStyles() {
       
       setStyles(sortedStyles);
     } catch {
-      message.error('加载风格列表失败');
+      message.error(t('toast.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -95,12 +97,12 @@ export default function WritingStyles() {
       };
 
       await writingStyleApi.createStyle(createData);
-      message.success('创建成功');
+      message.success(t('toast.createSuccess'));
       setIsCreateModalOpen(false);
       createForm.resetFields();
       await loadStyles();
     } catch {
-      message.error('创建失败');
+      message.error(t('toast.createFailed'));
     }
   };
 
@@ -119,38 +121,38 @@ export default function WritingStyles() {
 
     try {
       await writingStyleApi.updateStyle(editingStyle.id, values);
-      message.success('更新成功');
+      message.success(t('toast.updateSuccess'));
       setIsEditModalOpen(false);
       editForm.resetFields();
       setEditingStyle(null);
       await loadStyles();
     } catch {
-      message.error('更新失败');
+      message.error(t('toast.updateFailed'));
     }
   };
 
   const handleDelete = async (styleId: number) => {
     try {
       await writingStyleApi.deleteStyle(styleId);
-      message.success('删除成功');
+      message.success(t('toast.deleteSuccess'));
       await loadStyles();
     } catch {
-      message.error('删除失败');
+      message.error(t('toast.deleteFailed'));
     }
   };
 
   const handleSetDefault = async (styleId: number) => {
     if (!currentProject?.id) {
-      message.warning('请先选择项目');
+      message.warning(t('toast.selectProjectFirst'));
       return;
     }
     
     try {
       await writingStyleApi.setDefaultStyle(styleId, currentProject.id);
-      message.success('设置默认风格成功');
+      message.success(t('toast.setDefaultSuccess'));
       await loadStyles();
     } catch {
-      message.error('设置失败');
+      message.error(t('toast.setDefaultFailed'));
     }
   };
 
@@ -164,7 +166,7 @@ export default function WritingStyles() {
   };
 
   const getStyleTypeLabel = (styleType: string) => {
-    return styleType === 'preset' ? '预设' : '自定义';
+    return styleType === 'preset' ? t('type.preset') : t('type.custom');
   };
 
   return (
@@ -183,20 +185,20 @@ export default function WritingStyles() {
       }}>
         <h2 style={{ margin: 0, fontSize: isMobile ? 18 : 24 }}>
           <EditOutlined style={{ marginRight: 8 }} />
-          写作风格管理
+          {t('page.title')}
         </h2>
         <Button
           type="primary"
           icon={<PlusOutlined />}
           onClick={showCreateModal}
         >
-          创建自定义风格
+          {t('page.createButton')}
         </Button>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {styles.length === 0 ? (
-          <Empty description="暂无风格数据" />
+          <Empty description={t('empty.noStyles')} />
         ) : (
           <Row
             gutter={[0, gridConfig.gutter]}
@@ -254,11 +256,11 @@ export default function WritingStyles() {
                     />,
                     <Popconfirm
                       key="delete"
-                      title="确定删除这个风格吗？"
-                      description={style.is_default ? '这是默认风格，删除后需要设置新的默认风格' : undefined}
+                      title={t('deleteConfirm.title')}
+                      description={style.is_default ? t('deleteConfirm.defaultWarning') : undefined}
                       onConfirm={() => handleDelete(style.id)}
-                      okText="确定"
-                      cancelText="取消"
+                      okText={t('deleteConfirm.ok')}
+                      cancelText={t('deleteConfirm.cancel')}
                       disabled={style.user_id === null}
                     >
                       <DeleteOutlined
@@ -277,7 +279,7 @@ export default function WritingStyles() {
                       <Tag color={getStyleTypeColor(style.style_type)}>
                         {getStyleTypeLabel(style.style_type)}
                       </Tag>
-                      {style.is_default && <Tag color="gold">默认</Tag>}
+                      {style.is_default && <Tag color="gold">{t('tag.default')}</Tag>}
                     </Space>
                     
                     {style.description && (
@@ -315,7 +317,7 @@ export default function WritingStyles() {
 
       {/* 创建自定义风格 Modal */}
       <Modal
-        title="创建自定义风格"
+        title={t('createModal.title')}
         open={isCreateModalOpen}
         onCancel={() => {
           setIsCreateModalOpen(false);
@@ -333,25 +335,25 @@ export default function WritingStyles() {
           style={{ marginTop: 16 }}
         >
           <Form.Item
-            label="风格名称"
+            label={t('form.name')}
             name="name"
-            rules={[{ required: true, message: '请输入风格名称' }]}
+            rules={[{ required: true, message: t('form.nameRequired') }]}
           >
-            <Input placeholder="如：武侠风、科幻风" />
+            <Input placeholder={t('form.namePlaceholderCreate')} />
           </Form.Item>
           
-          <Form.Item label="风格描述" name="description">
-            <TextArea rows={2} placeholder="简要描述这个风格的特点..." />
+          <Form.Item label={t('form.description')} name="description">
+            <TextArea rows={2} placeholder={t('form.descriptionPlaceholder')} />
           </Form.Item>
           
           <Form.Item
-            label="提示词内容"
+            label={t('form.promptContent')}
             name="prompt_content"
-            rules={[{ required: true, message: '请输入提示词内容' }]}
+            rules={[{ required: true, message: t('form.promptRequired') }]}
           >
             <TextArea
               rows={6}
-              placeholder="输入风格的提示词，用于引导AI生成符合该风格的内容..."
+              placeholder={t('form.promptPlaceholderCreate')}
             />
           </Form.Item>
           
@@ -361,10 +363,10 @@ export default function WritingStyles() {
                 setIsCreateModalOpen(false);
                 createForm.resetFields();
               }}>
-                取消
+                {t('buttons.cancel')}
               </Button>
               <Button type="primary" htmlType="submit" loading={loading}>
-                创建
+                {t('buttons.create')}
               </Button>
             </Space>
           </Form.Item>
@@ -373,7 +375,7 @@ export default function WritingStyles() {
 
       {/* 编辑风格 Modal */}
       <Modal
-        title="编辑写作风格"
+        title={t('editModal.title')}
         open={isEditModalOpen}
         onCancel={() => {
           setIsEditModalOpen(false);
@@ -387,25 +389,25 @@ export default function WritingStyles() {
       >
         <Form form={editForm} layout="vertical" onFinish={handleUpdate} style={{ marginTop: 16 }}>
           <Form.Item
-            label="风格名称"
+            label={t('form.name')}
             name="name"
-            rules={[{ required: true, message: '请输入风格名称' }]}
+            rules={[{ required: true, message: t('form.nameRequired') }]}
           >
-            <Input placeholder="输入风格名称" />
+            <Input placeholder={t('form.namePlaceholderEdit')} />
           </Form.Item>
           
-          <Form.Item label="风格描述" name="description">
-            <TextArea rows={2} placeholder="简要描述这个风格的特点..." />
+          <Form.Item label={t('form.description')} name="description">
+            <TextArea rows={2} placeholder={t('form.descriptionPlaceholder')} />
           </Form.Item>
           
           <Form.Item
-            label="提示词内容"
+            label={t('form.promptContent')}
             name="prompt_content"
-            rules={[{ required: true, message: '请输入提示词内容' }]}
+            rules={[{ required: true, message: t('form.promptRequired') }]}
           >
             <TextArea 
               rows={6} 
-              placeholder="输入风格的提示词..."
+              placeholder={t('form.promptPlaceholderEdit')}
             />
           </Form.Item>
           
@@ -416,10 +418,10 @@ export default function WritingStyles() {
                 editForm.resetFields();
                 setEditingStyle(null);
               }}>
-                取消
+                {t('buttons.cancel')}
               </Button>
               <Button type="primary" htmlType="submit" loading={loading}>
-                保存
+                {t('buttons.save')}
               </Button>
             </Space>
           </Form.Item>

@@ -1,0 +1,39 @@
+{
+  "card": {
+    "noDescription": "暂无描述...",
+    "progress": "完成进度",
+    "target": "目标字数",
+    "uncategorized": "未分类",
+    "written": "已写字数"
+  },
+  "cover": {
+    "actions": "封面操作",
+    "backToDetails": "切换回详情",
+    "download": "下载封面",
+    "failed": "封面生成失败",
+    "generate": "生成封面",
+    "generating": "封面生成中，请稍候...",
+    "generatingShort": "生成中...",
+    "noneAvailable": "当前暂无可用封面",
+    "regenerate": "重新生成",
+    "regenerating": "重新生成中...",
+    "retryLater": "请稍后重试",
+    "viewCover": "查看封面"
+  },
+  "header": {
+    "export": "导出项目",
+    "import": "导入项目",
+    "subtitle": "点击书本即可进入项目，统一查看进度、字数与状态。",
+    "title": "我的书架"
+  },
+  "newProject": {
+    "inspiration": "灵感模式",
+    "quickStart": "快速开始",
+    "tagline": "开始一个新的创作旅程"
+  },
+  "welcome": {
+    "description": "在开始创作之前，请先配置您的AI接口（支持 OpenAI / Anthropic）。",
+    "goConfigure": "去配置",
+    "title": "欢迎使用 AIFictionForge"
+  }
+}

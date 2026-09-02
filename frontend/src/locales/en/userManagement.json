@@ -1,0 +1,119 @@
+{
+  "actions": {
+    "delete": "Delete",
+    "deleteUser": "Delete User",
+    "disable": "Disable",
+    "disableUser": "Disable User",
+    "edit": "Edit",
+    "editUser": "Edit User",
+    "enable": "Enable",
+    "enableUser": "Enable User",
+    "resetPassword": "Reset Password"
+  },
+  "confirm": {
+    "cancel": "Cancel",
+    "deleteUser": "Delete this user? This action cannot be undone!",
+    "disableUser": "Disable this user?",
+    "enableUser": "Enable this user?",
+    "ok": "Confirm"
+  },
+  "createModal": {
+    "cancel": "Cancel",
+    "ok": "Create",
+    "title": "Add User"
+  },
+  "createResult": {
+    "initialPassword": "Initial password: ",
+    "title": "User Created",
+    "username": "Username: ",
+    "warning": "Copy the password and inform the user — it is shown only once!"
+  },
+  "editModal": {
+    "cancel": "Cancel",
+    "ok": "Save",
+    "title": "Edit User"
+  },
+  "form": {
+    "avatarUrl": "Avatar URL",
+    "avatarUrlPlaceholder": "Enter avatar URL (optional)",
+    "displayName": "Display Name",
+    "displayNameLength": "Display name must be 2-50 characters",
+    "displayNamePlaceholder": "Enter display name",
+    "displayNameRequired": "Please enter the display name",
+    "initialPassword": "Initial Password",
+    "initialPasswordExtra": "Leave empty to auto-generate username@666",
+    "initialPasswordPlaceholder": "Leave empty to auto-generate",
+    "passwordMin": "Password must be at least 6 characters",
+    "setAdmin": "Set as Admin",
+    "trustLevel": "Trust Level",
+    "username": "Username",
+    "usernameLength": "Username must be 3-20 characters",
+    "usernamePattern": "Only letters, digits and underscores allowed",
+    "usernamePlaceholder": "Enter username",
+    "usernameRequired": "Please enter the username"
+  },
+  "neverLoggedIn": "Never logged in",
+  "page": {
+    "addUser": "Add User",
+    "backHome": "Back to Home",
+    "subtitle": "Manage system users and permissions",
+    "title": "User Management"
+  },
+  "pagination": {
+    "filtered": " (filtered)",
+    "total": "{{n}} users in total"
+  },
+  "resetModal": {
+    "cancel": "Cancel",
+    "extra": "Leave empty to reset to the default password username@666",
+    "newPassword": "New Password",
+    "ok": "Confirm Reset",
+    "placeholder": "Leave empty to use the default password",
+    "title": "Reset Password",
+    "user": "User: "
+  },
+  "resetResult": {
+    "newPassword": "New password: ",
+    "title": "Password Reset",
+    "user": "User: ",
+    "warning": "Copy the password and inform the user!"
+  },
+  "role": {
+    "admin": "👑 Admin",
+    "user": "Regular User"
+  },
+  "search": {
+    "placeholder": "Search username, display name or user ID"
+  },
+  "status": {
+    "active": "Active",
+    "disabled": "Disabled"
+  },
+  "table": {
+    "actions": "Actions",
+    "createdAt": "Created At",
+    "displayName": "Display Name",
+    "lastLogin": "Last Login",
+    "role": "Role",
+    "status": "Status",
+    "trustLevel": "Trust Level",
+    "username": "Username"
+  },
+  "toast": {
+    "createFailed": "Failed to create user",
+    "createSuccess": "User created",
+    "deleteFailed": "Failed to delete user",
+    "deleteSuccess": "User deleted",
+    "disableFailed": "Failed to disable user",
+    "enableFailed": "Failed to enable user",
+    "loadFailed": "Failed to load user list",
+    "resetFailed": "Failed to reset password",
+    "updateFailed": "Failed to update user",
+    "updateSuccess": "User info updated",
+    "userDisabled": "User disabled",
+    "userEnabled": "User enabled"
+  },
+  "trust": {
+    "disabled": "Disabled"
+  }
+}
