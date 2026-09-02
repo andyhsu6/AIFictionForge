@@ -48,6 +48,7 @@ i18n
       'expansionPlanEditor',
       'floatingTaskPanel',
       'partialRegenerateModal',
+      'projectAgentPanel',
     ],
     defaultNS: 'common',
     resources,

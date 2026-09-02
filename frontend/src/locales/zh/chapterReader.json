@@ -2,6 +2,7 @@
   "actions": {
     "analyze": "分析",
     "back": "返回",
+    "close": "关闭",
     "showAnnotations": "显示标注"
   },
   "analyze": {
@@ -20,12 +21,14 @@
   },
   "empty": {
     "noAnalysisDesc": "该章节尚未进行AI分析，无法显示记忆标注。",
-    "noAnalysisTitle": "暂无分析数据"
+    "noAnalysisTitle": "暂无分析数据",
+    "noContent": "暂无内容"
   },
   "error": {
     "chapterNotFound": "章节不存在",
     "invalidChapterData": "章节数据无效：缺少内容",
-    "loadFailed": "加载失败"
+    "loadFailed": "加载失败",
+    "loadNavigationFailed": "获取章节导航信息失败"
   },
   "nav": {
     "chapterLabel": "第{{n}}章: {{title}}",
@@ -36,9 +39,20 @@
     "nextTitle": "下一章: {{title}}",
     "prevFull": "上一章: 第{{n}}章 {{title}}",
     "previous": "上一章",
-    "prevTitle": "上一章: {{title}}"
+    "prevTitle": "上一章: {{title}}",
+    "wordCount": "{{count}} 字"
+  },
+  "settings": {
+    "fontSize": "字体大小: {{size}}px",
+    "lineHeight": "行高: {{value}}",
+    "theme": "主题",
+    "themeDark": "夜间",
+    "themeLight": "日间",
+    "themeSepia": "护眼",
+    "title": "阅读设置"
   },
   "status": {
+    "loading": "加载中...",
     "loadingChapter": "加载章节中..."
   },
   "summary": {

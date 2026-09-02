@@ -354,19 +354,81 @@ export default interface Resources {
       "analyze": "分析",
       "showAnnotations": "显示标注"
     },
+    "alert": {
+      "error": "错误"
+    },
+    "analysis": {
+      "careerUpdate": "职业更新",
+      "characterStateUpdate": "角色状态/关系更新",
+      "coherence": "连贯性",
+      "engagement": "吸引力",
+      "entityUpdates": "实体联动更新",
+      "foundSuggestions": "发现改进建议",
+      "organizationStateUpdate": "组织状态更新",
+      "overallScore": "整体评分",
+      "pacing": "节奏把控",
+      "quality": "整体质量",
+      "regenerate": "根据建议重新生成",
+      "suggestions": "analysis.suggestions",
+      "suggestionsTitle": "改进建议",
+      "suggestions_one": "AI已分析出 {{count}} 条改进建议，您可以根据这些建议重新生成章节内容。",
+      "suggestions_other": "AI已分析出 {{count}} 条改进建议，您可以根据这些建议重新生成章节内容。",
+      "summary": "分析摘要",
+      "waiting": "分析过程需要一定时间，请耐心等待"
+    },
+    "button": {
+      "close": "关闭",
+      "loading": "加载中...",
+      "reanalyze": "重新分析",
+      "startAnalysis": "开始分析"
+    },
     "drawer": {
       "title": "章节分析"
     },
     "empty": {
+      "characters": "暂无角色分析",
+      "emotion": "暂无情感分析",
+      "foreshadows": "暂无伏笔",
+      "hooks": "暂无钩子",
+      "memories": "暂无记忆片段",
       "noAnalysisDesc": "该章节尚未进行AI分析，无法显示记忆标注。",
       "noAnalysisTitle": "暂无分析数据",
       "selectChapter": "请从左侧选择一个章节查看"
+    },
+    "error": {
+      "chapterNotAnalyzed": "该章节还未进行分析",
+      "fetchResultFailed": "获取分析结果失败",
+      "fetchStatusFailed": "获取分析状态失败",
+      "statusTimeout": "查询分析状态超时，请关闭后重新打开",
+      "triggerFailed": "触发分析失败"
+    },
+    "field": {
+      "conflictLevel": "冲突等级：{{value}}",
+      "conflictTypes": "冲突类型：",
+      "dominantEmotion": "主导情绪",
+      "echoChapter": "呼应第{{n}}章",
+      "emotionalIntensity": "情感强度",
+      "foreshadowPlanted": "已埋下",
+      "foreshadowRecovered": "已回收",
+      "foreshadowSubtlety": "隐藏度: {{value}}/10",
+      "hookStrength": "强度: {{value}}/10",
+      "importance": "重要性: {{value}}",
+      "keyEvent": "关键事件：{{value}}",
+      "plotStage": "阶段：{{value}}",
+      "plotStageTitle": "剧情阶段",
+      "psychologicalChange": "心理变化：{{value}}",
+      "relationshipChange": "与{{name}}: {{change}}",
+      "relationshipChanges": "关系变化：",
+      "stateChange": "状态变化：{{before}} → {{after}}"
     },
     "list": {
       "chapterLabel": "第{{n}}章: {{title}}",
       "empty": "暂无章节",
       "title": "章节列表",
       "wordCount": "{{n}}字"
+    },
+    "modal": {
+      "title": "章节分析"
     },
     "nav": {
       "chapterLabel": "第{{n}}章: {{title}}",
@@ -381,8 +443,21 @@ export default interface Resources {
     "page": {
       "title": "剧情分析"
     },
+    "section": {
+      "careerChange": "职业变化：",
+      "characterRelationChange": "角色/关系变化：",
+      "organizationStateChange": "组织状态变化："
+    },
     "status": {
-      "loadingChapters": "加载章节中..."
+      "analyzing": "AI正在分析中...",
+      "extracting": "正在提取关键信息和记忆片段...",
+      "failed": "分析失败",
+      "loadingChapters": "加载章节中...",
+      "queued": "分析任务已创建，正在队列中...",
+      "waiting": "等待分析..."
+    },
+    "suggestion": {
+      "category": "改进建议"
     },
     "summary": {
       "characterEvents": " 👤{{n}}个角色事件",
@@ -390,6 +465,14 @@ export default interface Resources {
       "hooks": " 🎣{{n}}个钩子",
       "plotPoints": " 💎{{n}}个情节点",
       "total": "共有 {{n}} 个标注："
+    },
+    "tab": {
+      "characters": "角色 ({{n}})",
+      "emotion": "情感曲线",
+      "foreshadows": "伏笔 ({{n}})",
+      "hooks": "钩子 ({{n}})",
+      "memories": "记忆 ({{n}})",
+      "overview": "概览"
     },
     "toast": {
       "loadContentFailed": "加载章节内容失败",
@@ -423,6 +506,7 @@ export default interface Resources {
     "actions": {
       "analyze": "分析",
       "back": "返回",
+      "close": "关闭",
       "showAnnotations": "显示标注"
     },
     "analyze": {
@@ -441,12 +525,14 @@ export default interface Resources {
     },
     "empty": {
       "noAnalysisDesc": "该章节尚未进行AI分析，无法显示记忆标注。",
-      "noAnalysisTitle": "暂无分析数据"
+      "noAnalysisTitle": "暂无分析数据",
+      "noContent": "暂无内容"
     },
     "error": {
       "chapterNotFound": "章节不存在",
       "invalidChapterData": "章节数据无效：缺少内容",
-      "loadFailed": "加载失败"
+      "loadFailed": "加载失败",
+      "loadNavigationFailed": "获取章节导航信息失败"
     },
     "nav": {
       "chapterLabel": "第{{n}}章: {{title}}",
@@ -457,9 +543,20 @@ export default interface Resources {
       "nextTitle": "下一章: {{title}}",
       "prevFull": "上一章: 第{{n}}章 {{title}}",
       "prevTitle": "上一章: {{title}}",
-      "previous": "上一章"
+      "previous": "上一章",
+      "wordCount": "{{count}} 字"
+    },
+    "settings": {
+      "fontSize": "字体大小: {{size}}px",
+      "lineHeight": "行高: {{value}}",
+      "theme": "主题",
+      "themeDark": "夜间",
+      "themeLight": "日间",
+      "themeSepia": "护眼",
+      "title": "阅读设置"
     },
     "status": {
+      "loading": "加载中...",
       "loadingChapter": "加载章节中..."
     },
     "summary": {
@@ -2196,6 +2293,92 @@ export default interface Resources {
     "title": "AI局部重写",
     "waitingGenerate": "等待生成...",
     "wordUnit": "字"
+  },
+  "projectAgentPanel": {
+    "approveAll": "approveAll",
+    "approveAll_one": "一键批准全部修改（{{count}} 项）",
+    "approveAll_other": "一键批准全部修改（{{count}} 项）",
+    "approvedExecuted": "approvedExecuted",
+    "approvedExecuted_one": "已批准并执行 {{count}} 项修改",
+    "approvedExecuted_other": "已批准并执行 {{count}} 项修改",
+    "assistantName": "灵创创作助手",
+    "assistantRequestFailed": "灵创创作助手请求失败",
+    "autoApprove": "自动批准修改",
+    "autoApproveEnabled": "已开启自动批准修改",
+    "cancel": "取消",
+    "category": {
+      "analysis": "思考摘要",
+      "default": "工具",
+      "project": "项目工具"
+    },
+    "collapse": "收起",
+    "confirmChange": "确认修改",
+    "deleteConversation": "删除对话",
+    "deleteCurrentConfirm": "删除当前对话？",
+    "emptyStateHint": "例如：“把第三条大纲标题改得更有悬念”",
+    "emptyStateTitle": "可以查询和修改当前项目",
+    "emptyValue": "（空）",
+    "error": "错误：{{message}}",
+    "executionAbortedByFailure": "本次执行因请求失败而中止。",
+    "executionStoppedByUser": "本次执行已由用户停止。",
+    "expandAssistant": "展开{{name}}",
+    "fieldLabels": {
+      "age": "年龄",
+      "appearance": "外貌",
+      "background": "背景",
+      "chapter_count": "章节数",
+      "character_count": "角色数",
+      "content": "内容",
+      "description": "简介",
+      "gender": "性别",
+      "genre": "类型",
+      "name": "名称",
+      "narrative_perspective": "叙事视角",
+      "personality": "性格",
+      "role_type": "角色类型",
+      "status": "状态",
+      "summary": "摘要",
+      "target_words": "目标字数",
+      "theme": "主题",
+      "title": "标题",
+      "traits": "特征",
+      "world_atmosphere": "世界氛围",
+      "world_location": "地点",
+      "world_rules": "世界规则",
+      "world_time_period": "时代背景"
+    },
+    "historyConversations": "历史对话",
+    "manualApprove": "手动批准修改",
+    "manualApproveEnabled": "已切换为手动批准修改",
+    "newConversation": "新对话",
+    "noChangesExecuted": "没有修改被执行，请检查预览后重试",
+    "noConversations": "暂无历史对话",
+    "partiallyExecuted": "{{completed}} 项修改已执行，{{failed}} 项未执行",
+    "placeholder": {
+      "ask": "询问或修改当前项目……"
+    },
+    "preparingToolCalls": "preparingToolCalls",
+    "preparingToolCalls_one": "🔧 准备调用 {{count}} 个工具...",
+    "preparingToolCalls_other": "🔧 准备调用 {{count}} 个工具...",
+    "processChangeFailed": "处理修改失败",
+    "processLabel": "思考与调用过程",
+    "requestFailed": "请求失败：{{message}}",
+    "send": "发送",
+    "status": {
+      "cancelled": "已停止",
+      "completed": "已完成",
+      "partialFailed": "部分失败",
+      "running": "执行中",
+      "waitingConfirmation": "等待确认"
+    },
+    "stepCount": "stepCount",
+    "stepCount_one": "{{count}} 步",
+    "stepCount_other": "{{count}} 步",
+    "stop": "停止",
+    "stoppedGenerating": "已停止生成",
+    "tool": "工具",
+    "toolCall": "⚙️ {{name}} 调用",
+    "viewParams": "查看参数与结果"
   },
   "projectDetail": {
     "agent": {

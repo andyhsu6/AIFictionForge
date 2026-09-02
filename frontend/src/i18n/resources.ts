@@ -38,6 +38,7 @@ import zhCharacterCareerCard from '../locales/zh/characterCareerCard.json';
 import zhExpansionPlanEditor from '../locales/zh/expansionPlanEditor.json';
 import zhFloatingTaskPanel from '../locales/zh/floatingTaskPanel.json';
 import zhPartialRegenerateModal from '../locales/zh/partialRegenerateModal.json';
+import zhProjectAgentPanel from '../locales/zh/projectAgentPanel.json';
 import enCommon from '../locales/en/common.json';
 import enErrors from '../locales/en/errors.json';
 import enChapters from '../locales/en/chapters.json';
@@ -74,6 +75,7 @@ import enCharacterCareerCard from '../locales/en/characterCareerCard.json';
 import enExpansionPlanEditor from '../locales/en/expansionPlanEditor.json';
 import enFloatingTaskPanel from '../locales/en/floatingTaskPanel.json';
 import enPartialRegenerateModal from '../locales/en/partialRegenerateModal.json';
+import enProjectAgentPanel from '../locales/en/projectAgentPanel.json';
 
 export const resources = {
   zh: {
@@ -113,6 +115,7 @@ export const resources = {
     expansionPlanEditor: zhExpansionPlanEditor,
     floatingTaskPanel: zhFloatingTaskPanel,
     partialRegenerateModal: zhPartialRegenerateModal,
+    projectAgentPanel: zhProjectAgentPanel,
   },
   en: {
     common: enCommon,
@@ -151,5 +154,6 @@ export const resources = {
     expansionPlanEditor: enExpansionPlanEditor,
     floatingTaskPanel: enFloatingTaskPanel,
     partialRegenerateModal: enPartialRegenerateModal,
+    projectAgentPanel: enProjectAgentPanel,
   },
 } as const;

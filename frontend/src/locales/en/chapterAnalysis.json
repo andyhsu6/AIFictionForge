@@ -3,19 +3,80 @@
     "analyze": "Analyze",
     "showAnnotations": "Show Annotations"
   },
+  "alert": {
+    "error": "Error"
+  },
+  "analysis": {
+    "careerUpdate": "Career Updates",
+    "characterStateUpdate": "Character State / Relationship Updates",
+    "coherence": "Coherence",
+    "engagement": "Engagement",
+    "entityUpdates": "Entity Linkage Updates",
+    "foundSuggestions": "Improvement suggestions found",
+    "organizationStateUpdate": "Organization State Updates",
+    "overallScore": "Overall Score",
+    "pacing": "Pacing",
+    "quality": "Overall Quality",
+    "regenerate": "Regenerate based on suggestions",
+    "suggestions_one": "The AI has analyzed {{count}} improvement suggestion. You can regenerate the chapter content based on these suggestions.",
+    "suggestions_other": "The AI has analyzed {{count}} improvement suggestions. You can regenerate the chapter content based on these suggestions.",
+    "suggestionsTitle": "Improvement Suggestions",
+    "summary": "Analysis Summary",
+    "waiting": "The analysis process takes some time, please wait patiently"
+  },
+  "button": {
+    "close": "Close",
+    "loading": "Loading...",
+    "reanalyze": "Re-analyze",
+    "startAnalysis": "Start Analysis"
+  },
   "drawer": {
     "title": "Chapter Analysis"
   },
   "empty": {
+    "characters": "No character analysis yet",
+    "emotion": "No emotion analysis yet",
+    "foreshadows": "No foreshadows yet",
+    "hooks": "No hooks yet",
+    "memories": "No memory fragments yet",
     "noAnalysisDesc": "This chapter has not been AI-analyzed yet, so memory annotations cannot be shown.",
     "noAnalysisTitle": "No analysis data",
     "selectChapter": "Select a chapter from the left to view"
+  },
+  "error": {
+    "chapterNotAnalyzed": "This chapter has not been analyzed yet",
+    "fetchResultFailed": "Failed to fetch analysis result",
+    "fetchStatusFailed": "Failed to fetch analysis status",
+    "statusTimeout": "Timed out querying analysis status. Please close and reopen.",
+    "triggerFailed": "Failed to trigger analysis"
+  },
+  "field": {
+    "conflictLevel": "Conflict Level: {{value}}",
+    "conflictTypes": "Conflict Types:",
+    "dominantEmotion": "Dominant Emotion",
+    "echoChapter": "Echoes Chapter {{n}}",
+    "emotionalIntensity": "Emotional Intensity",
+    "foreshadowPlanted": "Planted",
+    "foreshadowRecovered": "Resolved",
+    "foreshadowSubtlety": "Subtlety: {{value}}/10",
+    "hookStrength": "Strength: {{value}}/10",
+    "importance": "Importance: {{value}}",
+    "keyEvent": "Key Event: {{value}}",
+    "plotStage": "Stage: {{value}}",
+    "plotStageTitle": "Plot Stage",
+    "psychologicalChange": "Psychological Change: {{value}}",
+    "relationshipChange": "With {{name}}: {{change}}",
+    "relationshipChanges": "Relationship Changes:",
+    "stateChange": "State Change: {{before}} → {{after}}"
   },
   "list": {
     "chapterLabel": "Chapter {{n}}: {{title}}",
     "empty": "No chapters yet",
     "title": "Chapter List",
     "wordCount": "{{n}} words"
+  },
+  "modal": {
+    "title": "Chapter Analysis"
   },
   "nav": {
     "chapterLabel": "Chapter {{n}}: {{title}}",
@@ -30,8 +91,21 @@
   "page": {
     "title": "Plot Analysis"
   },
+  "section": {
+    "careerChange": "Career Changes:",
+    "characterRelationChange": "Character / Relationship Changes:",
+    "organizationStateChange": "Organization State Changes:"
+  },
   "status": {
-    "loadingChapters": "Loading chapters..."
+    "analyzing": "AI is analyzing...",
+    "extracting": "Extracting key information and memory fragments...",
+    "failed": "Analysis failed",
+    "loadingChapters": "Loading chapters...",
+    "queued": "Analysis task created, queuing...",
+    "waiting": "Waiting for analysis..."
+  },
+  "suggestion": {
+    "category": "Improvement Suggestion"
   },
   "summary": {
     "characterEvents": " 👤{{n}} character events",
@@ -39,6 +113,14 @@
     "hooks": " 🎣{{n}} hooks",
     "plotPoints": " 💎{{n}} plot points",
     "total": "Total {{n}} annotations:"
+  },
+  "tab": {
+    "characters": "Characters ({{n}})",
+    "emotion": "Emotion Curve",
+    "foreshadows": "Foreshadows ({{n}})",
+    "hooks": "Hooks ({{n}})",
+    "memories": "Memories ({{n}})",
+    "overview": "Overview"
   },
   "toast": {
     "loadContentFailed": "Failed to load chapter content",
