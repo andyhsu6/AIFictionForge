@@ -614,6 +614,7 @@ class AIService:
         tool_choice: Optional[str] = None,
         auto_mcp: bool = True,
         mcp_max_rounds: Optional[int] = None,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         流式生成文本（自动支持MCP工具）
@@ -630,6 +631,7 @@ class AIService:
             tool_choice: 工具选择策略（"auto"/"none"/"required"）
             auto_mcp: 是否自动加载MCP工具
             mcp_max_rounds: 最大工具调用轮数（None使用默认值3）
+            response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）
             
         Yields:
             生成的文本块
@@ -643,6 +645,14 @@ class AIService:
             tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
             if tools_to_use:
                 logger.info(f"🔧 已获取 {len(tools_to_use)} 个MCP工具")
+
+        # 冲突处理：response_format 与 MCP tools / 非 OpenAI 提供商不兼容，注入前丢弃
+        if response_format and tools_to_use:
+            logger.warning("response_format 与 MCP tools 冲突，丢弃 response_format")
+            response_format = None
+        if response_format and normalize_provider(provider or self.api_provider) != "openai":
+            logger.warning("非 OpenAI 提供商不支持 response_format，跳过")
+            response_format = None
 
         metrics = self._build_call_metrics(
             request_mode="流式文本",
@@ -672,6 +682,7 @@ class AIService:
                 tools=tools_to_use,
                 tool_choice=tool_choice,
                 user_id=self.user_id,
+                response_format=response_format,
             ):
                 if isinstance(chunk, dict):
                     if chunk.get("usage"):
@@ -774,6 +785,7 @@ class AIService:
         auto_mcp: bool = True,
         validator: Optional[Callable[[Any], None]] = None,
         validator_max_retries: int = 2,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> Union[Dict, List]:
         """
         带重试的 JSON 调用（自动支持MCP工具）
@@ -792,6 +804,8 @@ class AIService:
                 抛 ValueError 视为可重试失败，错误信息注入重试提示
             validator_max_retries: validator 独立重试上限（不消耗 max_retries），
                 超过后抛 ValueError("校验失败: ...")
+            response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）。
+                默认 None 时自动注入 json_object（除非会加载 MCP tools 或非 OpenAI 提供商）
             
         Returns:
             解析后的JSON数据
@@ -808,35 +822,59 @@ class AIService:
             stream=True,
         )
         
+        # OpenAI 禁止 response_format 与 tools 同用，非 OpenAI 提供商不支持该参数
+        if response_format is None:
+            tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
+            if tools_to_use:
+                logger.warning("检测到 MCP tools，跳过 response_format 注入以避免 API 冲突")
+            elif normalize_provider(provider or self.api_provider) != "openai":
+                logger.warning("非 OpenAI 提供商不支持 response_format，跳过 JSON 格式约束")
+            else:
+                response_format = {"type": "json_object"}
+        
         try:
             validator_retries = 0
             validator_error = None
+            json_error = None
             for attempt in range(1, max_retries + 1):
                 current_prompt = prompt if attempt == 1 else self._add_json_hint(
-                    prompt, last_response, attempt, extra_error=validator_error
+                    prompt, attempt, extra_error=validator_error, json_error=json_error
                 )
                 
                 # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
                 # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
                 accumulated: List[str] = []
                 finish_reason = None
-                async for chunk in self.generate_text_stream(
-                    prompt=current_prompt,
-                    provider=provider,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    system_prompt=system_prompt,
-                    auto_mcp=auto_mcp,
-                ):
-                    if isinstance(chunk, dict):
-                        if chunk.get("finish_reason"):
-                            finish_reason = chunk.get("finish_reason")
-                        if chunk.get("usage"):
-                            aggregate_usage.add(TokenUsage.from_response({"usage": chunk["usage"]}))
-                        continue
-                    if chunk:
-                        accumulated.append(chunk)
+                # while 保底：response_format 降级即置空，后续不会再次命中，不会死循环
+                while True:
+                    try:
+                        async for chunk in self.generate_text_stream(
+                            prompt=current_prompt,
+                            provider=provider,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            system_prompt=system_prompt,
+                            auto_mcp=auto_mcp,
+                            response_format=response_format,
+                        ):
+                            if isinstance(chunk, dict):
+                                if chunk.get("finish_reason"):
+                                    finish_reason = chunk.get("finish_reason")
+                                if chunk.get("usage"):
+                                    aggregate_usage.add(TokenUsage.from_response({"usage": chunk["usage"]}))
+                                continue
+                            if chunk:
+                                accumulated.append(chunk)
+                        break
+                    except Exception as e:
+                        if response_format and "response_format" in str(e):
+                            logger.warning("API 不支持 response_format，降级为文本模式: %s", str(e)[:200])
+                            response_format = None
+                            accumulated = []
+                            finish_reason = None
+                            continue
+                        raise
                 result = {
                     "content": "".join(accumulated),
                     "finish_reason": finish_reason,
@@ -846,6 +884,17 @@ class AIService:
                 
                 last_response = result.get("content", "")
                 
+                # 思考型模型可能把 token 预算耗在推理上致正文为空，跳过解析直接重试
+                if not last_response.strip():
+                    metrics.json_parse_success = False
+                    if attempt < max_retries:
+                        logger.warning(
+                            "模型输出为空，立即重试 %d/%d: model=%s",
+                            attempt, max_retries, model or self.default_model,
+                        )
+                        continue
+                    raise ValueError("模型输出为空，无法解析 JSON")
+                
                 try:
                     data = parse_json(last_response)
                     if expected_type == "object" and not isinstance(data, dict):
@@ -854,6 +903,7 @@ class AIService:
                         raise ValueError("期望数组")
                 except Exception as e:
                     metrics.json_parse_success = False
+                    json_error = str(e)
                     if attempt == max_retries:
                         raise ValueError(f"JSON 解析失败: {e}")
                     continue
@@ -895,8 +945,10 @@ class AIService:
             raise
 
     @staticmethod
-    def _add_json_hint(prompt: str, failed: str, attempt: int, extra_error: Optional[str] = None) -> str:
-        hint = f"{prompt}\n\n⚠️ 第{attempt}次重试，请返回纯JSON，不要markdown包裹。上次错误: {failed[:200]}..."
+    def _add_json_hint(prompt: str, attempt: int, extra_error: Optional[str] = None, json_error: Optional[str] = None) -> str:
+        hint = f"{prompt}\n\n⚠️ 第{attempt}次重试，请返回纯JSON，不要markdown包裹。"
+        if json_error:
+            hint += f"\n\nJSON 错误详情: {json_error[:300]}"
         if extra_error:
             hint += f"\n\n校验提示: {extra_error}"
         return hint

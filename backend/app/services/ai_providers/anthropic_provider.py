@@ -45,7 +45,9 @@ class AnthropicProvider(BaseAIProvider):
         tools: Optional[List[Dict]] = None,
         tool_choice: Optional[str] = None,
         user_id: Optional[str] = None,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[str, None]:
+        # response_format 为 OpenAI 兼容参数，Anthropic API 不支持，忽略
         # 如果有工具，使用真正的流式工具调用
         if tools:
             logger.debug(f"🔧 AnthropicProvider: 有 {len(tools)} 个工具，使用流式处理")
