@@ -29,7 +29,7 @@ DYNAMIC_DETAIL_CODE = "dynamic_detail"
 HTTP_ERROR_FALLBACK_CODE = "http_error"
 
 # 错误码 registry: code -> (默认中文 detail, 默认 HTTP status)
-# 全量码表（todo 11 CSV registry 落库，195 码 + 4 个 handler 专用码）。
+# 全量码表（todo 11 CSV registry 落库，207 码 + 4 个 handler 专用码，共 211）。
 # 默认 detail 即该 code 的 original_detail（静态站逐字、参数化站含 i18next 占位符
 # {{param}}，参数化站点 raise 时必须显式传原文案 detail 以保证旧客户端 byte-identity）。
 ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
@@ -87,6 +87,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "internal.ai_json_unparsable": ("AI返回的内容无法解析为JSON：{{error}}", 200),
     "internal.ai_service_failed": ("AI 服务配置错误: {{error}}", 200),
     "internal.career_parse_exhausted": ("职业体系解析失败（已达最大重试次数）", 200),
+    # 共享码：仅剩 wizard_stream.py 一处使用，其余已拆分（todo15）
     "internal.career_retry_exhausted": ("职业体系生成失败（AI多次返回为空）", 200),
     "internal.career_save_exhausted": ("职业体系保存失败（已达最大重试次数）", 200),
     "internal.generation_failed": ("生成失败: {{error}}", 200),
@@ -181,6 +182,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.book_import_new_project": ("当前仅支持新建项目导入，不支持指定 project_id", 400),
     "validation.career_stage_out_of_range": ("阶段超出范围，该职业最大阶段为{{max_stage}}", 400),
     "validation.career_sub_type_mismatch": ("该职业不是副职业类型，无法添加为副职业", 400),
+    # 共享码：仅剩 careers.py 一处使用，其余已拆分（todo15）
     "validation.career_type_mismatch": ("该职业不是主职业类型，无法设置为主职业", 400),
     "validation.chapter_content_empty": ("章节内容为空", 400),
     "validation.chapter_content_empty_for_analysis": ("章节内容为空，无法分析", 400),
@@ -198,6 +200,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.import_retry_steps_invalid": ("以下步骤不在失败列表中，无法重试: {{steps}}", 400),
     "validation.import_target_project_missing": ("缺少目标项目ID", 400),
     "validation.json_only": ("只支持 JSON 格式文件", 400),
+    # 共享码：仅剩 users.py 一处使用，其余已拆分（todo15）
     "validation.last_admin_required": ("无法撤销管理员权限，至少需要保留一个管理员", 400),
     "validation.main_career_delete_blocked": ("无法删除主职业，只能更换", 400),
     "validation.main_career_invalid": ("主职业不存在或类型错误", 400),

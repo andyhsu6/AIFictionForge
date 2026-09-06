@@ -9,13 +9,15 @@ Checks:
 """
 import json
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "backend")
+REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/tests/tools/x.py -> repo root
+sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.core.errors import ERROR_REGISTRY  # noqa: E402
 
 LOCALES = {
-    "zh": "frontend/src/locales/zh/errors.json",
-    "en": "frontend/src/locales/en/errors.json",
+    "zh": REPO_ROOT / "frontend/src/locales/zh/errors.json",
+    "en": REPO_ROOT / "frontend/src/locales/en/errors.json",
 }
 
 # documented frontend-only keys (not registry codes; UI labels / fallbacks /
@@ -117,4 +119,5 @@ def main():
     return "\n".join(report)
 
 
-print(main())
+if __name__ == "__main__":
+    print(main())
