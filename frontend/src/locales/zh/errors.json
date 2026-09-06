@@ -1,11 +1,32 @@
 {
   "auth": {
-    "unauthorized": "未登录"
+    "admin_required": "需要管理员权限",
+    "email_already_registered": "该邮箱已注册",
+    "email_not_registered": "该邮箱尚未注册",
+    "identity_missing": "未登录或用户ID缺失",
+    "login_failed": "用户名或密码错误",
+    "login_method_disabled": "本地账户登录未启用",
+    "oauth_params_missing": "缺少 code 或 state 参数",
+    "oauth_request_invalid": "无效的 state 参数",
+    "oauth_upstream_failed": "获取访问令牌失败",
+    "password_already_initialized": "密码已经初始化，请使用密码修改功能",
+    "smtp_not_configured": "系统 SMTP 未配置完整，暂无法发送验证码",
+    "unauthorized": "未登录",
+    "verification_code_expired": "验证码已过期，请重新发送",
+    "verification_code_required": "请先发送验证码",
+    "verification_code_wrong": "验证码错误"
   },
   "conflict": {
-    "error": "资源冲突"
+    "career_in_use": "该职业被{{usage_count}}个角色使用，无法删除。请先移除角色的职业关联。",
+    "chapter_order_exists": "第{{order_index}}章已存在，不能重复创建",
+    "error": "资源冲突",
+    "plugin_name_exists": "插件名已存在: {{plugin_name}}",
+    "username_exists": "用户名已存在"
   },
   "dynamic_detail": "请求处理失败，请稍后重试",
+  "forbidden": {
+    "other_user_cache": "无权清理其他用户的缓存"
+  },
   "http": {
     "badRequest": "请求参数错误",
     "errorWithStatus": "请求失败 ({{status}})",
@@ -16,15 +37,34 @@
   },
   "http_error": "请求处理失败",
   "internal": {
-    "error": "服务器内部错误"
+    "error": "服务器内部错误",
+    "plugin_create_failed": "插件注册失败: {{plugin_name}}"
   },
   "network": {
     "error": "网络错误，请检查网络连接"
   },
   "not_found": {
+    "api_route": "API路径不存在",
+    "batch_task": "批量生成任务不存在",
+    "career": "职业不存在",
     "chapter": "章节不存在",
+    "chapter_analysis": "该章节暂无分析结果",
+    "character": "角色不存在",
+    "character_career": "角色职业关联不存在",
+    "foreshadow": "伏笔不存在",
+    "frontend_route": "页面不存在",
+    "model_list": "未能从 API 获取到可用的模型列表",
     "outline": "大纲不存在",
-    "project": "项目不存在"
+    "plugin": "插件不存在",
+    "preset": "预设不存在",
+    "project": "项目不存在",
+    "project_chapters": "项目没有章节",
+    "setting": "设置不存在，请先创建设置",
+    "user": "用户不存在"
+  },
+  "rate_limit": {
+    "verification_code_attempts": "验证码错误次数过多，请重新发送",
+    "verification_code_send": "验证码发送过于频繁，请 {{remain_seconds}} 秒后重试"
   },
   "requestFailed": "请求失败",
   "security": {
@@ -32,6 +72,7 @@
   },
   "task": {
     "batchListFailed": "获取批量生成任务失败",
+    "cancel_invalid": "无法取消任务（不存在或已完成）",
     "cancelBatchFailed": "取消批量生成任务失败",
     "cancelFailed": "取消任务失败",
     "cancelled": "任务已取消",
@@ -45,9 +86,49 @@
   },
   "unknown": "未知错误",
   "validation": {
+    "career_stage_out_of_range": "阶段超出范围，该职业最大阶段为{{max_stage}}",
+    "career_type_mismatch": "该职业不是主职业类型，无法设置为主职业",
+    "chapter_content_empty": "章节内容为空",
+    "chapter_content_empty_for_analysis": "章节内容为空，无法分析",
+    "chapter_content_empty_for_regenerate": "章节内容为空，无法重新生成",
+    "character_career_duplicate": "该角色已拥有此副职业",
+    "characters_selected_min_one": "请至少选择一个角色/组织",
     "config": "配置数据格式错误",
+    "email_format": "请输入有效的邮箱地址",
     "error": "请求参数验证失败",
     "failed": "请求参数验证失败",
-    "int_parsing": "参数格式不正确"
+    "file_too_large": "文件大小超过 10MB 限制",
+    "import_json_invalid": "JSON格式错误: {{error}}",
+    "int_parsing": "参数格式不正确",
+    "json_only": "只支持 JSON 格式文件",
+    "last_admin_required": "无法撤销管理员权限，至少需要保留一个管理员",
+    "main_career_delete_blocked": "无法删除主职业，只能更换",
+    "mcp_config_invalid": "配置JSON必须包含mcpServers字段",
+    "model_list_endpoint_unsupported": "该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {{api_base_url}}/models",
+    "model_list_http_error": "无法从 API 获取模型列表 (HTTP {{status}})",
+    "model_provider_unsupported": "不支持的提供商: {{provider}}",
+    "outline_continue_requires_existing": "续写模式需要已有大纲",
+    "outline_mode_single_create_blocked": "当前项目为{{outline_mode}}模式，不支持一对一创建。请使用展开功能。",
+    "outline_mode_unsupported": "不支持的模式: {{mode}}",
+    "outline_plan_list_empty": "章节规划列表不能为空",
+    "password_too_short": "密码长度至少为6个字符",
+    "plugin_config_json_invalid": "配置JSON格式错误: {{error}}",
+    "plugin_disabled": "插件未启用",
+    "plugin_server_type_unsupported": "不支持的服务器类型: {{server_type}}",
+    "plugin_server_url_required": "{{plugin_type}}类型插件必须提供server_url",
+    "plugin_transport_fields_required": "Stdio类型插件必须提供command字段",
+    "polish_new_content_empty": "新内容不能为空",
+    "polish_position_invalid": "位置参数无效",
+    "polish_range_out_of_bounds": "起始位置超出内容范围",
+    "polish_selection_mismatch": "选中的文本与章节内容不匹配，请刷新页面后重试",
+    "polish_start_before_end": "起始位置必须小于结束位置",
+    "preset_active_delete_blocked": "无法删除激活中的预设，请先激活其他预设",
+    "qq_smtp_host": "QQ 邮箱 SMTP 主机必须为 smtp.qq.com",
+    "self_account_mutation": "不能禁用自己的账号",
+    "smtp_fields_missing": "请先完善 SMTP 主机、用户名和授权码",
+    "smtp_ssl_tls_conflict": "SSL 和 TLS 不能同时启用",
+    "sub_career_limit": "副职业数量已达上限（最多5个）",
+    "verification_code_format": "请输入6位数字验证码",
+    "verification_code_scene": "不支持的验证码场景"
   }
 }

@@ -1,11 +1,32 @@
 {
   "auth": {
-    "unauthorized": "Not logged in"
+    "admin_required": "Administrator privileges required",
+    "email_already_registered": "This email is already registered",
+    "email_not_registered": "This email is not registered",
+    "identity_missing": "Not logged in or user ID missing",
+    "login_failed": "Incorrect username or password",
+    "login_method_disabled": "Local account login is disabled",
+    "oauth_params_missing": "Missing code or state parameter",
+    "oauth_request_invalid": "Invalid state parameter",
+    "oauth_upstream_failed": "Failed to obtain the access token",
+    "password_already_initialized": "Password is already initialized; please use the change-password feature",
+    "smtp_not_configured": "SMTP is not fully configured; verification codes cannot be sent right now",
+    "unauthorized": "Not logged in",
+    "verification_code_expired": "Verification code has expired, please resend",
+    "verification_code_required": "Please request a verification code first",
+    "verification_code_wrong": "Incorrect verification code"
   },
   "conflict": {
-    "error": "Resource conflict"
+    "career_in_use": "This career is used by {{usage_count}} character(s) and cannot be deleted. Remove the characters’ career links first.",
+    "chapter_order_exists": "Chapter {{order_index}} already exists and cannot be created again",
+    "error": "Resource conflict",
+    "plugin_name_exists": "Plugin name already exists: {{plugin_name}}",
+    "username_exists": "Username already exists"
   },
   "dynamic_detail": "The request could not be processed. Please try again later.",
+  "forbidden": {
+    "other_user_cache": "You are not allowed to clear another user’s cache"
+  },
   "http": {
     "badRequest": "Bad request parameters",
     "errorWithStatus": "Request failed ({{status}})",
@@ -16,15 +37,34 @@
   },
   "http_error": "Request failed",
   "internal": {
-    "error": "Internal server error"
+    "error": "Internal server error",
+    "plugin_create_failed": "Plugin registration failed: {{plugin_name}}"
   },
   "network": {
     "error": "Network error, please check your connection"
   },
   "not_found": {
+    "api_route": "API route not found",
+    "batch_task": "Batch generation task not found",
+    "career": "Career not found",
     "chapter": "Chapter not found",
+    "chapter_analysis": "No analysis result available for this chapter yet",
+    "character": "Character not found",
+    "character_career": "Character-career link not found",
+    "foreshadow": "Foreshadowing not found",
+    "frontend_route": "Page not found",
+    "model_list": "Could not retrieve a model list from the API",
     "outline": "Outline not found",
-    "project": "Project not found"
+    "plugin": "Plugin not found",
+    "preset": "Preset not found",
+    "project": "Project not found",
+    "project_chapters": "The project has no chapters",
+    "setting": "Settings not found; please create them first",
+    "user": "User not found"
+  },
+  "rate_limit": {
+    "verification_code_attempts": "Too many incorrect verification code attempts, please resend",
+    "verification_code_send": "Verification codes are being sent too often; please retry in {{remain_seconds}} seconds"
   },
   "requestFailed": "Request failed",
   "security": {
@@ -32,6 +72,7 @@
   },
   "task": {
     "batchListFailed": "Failed to fetch batch generation tasks",
+    "cancel_invalid": "Cannot cancel the task (not found or already finished)",
     "cancelBatchFailed": "Failed to cancel batch generation task",
     "cancelFailed": "Failed to cancel task",
     "cancelled": "Task cancelled",
@@ -45,9 +86,49 @@
   },
   "unknown": "Unknown error",
   "validation": {
+    "career_stage_out_of_range": "Stage out of range; this career has at most {{max_stage}} stages",
+    "career_type_mismatch": "This career is not a main career and cannot be set as the main career",
+    "chapter_content_empty": "Chapter content is empty",
+    "chapter_content_empty_for_analysis": "Chapter content is empty; cannot analyze",
+    "chapter_content_empty_for_regenerate": "Chapter content is empty; cannot regenerate",
+    "character_career_duplicate": "This character already has this sub-career",
+    "characters_selected_min_one": "Select at least one character/organization",
     "config": "Configuration data format error",
+    "email_format": "Please enter a valid email address",
     "error": "Request parameter validation failed",
     "failed": "Request parameter validation failed",
-    "int_parsing": "Invalid parameter format"
+    "file_too_large": "File size exceeds the 10MB limit",
+    "import_json_invalid": "Invalid JSON format: {{error}}",
+    "int_parsing": "Invalid parameter format",
+    "json_only": "Only JSON files are supported",
+    "last_admin_required": "Cannot revoke administrator privileges; at least one administrator must remain",
+    "main_career_delete_blocked": "Cannot delete a main career; you can only replace it",
+    "mcp_config_invalid": "The config JSON must contain an mcpServers field",
+    "model_list_endpoint_unsupported": "This API provider does not support the model list endpoint (/models returned 404); please enter the model name manually. Requested URL: {{api_base_url}}/models",
+    "model_list_http_error": "Could not fetch the model list from the API (HTTP {{status}})",
+    "model_provider_unsupported": "Unsupported provider: {{provider}}",
+    "outline_continue_requires_existing": "Continue mode requires existing outlines",
+    "outline_mode_single_create_blocked": "This project is in {{outline_mode}} mode; one-to-one creation is not supported. Please use the expand feature instead.",
+    "outline_mode_unsupported": "Unsupported mode: {{mode}}",
+    "outline_plan_list_empty": "The chapter plan list cannot be empty",
+    "password_too_short": "Password must be at least 6 characters",
+    "plugin_config_json_invalid": "Invalid config JSON format: {{error}}",
+    "plugin_disabled": "The plugin is not enabled",
+    "plugin_server_type_unsupported": "Unsupported server type: {{server_type}}",
+    "plugin_server_url_required": "{{plugin_type}} plugins must provide server_url",
+    "plugin_transport_fields_required": "Stdio plugins must provide the command field",
+    "polish_new_content_empty": "New content cannot be empty",
+    "polish_position_invalid": "Invalid position argument",
+    "polish_range_out_of_bounds": "Start position is out of the content range",
+    "polish_selection_mismatch": "The selected text does not match the chapter content; please refresh the page and try again",
+    "polish_start_before_end": "Start position must be less than the end position",
+    "preset_active_delete_blocked": "Cannot delete the active preset; please activate another preset first",
+    "qq_smtp_host": "QQ Mail SMTP host must be smtp.qq.com",
+    "self_account_mutation": "You cannot disable your own account",
+    "smtp_fields_missing": "Please complete the SMTP host, username, and auth code first",
+    "smtp_ssl_tls_conflict": "SSL and TLS cannot both be enabled",
+    "sub_career_limit": "Sub-career limit reached (at most 5)",
+    "verification_code_format": "Please enter a 6-digit verification code",
+    "verification_code_scene": "Unsupported verification code scene"
   }
 }

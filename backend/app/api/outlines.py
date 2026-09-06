@@ -6,6 +6,7 @@ from typing import List, AsyncGenerator, Dict, Any
 import json
 
 from app.database import get_db
+from app.core.errors import ApiError
 from app.api.common import verify_project_access
 from app.models.outline import Outline
 from app.models.project import Project
@@ -163,7 +164,7 @@ async def get_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -186,7 +187,7 @@ async def update_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -274,7 +275,7 @@ async def delete_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -1816,7 +1817,7 @@ async def generate_outline_task(
     data["mode"] = mode
 
     if mode == "continue" and not existing_outlines:
-        raise HTTPException(status_code=400, detail="续写模式需要已有大纲")
+        raise ApiError(code="validation.outline_continue_requires_existing")
 
     # 创建后台任务
     task_type = "outline_new" if mode == "new" else "outline_continue"
@@ -2295,15 +2296,16 @@ async def generate_outline_stream(
         return create_sse_response(new_outline_generator(data, db, user_ai_service))
     elif mode == "continue":
         if not existing_outlines:
-            raise HTTPException(
-                status_code=400,
-                detail="续写模式需要已有大纲，当前项目没有大纲"
+            raise ApiError(
+                code="validation.outline_continue_requires_existing",
+                detail="续写模式需要已有大纲，当前项目没有大纲",
             )
         return create_sse_response(continue_outline_generator(data, db, user_ai_service, user_id))
     else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的模式: {mode}"
+        raise ApiError(
+            code="validation.outline_mode_unsupported",
+            detail=f"不支持的模式: {mode}",
+            params={"mode": mode},
         )
 
 
@@ -2764,16 +2766,17 @@ async def create_single_chapter_from_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证项目权限并获取项目信息
     project = await verify_project_access(outline.project_id, user_id, db)
     
     # 验证项目模式
     if project.outline_mode != 'one-to-one':
-        raise HTTPException(
-            status_code=400,
-            detail=f"当前项目为{project.outline_mode}模式，不支持一对一创建。请使用展开功能。"
+        raise ApiError(
+            code="validation.outline_mode_single_create_blocked",
+            detail=f"当前项目为{project.outline_mode}模式，不支持一对一创建。请使用展开功能。",
+            params={"outline_mode": project.outline_mode},
         )
     
     # 检查该大纲对应的章节是否已存在
@@ -2787,9 +2790,10 @@ async def create_single_chapter_from_outline(
     existing_chapter = existing_chapter_result.scalar_one_or_none()
     
     if existing_chapter:
-        raise HTTPException(
-            status_code=400,
-            detail=f"第{outline.order_index}章已存在，不能重复创建"
+        raise ApiError(
+            code="conflict.chapter_order_exists",
+            detail=f"第{outline.order_index}章已存在，不能重复创建",
+            params={"order_index": outline.order_index},
         )
     
     try:
@@ -2842,7 +2846,7 @@ async def expand_outline_to_chapters_background(
     result = await db.execute(select(Outline).where(Outline.id == outline_id))
     outline = result.scalar_one_or_none()
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
 
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(outline.project_id, user_id, db)
@@ -2913,7 +2917,7 @@ async def expand_outline_to_chapters_stream(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -2940,7 +2944,7 @@ async def get_outline_chapters(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -3327,7 +3331,7 @@ async def create_chapters_from_existing_plans(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证项目权限
     await verify_project_access(outline.project_id, user_id, db)
@@ -3335,7 +3339,7 @@ async def create_chapters_from_existing_plans(
     try:
         # 验证规划数据
         if not plans_request.chapter_plans:
-            raise HTTPException(status_code=400, detail="章节规划列表不能为空")
+            raise ApiError(code="validation.outline_plan_list_empty")
         
         logger.info(f"根据已有规划为大纲 {outline_id} 创建 {len(plans_request.chapter_plans)} 个章节")
         
@@ -3381,7 +3385,7 @@ async def create_chapters_from_existing_plans(
             ]
         )
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"根据已有规划创建章节失败: {str(e)}", exc_info=True)

@@ -7,6 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
+from app.core.errors import ApiError
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.career import Career, CharacterCareer
 from app.models.character import Character
@@ -470,7 +471,7 @@ async def update_career(
     career = result.scalar_one_or_none()
     
     if not career:
-        raise HTTPException(status_code=404, detail="职业不存在")
+        raise ApiError(code="not_found.career")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -535,7 +536,7 @@ async def delete_career(
     career = result.scalar_one_or_none()
     
     if not career:
-        raise HTTPException(status_code=404, detail="职业不存在")
+        raise ApiError(code="not_found.career")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -550,9 +551,10 @@ async def delete_career(
     usage_count = char_career_result.scalar_one()
     
     if usage_count > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"该职业被{usage_count}个角色使用，无法删除。请先移除角色的职业关联。"
+        raise ApiError(
+            code="conflict.career_in_use",
+            detail=f"该职业被{usage_count}个角色使用，无法删除。请先移除角色的职业关联。",
+            params={"usage_count": usage_count},
         )
     
     await db.delete(career)
@@ -576,7 +578,7 @@ async def get_career(
     career = result.scalar_one_or_none()
     
     if not career:
-        raise HTTPException(status_code=404, detail="职业不存在")
+        raise ApiError(code="not_found.career")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -621,12 +623,12 @@ async def get_character_careers(
     character = char_result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
-    
+
     # 获取角色的所有职业关联
     result = await db.execute(
         select(CharacterCareer, Career)
@@ -696,12 +698,12 @@ async def set_main_career(
     character = char_result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
-    
+
     # 验证职业存在且为主职业类型
     career_result = await db.execute(
         select(Career).where(
@@ -712,18 +714,19 @@ async def set_main_career(
     career = career_result.scalar_one_or_none()
     
     if not career:
-        raise HTTPException(status_code=404, detail="职业不存在")
+        raise ApiError(code="not_found.career")
     
     if career.type != "main":
-        raise HTTPException(status_code=400, detail="该职业不是主职业类型，无法设置为主职业")
-    
+        raise ApiError(code="validation.career_type_mismatch")
+
     # 验证阶段有效性
     if career_request.current_stage > career.max_stage:
-        raise HTTPException(
-            status_code=400,
-            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}"
+        raise ApiError(
+            code="validation.career_stage_out_of_range",
+            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}",
+            params={"max_stage": career.max_stage},
         )
-    
+
     # 检查是否已有主职业
     existing_main = await db.execute(
         select(CharacterCareer).where(
@@ -771,12 +774,12 @@ async def add_sub_career(
     character = char_result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
-    
+
     # 验证职业存在且为副职业类型
     career_result = await db.execute(
         select(Career).where(
@@ -787,18 +790,19 @@ async def add_sub_career(
     career = career_result.scalar_one_or_none()
     
     if not career:
-        raise HTTPException(status_code=404, detail="职业不存在")
+        raise ApiError(code="not_found.career")
     
     if career.type != "sub":
-        raise HTTPException(status_code=400, detail="该职业不是副职业类型，无法添加为副职业")
-    
+        raise ApiError(code="validation.career_type_mismatch", detail="该职业不是副职业类型，无法添加为副职业")
+
     # 验证阶段有效性
     if career_request.current_stage > career.max_stage:
-        raise HTTPException(
-            status_code=400,
-            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}"
+        raise ApiError(
+            code="validation.career_stage_out_of_range",
+            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}",
+            params={"max_stage": career.max_stage},
         )
-    
+
     # 检查是否已存在
     existing_check = await db.execute(
         select(CharacterCareer).where(
@@ -807,7 +811,7 @@ async def add_sub_career(
         )
     )
     if existing_check.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="该角色已拥有此副职业")
+        raise ApiError(code="validation.character_career_duplicate")
     
     # 检查副职业数量限制（可选，这里设置为最多5个）
     sub_count_result = await db.execute(
@@ -819,7 +823,7 @@ async def add_sub_career(
     sub_count = sub_count_result.scalar_one()
     
     if sub_count >= 5:
-        raise HTTPException(status_code=400, detail="副职业数量已达上限（最多5个）")
+        raise ApiError(code="validation.sub_career_limit")
     
     # 创建副职业关联
     char_career = CharacterCareer(
@@ -861,19 +865,20 @@ async def update_career_stage(
     relation_data = result.one_or_none()
     
     if not relation_data:
-        raise HTTPException(status_code=404, detail="角色职业关联不存在")
-    
+        raise ApiError(code="not_found.character_career")
+
     char_career, career, character = relation_data
-    
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
-    
+
     # 验证新阶段有效性
     if stage_request.current_stage > career.max_stage:
-        raise HTTPException(
-            status_code=400,
-            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}"
+        raise ApiError(
+            code="validation.career_stage_out_of_range",
+            detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}",
+            params={"max_stage": career.max_stage},
         )
     
     # 验证阶段递增规则（不能倒退，除非降级）
@@ -919,8 +924,8 @@ async def remove_sub_career(
     relation_data = result.one_or_none()
     
     if not relation_data:
-        raise HTTPException(status_code=404, detail="角色职业关联不存在")
-    
+        raise ApiError(code="not_found.character_career")
+
     char_career, character = relation_data
     
     # 验证用户权限
@@ -929,7 +934,7 @@ async def remove_sub_career(
     
     # 不允许删除主职业
     if char_career.career_type == "main":
-        raise HTTPException(status_code=400, detail="无法删除主职业，只能更换")
+        raise ApiError(code="validation.main_career_delete_blocked")
     
     await db.delete(char_career)
     await db.commit()
