@@ -307,6 +307,8 @@ def sse_code_for_exception(exc: BaseException) -> Tuple[Optional[str], Dict[str,
       返回 (None, {})，调用点保持旧 (detail, status) 通道，前端按 legacy 显示。
     - 其余异常：(None, {})。
     调用点负责把 error_code=None 时走旧路径；不为站点发明新 code。
+    另：detail 非字符串的 HTTPException 同样返回 (None, {})；嵌套/`__cause__`
+    异常不展开（动态站点由 todo14 处理）。
     """
     if isinstance(exc, ApiError):
         return exc.code, dict(exc.params or {})

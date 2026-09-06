@@ -254,6 +254,8 @@ class WizardProgressTracker:
 
         task 14a：error_code 设置时走结构化通道（raw 缺省回填 error_message，
         现场 error_message 即诊断原文）；未设置时保持旧 (str, int) 形状不变。
+        注意默认为 opt-in（error_code=None），与 TaskProgressTracker.error 的默认
+        task.failed 相反；error_code 设置时旧 int code 参数被忽略（改发 registry 默认 status）。
         """
         if error_code is not None:
             return await SSEResponse.send_error(

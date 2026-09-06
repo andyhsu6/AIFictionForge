@@ -462,6 +462,102 @@ async def test_task_tracker_failure_persists_structured_columns(tmp_path, monkey
 
 
 @pytest.mark.anyio
+async def test_task_tracker_error_opt_out_legacy_shape(tmp_path, monkeypatch):
+    """TaskProgressTracker.error(error_code=None) 显式退出结构化通道：
+    旧行为只写 status/error_message/status_message，不写 status_code/status_params。"""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.models.background_task import BackgroundTask
+    from app.services import background_task_service as bts
+
+    db_file = tmp_path / "task_optout.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    BackgroundTask.__table__.create(sync_engine)
+
+    aengine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+
+    async def fake_get_engine(user_id):
+        return aengine
+
+    monkeypatch.setattr(bts, "get_engine", fake_get_engine)
+
+    maker = async_sessionmaker(aengine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as session:
+        session.add(BackgroundTask(
+            id="tt3", user_id="u", project_id="p", task_type="chapter_generate",
+            status="running",
+        ))
+        await session.commit()
+
+    tracker = bts.TaskProgressTracker("tt3", "u", "章节")
+    await tracker.error("boom 诊断", error_code=None)
+
+    async with maker() as session:
+        row = (
+            await session.execute(select(BackgroundTask).where(BackgroundTask.id == "tt3"))
+        ).scalar_one()
+        assert row.status == "failed"
+        assert row.status_message == "失败: boom 诊断"  # 中文组装字节不变
+        assert row.error_message == "boom 诊断"
+        assert row.status_code is None  # opt-out：无结构化列写入
+        assert row.status_params is None
+
+
+@pytest.mark.anyio
+async def test_task_tracker_warning_complete_structured_path(tmp_path, monkeypatch):
+    """TaskProgressTracker.warning/complete 结构化路径：code 设置时同一行写入
+    status_code/status_params，旧 status_message 文本字节不变。"""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.models.background_task import BackgroundTask
+    from app.services import background_task_service as bts
+
+    db_file = tmp_path / "task_struct_path.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    BackgroundTask.__table__.create(sync_engine)
+
+    aengine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+
+    async def fake_get_engine(user_id):
+        return aengine
+
+    monkeypatch.setattr(bts, "get_engine", fake_get_engine)
+
+    maker = async_sessionmaker(aengine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as session:
+        session.add(BackgroundTask(
+            id="tt4", user_id="u", project_id="p", task_type="chapter_generate",
+            status="running",
+        ))
+        await session.commit()
+
+    tracker = bts.TaskProgressTracker("tt4", "u", "章节")
+    await tracker.warning("注意点", code="progress.loading", params={"p": 1})
+
+    async with maker() as session:
+        row = (
+            await session.execute(select(BackgroundTask).where(BackgroundTask.id == "tt4"))
+        ).scalar_one()
+        assert row.status_message == "⚠️ 注意点"  # 旧文案不变
+        assert row.status_code == "progress.loading"
+        assert row.status_params == {"p": 1}
+
+    await tracker.complete("搞定", code="progress.done", params={"n": 2})
+
+    async with maker() as session:
+        row = (
+            await session.execute(select(BackgroundTask).where(BackgroundTask.id == "tt4"))
+        ).scalar_one()
+        assert row.status == "completed"
+        assert row.progress == 100
+        assert row.status_message == "搞定"
+        assert row.status_code == "progress.done"
+        assert row.status_params == {"n": 2}
+
+
+@pytest.mark.anyio
 async def test_cancel_task_writes_structured_code(tmp_path):
     """cancel_task：status_message '任务已取消' 不变，同一行写入 task.cancelled。"""
     from sqlalchemy import create_engine, select

@@ -122,7 +122,8 @@ class TaskProgressTracker:
     async def set_result(self, task_result: Dict[str, Any]):
         await self._update_task(task_result=task_result)
 
-    async def complete(self, message: str = None, code: str = None, params: Dict[str, Any] = None):
+    async def complete(self, message: Optional[str] = None, code: Optional[str] = None,
+                       params: Optional[Dict[str, Any]] = None):
         """完成任务。
 
         i18n todo13 part 2：code 设置时同一行写入 status_code/status_params
@@ -140,7 +141,8 @@ class TaskProgressTracker:
             update_kwargs["status_params"] = params or {}
         await self._update_task(**update_kwargs)
 
-    async def error(self, error_message: str, error_code: str = "task.failed", params: Dict[str, Any] = None):
+    async def error(self, error_message: str, error_code: Optional[str] = "task.failed",
+                    params: Optional[Dict[str, Any]] = None):
         """失败收尾。
 
         i18n todo13 part 2：失败行默认写 status_code="task.failed"（文案动态，
@@ -158,7 +160,8 @@ class TaskProgressTracker:
             update_kwargs["status_params"] = params or {}
         await self._update_task(**update_kwargs)
 
-    async def warning(self, message: str, code: str = None, params: Dict[str, Any] = None):
+    async def warning(self, message: str, code: Optional[str] = None,
+                      params: Optional[Dict[str, Any]] = None):
         update_kwargs: Dict[str, Any] = dict(
             status_message=f"⚠️ {message}",
             progress_details={"stage": "warning", "message": message}
@@ -169,7 +172,7 @@ class TaskProgressTracker:
         await self._update_task(**update_kwargs)
 
     async def retry(self, retry_count: int, max_retries: int, reason: str = "准备重试",
-                    code: str = None, params: Dict[str, Any] = None):
+                    code: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
         msg = f"⚠️ {reason}... ({retry_count}/{max_retries})"
         update_kwargs: Dict[str, Any] = dict(
             status_message=msg, retry_count=retry_count,
