@@ -14,7 +14,7 @@
     "serviceUnavailable": "服务暂时不可用，请稍后重试",
     "unauthorized": "登录状态已失效，请重新登录"
   },
-  "http_error": "{{detail}}",
+  "http_error": "请求处理失败",
   "internal": {
     "error": "服务器内部错误"
   },

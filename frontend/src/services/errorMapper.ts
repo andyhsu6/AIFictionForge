@@ -1,15 +1,20 @@
 /**
  * Backend error envelope → localized display string.
  *
- * Contract (i18n plan todo 4, backend `app/core/errors.py`):
- * - HTTP error body: `{ detail, code, params }`
- * - SSE error event: `{ type: 'error', error, code, error_code?, error_params? }`
- * - SSE progress event: `{ type: 'progress', message, message_code?, message_params? }`
+ * Contract (i18n plan todo 4, backend `app/core/errors.py`; task 14a raw field):
+ * - HTTP error body: `{ detail, code, params, raw? }`
+ * - SSE error event: `{ type: 'error', error, code, error_code?, error_params?, error_raw? }`
+ * - SSE progress event: `{ type: 'progress', message, message_code?, message_params?, message_raw? }`
  * - Background task rows: `status_message` + `status_code`/`status_params`
  *   (NULL code = legacy raw text, show as-is).
  *
- * Backward-compat rule (hard): an unknown/missing code NEVER drops the raw
- * backend text — it falls back to detail (or status_message).
+ * Display policy (task 14a — supersedes the old "never drop raw text" rule):
+ * the raw backend text is preserved in the PAYLOAD (`raw` field / detail /
+ * status_message) but for a payload WITH a code, an unknown/unregistered code
+ * displays a localized GENERIC message — the backend text never leaks to the
+ * UI. Legacy rows with NO code still show detail verbatim (they have no
+ * translation). Debug surfaces read the original text via getErrorDiagnostic().
+ *
  * Unit-testable without React: pure string in/out (needs i18n initialized).
  */
 // `never[]` params make any i18next TFunction structurally assignable;
@@ -44,6 +49,8 @@ export interface ErrorPayload {
   params?: Record<string, unknown> | null;
   /** HTTP status, used only for status-specific fallbacks. */
   status?: number | null;
+  /** Original diagnostic string (task 14a `raw` channel); debug surfaces only. */
+  raw?: string | null;
 }
 
 const AUTH_UNAUTHORIZED_CODE = 'auth.unauthorized';
@@ -88,11 +95,16 @@ const STATUS_FALLBACK_KEYS: Record<number, string> = {
 /**
  * Main mapping: `{ code, params, detail }` → display string.
  *
- * Resolution order:
- * 1. `dynamic_detail` marker → raw detail (content is runtime-generated).
+ * Resolution order (task 14a display policy — supersedes the old
+ * "unknown code → raw detail" rule):
+ * 1. `dynamic_detail` marker → raw detail (content is runtime-generated display text).
  * 2. Known code → `errors:<code>` template (dots nest; params interpolated).
- * 3. Unknown code → raw detail (never dropped).
- * 4. No usable result → per-status fallback key, then `errors:unknown`.
+ * 3. Unknown/unregistered code (incl. bare `http_error`) → localized GENERIC
+ *    text — the backend detail must NOT leak to the UI; diagnostics read it
+ *    via getErrorDiagnostic().
+ * 4. No code at all → legacy row (old task rows, legacy SSE): detail verbatim
+ *    (the only remaining detail escape).
+ * 5. No usable result → per-status fallback key, then `errors:unknown`.
  */
 export function mapErrorPayload(payload: ErrorPayload): string {
   const { code, params, detail, status } = payload;
@@ -102,18 +114,20 @@ export function mapErrorPayload(payload: ErrorPayload): string {
   }
 
   if (code) {
-    const key = normalizeErrorCode(code);
-    if (key === HTTP_ERROR_CODE) {
-      // Bare 'http_error' = existing HTTPException not in registry:
-      // generic shell interpolating the backend detail.
-      return tErrors(HTTP_ERROR_CODE, { detail: detail || tErrors('unknown', {}) });
+    // Bare 'http_error' = existing HTTPException not in registry: generic
+    // message only; the backend detail is a diagnostic, not display text.
+    // (Checked on the RAW code — normalizeErrorCode would nest it under
+    // `validation.` since 'http_error' is not a registry group head.)
+    if (code === HTTP_ERROR_CODE) {
+      return tErrors(HTTP_ERROR_CODE, {});
     }
+    const key = normalizeErrorCode(code);
     if (hasErrorsKey(key)) {
       const translated = tErrors(key, { ...params, detail: detail ?? '', status });
       if (translated.trim()) return translated;
     }
-    if (detail) return detail;
   } else if (detail) {
+    // No code at all → legacy row (old task rows / legacy SSE): verbatim.
     return detail;
   }
 
@@ -123,6 +137,14 @@ export function mapErrorPayload(payload: ErrorPayload): string {
     return tErrors('http.errorWithStatus', { status });
   }
   return tErrors('unknown', {});
+}
+
+/**
+ * Original backend diagnostic text (task 14a `raw` channel, falling back to
+ * the legacy `detail`): for debug/detail views only — never a display string.
+ */
+export function getErrorDiagnostic(payload: ErrorPayload): string {
+  return payload.raw ?? payload.detail ?? '';
 }
 
 /**
@@ -149,7 +171,8 @@ export function mapSSEError(payload: {
 
 /**
  * SSE progress-event message: `message_code`/`message_params` → localized
- * template; unknown code or missing code → raw `message` (backward compat).
+ * template. Task 14a policy: missing code → raw `message` (legacy event);
+ * unregistered code → localized generic text (raw message never leaks).
  */
 export function mapSSEProgressMessage(payload: {
   message?: string | null;
@@ -158,13 +181,14 @@ export function mapSSEProgressMessage(payload: {
 }): string {
   const raw = payload.message || '';
   if (!payload.message_code) return raw;
-  if (!hasErrorsKey(payload.message_code)) return raw;
+  if (!hasErrorsKey(payload.message_code)) return tErrors('unknown', {});
   return tErrors(payload.message_code, { ...(payload.message_params || {}) });
 }
 
 /**
- * Background-task status: structured `status_code`/`status_params` when set;
- * NULL code (old rows) → raw `status_message` untouched.
+ * Background-task status: structured `status_code`/`status_params` when set
+ * (known → template, unregistered → generic); NULL code (old rows) → raw
+ * `status_message` untouched. Delegates to mapErrorPayload's task-14a policy.
  */
 export function mapTaskStatusMessage(task: {
   status_message?: string | null;

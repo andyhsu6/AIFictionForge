@@ -14,7 +14,7 @@
     "serviceUnavailable": "Service temporarily unavailable, please retry later",
     "unauthorized": "Session expired, please log in again"
   },
-  "http_error": "{{detail}}",
+  "http_error": "Request failed",
   "internal": {
     "error": "Internal server error"
   },

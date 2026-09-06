@@ -26,6 +26,9 @@ def _background_task_data(task: BackgroundTask) -> dict:
         "status": task.status,
         "progress": task.progress or 0,
         "status_message": task.status_message,
+        # task 14a：结构化状态列透传（存量行为 NULL，前端按旧 raw 文案展示）
+        "status_code": task.status_code,
+        "status_params": task.status_params or None,
         "progress_details": task.progress_details,
         "error_message": task.error_message,
         "task_result": task.task_result,

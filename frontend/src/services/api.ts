@@ -2,7 +2,7 @@ import axios from 'axios';
 import { antdMessage } from '../utils/antdApp';
 import i18n from '../i18n';
 import { ssePost } from '../utils/sseClient';
-import { mapErrorPayload, mapSSEError, isUnauthenticatedError } from './errorMapper';
+import { mapErrorPayload, mapSSEError, getErrorDiagnostic, isUnauthenticatedError } from './errorMapper';
 import type { SSEClientOptions } from '../utils/sseClient';
 import type {
   User,
@@ -96,17 +96,23 @@ api.interceptors.response.use(
   },
   (error) => {
     let errorMessage: string;
+    let diagnostic = '';
 
     if (error.response) {
       const status: number = error.response.status;
       const data = error.response.data;
-      // Envelope {detail, code, params}; unknown code → raw detail (never dropped).
-      errorMessage = mapErrorPayload({
+      // Envelope {detail, code, params, raw?}; unregistered code → generic
+      // localized text (task 14a). Backend text stays out of the UI and is
+      // logged here via getErrorDiagnostic.
+      const payload = {
         detail: typeof data?.detail === 'string' ? data.detail : (typeof data?.message === 'string' ? data.message : null),
         code: typeof data?.code === 'string' ? data.code : null,
         params: data?.params && typeof data.params === 'object' ? data.params : null,
         status,
-      });
+        raw: typeof data?.raw === 'string' ? data.raw : null,
+      };
+      diagnostic = getErrorDiagnostic(payload);
+      errorMessage = mapErrorPayload(payload);
 
       // 401 by code/status, not by matching raw Chinese text.
       if (isUnauthenticatedError(data?.code, status) && window.location.pathname !== '/login') {
@@ -123,7 +129,7 @@ api.interceptors.response.use(
     }
 
     antdMessage.error(errorMessage);
-    console.error('API Error:', errorMessage, error);
+    console.error('API Error:', errorMessage, diagnostic || '(no diagnostic)', error);
 
     return Promise.reject(error);
   }
@@ -1271,15 +1277,17 @@ export const projectAgentApi = {
       let detail: string | null = null;
       let code: string | null = null;
       let params: Record<string, unknown> | null = null;
+      let raw: string | null = null;
       try {
         const body = await response.json();
         detail = typeof body?.detail === 'string' ? body.detail : null;
         code = typeof body?.code === 'string' ? body.code : null;
         params = body?.params && typeof body.params === 'object' ? body.params : null;
+        raw = typeof body?.raw === 'string' ? body.raw : null;
       } catch {
         // 响应非 JSON 时按状态码兜底。
       }
-      throw new Error(mapErrorPayload({ detail, code, params, status: response.status }));
+      throw new Error(mapErrorPayload({ detail, code, params, status: response.status, raw }));
     }
     if (!response.body) throw new Error(i18n.t('stream.readFailed'));
 

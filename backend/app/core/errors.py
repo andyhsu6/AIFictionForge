@@ -1,8 +1,11 @@
-"""ApiError 基建：统一错误码 registry + {detail, code, params} envelope + 全局异常 handler。
+"""ApiError 基建：统一错误码 registry + {detail, code, params[, raw]} envelope + 全局异常 handler。
 
-契约（i18n plan todo 4）：
-- HTTP 错误响应 body 为 {"detail": str, "code": str, "params": dict}。
+契约（i18n plan todo 4 + task 14a）：
+- HTTP 错误响应 body 为 {"detail": str, "code": str, "params": dict}，可选 "raw"。
   detail 保留原中文文案以兼容旧客户端；code/params 为新增结构化字段，供前端翻译。
+- raw 是「原始诊断文案」双通道字段（task 14a）：code 未注册时前端只显示本地化
+  通用文案，原文移入 raw 仅在调试界面展示。raw 为纯增量字段——未设置时响应
+  不含该键；生产环境 500 兜底不外泄异常原文（只进日志）。
 - dynamic_detail 是「动态 detail」站点的标记（todo 14）：这些站点的 detail 内容由运行时
   拼接产生，无法静态注册，前端按 code 归类、detail 直接展示或作 fallback。
 - 完整 registry 在 todo 11 建立；本模块先提供机制 + 高频种子码。
@@ -30,6 +33,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "not_found.chapter": ("章节不存在", 404),
     "not_found.project": ("项目不存在", 404),
     "not_found.outline": ("大纲不存在", 404),
+    "not_found.api_route": ("API路径不存在", 404),
+    "not_found.frontend_route": ("页面不存在", 404),
     "validation.config": ("配置数据格式错误", 500),
     "internal.error": ("服务器内部错误", 500),
     "validation.error": ("请求参数验证失败", 422),
@@ -53,6 +58,8 @@ class ApiError(Exception):
         detail: 错误文案；省略时取 registry 默认中文 detail（向后兼容旧客户端）。
         status: HTTP 状态码；省略时取 registry 默认值，再省略则 500。
         params: 结构化参数，供前端模板化翻译（如 {"chapter_id": "..."}）。
+        raw: 原始诊断文案（task 14a 双通道）。仅调试界面展示；未设置时响应
+            不含 raw 键（纯增量，旧客户端与精确断言不受影响）。
     """
 
     def __init__(
@@ -61,22 +68,35 @@ class ApiError(Exception):
         detail: Optional[str] = None,
         status: Optional[int] = None,
         params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
     ):
         self.code = code
         default_detail, default_status = ERROR_REGISTRY.get(code, ("", 500))
         self.detail = detail if detail is not None else default_detail
         self.status = status if status is not None else default_status
         self.params: Dict[str, Any] = params or {}
+        self.raw = raw
         super().__init__(f"[{code}] {self.detail}")
 
     def to_envelope(self) -> Dict[str, Any]:
         """HTTP 响应 envelope：detail 保留旧中文文案，code/params 为结构化新字段。"""
-        return {"detail": self.detail, "code": self.code, "params": self.params}
+        content: Dict[str, Any] = {"detail": self.detail, "code": self.code, "params": self.params}
+        if self.raw:
+            content["raw"] = self.raw
+        return content
 
 
-def envelope(detail: str, code: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """构造统一错误 envelope（供 handler 与非异常路径复用）。"""
-    return {"detail": detail, "code": code, "params": params or {}}
+def envelope(
+    detail: str,
+    code: str,
+    params: Optional[Dict[str, Any]] = None,
+    raw: Optional[str] = None,
+) -> Dict[str, Any]:
+    """构造统一错误 envelope（供 handler 与非异常路径复用）；raw 真值才输出该键。"""
+    content: Dict[str, Any] = {"detail": detail, "code": code, "params": params or {}}
+    if raw:
+        content["raw"] = raw
+    return content
 
 
 def code_for_http_exception(exc: HTTPException) -> str:
@@ -98,13 +118,19 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
-        """存量 HTTPException → ApiError 化：已知 (status, detail) 归码，未知走 http_error。"""
+        """存量 HTTPException → ApiError 化：已知 (status, detail) 归码，未知走 http_error。
+
+        task 14a：detail 保持 byte-identical（旧契约）；未知站点的 detail 即现场
+        诊断原文，随 raw 双通道下发，前端只显示本地化通用文案。
+        """
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        code = code_for_http_exception(exc)
+        raw = getattr(exc, "raw", None)
+        if raw is None and code == HTTP_ERROR_FALLBACK_CODE:
+            raw = detail
         return JSONResponse(
             status_code=exc.status_code,
-            content=envelope(
-                detail=exc.detail if isinstance(exc.detail, str) else str(exc.detail),
-                code=code_for_http_exception(exc),
-            ),
+            content=envelope(detail=detail, code=code, raw=raw),
             headers=getattr(exc, "headers", None),
         )
 
@@ -137,7 +163,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         detail, default_status = ERROR_REGISTRY["internal.error"]
         content = envelope(detail=detail, code="internal.error")
         if config_debug():
-            content["message"] = str(exc)
+            # task 14a：debug 才随 raw 下发原文；生产环境原文只进日志。
+            content["message"] = str(exc)  # compat alias，保留一个版本
+            content["raw"] = str(exc)
         else:
             content["message"] = "请稍后重试"
         return JSONResponse(status_code=default_status, content=content)

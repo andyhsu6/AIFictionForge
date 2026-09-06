@@ -229,9 +229,10 @@ export function pollTaskUntilComplete(
       }
 
       if (status.status === 'failed') {
-        // error_message is raw backend text (keep); status_message goes through
-        // code mapping with raw fallback for legacy NULL-code rows.
-        const detail = status.error_message || mapTaskStatusMessage(status) || i18n.t('task.failed', { ns: 'errors' });
+        // Task 14a: the mapped (localized) status wins; error_message is raw
+        // backend text and no longer leaks to the default display. Legacy
+        // NULL-code rows still pass status_message through verbatim.
+        const detail = mapTaskStatusMessage(status) || i18n.t('task.failed', { ns: 'errors' });
         onError(detail, status);
         return;
       }

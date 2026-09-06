@@ -239,7 +239,10 @@ export class SSEPostClient {
         } else {
           console.error('SSE POST请求失败:', error);
           if (this.options.onError) {
-            this.options.onError(mapErrorPayload({ detail: error.message, status: null }));
+            // error.message is already a mapped display string (the non-2xx
+            // handler above throws mapErrorPayload(...)); re-mapping it would
+            // double-translate. Forward as-is, generic fallback only if empty.
+            this.options.onError(error.message || mapErrorPayload({ status: null }));
           }
           reject(error);
         }

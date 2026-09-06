@@ -13,6 +13,7 @@ import {
   ClearOutlined,
 } from '@ant-design/icons';
 import { getProjectTasks, getTaskStatus, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
+import { mapTaskStatusMessage, getErrorDiagnostic } from '../services/errorMapper';
 import { eventBus, EventNames } from '../store/eventBus';
 
 interface FloatingTaskPanelProps {
@@ -346,17 +347,26 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
                         </Space>
                       </div>
 
-                      {task.status_message && (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: token.colorTextSecondary,
-                            marginBottom: 4,
-                          }}
-                        >
-                          {task.status_message}
-                        </div>
-                      )}
+                      {task.status_message && (() => {
+                        // Task 14a: show the localized status; the raw backend
+                        // status_message is a diagnostic, surfaced only in DEV.
+                        const display = mapTaskStatusMessage(task);
+                        const diagnostic = getErrorDiagnostic({ detail: task.status_message });
+                        return (
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: token.colorTextSecondary,
+                              marginBottom: 4,
+                            }}
+                          >
+                            {display}
+                            {import.meta.env.DEV && diagnostic && diagnostic !== display && (
+                              <span style={{ color: token.colorTextTertiary }}> · {diagnostic}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {(task.status === 'running' || task.status === 'pending') && (
                         <Progress

@@ -9,7 +9,7 @@ from datetime import datetime
 import sys
 
 from app.config import settings as config_settings
-from app.core.errors import register_exception_handlers
+from app.core.errors import envelope, register_exception_handlers
 from app.database import close_db, _session_stats
 from app.logger import setup_logging, get_logger
 from app.middleware import RequestIDMiddleware
@@ -219,9 +219,9 @@ if static_dir.exists():
         if full_path.startswith("api/"):
             return JSONResponse(
                 status_code=404,
-                content={"detail": "API路径不存在"}
+                content=envelope("API路径不存在", "not_found.api_route")
             )
-        
+
         file_path = static_dir / full_path
         try:
             resolved_file = file_path.resolve()
@@ -230,19 +230,19 @@ if static_dir.exists():
         except ValueError:
             return JSONResponse(
                 status_code=404,
-                content={"detail": "页面不存在"}
+                content=envelope("页面不存在", "not_found.frontend_route")
             )
 
         if resolved_file.is_file():
             return FileResponse(resolved_file)
-        
+
         index_file = static_dir / "index.html"
         if index_file.exists():
             return FileResponse(index_file)
-        
+
         return JSONResponse(
             status_code=404,
-            content={"detail": "页面不存在"}
+            content=envelope("页面不存在", "not_found.frontend_route")
         )
 else:
     logger.warning("静态文件目录不存在，请先构建前端: cd frontend && npm run build")

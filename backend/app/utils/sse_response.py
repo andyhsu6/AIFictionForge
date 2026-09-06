@@ -205,8 +205,26 @@ class WizardProgressTracker:
             "warning"
         )
     
-    async def error(self, error_message: str, code: int = 500) -> str:
-        """发送错误消息"""
+    async def error(
+        self,
+        error_message: str,
+        code: int = 500,
+        error_code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
+    ) -> str:
+        """发送错误消息。
+
+        task 14a：error_code 设置时走结构化通道（raw 缺省回填 error_message，
+        现场 error_message 即诊断原文）；未设置时保持旧 (str, int) 形状不变。
+        """
+        if error_code is not None:
+            return await SSEResponse.send_error(
+                error=error_message,
+                code=error_code,
+                params=params,
+                raw=raw or error_message,
+            )
         return await SSEResponse.send_error(error_message, code)
     
     async def result(self, data: Dict[str, Any]) -> str:
@@ -265,16 +283,18 @@ class SSEResponse:
         status: str = "processing",
         code: Optional[str] = None,
         params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
     ) -> str:
         """
         发送进度消息
-        
+
         Args:
             message: 进度消息
             progress: 进度百分比(0-100)
             status: 状态(processing/success/error)
             code: 结构化消息码（可选，i18n 机制；缺省时 payload 形状与旧版完全一致）
             params: 结构化消息参数（可选，配合 code 供前端模板化翻译）
+            raw: 原始诊断文案（可选，task 14a 双通道；真值时追加 message_raw）
         """
         payload: Dict[str, Any] = {
             "type": "progress",
@@ -285,6 +305,8 @@ class SSEResponse:
         if code is not None:
             payload["message_code"] = code
             payload["message_params"] = params or {}
+        if raw:
+            payload["message_raw"] = raw
         return SSEResponse.format_sse(payload)
     
     @staticmethod
@@ -329,6 +351,7 @@ class SSEResponse:
         error: Optional[str] = None,
         code: Any = 500,
         params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
     ) -> str:
         """
         发送错误消息
@@ -338,6 +361,9 @@ class SSEResponse:
         - 结构化模式: send_error(code="not_found.chapter", params={...}) →
           追加 error_code/error_params 字段，同时保留旧字段形状（error 回填默认 detail，
           code 回填 registry 默认 status），旧客户端不受影响。
+        - raw（task 14a 双通道）: 结构化模式下真值 raw 追加 error_raw 字段；
+          前端对未注册 code 只显示本地化通用文案，原文仅调试界面使用。
+          旧 `error` 字段保持原样，旧客户端仍能拿到文本。
         """
         payload: Dict[str, Any] = {"type": "error"}
         if isinstance(code, str):
@@ -347,6 +373,8 @@ class SSEResponse:
             payload["code"] = default_status
             payload["error_code"] = code
             payload["error_params"] = params or {}
+            if raw:
+                payload["error_raw"] = raw
         else:
             payload["error"] = error or ""
             payload["code"] = code
