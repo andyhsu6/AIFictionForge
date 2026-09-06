@@ -3,14 +3,16 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Annotated
 from datetime import datetime
 
-# ========== AI 生成内容语言（i18n plan todo 16）==========
+from app.schemas.common import ContentLanguageLiteral
+
+# ========== AI 生成内容语言（i18n plan todo 16/17）==========
 # 语义：None / "auto" = 跟随界面语言；"zh" = 简体中文；"en" = English。
-# 仅做存储与请求校验，注入生成提示词的行为在后续 todo（17/19）接入。
+# 词表统一定义在 app/schemas/common.py（todo 17 prelude）；
+# 注入生成提示词的解析链在 app/services/language_resolver.py。
 ContentLanguage = Annotated[
-    Optional[str],
+    Optional[ContentLanguageLiteral],
     Field(
         default=None,
-        pattern=r"^(auto|zh|en)$",
         description="AI 生成内容语言：None 或 'auto' 表示跟随界面语言，'zh' 简体中文，'en' English",
     ),
 ]

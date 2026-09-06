@@ -3,6 +3,7 @@ from typing import Dict, Any, AsyncGenerator, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.ai_service import AIService
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis
 from app.schemas.regeneration import ChapterRegenerateRequest, PreserveElementsConfig
@@ -189,6 +190,9 @@ class ChapterRegenerator:
         db: AsyncSession = None
     ) -> str:
         """构建完整的重新生成提示词"""
+        # 解析最终生成语言：用户偏好 > UI 语言 > zh（重新生成请求无 per-gen 参数，todo 17）
+        generation_language = await resolve_user_generation_language(db, user_id)
+
         # 使用PromptService的get_chapter_regeneration_prompt方法
         # 该方法会处理自定义模板加载和完整提示词构建
         return await PromptService.get_chapter_regeneration_prompt(
@@ -201,7 +205,8 @@ class ChapterRegenerator:
             style_content=style_content,
             target_word_count=regenerate_request.target_word_count,
             user_id=user_id,
-            db=db
+            db=db,
+            content_language=generation_language
         )
     
     def calculate_content_diff(

@@ -7,6 +7,7 @@ import { useCallback } from 'react';
 import { App } from 'antd';
 import { useStore } from './index';
 import { projectApi, outlineApi, characterApi, chapterApi } from '../services/api';
+import type { ContentLanguage } from '../utils/languageSync';
 import type {
   PaginationResponse,
   Outline,
@@ -294,7 +295,7 @@ export function useChapterSync() {
     model?: string,
     narrativePerspective?: string,
     skillKey?: string,
-    contentLanguage?: string
+    contentLanguage?: ContentLanguage
   ) => {
     try {
       // 使用fetch处理流式响应

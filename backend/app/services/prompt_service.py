@@ -1,6 +1,10 @@
 """提示词管理服务"""
 from typing import Dict, Any, Optional
 import json
+from app.services.language_resolver import (
+    GenerationLanguage,
+    append_language_instruction,
+)
 from app.services.skill_loader import get_all_skills_cached
 
 
@@ -2689,31 +2693,43 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 </constraints>"""
 
     @staticmethod
-    def format_prompt(template: str, **kwargs) -> str:
+    def format_prompt(template: str, content_language: Optional[GenerationLanguage] = None, **kwargs) -> str:
         """
         格式化提示词模板
-        
+
+        i18n plan todo 17：content_language（解析链产物，"zh"/"en"）非空时，
+        把目标语言指令作为独立尾部段追加在模板渲染结果之外（追加式注入）——
+        DB 可编辑模板无需包含任何语言变量，旧模板格式化行为不变；
+        content_language 为 None 时输出与历史行为逐字节一致（模板预览等
+        非生成路径保持零改动）。
+
         Args:
             template: 提示词模板
+            content_language: 已解析的生成语言（resolve_generation_language 产物）；
+                None 或非 "zh"/"en" 值不注入
             **kwargs: 模板参数
-            
+
         Returns:
             格式化后的提示词
         """
         try:
-            return template.format(**kwargs)
+            rendered = template.format(**kwargs)
         except KeyError as e:
             raise ValueError(f"缺少必需的参数: {e}")
+        if content_language in ("zh", "en"):
+            rendered = append_language_instruction(rendered, content_language)
+        return rendered
     
 
     @classmethod
     async def get_chapter_regeneration_prompt(cls, chapter_number: int, title: str, word_count: int, content: str,
                                         modification_instructions: str, project_context: Dict[str, Any],
                                         style_content: str, target_word_count: int,
-                                        user_id: str = None, db = None) -> str:
+                                        user_id: str = None, db = None,
+                                        content_language: Optional[GenerationLanguage] = None) -> str:
         """
         获取章节重写提示词（支持用户自定义）
-        
+
         Args:
             chapter_number: 章节序号
             title: 章节标题
@@ -2725,7 +2741,9 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
             target_word_count: 目标字数
             user_id: 用户ID（可选，用于获取自定义模板）
             db: 数据库会话（可选，用于查询自定义模板）
-            
+            content_language: 已解析的生成语言（todo 17）；非空时在最终拼接
+                结果尾部追加目标语言指令段
+
         Returns:
             完整的章节重写提示词
         """
@@ -2831,8 +2849,14 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 
 现在开始：
 """)
-        
-        return "\n".join(prompt_parts)
+
+        joined_prompt = "\n".join(prompt_parts)
+
+        # i18n plan todo 17：语言指令作为独立尾部段追加（模板之外，不要求模板含变量）
+        if content_language in ("zh", "en"):
+            joined_prompt = append_language_instruction(joined_prompt, content_language)
+
+        return joined_prompt
 
     @classmethod
     async def get_mcp_tool_test_prompts(

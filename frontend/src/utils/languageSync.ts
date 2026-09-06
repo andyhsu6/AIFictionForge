@@ -2,6 +2,13 @@ import i18n, { normalizeLanguage } from '../i18n';
 import { settingsApi } from '../services/api';
 
 /**
+ * AI 生成内容语言词表（i18n plan todo 17 前端统一出口）。
+ * 与后端 app/schemas/common.py 的 ContentLanguageLiteral 对齐：
+ * null/undefined 与 'auto' 均表示跟随界面语言（优先级链由后端 language_resolver 解析）。
+ */
+export type ContentLanguage = 'auto' | 'zh' | 'en';
+
+/**
  * 从 settings.preferences JSON 中解析合法语言值。
  * 仅接受标准化短码 zh / en；JSON 损坏或无该键返回 null。
  */
@@ -21,7 +28,7 @@ export function parseServerLanguage(rawPreferences?: string | null): 'zh' | 'en'
  * 从 settings.preferences JSON 中解析 AI 生成内容语言（i18n plan todo 16）。
  * 仅接受 auto / zh / en；JSON 损坏或无该键返回 null（null 与 'auto' 均表示跟随界面语言）。
  */
-export function parseServerContentLanguage(rawPreferences?: string | null): 'auto' | 'zh' | 'en' | null {
+export function parseServerContentLanguage(rawPreferences?: string | null): ContentLanguage | null {
   try {
     const prefs = JSON.parse(rawPreferences || '{}');
     if (prefs.content_language === 'auto' || prefs.content_language === 'zh' || prefs.content_language === 'en') {

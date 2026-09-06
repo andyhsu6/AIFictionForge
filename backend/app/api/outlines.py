@@ -30,6 +30,7 @@ from app.schemas.outline import (
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.services.memory_service import memory_service
 from app.services.plot_expansion_service import PlotExpansionService
 from app.services.foreshadow_service import foreshadow_service
@@ -1083,6 +1084,10 @@ async def new_outline_generator(
         
         # 使用提示词模板
         yield await tracker.preparing("准备AI提示词...")
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id_for_mcp, data.get("content_language")
+        )
         template = await PromptService.get_template("OUTLINE_CREATE", user_id_for_mcp, db)
         prompt = PromptService.format_prompt(
             template,
@@ -1097,7 +1102,8 @@ async def new_outline_generator(
             rules=project.world_rules or "未设定",
             characters_info=characters_info or "暂无角色信息",
             requirements=data.get("requirements") or "",
-            mcp_references=""
+            mcp_references="",
+            content_language=generation_language
         )
         logger.debug(f"大纲生成提示词完成: prompt_length={len(prompt)}")
         # 添加调试日志
@@ -1533,6 +1539,10 @@ async def continue_outline_generator(
                 logger.warning(f"⚠️ 获取大纲续写伏笔提醒失败: {str(e)}")
 
             # 使用标准续写提示词模板（简化版）
+            # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+            generation_language = await resolve_user_generation_language(
+                db, user_id, data.get("content_language")
+            )
             template = await PromptService.get_template("OUTLINE_CONTINUE", user_id, db)
             prompt = PromptService.format_prompt(
                 template,
@@ -1558,7 +1568,8 @@ async def continue_outline_generator(
                 plot_stage_instruction=stage_instruction,
                 story_direction=data.get("story_direction", "自然延续"),
                 requirements=data.get("requirements", ""),
-                mcp_references=""
+                mcp_references="",
+                content_language=generation_language
             )
             logger.debug(f"续写提示词完成: batch={batch_num + 1}, prompt_length={len(prompt)}")
             # 调用AI生成当前批次
@@ -1898,6 +1909,10 @@ async def _run_new_outline_bg(
         user_ai_service.db_session = db
 
     await tracker.preparing("准备AI提示词...")
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id_for_mcp, data.get("content_language")
+    )
     template = await PromptService.get_template("OUTLINE_CREATE", user_id_for_mcp, db)
     prompt = PromptService.format_prompt(
         template,
@@ -1912,7 +1927,8 @@ async def _run_new_outline_bg(
         rules=project.world_rules or "未设定",
         characters_info=characters_info or "暂无角色信息",
         requirements=data.get("requirements") or "",
-        mcp_references=""
+        mcp_references="",
+        content_language=generation_language
     )
 
     model_param = data.get("model")
@@ -2129,6 +2145,10 @@ async def _run_continue_outline_bg(
         except Exception:
             pass
 
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
         template = await PromptService.get_template("OUTLINE_CONTINUE", user_id, db)
         prompt = PromptService.format_prompt(
             template,
@@ -2149,7 +2169,8 @@ async def _run_continue_outline_bg(
             plot_stage_instruction=stage_instruction,
             story_direction=data.get("story_direction", "自然延续"),
             requirements=data.get("requirements", ""),
-            mcp_references=""
+            mcp_references="",
+            content_language=generation_language
         )
 
         accumulated_text = ""

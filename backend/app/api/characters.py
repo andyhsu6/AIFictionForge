@@ -23,6 +23,7 @@ from app.schemas.character import (
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.services.import_export_service import ImportExportService
 from app.services.relationship_service import relationship_display_name
 from app.services.relationship_service import (
@@ -940,13 +941,16 @@ async def generate_character_stream(
             
             # 获取自定义提示词模板
             template = await PromptService.get_template("SINGLE_CHARACTER_GENERATION", user_id, db)
+            # 解析最终生成语言：用户偏好 > UI 语言 > zh（单角色生成无 per-gen 参数，todo 17）
+            generation_language = await resolve_user_generation_language(db, user_id)
             # 格式化提示词
             prompt = PromptService.format_prompt(
                 template,
                 project_context=project_context,
-                user_input=user_input
+                user_input=user_input,
+                content_language=generation_language
             )
-            
+
             yield await tracker.generating(0, max(3000, len(prompt) * 8), "调用AI服务生成角色...")
             logger.info(f"🎯 开始为项目 {request.project_id} 生成角色（SSE流式）")
             

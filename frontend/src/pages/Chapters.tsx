@@ -7,6 +7,7 @@ import { useChapterSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
 import { projectApi, writingStyleApi, chapterApi } from '../services/api';
 import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
+import type { ContentLanguage } from '../utils/languageSync';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import ChapterAnalysis from '../components/ChapterAnalysis';
 import ExpansionPlanEditor from '../components/ExpansionPlanEditor';
@@ -62,7 +63,7 @@ export default function Chapters() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const contentTextAreaRef = useRef<TextAreaRef>(null);
   // 本次生成的内容语言（modal.confirm 内容为静态快照，用 ref 捕获 Select 值，避免重渲染问题）
-  const generateContentLanguageRef = useRef<'auto' | 'zh' | 'en'>('auto');
+  const generateContentLanguageRef = useRef<ContentLanguage>('auto');
   const [writingStyles, setWritingStyles] = useState<WritingStyle[]>([]);
   const [selectedStyleId, setSelectedStyleId] = useState<number | undefined>();
   const [targetWordCount, setTargetWordCount] = useState<number>(getCachedWordCount);
@@ -1180,7 +1181,7 @@ export default function Chapters() {
     styleId?: number;
     targetWordCount?: number;
     model?: string;
-    content_language?: 'auto' | 'zh' | 'en';
+    content_language?: ContentLanguage;
   }) => {
     if (!currentProject?.id) return;
 
@@ -1214,7 +1215,7 @@ export default function Chapters() {
         target_word_count: number;
         model?: string;
         skill_key?: string;
-        content_language?: string;
+        content_language?: ContentLanguage;
       } = {
         start_chapter_number: values.startChapterNumber,
         count: values.count,

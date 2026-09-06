@@ -58,6 +58,7 @@ from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
+from app.services.language_resolver import resolve_user_generation_language
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import SSEResponse, create_sse_response
@@ -1668,7 +1669,12 @@ async def generate_chapter_content_stream(
                     '第三人称'
                 )
                 logger.info(f"📝 使用叙事人称: {chapter_perspective}")
-                
+
+                # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+                generation_language = await resolve_user_generation_language(
+                    db_session, current_user_id, generate_request.content_language
+                )
+
                 # 🚀 根据大纲模式选择提示词模板和参数
                 if outline_mode == 'one-to-one':
                     # 1-1模式
@@ -1690,7 +1696,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
@@ -1708,7 +1715,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 else:
@@ -1738,7 +1746,8 @@ async def generate_chapter_content_stream(
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             previous_chapter_summary=previous_summary,
                             recent_chapters_context=chapter_context.recent_chapters_context or '',
-                            relevant_memories=chapter_context.relevant_memories or ''
+                            relevant_memories=chapter_context.relevant_memories or '',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
@@ -1757,7 +1766,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 
@@ -2057,6 +2067,7 @@ async def generate_chapter_content_background(
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
             "skill_key": generate_request.skill_key,
+            "content_language": generate_request.content_language,
         },
         db=db
     )
@@ -2087,6 +2098,7 @@ async def generate_chapter_content_background(
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
                         "skill_key": generate_request.skill_key,
+                        "content_language": generate_request.content_language,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2224,6 +2236,11 @@ async def _run_chapter_generation_bg(
         '第三人称'
     )
 
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id, task_input.get("content_language")
+    )
+
     # === 准备提示词 ===
     if outline_mode == 'one-to-one':
         if chapter_context.continuation_point:
@@ -2243,7 +2260,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
@@ -2259,7 +2277,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         if chapter_context.continuation_point:
@@ -2280,7 +2299,8 @@ async def _run_chapter_generation_bg(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
@@ -2296,7 +2316,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
 
     # 应用写作风格
@@ -2580,6 +2601,7 @@ async def generate_chapter_content_background_legacy(
             "enable_mcp": generate_request.enable_mcp,
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
+            "content_language": generate_request.content_language,
         },
         db=db
     )
@@ -2609,6 +2631,7 @@ async def generate_chapter_content_background_legacy(
                         "enable_mcp": generate_request.enable_mcp,
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
+                        "content_language": generate_request.content_language,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2747,6 +2770,11 @@ async def _run_chapter_generation_bg(
         '第三人称'
     )
 
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id, task_input.get("content_language")
+    )
+
     # === 准备提示词 ===
     if outline_mode == 'one-to-one':
         if chapter_context.continuation_point:
@@ -2766,7 +2794,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
@@ -2782,7 +2811,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         if chapter_context.continuation_point:
@@ -2803,7 +2833,8 @@ async def _run_chapter_generation_bg(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
@@ -2819,7 +2850,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
 
     # 应用写作风格
@@ -3740,7 +3772,8 @@ async def batch_generate_chapters_in_order(
         custom_model=batch_request.model,
         skill_key=batch_request.skill_key,
         enable_mcp=batch_request.enable_mcp,
-        narrative_perspective=batch_request.narrative_perspective
+        narrative_perspective=batch_request.narrative_perspective,
+        content_language=batch_request.content_language
     )
     
     return BatchGenerateResponse(
@@ -3894,7 +3927,8 @@ async def execute_batch_generation_in_order(
     custom_model: Optional[str] = None,
     skill_key: Optional[str] = None,
     enable_mcp: bool = True,
-    narrative_perspective: Optional[str] = None
+    narrative_perspective: Optional[str] = None,
+    content_language: Optional[str] = None
 ):
     """
     按顺序执行批量生成任务（后台任务）
@@ -4018,7 +4052,8 @@ async def execute_batch_generation_in_order(
                         skill_key=skill_key,
                         batch_id=batch_id,
                         enable_mcp=enable_mcp,
-                        temp_narrative_perspective=narrative_perspective
+                        temp_narrative_perspective=narrative_perspective,
+                        content_language=content_language
                     )
 
                     await db_session.refresh(task)
@@ -4192,7 +4227,8 @@ async def generate_single_chapter_for_batch(
     skill_key: Optional[str] = None,
     batch_id: Optional[str] = None,
     enable_mcp: bool = True,
-    temp_narrative_perspective: Optional[str] = None
+    temp_narrative_perspective: Optional[str] = None,
+    content_language: Optional[str] = None
 ) -> Optional[str]:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4287,6 +4323,10 @@ async def generate_single_chapter_for_batch(
     
     # 🚀 根据大纲模式选择提示词模板（批量生成）
     # 统一使用 context_builder 构建的 chapter_context 结果，与单章生成保持一致
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db_session, user_id, content_language
+    )
     if outline_mode == 'one-to-one':
         # 1-1模式
         if chapter_context.continuation_point:
@@ -4307,7 +4347,8 @@ async def generate_single_chapter_for_batch(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '',
-                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要'
+                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
+                content_language=generation_language
             )
         else:
             # 第一章
@@ -4324,7 +4365,8 @@ async def generate_single_chapter_for_batch(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         # 1-n模式：使用 context_builder 构建的结果，与单章生成保持一致
@@ -4354,7 +4396,8 @@ async def generate_single_chapter_for_batch(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=final_prev_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             # 第一章，使用无前置内容模板
@@ -4371,7 +4414,8 @@ async def generate_single_chapter_for_batch(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     
     # 应用写作风格
@@ -5149,7 +5193,10 @@ async def partial_regenerate_stream(
             template = await PromptService.get_template("PARTIAL_REGENERATE", user_id, db)
             if not template:
                 template = PromptService.PARTIAL_REGENERATE
-            
+
+            # 解析最终生成语言：用户偏好 > UI 语言 > zh（局部重写无 per-gen 参数，todo 17）
+            generation_language = await resolve_user_generation_language(db, user_id)
+
             # 构建提示词
             prompt = PromptService.format_prompt(
                 template,
@@ -5159,7 +5206,8 @@ async def partial_regenerate_stream(
                 context_after=context_after if context_after else "（这是章节结尾）",
                 user_instructions=partial_request.user_instructions,
                 length_requirement=length_requirement,
-                style_content=style_content if style_content else "保持与原文一致的叙事风格"
+                style_content=style_content if style_content else "保持与原文一致的叙事风格",
+                content_language=generation_language
             )
             
             yield await tracker.preparing("开始生成...")

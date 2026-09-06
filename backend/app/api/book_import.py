@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ApiError, exc_status, sse_code_for_exception
 from app.database import get_db
 from app.logger import get_logger
+from app.schemas.common import ContentLanguageLiteral
 from app.schemas.book_import import (
     BookImportApplyRequest,
     BookImportApplyResponse,
@@ -38,6 +39,10 @@ async def create_book_import_task(
     import_mode: str = Form(default="append", description="导入模式：append/overwrite"),
     extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
     tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
+    content_language: Optional[ContentLanguageLiteral] = Form(
+        default=None,
+        description="AI 生成内容语言：None/auto 跟随用户偏好链，zh/en 为本次导入生成内容的语言覆盖（todo 17）",
+    ),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -67,6 +72,7 @@ async def create_book_import_task(
     create_payload = BookImportTaskCreateRequest(
         extract_mode=extract_mode,
         tail_chapter_count=tail_chapter_count,
+        content_language=content_language,
     )
 
     content = await file.read()
@@ -82,6 +88,7 @@ async def create_book_import_task(
         import_mode=import_mode,
         extract_mode=create_payload.extract_mode,
         tail_chapter_count=create_payload.tail_chapter_count,
+        content_language=create_payload.content_language,
     )
     return task
 

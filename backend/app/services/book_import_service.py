@@ -57,6 +57,7 @@ from app.services.import_validators import (
     validate_world_building,
 )
 from app.services.prompt_service import PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
     is_probably_proper_noun_type,
@@ -222,6 +223,9 @@ class _BookImportTask:
     import_mode: str
     extract_mode: BookImportExtractMode = "tail"
     tail_chapter_count: int = 10
+    # i18n plan todo 17：任务创建时的 per-generation content_language 覆盖
+    # （None/"auto" 表示跟随用户偏好链；由 language_resolver 统一解析）
+    content_language: Optional[str] = None
     status: str = "pending"
     progress: int = 0
     message: Optional[str] = "任务已创建"
@@ -254,6 +258,7 @@ class BookImportService:
         import_mode: str,
         extract_mode: BookImportExtractMode = "tail",
         tail_chapter_count: int = 10,
+        content_language: Optional[str] = None,
     ) -> BookImportTaskCreateResponse:
         normalized_tail_count = max(5, int(tail_chapter_count))
         normalized_extract_mode = extract_mode
@@ -272,6 +277,7 @@ class BookImportService:
             import_mode=import_mode,
             extract_mode=normalized_extract_mode,
             tail_chapter_count=normalized_tail_count,
+            content_language=content_language,
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
@@ -1431,10 +1437,15 @@ class BookImportService:
                     self._set_task_state(task, status="running", progress=30, message="正在准备AI提示词...")
 
                 template = await PromptService.get_template("BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION", user_id, db)
+                # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+                generation_language = await resolve_user_generation_language(
+                    db, user_id, getattr(task, "content_language", None)
+                )
                 prompt = PromptService.format_prompt(
                     template,
                     title=suggestion.title or "拆书导入项目",
                     sampled_text=sampled_text,
+                    content_language=generation_language,
                 )
 
                 if task:
@@ -1538,6 +1549,10 @@ class BookImportService:
             session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
             async with session_factory() as db:
                 ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
+                # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+                generation_language = await resolve_user_generation_language(
+                    db, user_id, getattr(task, "content_language", None)
+                )
                 template = await PromptService.get_template("BOOK_IMPORT_REVERSE_OUTLINES", user_id, db)
 
                 batch_size = 5
@@ -1573,6 +1588,7 @@ class BookImportService:
                         end_chapter=end_chapter,
                         expected_count=expected_count,
                         chapters_text=chapters_text,
+                        content_language=generation_language,
                     )
 
                     ai_data = await ai_service.call_with_json_retry(
