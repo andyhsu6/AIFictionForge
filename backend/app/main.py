@@ -221,7 +221,7 @@ if static_dir.exists():
                 status_code=404,
                 content=envelope("API路径不存在", "not_found.api_route")
             )
-
+        
         file_path = static_dir / full_path
         try:
             resolved_file = file_path.resolve()
@@ -235,11 +235,11 @@ if static_dir.exists():
 
         if resolved_file.is_file():
             return FileResponse(resolved_file)
-
+        
         index_file = static_dir / "index.html"
         if index_file.exists():
             return FileResponse(index_file)
-
+        
         return JSONResponse(
             status_code=404,
             content=envelope("页面不存在", "not_found.frontend_route")

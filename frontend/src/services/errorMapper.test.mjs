@@ -3,11 +3,12 @@
 // Uses the setErrorTranslator seam with a real i18next instance over the
 // actual locale JSONs, so it validates templates + fallback behavior.
 //
-// Task 14a display policy: for a payload WITH a code, an unregistered code
-// shows a localized GENERIC message — the backend's raw text must NOT leak to
-// the UI (it lives in the payload `raw`/`detail`, surfaced only via
+// Task 14a display policy: for ANY payload with a code (registered or not,
+// including the dynamic_detail marker) the display string is localized —
+// template for known codes, generic text otherwise; the backend's raw text
+// never leaks (it lives in the payload `raw`/`detail`, surfaced only via
 // getErrorDiagnostic in debug surfaces). Payloads WITHOUT a code are legacy
-// rows and still show detail verbatim.
+// rows and still show detail verbatim — the only detail escape.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import i18next from 'i18next';
@@ -55,8 +56,20 @@ const cases = [
   () => assert.equal(mapErrorPayload({ status: 503 }), '服务暂时不可用，请稍后重试'),
   () => assert.equal(mapErrorPayload({ status: 418 }), '请求失败 (418)'),
   () => assert.equal(mapErrorPayload({}), '未知错误'),
-  // dynamic_detail marker → raw detail wins (runtime-generated display text)
-  () => assert.equal(mapErrorPayload({ code: 'dynamic_detail', detail: '运行时拼接文案' }), '运行时拼接文案'),
+  // dynamic_detail is a KNOWN code → localized generic text only; the
+  // runtime-composed backend text never reaches the display string.
+  () => {
+    const shown = mapErrorPayload({ code: 'dynamic_detail', detail: '运行时拼接文案' });
+    assert.equal(shown, zhErrors.dynamic_detail);
+    assert.ok(!shown.includes('运行时拼接文案'), `dynamic_detail leaked detail: ${shown}`);
+  },
+  // raw channel: display stays generic, original text only via getErrorDiagnostic
+  () => {
+    const payload = { code: 'dynamic_detail', detail: '运行时拼接文案', raw: '运行时拼接文案', status: 500 };
+    assert.equal(mapErrorPayload(payload), zhErrors.dynamic_detail);
+    assert.equal(getErrorDiagnostic(payload), '运行时拼接文案');
+  },
+  () => assert.equal(mapErrorPayload({ code: 'dynamic_detail' }), zhErrors.dynamic_detail),
   // 422 generated code flattening: errors.validation.string is unregistered →
   // status-based fallback (422 → validation.failed), still localized
   () => assert.equal(mapErrorPayload({ code: 'errors.validation.string', detail: '请求参数验证失败', status: 422 }), '请求参数验证失败'),
@@ -100,6 +113,8 @@ const cases = [
     assert.equal(shown, 'Bad request parameters');
     // http_error → en generic
     assert.equal(mapErrorPayload({ code: 'http_error', detail: '需要登录', status: 401 }), 'Request failed');
+    // dynamic_detail → en generic (known code, never the raw detail)
+    assert.equal(mapErrorPayload({ code: 'dynamic_detail', detail: 'runtime composed' }), enErrors.dynamic_detail);
     // legacy no-code row keeps detail verbatim even in en
     assert.equal(mapErrorPayload({ detail: 'legacy raw' }), 'legacy raw');
     await i18next.changeLanguage('zh');

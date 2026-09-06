@@ -6,8 +6,10 @@
 - raw 是「原始诊断文案」双通道字段（task 14a）：code 未注册时前端只显示本地化
   通用文案，原文移入 raw 仅在调试界面展示。raw 为纯增量字段——未设置时响应
   不含该键；生产环境 500 兜底不外泄异常原文（只进日志）。
-- dynamic_detail 是「动态 detail」站点的标记（todo 14）：这些站点的 detail 内容由运行时
-  拼接产生，无法静态注册，前端按 code 归类、detail 直接展示或作 fallback。
+- dynamic_detail 是「动态 detail」站点的标记（todo 14）：这些站点的原文由运行时拼接产生、
+  无法静态注册，因此前端不再展示 detail，而是按 code 命中 errors.json 的 `dynamic_detail`
+  本地化通用文案；原文经可选 raw 通道保留（detail 仍填原中文以兼容旧客户端），raw 仅在
+  调试界面展示。
 - 完整 registry 在 todo 11 建立；本模块先提供机制 + 高频种子码。
 """
 from typing import Any, Dict, Optional, Tuple

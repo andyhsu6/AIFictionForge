@@ -10,10 +10,13 @@
  *
  * Display policy (task 14a — supersedes the old "never drop raw text" rule):
  * the raw backend text is preserved in the PAYLOAD (`raw` field / detail /
- * status_message) but for a payload WITH a code, an unknown/unregistered code
- * displays a localized GENERIC message — the backend text never leaks to the
- * UI. Legacy rows with NO code still show detail verbatim (they have no
- * translation). Debug surfaces read the original text via getErrorDiagnostic().
+ * status_message) but NEVER picks the display string when a code is present:
+ * any code (registered or not) renders localized text only — the `errors:<code>`
+ * template for known codes, a generic message for unknown ones
+ * (`dynamic_detail` is just another known code whose locale text is generic).
+ * The ONLY remaining detail escape is a payload with NO code at all (legacy
+ * rows / legacy SSE events, which have no translation to show). Original text
+ * reaches users only via getErrorDiagnostic() in debug/detail views.
  *
  * Unit-testable without React: pure string in/out (needs i18n initialized).
  */
@@ -54,7 +57,6 @@ export interface ErrorPayload {
 }
 
 const AUTH_UNAUTHORIZED_CODE = 'auth.unauthorized';
-const DYNAMIC_DETAIL_CODE = 'dynamic_detail';
 const HTTP_ERROR_CODE = 'http_error';
 
 /**
@@ -96,22 +98,19 @@ const STATUS_FALLBACK_KEYS: Record<number, string> = {
  * Main mapping: `{ code, params, detail }` → display string.
  *
  * Resolution order (task 14a display policy — supersedes the old
- * "unknown code → raw detail" rule):
- * 1. `dynamic_detail` marker → raw detail (content is runtime-generated display text).
- * 2. Known code → `errors:<code>` template (dots nest; params interpolated).
- * 3. Unknown/unregistered code (incl. bare `http_error`) → localized GENERIC
- *    text — the backend detail must NOT leak to the UI; diagnostics read it
- *    via getErrorDiagnostic().
+ * "unknown code → raw detail" and "dynamic_detail → raw detail" rules):
+ * 1. Bare `http_error` (unregistered HTTPException) → localized generic message.
+ * 2. Known code (incl. `dynamic_detail`) → `errors:<code>` template (dots nest;
+ *    params interpolated). Localized text only — `dynamic_detail` sites send
+ *    runtime-composed text, so their locale entry is a generic fallback string.
+ * 3. Unknown/unregistered code → localized GENERIC text — the backend detail
+ *    must NOT leak to the UI; diagnostics read it via getErrorDiagnostic().
  * 4. No code at all → legacy row (old task rows, legacy SSE): detail verbatim
- *    (the only remaining detail escape).
+ *    (the ONLY remaining detail escape).
  * 5. No usable result → per-status fallback key, then `errors:unknown`.
  */
 export function mapErrorPayload(payload: ErrorPayload): string {
   const { code, params, detail, status } = payload;
-
-  if (code === DYNAMIC_DETAIL_CODE) {
-    return detail || tErrors(DYNAMIC_DETAIL_CODE, {});
-  }
 
   if (code) {
     // Bare 'http_error' = existing HTTPException not in registry: generic
@@ -123,7 +122,9 @@ export function mapErrorPayload(payload: ErrorPayload): string {
     }
     const key = normalizeErrorCode(code);
     if (hasErrorsKey(key)) {
-      const translated = tErrors(key, { ...params, detail: detail ?? '', status });
+      // `detail` is deliberately NOT interpolated: for a coded payload the
+      // backend text is diagnostic-only (getErrorDiagnostic), never display.
+      const translated = tErrors(key, { ...params, status });
       if (translated.trim()) return translated;
     }
   } else if (detail) {
