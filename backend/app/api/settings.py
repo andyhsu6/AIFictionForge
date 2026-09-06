@@ -13,7 +13,7 @@ import json
 import time
 
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.settings import Settings
 from app.services.cover_generation_service import cover_generation_service
 from app.schemas.settings import (
@@ -490,7 +490,8 @@ async def test_system_smtp_settings(
         )
     except Exception as exc:
         logger.exception(f"SMTP 测试邮件发送失败: {exc}")
-        raise HTTPException(status_code=400, detail=f"SMTP 测试邮件发送失败: {str(exc)}") from exc
+        detail = f"SMTP 测试邮件发送失败: {str(exc)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail) from exc
 
     return {
         "success": True,
@@ -768,18 +769,14 @@ async def get_available_models(
         )
     except httpx.RequestError as e:
         logger.error(f"请求模型列表失败: {str(e)}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"无法连接到 API: {str(e)}"
-        )
+        detail = f"无法连接到 API: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
     except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"获取模型列表时发生错误: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取模型列表失败: {str(e)}"
-        )
+        detail = f"获取模型列表失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 class ApiTestRequest(BaseModel):

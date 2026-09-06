@@ -172,12 +172,16 @@ def validate_ai_http_url(raw_url: str) -> str:
         if exc_status(exc) == 400 and any(
             token in detail for token in ("本机", "内网", "链路本地")
         ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{detail}。如需连接本地或 Docker 内网 LLM，"
-                    "请设置 ALLOW_PRIVATE_AI_ENDPOINTS=true，"
-                    "或把主机名加入 ALLOWED_AI_HOSTS（例如 host.docker.internal,127.0.0.1）。"
-                ),
+            # security.url_blocked_with_hint（registry 参数化码）：detail 保持
+            # 原文案 byte-identity，reason 参数供前端模板化翻译提示语。
+            hint_detail = (
+                f"{detail}。如需连接本地或 Docker 内网 LLM，"
+                "请设置 ALLOW_PRIVATE_AI_ENDPOINTS=true，"
+                "或把主机名加入 ALLOWED_AI_HOSTS（例如 host.docker.internal,127.0.0.1）。"
+            )
+            raise ApiError(
+                code="security.url_blocked_with_hint",
+                detail=hint_detail,
+                params={"reason": detail},
             ) from exc
         raise

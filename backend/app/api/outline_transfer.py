@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import verify_project_access
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.outline_transfer import (
@@ -55,7 +55,7 @@ async def export_outlines(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(exc), status=400, raw=str(exc)) from exc
 
     safe_title = "".join(char for char in project.title if char.isalnum() or char in (" ", "-", "_"))
     filename = f"outlines_{safe_title or 'project'}.json"

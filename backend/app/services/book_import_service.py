@@ -19,7 +19,7 @@ from app.api.common import verify_project_access
 from app.config import settings as app_settings
 from app.database import get_engine
 from app.logger import get_logger
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.career import Career, CharacterCareer
@@ -391,7 +391,8 @@ class BookImportService:
         except Exception as exc:
             await db.rollback()
             logger.error(f"拆书导入落库失败: {exc}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"导入失败: {exc}")
+            detail = f"导入失败: {exc}"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
     # ---- 类型别名：进度回调 ----
     ProgressCallback = Optional[Any]  # Callable[[str, int, str], Awaitable[None]]
@@ -624,7 +625,8 @@ class BookImportService:
         except Exception as exc:
             await db.rollback()
             logger.error(f"拆书导入落库失败: {exc}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"导入失败: {exc}")
+            detail = f"导入失败: {exc}"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
     async def retry_failed_steps_stream(
         self,
@@ -847,7 +849,8 @@ class BookImportService:
         except Exception as exc:
             await db.rollback()
             logger.error(f"拆书重试失败: {exc}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"重试失败: {exc}")
+            detail = f"重试失败: {exc}"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
     async def _run_pipeline(self, *, task_id: str, file_content: bytes) -> None:
         task = self._tasks.get(task_id)

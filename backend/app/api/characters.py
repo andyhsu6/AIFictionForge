@@ -7,7 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
-from app.core.errors import ApiError, exc_status, sse_code_for_exception
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE, exc_status, sse_code_for_exception
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.character import Character
 from app.models.project import Project
@@ -817,7 +817,8 @@ async def create_character(
         
     except Exception as e:
         logger.error(f"手动创建角色失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"创建角色失败: {str(e)}")
+        detail = f"创建角色失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/generate-stream", summary="AI生成角色（流式）")
@@ -1445,7 +1446,8 @@ async def export_characters(
         raise
     except Exception as e:
         logger.error(f"导出角色/组织失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        detail = f"导出失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/import", response_model=CharactersImportResult, summary="导入角色/组织")
@@ -1499,7 +1501,8 @@ async def import_characters(
         )
     except Exception as e:
         logger.error(f"导入角色/组织失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+        detail = f"导入失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/validate-import", summary="验证导入文件")
@@ -1545,4 +1548,5 @@ async def validate_import(
         }
     except Exception as e:
         logger.error(f"验证导入文件失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"验证失败: {str(e)}")
+        detail = f"验证失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

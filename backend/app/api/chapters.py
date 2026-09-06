@@ -11,7 +11,7 @@ from asyncio import Queue, Lock
 
 from app.database import get_db, get_engine
 from app.api.common import verify_project_access
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
     OneToOneContextBuilder,
@@ -1499,10 +1499,10 @@ async def generate_chapter_content_stream(
             # 检查前置条件
             can_generate, error_msg, previous_chapters = await check_prerequisites(temp_db, chapter)
             if not can_generate:
-                raise HTTPException(status_code=400, detail=error_msg)
+                raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
             analysis_ready, analysis_msg = await check_previous_analysis_ready(temp_db, chapter)
             if not analysis_ready:
-                raise HTTPException(status_code=409, detail=analysis_msg)
+                raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=analysis_msg, status=409, raw=analysis_msg)
             
             # 保存前置章节数据供生成器使用
             previous_chapters_data = [
@@ -2038,10 +2038,10 @@ async def generate_chapter_content_background(
     # 检查前置条件
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
     analysis_ready, analysis_msg = await check_previous_analysis_ready(db, chapter)
     if not analysis_ready:
-        raise HTTPException(status_code=409, detail=analysis_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=analysis_msg, status=409, raw=analysis_msg)
 
     # 创建后台任务
     from app.services.background_task_service import background_task_service, TaskProgressTracker
@@ -2565,7 +2565,7 @@ async def generate_chapter_content_background_legacy(
     # 检查前置条件
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
 
     # 创建后台任务
     from app.services.background_task_service import background_task_service, TaskProgressTracker
@@ -3287,7 +3287,8 @@ async def batch_analyze_unanalyzed_chapters(
         except Exception as e:
             await db.rollback()
             logger.error(f"❌ 一键分析创建任务失败: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"一键分析创建任务失败: {str(e)}")
+            detail = f"一键分析创建任务失败: {str(e)}"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
         # 提交后立即按章节顺序调度后台分析（逐章执行）
         tasks_queue = [
@@ -3692,7 +3693,8 @@ async def batch_generate_chapters_in_order(
     first_chapter = chapters_to_generate[0]
     can_generate, error_msg, _ = await check_prerequisites(db, first_chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=f"起始章节无法生成：{error_msg}")
+        detail = f"起始章节无法生成：{error_msg}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
 
     # 批量生成必须同步分析，否则下一章无法获得最新角色状态、记忆和伏笔上下文。
     enable_analysis = True

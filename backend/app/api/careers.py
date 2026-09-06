@@ -7,7 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
-from app.core.errors import ApiError, exc_status, sse_code_for_exception
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE, exc_status, sse_code_for_exception
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.career import Career, CharacterCareer
 from app.models.character import Character
@@ -154,7 +154,8 @@ async def create_career(
         
     except Exception as e:
         logger.error(f"创建职业失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"创建职业失败: {str(e)}")
+        detail = f"创建职业失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/generate-system", summary="AI生成新职业（增量式，流式）")

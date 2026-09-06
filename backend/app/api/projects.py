@@ -7,7 +7,7 @@ from typing import List
 import json
 from urllib.parse import quote
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.project import Project
 from app.models.character import Character
 from app.models.outline import Outline
@@ -435,7 +435,8 @@ async def export_project_chapters(
         raise
     except Exception as e:
         logger.error(f"导出项目失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        detail = f"导出失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{project_id}/check-consistency", summary="检查数据一致性")
@@ -489,7 +490,8 @@ async def check_project_consistency(
         raise
     except Exception as e:
         logger.error(f"数据一致性检查失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"检查失败: {str(e)}")
+        detail = f"检查失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{project_id}/fix-organizations", summary="修复组织记录")
@@ -538,7 +540,8 @@ async def fix_project_organizations(
         raise
     except Exception as e:
         logger.error(f"修复组织记录失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"修复失败: {str(e)}")
+        detail = f"修复失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{project_id}/fix-member-counts", summary="修复成员计数")
@@ -587,7 +590,8 @@ async def fix_project_member_counts(
         raise
     except Exception as e:
         logger.error(f"修复成员计数失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"修复失败: {str(e)}")
+        detail = f"修复失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{project_id}/export-data", summary="导出项目数据为JSON")
@@ -670,7 +674,8 @@ async def export_project_data(
         raise
     except Exception as e:
         logger.error(f"导出项目数据失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        detail = f"导出失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/validate-import", response_model=ImportValidationResult, summary="验证导入文件")
@@ -721,7 +726,8 @@ async def validate_import_file(
         raise
     except Exception as e:
         logger.error(f"验证导入文件失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"验证失败: {str(e)}")
+        detail = f"验证失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/import", response_model=ImportResult, summary="导入项目")
@@ -784,4 +790,5 @@ async def import_project(
         raise
     except Exception as e:
         logger.error(f"导入项目失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+        detail = f"导入失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

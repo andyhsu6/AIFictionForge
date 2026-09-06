@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PROJECT_ROOT
 from app.logger import get_logger
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.project import Project
 from app.models.settings import Settings
 from app.services.cover_providers.base_cover_provider import BaseCoverProvider, CoverGenerationResult
@@ -108,7 +108,7 @@ class CoverGenerationService:
             project.cover_status = "failed"
             project.cover_error = detail
             await db.commit()
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=exc.response.status_code, raw=detail) from exc
         except (HTTPException, ApiError) as exc:
             logger.error("封面生成业务错误: project_id=%s error=%s", project.id, exc.detail, exc_info=True)
             project.cover_status = "failed"
@@ -120,7 +120,7 @@ class CoverGenerationService:
             project.cover_status = "failed"
             project.cover_error = str(exc)
             await db.commit()
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(exc), status=500, raw=str(exc)) from exc
 
     async def test_cover_settings(
         self,
@@ -151,7 +151,7 @@ class CoverGenerationService:
             )
         except httpx.HTTPStatusError as exc:
             detail = self._extract_upstream_error_detail(exc)
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=exc.response.status_code, raw=detail) from exc
 
         return CoverTestResult(
             success=True,

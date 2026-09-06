@@ -10,7 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.database import get_db
 from app.api.common import verify_project_access
 from app.api.settings import get_user_ai_service
@@ -465,7 +465,8 @@ async def confirm_tool_call(
         ))).scalar_one_or_none()
         if refreshed is not None and refreshed.status == "executing":
             await _restore_waiting_tool_call(db, refreshed, error=str(exc))
-        raise HTTPException(status_code=400, detail=f"执行修改失败：{exc}") from exc
+        detail = f"执行修改失败：{exc}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail) from exc
 
 
 @router.post("/tool-calls/{tool_call_id}/reject", response_model=AgentToolDecisionResponse)

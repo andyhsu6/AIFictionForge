@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.errors import ApiError
+from app.core.errors import DYNAMIC_DETAIL_CODE, ApiError
 from app.services.oauth_service import LinuxDOOAuthService
 from app.user_manager import user_manager, User as UserDTO
 from app.user_password import password_manager
@@ -728,7 +728,8 @@ async def _handle_callback(
     成功后重定向到前端首页，并设置 user_id Cookie
     """
     if error:
-        raise HTTPException(status_code=400, detail=f"授权失败: {error}")
+        detail = f"授权失败: {error}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
 
     if not code or not state:
         raise ApiError(code="auth.oauth_params_missing")

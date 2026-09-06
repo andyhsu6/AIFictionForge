@@ -10,7 +10,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.user import User
 from app.user_manager import user_manager
 from app.user_password import password_manager
@@ -113,7 +113,8 @@ async def get_users(
         }
     except Exception as e:
         logger.error(f"获取用户列表失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取用户列表失败: {str(e)}")
+        detail = f"获取用户列表失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/users")
@@ -177,7 +178,8 @@ async def create_user(
         raise
     except Exception as e:
         logger.error(f"创建用户失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"创建用户失败: {str(e)}")
+        detail = f"创建用户失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.put("/users/{user_id}")
@@ -239,7 +241,8 @@ async def update_user(
         raise
     except Exception as e:
         logger.error(f"更新用户失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"更新用户失败: {str(e)}")
+        detail = f"更新用户失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/users/{user_id}/toggle-status")
@@ -292,7 +295,8 @@ async def toggle_user_status(
         raise
     except Exception as e:
         logger.error(f"切换用户状态失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"切换用户状态失败: {str(e)}")
+        detail = f"切换用户状态失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -332,7 +336,8 @@ async def reset_password(
         raise
     except Exception as e:
         logger.error(f"重置密码失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"重置密码失败: {str(e)}")
+        detail = f"重置密码失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.delete("/users/{user_id}")
@@ -391,4 +396,5 @@ async def delete_user(
         raise
     except Exception as e:
         logger.error(f"删除用户失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"删除用户失败: {str(e)}")
+        detail = f"删除用户失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

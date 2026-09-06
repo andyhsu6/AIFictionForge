@@ -4,7 +4,7 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
 from typing import List, Optional
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.user_manager import user_manager, User
 from app.user_password import password_manager
 
@@ -171,7 +171,5 @@ async def reset_user_password(
         return response_data
         
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"重置密码失败: {str(e)}"
-        )
+        detail = f"重置密码失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

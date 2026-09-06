@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, delete
 from typing import List, Optional
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.chapter import Chapter
 from app.models.project import Project
@@ -287,7 +287,8 @@ async def analyze_chapter(
     except Exception as e:
         logger.error(f"❌ 章节分析失败: {str(e)}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+        detail = f"分析失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.get("/projects/{project_id}/memories")
@@ -329,7 +330,7 @@ async def get_project_memories(
         raise
     except Exception as e:
         logger.error(f"❌ 获取记忆失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))
 
 
 @router.get("/projects/{project_id}/analysis/{chapter_id}")
@@ -368,7 +369,7 @@ async def get_chapter_analysis(
         raise
     except Exception as e:
         logger.error(f"❌ 获取分析失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))
 
 
 @router.post("/projects/{project_id}/search")
@@ -408,7 +409,7 @@ async def search_memories(
         raise
     except Exception as e:
         logger.error(f"❌ 搜索记忆失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))
 
 
 @router.get("/projects/{project_id}/foreshadows")
@@ -442,7 +443,7 @@ async def get_unresolved_foreshadows(
         raise
     except Exception as e:
         logger.error(f"❌ 获取伏笔失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))
 
 
 @router.get("/projects/{project_id}/stats")
@@ -472,7 +473,7 @@ async def get_memory_stats(
         raise
     except Exception as e:
         logger.error(f"❌ 获取统计失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))
 
 
 @router.delete("/projects/{project_id}/chapters/{chapter_id}/memories")
@@ -522,4 +523,4 @@ async def delete_chapter_memories(
     except Exception as e:
         logger.error(f"❌ 删除记忆失败: {str(e)}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=500, raw=str(e))

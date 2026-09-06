@@ -226,12 +226,11 @@ async def create_skill(request: SkillCreateRequest, user: User = Depends(require
         )
         return {"success": True, "skill": result}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=400, raw=str(e))
     except Exception as e:
         logger.error(f"创建 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
+        detail = f"创建失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.put("/update/{skill_key:path}")
@@ -249,12 +248,11 @@ async def update_skill(skill_key: str, request: SkillUpdateRequest, user: User =
         )
         return {"success": True, "skill": result}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=404, raw=str(e))
     except Exception as e:
         logger.error(f"更新 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+        detail = f"更新失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.delete("/delete/{skill_key:path}")
@@ -264,12 +262,11 @@ async def delete_skill(skill_key: str, user: User = Depends(require_login)):
         delete_skill_files(skill_key)
         return {"success": True, "message": f"已删除 Skill: {skill_key}"}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=404, raw=str(e))
     except Exception as e:
         logger.error(f"删除 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+        detail = f"删除失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/refresh-cache")

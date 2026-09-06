@@ -6,7 +6,7 @@ from typing import List, AsyncGenerator, Dict, Any
 import json
 
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.api.common import verify_project_access
 from app.models.outline import Outline
 from app.models.project import Project
@@ -2847,7 +2847,8 @@ async def create_single_chapter_from_outline(
     except Exception as e:
         logger.error(f"一对一创建章节失败: {str(e)}", exc_info=True)
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"创建章节失败: {str(e)}")
+        detail = f"创建章节失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{outline_id}/expand-background", summary="后台展开单个大纲为多章")
@@ -3407,4 +3408,5 @@ async def create_chapters_from_existing_plans(
     except Exception as e:
         logger.error(f"根据已有规划创建章节失败: {str(e)}", exc_info=True)
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"创建章节失败: {str(e)}")
+        detail = f"创建章节失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

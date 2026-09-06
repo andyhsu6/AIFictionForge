@@ -10,7 +10,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from app.database import get_db, get_engine
-from app.core.errors import ApiError
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.mcp_plugin import MCPPlugin
 from app.schemas.mcp_plugin import (
     MCPPluginCreate,
@@ -411,7 +411,8 @@ async def create_plugin_simple(
         raise
     except Exception as e:
         logger.error(f"创建插件失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"创建插件失败: {str(e)}")
+        detail = f"创建插件失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.get("/{plugin_id}", response_model=MCPPluginResponse)
@@ -683,7 +684,8 @@ async def test_plugin(
         plugin.last_error = str(e)
         plugin.last_test_at = datetime.now()
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"测试失败: {str(e)}")
+        detail = f"测试失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 async def _ensure_plugin_registered(
@@ -923,7 +925,8 @@ async def get_plugin_tools(
         raise
     except Exception as e:
         logger.error(f"获取工具列表失败: {plugin.plugin_name}, 错误: {e}")
-        raise HTTPException(status_code=500, detail=f"获取工具列表失败: {str(e)}")
+        detail = f"获取工具列表失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/call")
@@ -972,4 +975,5 @@ async def call_mcp_tool(
         raise
     except Exception as e:
         logger.error(f"调用工具失败: {plugin.plugin_name}.{data.tool_name}, 错误: {e}")
-        raise HTTPException(status_code=500, detail=f"工具调用失败: {str(e)}")
+        detail = f"工具调用失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
