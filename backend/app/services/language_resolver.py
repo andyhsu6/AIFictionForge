@@ -12,7 +12,10 @@ resolve_generation_language 的返回值恒为 "zh" 或 "en"。
 格式化行为不变。resolve_generation_language 为纯函数；
 resolve_user_generation_language 负责从数据库读取用户偏好后复用同一优先级链。
 """
+import json
 from typing import Any, Dict, Literal, Mapping, Optional, Union
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.common import ContentLanguageLiteral  # noqa: F401 - 词表统一出口，供调用方按需引用
 
@@ -25,16 +28,15 @@ LANGUAGE_INSTRUCTIONS: Dict[GenerationLanguage, str] = {
     "en": "Please respond in English.",
 }
 
-# 请求层/content_language 层的合法"显式指定"值；"auto" 与 None 一样表示回落
-_EXPLICIT_CONTENT_LANGUAGES = {"zh", "en"}
+# 请求层/content_language 层的合法"显式指定"值（"auto" 与 None 一样表示回落）；
+# 用 str→GenerationLanguage 映射表达词表，查表命中即返回，天然收窄字面量类型
+_EXPLICIT_CONTENT_LANGUAGE_MAP: Dict[str, GenerationLanguage] = {"zh": "zh", "en": "en"}
 
 
 def normalize_content_language(value: Any) -> Optional[GenerationLanguage]:
     """把 content_language 原始值归一化为 "zh"/"en"；None/"auto"/非法值返回 None（回落）。"""
     if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in _EXPLICIT_CONTENT_LANGUAGES:
-            return normalized  # type: ignore[return-value]
+        return _EXPLICIT_CONTENT_LANGUAGE_MAP.get(value.strip().lower())
     return None
 
 
@@ -60,8 +62,6 @@ def _coerce_preferences(preferences: Union[None, str, Mapping[str, Any]]) -> Map
     if isinstance(preferences, Mapping):
         return preferences
     if isinstance(preferences, str):
-        import json
-
         try:
             parsed = json.loads(preferences or "{}")
         except (json.JSONDecodeError, TypeError):
@@ -119,7 +119,7 @@ def append_language_instruction(prompt: str, language: GenerationLanguage) -> st
 
 
 async def resolve_user_generation_language(
-    db: Any,
+    db: AsyncSession | None,
     user_id: Optional[str],
     per_request: Any = None,
 ) -> GenerationLanguage:

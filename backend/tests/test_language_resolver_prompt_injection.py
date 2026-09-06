@@ -23,7 +23,9 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
+from app.models.prompt_template import PromptTemplate  # noqa: F401 - 注册表结构，供 fixture create_all 建表
 from app.models.settings import Settings
+from app.services.book_import_service import BookImportService
 from app.services.language_resolver import (
     LANGUAGE_INSTRUCTIONS,
     append_language_instruction,
@@ -260,3 +262,52 @@ def test_agent_system_prompt_instruction_stays_last_with_skill():
     assert prompt.endswith(EN_INSTRUCTION)
     assert "Skill" in prompt
     assert "手动批准模式" in prompt
+
+
+# ========== 拆书 apply 流生成站点：content_language 接线（review fix refs #27） ==========
+
+
+@pytest.mark.anyio
+async def test_apply_flow_world_generation_receives_resolved_language(db_session):
+    """apply 流世界观生成读取用户偏好链：preferences.content_language=en
+    → 提示词尾部注入英文指令（此前 apply 流漏接线，en 偏好仍生成中文）；
+    任务级 per-gen override（zh）覆盖偏好 en。"""
+    user = make_user("u-apply")
+    db_session.add(Settings(
+        user_id=user.user_id,
+        preferences=json.dumps({"content_language": "en", "language": "zh"}),
+    ))
+    await db_session.commit()
+
+    captured: dict[str, str] = {}
+
+    class _FakeAIService:
+        default_model = "test-model"
+
+        async def call_with_json_retry(self, *, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return {"time_period": "古代", "location": "边城", "atmosphere": "苍凉", "rules": "灵气"}
+
+    project = SimpleNamespace(title="示例书名", genre="奇幻", theme="示例主题", description="示例简介")
+    service = BookImportService()
+
+    # 无 per-gen：用户偏好 content_language=en 生效（优先于 UI 语言 zh）
+    updated = await service._generate_world_building_from_project(
+        db=db_session,
+        user_id=user.user_id,
+        project=project,
+        ai_service=_FakeAIService(),
+    )
+    assert updated == 1
+    assert captured["prompt"].endswith(EN_INSTRUCTION)
+    assert ZH_INSTRUCTION not in captured["prompt"]
+
+    # 任务级 per-gen zh 覆盖偏好 en → 注入中文指令
+    await service._generate_world_building_from_project(
+        db=db_session,
+        user_id=user.user_id,
+        project=project,
+        ai_service=_FakeAIService(),
+        content_language="zh",
+    )
+    assert captured["prompt"].endswith(ZH_INSTRUCTION)

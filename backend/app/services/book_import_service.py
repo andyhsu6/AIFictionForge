@@ -378,6 +378,7 @@ class BookImportService:
                 project=project,
                 character_count=max(project.character_count or 0, 8),
                 chapters=chapters_to_import,
+                content_language=task.content_language,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -501,6 +502,7 @@ class BookImportService:
                     progress_range=(22, 40),
                     raise_on_error=True,
                     chapters=chapters_to_import,
+                    content_language=task.content_language,
                 )
                 statistics["generated_world_building"] = generated_world
                 await _notify("🌍 世界观生成完成", 40)
@@ -524,6 +526,7 @@ class BookImportService:
                     progress_callback=progress_callback,
                     progress_range=(42, 65),
                     chapters=chapters_to_import,
+                    content_language=task.content_language,
                 )
                 statistics["generated_careers"] = generated_careers
                 await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
@@ -548,6 +551,7 @@ class BookImportService:
                     ai_service=ai_service,
                     progress_callback=progress_callback,
                     progress_range=(67, 92),
+                    content_language=task.content_language,
                 )
                 statistics["generated_entities"] = generated_entities
                 await _notify(f"👥 角色/组织生成完成（{generated_entities}个）", 92)
@@ -569,6 +573,7 @@ class BookImportService:
                     project=project,
                     chapters=chapters_to_import,
                     ai_service=ai_service,
+                    content_language=task.content_language,
                 )
                 statistics["extracted_relationships"] = extracted["extracted_relationships"]
                 statistics["created_relationship_types"] = extracted["created_types"]
@@ -709,6 +714,7 @@ class BookImportService:
                             progress_range=(step_start_pct, step_end_pct),
                             raise_on_error=True,
                             chapters=chapters_for_retry,
+                            content_language=task.content_language,
                         )
                         retry_results["generated_world_building"] = result
                         await _notify("✅ 世界观重试成功", step_end_pct)
@@ -747,6 +753,7 @@ class BookImportService:
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
                             chapters=chapters_for_retry,
+                            content_language=task.content_language,
                         )
                         retry_results["generated_careers"] = result
                         await _notify(f"✅ 职业体系重试成功（{result}个）", step_end_pct)
@@ -772,6 +779,7 @@ class BookImportService:
                             ai_service=ai_service,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
+                            content_language=task.content_language,
                         )
                         retry_results["generated_entities"] = result
                         await _notify(f"✅ 角色/组织重试成功（{result}个）", step_end_pct)
@@ -807,6 +815,7 @@ class BookImportService:
                                 ).scalars().all()
                             ],
                             ai_service=ai_service,
+                            content_language=task.content_language,
                         )
                         retry_results["relationship_extraction"] = result
                         await _notify("✅ 原文关系抽取重试成功", step_end_pct)
@@ -2061,6 +2070,7 @@ class BookImportService:
         character_count: int,
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
+        content_language: Optional[str] = None,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -2075,6 +2085,7 @@ class BookImportService:
             project=project,
             chapters=chapters,
             model_name=model_name,
+            content_language=content_language,
         )
 
         generated_careers = await self._generate_career_system_from_project(
@@ -2083,6 +2094,7 @@ class BookImportService:
             project=project,
             chapters=chapters,
             model_name=model_name,
+            content_language=content_language,
         )
 
         generated_entities = await self._generate_characters_and_organizations_from_project(
@@ -2090,6 +2102,7 @@ class BookImportService:
             user_id=user_id,
             project=project,
             count=character_count,
+            content_language=content_language,
         )
 
         # 拆书导入场景不需要继续到大纲，直接标记流程完成，避免项目列表再次跳向导生成大纲
@@ -2111,6 +2124,7 @@ class BookImportService:
         raise_on_error: bool = False,
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
+        content_language: Optional[str] = None,
     ) -> int:
         """根据反向生成的项目基础信息，优先生成并写入世界观。
 
@@ -2134,6 +2148,8 @@ class BookImportService:
                 if not model_name:
                     model_name = getattr(ai_service, "default_model", None)
                 full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
+            # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+            generation_language = await resolve_user_generation_language(db, user_id, content_language)
             prompt = PromptService.format_prompt(
                 template,
                 title=project.title or "拆书导入项目",
@@ -2141,6 +2157,7 @@ class BookImportService:
                 theme=project.theme or "未设定",
                 description=project.description or "暂无简介",
                 full_book_context=full_book_context,
+                content_language=generation_language,
             )
 
             await _notify("🌍 AI正在生成世界观...", 0.3)
@@ -2192,6 +2209,7 @@ class BookImportService:
         progress_range: tuple[int, int] = (0, 100),
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
+        content_language: Optional[str] = None,
     ) -> int:
         """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
 
@@ -2214,6 +2232,8 @@ class BookImportService:
             if not model_name:
                 model_name = getattr(ai_service, "default_model", None)
             full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
+        # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(db, user_id, content_language)
         prompt = PromptService.format_prompt(
             template,
             title=project.title,
@@ -2225,6 +2245,7 @@ class BookImportService:
             atmosphere=project.world_atmosphere or "未设定",
             rules=project.world_rules or "未设定",
             full_book_context=full_book_context,
+            content_language=generation_language,
         )
 
         await _notify("💼 AI正在生成职业体系...", 0.3)
@@ -2303,6 +2324,7 @@ class BookImportService:
         ai_service: Optional[AIService] = None,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
+        content_language: Optional[str] = None,
     ) -> int:
         """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。"""
 
@@ -2333,6 +2355,8 @@ class BookImportService:
 
         await _notify("👥 正在准备角色生成提示词...", 0.15)
         template = await PromptService.get_template("CHARACTERS_BATCH_GENERATION", user_id, db)
+        # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(db, user_id, content_language)
         requirements = (
             "请生成能够支撑前期剧情推进的关键角色与组织，"
             "角色和组织都要与世界观、职业体系一致。"
@@ -2397,6 +2421,7 @@ class BookImportService:
                 theme=project.theme or "未设定",
                 genre=project.genre or "未设定",
                 requirements=requirements,
+                content_language=generation_language,
             )
             if total_batches > 1:
                 # 非首批时，提示词补充已生成实体，避免重复生成
@@ -2766,6 +2791,7 @@ class BookImportService:
         project: Project,
         chapters: list[Any],
         ai_service: Optional[AIService] = None,
+        content_language: Optional[str] = None,
     ) -> dict[str, int]:
         """从导入章节原文抽取人物关系，补录项目级类型、自动补角色并落库。"""
         if not chapters:
@@ -2773,6 +2799,8 @@ class BookImportService:
 
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
         template = await PromptService.get_template("RELATIONSHIP_EXTRACTION", user_id, db)
+        # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(db, user_id, content_language)
 
         # 名称来源约束：自动补角色名必须出现在原文中，否则标记 AI 补充。
         # 与模型所见一致：每批喂 1800 字符/章，这里用同一 excerpt 口径做匹配源。
@@ -2824,6 +2852,7 @@ class BookImportService:
                 title=project.title or "未命名",
                 genre=project.genre or "通用",
                 chapters_text=chapters_text,
+                content_language=generation_language,
             )
             ai_data = await ai_service.call_with_json_retry(
                 prompt=prompt,
