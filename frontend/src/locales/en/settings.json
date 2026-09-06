@@ -19,6 +19,15 @@
     "resetContent": "Reset to default values?",
     "resetTitle": "Reset Settings"
   },
+  "contentLanguage": {
+    "auto": "Follow UI language",
+    "description": "Language used for AI-generated content; follows the UI language by default and can be overridden per generation",
+    "en": "English",
+    "label": "Content language",
+    "syncFailed": "Saved locally, but syncing to server failed. It will apply on this browser only.",
+    "updated": "Content language updated",
+    "zh": "简体中文"
+  },
   "cover": {
     "apiKeyLabel": "Cover Image API Key",
     "apiKeyPlaceholder": "Enter cover image API key",

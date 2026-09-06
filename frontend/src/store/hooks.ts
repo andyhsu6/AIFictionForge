@@ -293,7 +293,8 @@ export function useChapterSync() {
     onProgressUpdate?: (message: string, progress: number) => void,
     model?: string,
     narrativePerspective?: string,
-    skillKey?: string
+    skillKey?: string,
+    contentLanguage?: string
   ) => {
     try {
       // 使用fetch处理流式响应
@@ -307,7 +308,9 @@ export function useChapterSync() {
           target_word_count: targetWordCount,
           model: model,
           narrative_perspective: narrativePerspective,
-          skill_key: skillKey
+          skill_key: skillKey,
+          // AI 生成内容语言（todo16：后端仅接受并存储，注入行为在 todo17/19 接入）
+          content_language: contentLanguage
         }),
       });
 

@@ -61,6 +61,8 @@ export default function Chapters() {
   const [editorForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const contentTextAreaRef = useRef<TextAreaRef>(null);
+  // 本次生成的内容语言（modal.confirm 内容为静态快照，用 ref 捕获 Select 值，避免重渲染问题）
+  const generateContentLanguageRef = useRef<'auto' | 'zh' | 'en'>('auto');
   const [writingStyles, setWritingStyles] = useState<WritingStyle[]>([]);
   const [selectedStyleId, setSelectedStyleId] = useState<number | undefined>();
   const [targetWordCount, setTargetWordCount] = useState<number>(getCachedWordCount);
@@ -868,7 +870,8 @@ export default function Chapters() {
         },
         selectedModel,  // 传递选中的模型
         temporaryNarrativePerspective,  // 传递临时人称参数
-        selectedSkillKey  // 传递选中的Skill
+        selectedSkillKey,  // 传递选中的Skill
+        generateContentLanguageRef.current  // 传递本次生成的内容语言（todo16 仅透传，注入行为在 todo17/19 接入）
       );
 
       message.success(t('toast.aiCreateSuccess'));
@@ -908,6 +911,9 @@ export default function Chapters() {
 
     const selectedStyle = writingStyles.find(s => s.id === selectedStyleId);
 
+    // 每次打开对话框重置为默认（跟随界面语言）
+    generateContentLanguageRef.current = 'auto';
+
     const instance = modal.confirm({
       title: t('generateModal.title'),
       width: 700,
@@ -925,6 +931,23 @@ export default function Chapters() {
             )}
             <li><strong>{t('generateModal.wordsLine', { words: targetWordCount })}</strong></li>
           </ul>
+
+          <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: token.colorTextSecondary }}>
+              {t('generateModal.contentLanguage.label')}
+            </span>
+            <Select<'auto' | 'zh' | 'en'>
+              size="small"
+              style={{ minWidth: 160 }}
+              defaultValue="auto"
+              onChange={(value) => { generateContentLanguageRef.current = value; }}
+              options={[
+                { value: 'auto', label: t('generateModal.contentLanguage.auto') },
+                { value: 'zh', label: t('generateModal.contentLanguage.zh') },
+                { value: 'en', label: t('generateModal.contentLanguage.en') },
+              ]}
+            />
+          </div>
 
           {previousChapters.length > 0 && (
             <div style={{
@@ -1157,6 +1180,7 @@ export default function Chapters() {
     styleId?: number;
     targetWordCount?: number;
     model?: string;
+    content_language?: 'auto' | 'zh' | 'en';
   }) => {
     if (!currentProject?.id) return;
 
@@ -1190,12 +1214,15 @@ export default function Chapters() {
         target_word_count: number;
         model?: string;
         skill_key?: string;
+        content_language?: string;
       } = {
         start_chapter_number: values.startChapterNumber,
         count: values.count,
         enable_analysis: values.enableAnalysis,
         style_id: styleId,
         target_word_count: wordCount,
+        // AI 生成内容语言（todo16：后端仅接受并存储，注入行为在 todo17/19 接入）
+        content_language: values.content_language || 'auto',
       };
 
       // 如果有模型参数，添加到请求体中
@@ -2921,6 +2948,7 @@ export default function Chapters() {
               styleId: selectedStyleId,
               targetWordCount: getCachedWordCount(),
               model: selectedModel,
+              content_language: 'auto',
             }}
           >
             <Alert
@@ -3051,6 +3079,24 @@ export default function Chapters() {
                   ))}
                 </Select>
               </Form.Item>
+            </div>
+
+            {/* 生成内容语言（默认跟随界面语言；todo16 仅透传，注入行为在 todo17/19 接入） */}
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 0 : 16 }}>
+              <Form.Item
+                label={t('batch.contentLanguage.label')}
+                name="content_language"
+                style={{ flex: 1, marginBottom: 12 }}
+              >
+                <Select
+                  options={[
+                    { value: 'auto', label: t('batch.contentLanguage.auto') },
+                    { value: 'zh', label: t('batch.contentLanguage.zh') },
+                    { value: 'en', label: t('batch.contentLanguage.en') },
+                  ]}
+                />
+              </Form.Item>
+              <div style={{ flex: 1 }} />
             </div>
 
             {/* 同步分析（固定开启） */}

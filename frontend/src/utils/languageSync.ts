@@ -18,6 +18,22 @@ export function parseServerLanguage(rawPreferences?: string | null): 'zh' | 'en'
 }
 
 /**
+ * 从 settings.preferences JSON 中解析 AI 生成内容语言（i18n plan todo 16）。
+ * 仅接受 auto / zh / en；JSON 损坏或无该键返回 null（null 与 'auto' 均表示跟随界面语言）。
+ */
+export function parseServerContentLanguage(rawPreferences?: string | null): 'auto' | 'zh' | 'en' | null {
+  try {
+    const prefs = JSON.parse(rawPreferences || '{}');
+    if (prefs.content_language === 'auto' || prefs.content_language === 'zh' || prefs.content_language === 'en') {
+      return prefs.content_language;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 登录后语言同步（i18n 优先级契约）：
  * - 服务端 preferences.language 存在 → 它是登录后唯一事实来源，覆盖本地 localStorage 残留
  *   （同浏览器多账号互不污染：每次登录都以该账号自己的服务端偏好为准）。

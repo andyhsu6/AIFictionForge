@@ -5,7 +5,7 @@ import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
 import i18n, { normalizeLanguage } from '../i18n';
-import { parseServerLanguage } from '../utils/languageSync';
+import { parseServerLanguage, parseServerContentLanguage } from '../utils/languageSync';
 import { Trans, useTranslation } from 'react-i18next';
 
 const { Title, Text } = Typography;
@@ -51,6 +51,8 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('current');
   const [uiLanguage, setUiLanguage] = useState<'zh' | 'en'>(() => (normalizeLanguage(i18n.language) === 'en' ? 'en' : 'zh'));
   const [savingLanguage, setSavingLanguage] = useState(false);
+  const [contentLanguage, setContentLanguage] = useState<'auto' | 'zh' | 'en'>('auto');
+  const [savingContentLanguage, setSavingContentLanguage] = useState(false);
   const [presets, setPresets] = useState<APIKeyPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(false);
   const [activePresetId, setActivePresetId] = useState<string | undefined>();
@@ -103,6 +105,9 @@ export default function SettingsPage() {
       if (serverLang) {
         setUiLanguage(serverLang);
       }
+
+      // AI 生成内容语言（无值/非法值时回退默认：跟随界面语言）
+      setContentLanguage(parseServerContentLanguage(settings.preferences) ?? 'auto');
 
       form.setFieldsValue({
         ...defaultCoverSettings,
@@ -157,6 +162,21 @@ export default function SettingsPage() {
       message.warning(t('language.syncFailed'));
     } finally {
       setSavingLanguage(false);
+    }
+  };
+
+  // AI 生成内容语言：仅持久化到 preferences.content_language（注入行为由后续 todo 接入）
+  const handleContentLanguageChange = async (lang: 'auto' | 'zh' | 'en') => {
+    setContentLanguage(lang);
+    setSavingContentLanguage(true);
+    try {
+      await settingsApi.updatePreferences({ content_language: lang });
+      message.success(t('contentLanguage.updated'));
+    } catch (error) {
+      console.error('save content language preference failed:', error);
+      message.warning(t('contentLanguage.syncFailed'));
+    } finally {
+      setSavingContentLanguage(false);
     }
   };
 
@@ -1196,6 +1216,41 @@ export default function SettingsPage() {
                   options={[
                     { value: 'zh', label: t('language.zhLabel') },
                     { value: 'en', label: t('language.enLabel') },
+                  ]}
+                />
+              </Col>
+            </Row>
+          </Card>
+
+          {/* AI 生成内容语言（preferences.content_language，默认跟随界面语言） */}
+          <Card
+            variant="borderless"
+            style={{
+              background: token.colorBgContainer,
+              borderRadius: isMobile ? 12 : 16,
+              boxShadow: token.boxShadowSecondary,
+              marginBottom: isMobile ? 20 : 24,
+            }}
+          >
+            <Row align="middle" justify="space-between" gutter={[16, 12]}>
+              <Col xs={24} sm={12}>
+                <Space direction="vertical" size={2}>
+                  <Text strong>{t('contentLanguage.label')}</Text>
+                  <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
+                    {t('contentLanguage.description')}
+                  </Text>
+                </Space>
+              </Col>
+              <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
+                <Select
+                  value={contentLanguage}
+                  onChange={handleContentLanguageChange}
+                  loading={savingContentLanguage}
+                  style={{ minWidth: 160 }}
+                  options={[
+                    { value: 'auto', label: t('contentLanguage.auto') },
+                    { value: 'zh', label: t('contentLanguage.zh') },
+                    { value: 'en', label: t('contentLanguage.en') },
                   ]}
                 />
               </Col>

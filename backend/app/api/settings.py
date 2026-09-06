@@ -616,9 +616,10 @@ async def update_preferences(
     """
     更新当前用户的偏好设置（preferences JSON 列，无独立数据库字段）。
 
-    当前支持 language（界面语言，zh/en）。采用增量合并：仅覆盖请求中显式提供的键，
-    保留 preferences 中的其他既有键（如 api_presets）。
-    language 为空时不写该项；GET /settings 的 preferences 原样返回供前端读取。
+    当前支持 language（界面语言，zh/en）与 content_language（AI 生成内容语言，
+    auto/zh/en；None 或 auto 表示跟随界面语言，注入行为在后续 todo 接入）。
+    采用增量合并：仅覆盖请求中显式提供的键，保留 preferences 中的其他既有键（如 api_presets）。
+    键为 None（显式传 null）时不写该项并移除既有值；GET /settings 的 preferences 原样返回供前端读取。
     """
     settings = await get_user_settings(user.user_id, db)
     prefs = _safe_load_preferences(settings.preferences)
@@ -630,10 +631,18 @@ async def update_preferences(
         else:
             prefs["language"] = update_data["language"]
 
+    if "content_language" in update_data:
+        if update_data["content_language"] is None:
+            prefs.pop("content_language", None)
+        else:
+            prefs["content_language"] = update_data["content_language"]
+
     settings.preferences = json.dumps(prefs, ensure_ascii=False)
     await db.commit()
     await db.refresh(settings)
-    logger.info(f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')}")
+    logger.info(
+        f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')} content_language={prefs.get('content_language')}"
+    )
 
     return {"message": "偏好设置已更新", "preferences": settings.preferences}
 

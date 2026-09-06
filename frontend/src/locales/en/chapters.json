@@ -6,6 +6,12 @@
     "cancelTask": "Cancel Task",
     "confirmCancelContent": "Batch generation is in progress. Are you sure you want to cancel?",
     "confirmCancelTitle": "Confirm Cancel",
+    "contentLanguage": {
+      "auto": "Follow UI language",
+      "en": "English",
+      "label": "Content language",
+      "zh": "简体中文"
+    },
     "countOption": "{{n}} ch",
     "keepGenerating": "Keep Generating",
     "labelCount": "Count",
@@ -119,6 +125,12 @@
     "bulletPrevious": "Content of completed previous chapters (for plot continuity)",
     "bulletWorld": "Project worldbuilding settings",
     "cancel": "Cancel",
+    "contentLanguage": {
+      "auto": "Follow UI language",
+      "en": "English",
+      "label": "Content language",
+      "zh": "简体中文"
+    },
     "intro": "AI will write this chapter based on:",
     "okStart": "Start Writing",
     "overwriteWarning": "⚠️ Note: this will overwrite the current chapter content",

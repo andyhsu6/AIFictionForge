@@ -24,6 +24,7 @@ interface OutlineGenerateRequestData {
   plot_stage: 'development' | 'climax' | 'ending';
   model?: string;
   provider?: string;
+  content_language?: 'auto' | 'zh' | 'en';
 }
 
 // 角色/组织条目类型（新格式）
@@ -520,6 +521,7 @@ export default function Outline() {
     story_direction?: string;
     plot_stage?: 'development' | 'climax' | 'ending';
     keep_existing?: boolean;
+    content_language?: 'auto' | 'zh' | 'en';
   }
 
   const handleGenerate = async (values: GenerateFormValues) => {
@@ -546,7 +548,9 @@ export default function Outline() {
         requirements: values.requirements,
         mode: values.mode || 'auto',
         story_direction: values.story_direction,
-        plot_stage: values.plot_stage || 'development'
+        plot_stage: values.plot_stage || 'development',
+        // AI 生成内容语言（todo16：后端仅接受并存储，注入行为在 todo17/19 接入）
+        content_language: values.content_language || 'auto'
       };
 
       // 只有在用户选择了模型时才添加model参数
@@ -646,6 +650,7 @@ export default function Outline() {
             keep_existing: true,
             theme: currentProject.theme || '',
             model: defaultModel,
+            content_language: 'auto',
           }}
         >
           {hasOutlines && (
@@ -757,6 +762,21 @@ export default function Outline() {
                 </>
               );
             }}
+          </Form.Item>
+
+          {/* 生成内容语言（默认跟随界面语言；todo16 仅透传，注入行为在 todo17/19 接入） */}
+          <Form.Item
+            label={t('generate.contentLanguage.label')}
+            name="content_language"
+            style={{ marginTop: 12 }}
+          >
+            <Select
+              options={[
+                { value: 'auto', label: t('generate.contentLanguage.auto') },
+                { value: 'zh', label: t('generate.contentLanguage.zh') },
+                { value: 'en', label: t('generate.contentLanguage.en') },
+              ]}
+            />
           </Form.Item>
 
           {/* 自定义模型选择 - 移到外层，所有模式都显示 */}

@@ -608,6 +608,12 @@ export default interface Resources {
       "cancelTask": "取消任务",
       "confirmCancelContent": "批量生成正在进行中，确定要取消吗？",
       "confirmCancelTitle": "确认取消",
+      "contentLanguage": {
+        "auto": "跟随界面语言",
+        "en": "English",
+        "label": "生成内容语言",
+        "zh": "简体中文"
+      },
       "countOption": "{{n}}章",
       "keepGenerating": "继续生成",
       "labelCount": "生成数量",
@@ -721,6 +727,12 @@ export default interface Resources {
       "bulletPrevious": "前面已完成章节的内容（确保剧情连贯）",
       "bulletWorld": "项目的世界观设定",
       "cancel": "取消",
+      "contentLanguage": {
+        "auto": "跟随界面语言",
+        "en": "English",
+        "label": "生成内容语言",
+        "zh": "简体中文"
+      },
       "intro": "AI将根据以下信息创作本章内容：",
       "okStart": "开始创作",
       "overwriteWarning": "⚠️ 注意：此操作将覆盖当前章节内容",
@@ -2292,6 +2304,12 @@ export default interface Resources {
       "aiFailed": "AI生成失败",
       "cancel": "取消",
       "chapterCountLabel": "章节数量",
+      "contentLanguage": {
+        "auto": "跟随界面语言",
+        "en": "English",
+        "label": "生成内容语言",
+        "zh": "简体中文"
+      },
       "continueChapterCountLabel": "续写章节数",
       "defaultModelLabel": "当前默认模型: {{model}}",
       "directionLabel": "故事发展方向",
@@ -3061,6 +3079,15 @@ export default interface Resources {
       "ok": "确定",
       "resetContent": "确定要重置为默认值吗？",
       "resetTitle": "重置设置"
+    },
+    "contentLanguage": {
+      "auto": "跟随界面语言",
+      "description": "AI 生成内容使用的语言；默认跟随界面语言，每次生成时也可单独选择",
+      "en": "English",
+      "label": "生成内容语言 / Content language",
+      "syncFailed": "已在本地生效，但同步到服务器失败，仅对本浏览器有效。",
+      "updated": "生成内容语言已更新",
+      "zh": "简体中文"
     },
     "cover": {
       "apiKeyLabel": "封面图片 API Key",

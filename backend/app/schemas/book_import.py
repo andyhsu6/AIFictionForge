@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.settings import ContentLanguage
+
 
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 ImportMode = Literal["append", "overwrite"]
@@ -50,6 +52,7 @@ class BookImportTaskCreateRequest(BaseModel):
     """创建拆书任务请求"""
     extract_mode: BookImportExtractMode = Field(default="tail", description="提取范围：tail=截取末章，full=整本")
     tail_chapter_count: int = Field(default=10, ge=5, le=9999, description="当 extract_mode=tail 时，截取末尾章节数；需为5的倍数，超过50将按整本处理")
+    content_language: ContentLanguage
 
 
 class BookImportTaskCreateResponse(BaseModel):
