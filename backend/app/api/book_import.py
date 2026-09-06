@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ApiError
+from app.core.errors import ApiError, exc_status
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.book_import import (
@@ -182,7 +182,7 @@ async def apply_book_import_stream(
             await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success"))
             await progress_queue.put(await SSEResponse.send_done())
         except (HTTPException, ApiError) as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, getattr(exc, "status_code", None) or exc.status))
+            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE导入失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -261,7 +261,7 @@ async def retry_failed_steps_stream(
 
             await progress_queue.put(await SSEResponse.send_done())
         except (HTTPException, ApiError) as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, getattr(exc, "status_code", None) or exc.status))
+            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE重试失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))

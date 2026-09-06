@@ -7,7 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
-from app.core.errors import ApiError
+from app.core.errors import ApiError, exc_status
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.career import Career, CharacterCareer
 from app.models.character import Character
@@ -449,7 +449,7 @@ async def generate_career_system(
             
         except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, getattr(he, "status_code", None) or he.status)
+            yield await tracker.error(he.detail, exc_status(he))
         except Exception as e:
             logger.error(f"生成职业体系失败: {str(e)}")
             yield await tracker.error(f"生成新职业失败: {str(e)}")

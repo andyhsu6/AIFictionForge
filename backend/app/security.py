@@ -11,7 +11,7 @@ from typing import Iterable
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
-from app.core.errors import ApiError
+from app.core.errors import ApiError, exc_status
 
 from app.config import settings
 
@@ -169,8 +169,7 @@ def validate_ai_http_url(raw_url: str) -> str:
         )
     except (HTTPException, ApiError) as exc:
         detail = str(exc.detail or "")
-        exc_status = getattr(exc, "status_code", None) or exc.status
-        if exc_status == 400 and any(
+        if exc_status(exc) == 400 and any(
             token in detail for token in ("本机", "内网", "链路本地")
         ):
             raise HTTPException(

@@ -298,6 +298,11 @@ def code_for_http_exception(exc: HTTPException) -> str:
     return _STATUS_DETAIL_TO_CODE.get((exc.status_code, detail), HTTP_ERROR_FALLBACK_CODE)
 
 
+def exc_status(exc: BaseException) -> int:
+    """HTTP status for either HTTPException (`.status_code`) or ApiError (`.status`)."""
+    return getattr(exc, "status_code", None) or getattr(exc, "status", None) or 500
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """注册全局异常 handler（ApiError / HTTPException / 验证错误 / 兜底）。
 

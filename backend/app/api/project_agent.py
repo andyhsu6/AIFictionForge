@@ -452,7 +452,7 @@ async def confirm_tool_call(
             "tool_call": tool_call,
             "resources": result.get("resources") or [],
         }
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as exc:
         await db.rollback()

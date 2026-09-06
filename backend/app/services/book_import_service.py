@@ -385,7 +385,7 @@ class BookImportService:
                 statistics=statistics,
                 warnings=warnings,
             )
-        except HTTPException:
+        except (HTTPException, ApiError):
             await db.rollback()
             raise
         except Exception as exc:
@@ -618,7 +618,7 @@ class BookImportService:
                 statistics=statistics,
                 warnings=warnings,
             )
-        except HTTPException:
+        except (HTTPException, ApiError):
             await db.rollback()
             raise
         except Exception as exc:
