@@ -69,7 +69,7 @@ async def create_project(
         logger.info(f"项目创建成功: project_id={db_project.id}, user_id={user_id}")
         
         return db_project
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"创建项目失败: {str(e)}", exc_info=True)
@@ -110,7 +110,7 @@ async def get_projects(
         logger.info(f"获取项目列表成功: user_id={user_id}, 共{total}个项目")
         
         return ProjectListResponse(total=total, items=projects)
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"获取项目列表失败: {str(e)}", exc_info=True)
@@ -147,7 +147,7 @@ async def get_project(
         
         logger.info(f"获取项目详情成功: {project.title}")
         return project
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"获取项目详情失败: {str(e)}", exc_info=True)
@@ -192,7 +192,7 @@ async def update_project(
         await db.refresh(project)
         logger.info(f"项目更新成功: {project.title}")
         return project
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"更新项目失败: {str(e)}", exc_info=True)
@@ -337,7 +337,7 @@ async def delete_project(
         
         logger.info(f"项目删除成功: {project_title}")
         return {"message": "项目及所有关联数据（包括向量数据库）删除成功"}
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"删除项目失败: {str(e)}", exc_info=True)
@@ -431,7 +431,7 @@ async def export_project_chapters(
             }
         )
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"导出项目失败: {str(e)}", exc_info=True)

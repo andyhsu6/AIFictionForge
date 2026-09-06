@@ -701,7 +701,7 @@ async def _ensure_plugin_registered(
         是否成功
         
     Raises:
-        HTTPException: 注册失败
+        ApiError: 注册失败
     """
     try:
         # 使用ensure_registered方法，它会检查是否已注册

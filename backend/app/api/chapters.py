@@ -5042,7 +5042,6 @@ async def partial_regenerate_stream(
         else:
             raise ApiError(
                 code="validation.polish_selection_mismatch",
-                detail="选中的文本与章节内容不匹配，请刷新页面后重试",
             )
     
     # 预先获取项目信息和写作风格

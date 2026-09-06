@@ -714,7 +714,6 @@ async def get_available_models(
                 if not models:
                     raise ApiError(
                         code="not_found.model_list",
-                        detail="未能从 API 获取到可用的模型列表",
                     )
                 
                 logger.info(f"成功获取 {len(models)} 个模型")
