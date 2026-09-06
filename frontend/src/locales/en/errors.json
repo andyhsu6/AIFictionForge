@@ -27,6 +27,9 @@
     "project": "Project not found"
   },
   "requestFailed": "Request failed",
+  "security": {
+    "url_invalid": "URL is not allowed"
+  },
   "task": {
     "batchListFailed": "Failed to fetch batch generation tasks",
     "cancelBatchFailed": "Failed to cancel batch generation task",
@@ -44,6 +47,7 @@
   "validation": {
     "config": "Configuration data format error",
     "error": "Request parameter validation failed",
-    "failed": "Request parameter validation failed"
+    "failed": "Request parameter validation failed",
+    "int_parsing": "Invalid parameter format"
   }
 }

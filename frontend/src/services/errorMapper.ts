@@ -62,11 +62,10 @@ const AUTH_UNAUTHORIZED_CODE = 'auth.unauthorized';
 const HTTP_ERROR_CODE = 'http_error';
 
 /**
- * Normalize a backend code to an `errors`-namespace key path.
- * Dots are i18next nesting separators. Registry codes (auth.*, not_found.*, ...)
- * pass through; generated codes whose head isn't a real group (e.g. the 422
- * handler's `errors.validation.string`) are flattened under `validation:`
- * `errors.validation.string` → `validation.errors.validation.string`.
+ * Legacy compat export — NO LONGER on the display path. The backend registry
+ * owns the group list (12 groups), so a hardcoded whitelist both rots and
+ * flattens valid codes; the display path below resolves by locale lookup
+ * (resolveErrorKey) instead. Behavior kept verbatim for existing imports.
  */
 export function normalizeErrorCode(code: string): string {
   const groups = ['auth', 'not_found', 'validation', 'internal', 'conflict', 'http', 'network', 'task', 'dynamic_detail'];
@@ -78,6 +77,25 @@ function hasErrorsKey(key: string): boolean {
   // i18next returns the key itself when lookup misses (no defaultValue passed).
   const t = requireTranslator().t as (k: string, o: { ns: 'errors' }) => unknown;
   return t(key, { ns: 'errors' }) !== key;
+}
+
+const ERRORS_VALIDATION_PREFIX = 'errors.validation.';
+
+/**
+ * Existence-based code resolution: a code renders its own `errors:` entry when
+ * one exists (the backend registry owns the group list — no frontend
+ * whitelist), else — for the 422 handler's generated
+ * `errors.validation.<pydantic_type>` shape, whose `errors.` head is envelope
+ * noise rather than a registry group — its real `validation.*` entry. Null →
+ * the caller falls through to the generic ladder.
+ */
+function resolveErrorKey(code: string): string | null {
+  if (hasErrorsKey(code)) return code;
+  if (code.startsWith(ERRORS_VALIDATION_PREFIX)) {
+    const stripped = `validation.${code.slice(ERRORS_VALIDATION_PREFIX.length)}`;
+    if (hasErrorsKey(stripped)) return stripped;
+  }
+  return null;
 }
 
 function tErrors(key: string, options: Record<string, unknown>): string {
@@ -102,10 +120,14 @@ const STATUS_FALLBACK_KEYS: Record<number, string> = {
  * Resolution order (task 14a display policy — supersedes the old
  * "unknown code → raw detail" and "dynamic_detail → raw detail" rules):
  * 1. Bare `http_error` (unregistered HTTPException) → localized generic message.
- * 2. Known code (incl. `dynamic_detail`) → `errors:<code>` template (dots nest;
- *    params interpolated). Localized text only — `dynamic_detail` sites send
- *    runtime-composed text, so their locale entry is a generic fallback string.
- * 3. Unknown/unregistered code → localized GENERIC text — the backend detail
+ * 2. Code with an `errors:` locale entry — existence-checked via
+ *    resolveErrorKey, incl. every registry group and `dynamic_detail` —
+ *    `errors:<code>` template (dots nest; params interpolated). Localized text
+ *    only — `dynamic_detail` sites send runtime-composed text, so their locale
+ *    entry is a generic fallback string. A generated
+ *    `errors.validation.<type>` code retries without the redundant `errors.`
+ *    head.
+ * 3. Code with NO locale entry → localized GENERIC text — the backend detail
  *    must NOT leak to the UI; diagnostics read it via getErrorDiagnostic().
  * 4. No code at all → legacy row (old task rows, legacy SSE): detail verbatim
  *    (the ONLY remaining detail escape).
@@ -117,16 +139,16 @@ export function mapErrorPayload(payload: ErrorPayload): string {
   if (code) {
     // Bare 'http_error' = existing HTTPException not in registry: generic
     // message only; the backend detail is a diagnostic, not display text.
-    // (Checked on the RAW code — normalizeErrorCode would nest it under
-    // `validation.` since 'http_error' is not a registry group head.)
+    // (Checked on the RAW code before generic resolution; it has its own
+    // locale entry, but the explicit branch pins this legacy site's contract.)
     if (code === HTTP_ERROR_CODE) {
       // `status` is passed for symmetry with the known-code path so a future
       // `http_error` template can interpolate {{status}}; the current locale
       // string has no placeholder, so output is unchanged.
       return tErrors(HTTP_ERROR_CODE, { status });
     }
-    const key = normalizeErrorCode(code);
-    if (hasErrorsKey(key)) {
+    const key = resolveErrorKey(code);
+    if (key) {
       // `detail` is deliberately NOT interpolated: for a coded payload the
       // backend text is diagnostic-only (getErrorDiagnostic), never display.
       const translated = tErrors(key, { ...params, status });

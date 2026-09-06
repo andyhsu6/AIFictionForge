@@ -1257,6 +1257,9 @@ export default interface Resources {
       "project": "项目不存在"
     },
     "requestFailed": "请求失败",
+    "security": {
+      "url_invalid": "URL 不允许访问"
+    },
     "task": {
       "batchListFailed": "获取批量生成任务失败",
       "cancelBatchFailed": "取消批量生成任务失败",
@@ -1274,7 +1277,8 @@ export default interface Resources {
     "validation": {
       "config": "配置数据格式错误",
       "error": "请求参数验证失败",
-      "failed": "请求参数验证失败"
+      "failed": "请求参数验证失败",
+      "int_parsing": "参数格式不正确"
     }
   },
   "expansionPlanEditor": {

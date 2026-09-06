@@ -75,6 +75,21 @@ const cases = [
   () => assert.equal(mapErrorPayload({ code: 'errors.validation.string', detail: '请求参数验证失败', status: 422 }), '请求参数验证失败'),
   () => assert.equal(normalizeErrorCode('errors.validation.string'), 'validation.errors.validation.string'),
   () => assert.equal(normalizeErrorCode('auth.unauthorized'), 'auth.unauthorized'),
+  // Existence-based resolution (replaces the hardcoded group whitelist): a
+  // registry group the old whitelist missed (security.*) now hits its own
+  // locale entry instead of being flattened to validation.*
+  () => assert.equal(mapErrorPayload({ code: 'security.url_invalid', detail: '原始后端文案', status: 400 }), 'URL 不允许访问'),
+  // 422 handler composes `errors.validation.<pydantic_type>`; the redundant
+  // `errors.` head is stripped and the real validation.* entry is used
+  () => assert.equal(mapErrorPayload({ code: 'errors.validation.int_parsing', detail: '原始后端文案', status: 422 }), '参数格式不正确'),
+  // unknown-head code with no locale entry anywhere still falls to the
+  // localized generic — never the raw code, never the backend detail
+  () => {
+    const shown = mapErrorPayload({ code: 'progress.unregistered_step', detail: '后端诊断文案' });
+    assert.notEqual(shown, 'progress.unregistered_step');
+    assert.ok(!shown.includes('后端诊断文案'), `unknown-head code leaked detail: ${shown}`);
+    assert.equal(shown, '未知错误');
+  },
   // SSE structured vs legacy
   () => assert.equal(mapSSEError({ error: '章节不存在', error_code: 'not_found.chapter', error_params: {} }), '章节不存在'),
   () => assert.equal(mapSSEError({ error: '旧版中文错误' }), '旧版中文错误'),
@@ -132,6 +147,13 @@ const cases = [
     assert.equal(mapErrorPayload({ code: 'dynamic_detail', detail: 'runtime composed' }), enErrors.dynamic_detail);
     // legacy no-code row keeps detail verbatim even in en
     assert.equal(mapErrorPayload({ detail: 'legacy raw' }), 'legacy raw');
+    await i18next.changeLanguage('zh');
+  },
+  // en: the same existence-based resolution for the new fixture keys
+  async () => {
+    await i18next.changeLanguage('en');
+    assert.equal(mapErrorPayload({ code: 'security.url_invalid', detail: 'raw diagnostic', status: 400 }), 'URL is not allowed');
+    assert.equal(mapErrorPayload({ code: 'errors.validation.int_parsing', detail: 'raw diagnostic', status: 422 }), 'Invalid parameter format');
     await i18next.changeLanguage('zh');
   },
 ];
