@@ -704,7 +704,7 @@ async def validate_import_file(
         # 检查文件大小（50MB限制）
         max_size = 50 * 1024 * 1024  # 50MB
         if len(content) > max_size:
-            raise ApiError(code="validation.file_too_large", detail="文件大小超过50MB限制")
+            raise ApiError(code="validation.file_too_large", detail="文件大小超过50MB限制", params={"max_mb": 50})
         
         # 解析JSON
         try:
@@ -764,7 +764,7 @@ async def import_project(
         # 检查文件大小
         max_size = 50 * 1024 * 1024  # 50MB
         if len(content) > max_size:
-            raise ApiError(code="validation.file_too_large", detail="文件大小超过50MB限制")
+            raise ApiError(code="validation.file_too_large", detail="文件大小超过50MB限制", params={"max_mb": 50})
         
         # 解析JSON
         try:

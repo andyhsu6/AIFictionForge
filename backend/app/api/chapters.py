@@ -3674,7 +3674,7 @@ async def batch_generate_chapters_in_order(
     all_chapters = result.scalars().all()
     
     if not all_chapters:
-        raise ApiError(code="not_found.project_chapters")
+        raise ApiError(code="not_found.project_chapters", detail="项目没有章节")
     
     # 计算要生成的章节范围
     start_number = batch_request.start_chapter_number
@@ -3868,7 +3868,7 @@ async def cancel_batch_generation(
     
     if task.status in ['completed', 'failed', 'cancelled']:
         raise ApiError(
-            code="task.cancel_invalid",
+            code="task.cancel_invalid_status",
             detail=f"任务已处于 {task.status} 状态，无法取消",
             params={"status": task.status},
         )
@@ -5027,9 +5027,17 @@ async def partial_regenerate_stream(
     # 验证位置参数
     content_length = len(chapter.content)
     if partial_request.start_position >= content_length:
-        raise ApiError(code="validation.polish_range_out_of_bounds")
+        raise ApiError(
+            code="validation.polish_range_out_of_bounds",
+            detail="起始位置超出内容范围",
+            params={"bound": "start"},
+        )
     if partial_request.end_position > content_length:
-        raise ApiError(code="validation.polish_range_out_of_bounds", detail="结束位置超出内容范围")
+        raise ApiError(
+            code="validation.polish_range_out_of_bounds",
+            detail="结束位置超出内容范围",
+            params={"bound": "end"},
+        )
     if partial_request.start_position >= partial_request.end_position:
         raise ApiError(code="validation.polish_start_before_end")
     

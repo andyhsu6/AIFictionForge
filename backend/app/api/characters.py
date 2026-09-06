@@ -400,7 +400,7 @@ async def update_character(
             career = career_result.scalar_one_or_none()
             
             if not career:
-                raise ApiError(code="validation.career_type_mismatch", detail="主职业不存在或类型错误")
+                raise ApiError(code="validation.main_career_invalid")
 
             # 验证阶段有效性
             if main_career_stage and main_career_stage > career.max_stage:

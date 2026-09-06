@@ -71,7 +71,7 @@ async def create_book_import_task(
 
     content = await file.read()
     if len(content) > MAX_TXT_SIZE:
-        raise ApiError(code="validation.file_too_large", detail="文件大小超过 50MB 限制")
+        raise ApiError(code="validation.file_too_large", detail="文件大小超过 50MB 限制", params={"max_mb": 50})
 
     task = await book_import_service.create_task(
         user_id=user_id,

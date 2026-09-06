@@ -2584,7 +2584,11 @@ async def _run_outline_expansion_background(
             await _save_background_task_result(bg_db, task_id, result_data)
             await tracker.complete(
                 f"《{outline.title}》展开完成",
-                code="progress.outline_expand_done", params={"outline_title": outline.title},
+                code="progress.outline_expand_done",
+                params={
+                    "outline_title": outline.title,
+                    "chapter_count": len(created_chapters) if created_chapters else len(chapter_plans),
+                },
             )
         except Exception as e:
             logger.error(f"后台大纲展开失败: {str(e)}", exc_info=True)
@@ -2726,7 +2730,9 @@ async def _run_batch_outline_expansion_background(
                 await tracker.generating(
                     current_chars=(idx + 1) * chapters_per_outline * 500,
                     estimated_total=total_outlines * chapters_per_outline * 500,
-                    message=f"《{outline.title}》展开完成 ({len(chapter_plans)} 章)"
+                    message=f"《{outline.title}》展开完成 ({len(chapter_plans)} 章)",
+                    code="progress.outline_expand_done",
+                    params={"outline_title": outline.title, "chapter_count": len(chapter_plans)},
                 )
 
             await tracker.parsing("整理批量展开结果...")

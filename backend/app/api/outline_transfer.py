@@ -30,7 +30,7 @@ async def _read_import_file(file: UploadFile) -> bytes:
         raise ApiError(code="validation.json_only")
     content = await file.read(MAX_IMPORT_SIZE + 1)
     if len(content) > MAX_IMPORT_SIZE:
-        raise ApiError(code="validation.file_too_large")
+        raise ApiError(code="validation.file_too_large", detail="文件大小超过 10MB 限制", params={"max_mb": 10})
     return content
 
 

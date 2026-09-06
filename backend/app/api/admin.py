@@ -219,7 +219,7 @@ async def update_user(
                     all_users = await user_manager.get_all_users()
                     admin_count = sum(1 for u in all_users if u.is_admin)
                     if admin_count <= 1:
-                        raise ApiError(code="validation.last_admin_required", detail="不能取消最后一个管理员的权限")
+                        raise ApiError(code="forbidden.last_admin_revoke")
                 db_user.is_admin = data.is_admin
             
             await session.commit()
@@ -256,7 +256,7 @@ async def toggle_user_status(
     try:
         # 不允许禁用自己
         if user_id == admin.user_id:
-            raise ApiError(code="validation.self_account_mutation")
+            raise ApiError(code="forbidden.self_disable")
         
         # 获取目标用户
         target_user = await user_manager.get_user(user_id)
@@ -350,7 +350,7 @@ async def delete_user(
     try:
         # 不允许删除自己
         if user_id == admin.user_id:
-            raise ApiError(code="validation.self_account_mutation", detail="不能删除自己的账号")
+            raise ApiError(code="forbidden.self_delete")
 
         # 获取目标用户
         target_user = await user_manager.get_user(user_id)
@@ -362,7 +362,7 @@ async def delete_user(
             all_users = await user_manager.get_all_users()
             admin_count = sum(1 for u in all_users if u.is_admin)
             if admin_count <= 1:
-                raise ApiError(code="validation.last_admin_required", detail="不能删除最后一个管理员账号")
+                raise ApiError(code="forbidden.last_admin_delete")
         
         # 删除用户（包括密码记录）
         async with await user_manager._get_session() as session:

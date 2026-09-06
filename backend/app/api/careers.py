@@ -799,7 +799,7 @@ async def add_sub_career(
         raise ApiError(code="not_found.career")
     
     if career.type != "sub":
-        raise ApiError(code="validation.career_type_mismatch", detail="该职业不是副职业类型，无法添加为副职业")
+        raise ApiError(code="validation.career_sub_type_mismatch")
 
     # 验证阶段有效性
     if career_request.current_stage > career.max_stage:

@@ -49,7 +49,7 @@ const cases = [
     assert.equal(shown, '未知错误');
   },
   // http_error (unregistered HTTPException site) → generic message, no detail interpolation
-  () => assert.equal(mapErrorPayload({ code: 'http_error', detail: '需要登录', status: 401 }), '请求处理失败'),
+  () => assert.equal(mapErrorPayload({ code: 'http_error', detail: '需要登录', status: 401 }), '请求处理失败，请稍后重试'),
   // no code at all (legacy row) → detail verbatim
   () => assert.equal(mapErrorPayload({ detail: '旧版中文文案' }), '旧版中文文案'),
   // no code no detail → per-status fallback
@@ -142,7 +142,7 @@ const cases = [
     assert.ok(!shown.includes('raw chinese kept'), `en unregistered code leaked detail: ${shown}`);
     assert.equal(shown, 'Bad request parameters');
     // http_error → en generic
-    assert.equal(mapErrorPayload({ code: 'http_error', detail: '需要登录', status: 401 }), 'Request failed');
+    assert.equal(mapErrorPayload({ code: 'http_error', detail: '需要登录', status: 401 }), 'Request failed. Please try again later.');
     // dynamic_detail → en generic (known code, never the raw detail)
     assert.equal(mapErrorPayload({ code: 'dynamic_detail', detail: 'runtime composed' }), enErrors.dynamic_detail);
     // legacy no-code row keeps detail verbatim even in en

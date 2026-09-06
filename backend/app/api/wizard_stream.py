@@ -75,7 +75,11 @@ async def world_building_generator(
         user_id = data.get("user_id")  # 从中间件注入
         
         if not title or not description or not theme or not genre:
-            yield await tracker.error("title、description、theme 和 genre 是必需的参数", 400)
+            yield await tracker.error(
+                "title、description、theme 和 genre 是必需的参数", 400,
+                error_code="validation.wizard_fields_missing",
+                params={"fields": "title、description、theme 和 genre"},
+            )
             return
         
         # 获取基础提示词（支持自定义）
@@ -344,7 +348,11 @@ async def career_system_generator(
         user_id = data.get("user_id")
         
         if not project_id:
-            yield await tracker.error("project_id 是必需的参数", 400)
+            yield await tracker.error(
+                "project_id 是必需的参数", 400,
+                error_code="validation.wizard_fields_missing",
+                params={"fields": "project_id"},
+            )
             return
         
         # 获取项目信息
@@ -541,7 +549,7 @@ async def career_system_generator(
                         yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                         continue
                     else:
-                        yield await tracker.error("职业体系解析失败（已达最大重试次数）", error_code="internal.career_retry_exhausted")
+                        yield await tracker.error("职业体系解析失败（已达最大重试次数）", error_code="internal.career_parse_exhausted")
                         return
                 except Exception as e:
                     logger.error(f"❌ 职业体系保存失败（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）: {e}")
@@ -550,7 +558,7 @@ async def career_system_generator(
                         yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "保存失败", code="progress.retry_save_failed")
                         continue
                     else:
-                        yield await tracker.error("职业体系保存失败（已达最大重试次数）", error_code="internal.career_retry_exhausted")
+                        yield await tracker.error("职业体系保存失败（已达最大重试次数）", error_code="internal.career_save_exhausted")
                         return
             
             except Exception as e:

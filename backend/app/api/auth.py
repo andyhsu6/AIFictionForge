@@ -422,7 +422,7 @@ async def get_auth_config():
 async def local_login(request: LocalLoginRequest, response: Response):
     """本地账户登录（支持.env配置的管理员账号和Linux DO授权后绑定的账号）"""
     if not settings.LOCAL_AUTH_ENABLED:
-        raise ApiError(code="auth.login_method_disabled")
+        raise ApiError(code="auth.local_login_disabled")
 
     logger.info(f"[本地登录] 尝试登录用户名: {request.username}")
 
@@ -491,7 +491,7 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
     """发送邮箱验证码（注册 / 登录 / 重置密码）"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise ApiError(code="auth.login_method_disabled", detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     scene = _validate_verification_scene(request.scene)
@@ -499,7 +499,7 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
 
     if scene == "register":
         if not runtime["email_register_enabled"]:
-            raise ApiError(code="auth.login_method_disabled", detail="邮箱注册未启用")
+            raise ApiError(code="auth.email_register_disabled")
         if existing_user:
             raise ApiError(code="auth.email_already_registered")
     else:
@@ -565,9 +565,9 @@ async def email_register(request: EmailRegisterRequest, response: Response):
     """邮箱验证码注册并自动登录"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise ApiError(code="auth.login_method_disabled", detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
     if not runtime["email_register_enabled"]:
-        raise ApiError(code="auth.login_method_disabled", detail="邮箱注册未启用")
+        raise ApiError(code="auth.email_register_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
@@ -578,19 +578,19 @@ async def email_register(request: EmailRegisterRequest, response: Response):
 
     cached = _email_verification_storage.get(_get_verification_storage_key("register", email))
     if not cached:
-        raise ApiError(code="auth.verification_code_required")
+        raise ApiError(code="auth.verification_code_required", params={"scene": "register"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(_get_verification_storage_key("register", email), None)
-        raise ApiError(code="auth.verification_code_expired")
+        raise ApiError(code="auth.verification_code_expired", params={"scene": "register"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(_get_verification_storage_key("register", email), None)
             raise ApiError(code="rate_limit.verification_code_attempts")
-        raise ApiError(code="auth.verification_code_wrong")
+        raise ApiError(code="auth.verification_code_wrong", params={"scene": "register"})
 
     existing_user = await _find_user_by_email(email)
     if existing_user:
@@ -616,7 +616,7 @@ async def email_login(request: EmailLoginRequest, response: Response):
     """邮箱验证码登录"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise ApiError(code="auth.login_method_disabled", detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
@@ -630,19 +630,19 @@ async def email_login(request: EmailLoginRequest, response: Response):
     storage_key = _get_verification_storage_key("login", email)
     cached = _email_verification_storage.get(storage_key)
     if not cached:
-        raise ApiError(code="auth.verification_code_required", detail="请先发送登录验证码")
+        raise ApiError(code="auth.verification_code_required", detail="请先发送登录验证码", params={"scene": "login"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(storage_key, None)
-        raise ApiError(code="auth.verification_code_expired", detail="登录验证码已过期，请重新发送")
+        raise ApiError(code="auth.verification_code_expired", detail="登录验证码已过期，请重新发送", params={"scene": "login"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(storage_key, None)
             raise ApiError(code="rate_limit.verification_code_attempts")
-        raise ApiError(code="auth.verification_code_wrong", detail="登录验证码错误")
+        raise ApiError(code="auth.verification_code_wrong", detail="登录验证码错误", params={"scene": "login"})
 
     _email_verification_storage.pop(storage_key, None)
     await _touch_user_last_login(user.user_id)
@@ -665,7 +665,7 @@ async def email_reset_password(request: EmailResetPasswordRequest):
     """通过邮箱验证码重置密码"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise ApiError(code="auth.login_method_disabled", detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
@@ -681,19 +681,19 @@ async def email_reset_password(request: EmailResetPasswordRequest):
     storage_key = _get_verification_storage_key("reset_password", email)
     cached = _email_verification_storage.get(storage_key)
     if not cached:
-        raise ApiError(code="auth.verification_code_required", detail="请先发送重置密码验证码")
+        raise ApiError(code="auth.verification_code_required", detail="请先发送重置密码验证码", params={"scene": "reset"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(storage_key, None)
-        raise ApiError(code="auth.verification_code_expired", detail="重置密码验证码已过期，请重新发送")
+        raise ApiError(code="auth.verification_code_expired", detail="重置密码验证码已过期，请重新发送", params={"scene": "reset"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(storage_key, None)
             raise ApiError(code="rate_limit.verification_code_attempts")
-        raise ApiError(code="auth.verification_code_wrong", detail="重置密码验证码错误")
+        raise ApiError(code="auth.verification_code_wrong", detail="重置密码验证码错误", params={"scene": "reset"})
 
     await password_manager.set_password(user.user_id, email, request.new_password)
     _email_verification_storage.pop(storage_key, None)
@@ -741,13 +741,13 @@ async def _handle_callback(
 
     token_data = await oauth_service.get_access_token(code)
     if not token_data or "access_token" not in token_data:
-        raise ApiError(code="auth.oauth_upstream_failed")
+        raise ApiError(code="auth.oauth_upstream_failed", detail="获取访问令牌失败", params={"stage": "token"})
 
     access_token = token_data["access_token"]
 
     user_info = await oauth_service.get_user_info(access_token)
     if not user_info:
-        raise ApiError(code="auth.oauth_upstream_failed", detail="获取用户信息失败")
+        raise ApiError(code="auth.oauth_upstream_failed", detail="获取用户信息失败", params={"stage": "userinfo"})
 
     linuxdo_id = str(user_info.get("id"))
     username = user_info.get("username", "")

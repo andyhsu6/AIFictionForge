@@ -71,7 +71,13 @@ class TaskProgressTracker:
         )
 
     async def generating(self, current_chars: int = 0, estimated_total: int = 5000,
-                         message: str = None, retry_count: int = 0, max_retries: int = 3):
+                         message: str = None, retry_count: int = 0, max_retries: int = 3,
+                         code: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
+        """生成阶段进度。
+
+        i18n todo15：code 设置时同一行写入 status_code/status_params（结构化列，
+        与 complete/warning 同一模式、opt-in），status_message 组装保持字节不变。
+        """
         sub_progress = min(current_chars / max(estimated_total, 1), 1.0)
         progress = 20 + int(65 * sub_progress)
         if progress < self._last_generating_progress:
@@ -82,10 +88,14 @@ class TaskProgressTracker:
 
         retry_suffix = f" (重试 {retry_count}/{max_retries})" if retry_count > 0 else ""
         msg = message or f"生成{self.task_name}中... ({current_chars}字符){retry_suffix}"
-        await self._update_task(
+        update_kwargs: Dict[str, Any] = dict(
             progress=progress, status_message=msg,
             progress_details={"stage": "generating", "message": msg, "current_chars": current_chars}
         )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
     async def parsing(self, message: str = None):
         self.current_progress = 88
