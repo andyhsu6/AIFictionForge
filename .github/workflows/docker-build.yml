@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:  # Allow manual triggering
 
 env:
   DOCKER_IMAGE: mumujie/mumuainovel
@@ -42,15 +42,15 @@ jobs:
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
-            # 对于main/master分支，打latest标签
+            # Tag latest for main/master branches
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            # 对于tag，使用版本号
+            # Use version number for tags
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # 使用分支名
+            # Use branch name
             type=ref,event=branch
-            # 使用commit SHA
+            # Use commit SHA
             type=sha,prefix=sha-
 
       - name: Build and push Docker image
