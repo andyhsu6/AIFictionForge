@@ -215,8 +215,9 @@ export default function Relationships() {
       setEditingType(null);
       typeForm.resetFields();
       loadData();
-    } catch (error: any) {
-      message.error(error?.response?.data?.detail || t('toast.saveTypeFailed'));
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+      message.error(detail || t('toast.saveTypeFailed'));
       console.error(error);
     }
   };
@@ -234,8 +235,9 @@ export default function Relationships() {
           await axios.delete(`/api/relationships/types/${type.id}`);
           message.success(t('toast.typeDeleteSuccess'));
           loadData();
-        } catch (error: any) {
-          message.error(error?.response?.data?.detail || t('toast.deleteFailed'));
+        } catch (error) {
+          const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+          message.error(detail || t('toast.deleteFailed'));
           console.error(error);
         }
       }

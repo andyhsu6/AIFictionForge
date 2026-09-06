@@ -131,5 +131,7 @@ test.json
 backend/app/**/test_*.py
 backend/app/**/*_test.py
 
-# AI-generated working docs (kept locally, not shipped)
-docs/
+# AI-generated working docs (kept locally, not shipped); the public i18n
+# contributor guide is the one tracked exception.
+docs/*
+!docs/i18n.md

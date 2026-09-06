@@ -63,3 +63,10 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **拆分方案优先保全信息**：拆分的目的是保留全部信息；截断/摘要意味着信息损失，属于最后手段。
 - **超大内容（书/长文档）**：按"模型窗口 + 内容总量"综合判断注入/处理策略（全量 → 尾部加权 → 拆分多次传输），单章过长同样适用拆分，不做单章硬截断。
 - 实现前先评估拆分的负面影响（轮次增加带来的成本/延迟/上下文一致性），评估结果记录在对应 issue。
+
+## i18n 约定
+- **新增 UI 文案必须进 locale 文件**：`frontend/src/locales/{zh,en}/<ns>.json`（zh 是源语言，en 必须同步；空值会挂在 CI parity 门）。
+- **后端用户可见文案用错误码**：`raise ApiError(code=...)`，注册表在 `backend/app/core/errors.py`；未知码前端回退本地化通用文案，原文只进调试通道（`raw`）。
+- **AI 生成语言**由 `content_language` 设置链控制：per-generation 覆盖 > 用户设置 > UI 语言 > zh（解析器 `backend/app/services/language_resolver.py`）。
+- **CI 门**：`.github/workflows/i18n-check.yml` 跑 extract / types / parity / `npm test` 四道检查，locale 与类型产物必须保持零 diff。
+- 贡献者指南见 `CONTRIBUTING.md`，i18n 架构详情见 `docs/i18n.md`。

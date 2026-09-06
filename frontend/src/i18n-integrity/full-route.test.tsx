@@ -20,8 +20,6 @@
  * global fetch (backgroundTaskService polling) is stubbed. No real timers are
  * used beyond short waitFor timeouts.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import App from '../App';
@@ -183,7 +181,7 @@ function scanCjk(route: string) {
     if (!CJK.test(text)) continue;
     const el = node.parentElement;
     const matched = CJK_ALLOWLIST.find((entry) => {
-      if (entry.routes !== ['*'] && !entry.routes.includes(route)) return false;
+      if (!entry.routes.includes('*') && !entry.routes.includes(route)) return false;
       return el?.closest(entry.selector) !== null;
     });
     if (!matched) {
