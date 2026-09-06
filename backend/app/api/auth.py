@@ -4,8 +4,9 @@
 from fastapi import APIRouter, HTTPException, Response, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Dict, Optional
 import hashlib
+import json
 import secrets
 import re
 from datetime import datetime, timedelta, timezone
@@ -184,6 +185,31 @@ async def _find_user_by_email(email: str) -> Optional[UserDTO]:
         return UserDTO(**user.to_dict())
 
 
+async def _resolve_recipient_language(user: Optional[UserDTO]) -> str:
+    """按收件人 Settings.preferences.language 解析邮件语言（i18n todo13 part 4）。
+
+    - user 为空（register 场景发送时收件人尚未注册，无偏好可读）→ 默认 zh
+    - 无 Settings 行 / preferences 缺失或非法 JSON / language != 'en' → 默认 zh
+    仅 'en' 切换英文；其余一切情况保持 zh，与历史行为 byte-identity。
+    """
+    if not user:
+        return "zh"
+    async with await _get_global_session() as session:
+        result = await session.execute(
+            select(SettingsModel).where(SettingsModel.user_id == user.user_id)
+        )
+        settings_row = result.scalar_one_or_none()
+    if not settings_row:
+        return "zh"
+    try:
+        prefs = json.loads(settings_row.preferences or "{}")
+    except (TypeError, ValueError):
+        return "zh"
+    if not isinstance(prefs, dict):
+        return "zh"
+    return "en" if prefs.get("language") == "en" else "zh"
+
+
 async def _create_email_user(email: str, display_name: Optional[str]) -> UserDTO:
     """创建邮箱注册用户"""
     normalized_email = email.strip().lower()
@@ -285,31 +311,47 @@ def _generate_verification_code() -> str:
     return f"{secrets.randbelow(1000000):06d}"
 
 
-def _build_verification_mail_content(scene: str, code: str, ttl_minutes: int) -> tuple[str, str, str]:
-    scene_title_map = {
-        "register": "邮箱注册验证码",
-        "login": "邮箱登录验证码",
-        "reset_password": "重置密码验证码",
-    }
-    scene_desc_map = {
-        "register": "欢迎注册 AIFictionForge。",
-        "login": "你正在使用邮箱验证码登录 AIFictionForge。",
-        "reset_password": "你正在重置 AIFictionForge 账号密码。",
-    }
+# ---------------------------------------------------------------------------
+# 邮箱双语模板（i18n todo13 part 4 / issue #27）
+#
+# 结构：场景 -> locale -> {title, desc}；正文与 HTML 为 per-locale 组装模板。
+# zh 文案逐字保留转换前 f-string 的拼装结果（旧用户 byte-identity）；en 为同结构
+# 同变量（{code} / {ttl_minutes}）的等义翻译。邮件由后端直接渲染发送，不走前端
+# envelope/errorMapper，因此不进 errors.json。
+# 语言选择见 _resolve_recipient_language：仅 preferences.language == 'en' 时用 en，
+# 其余（含缺失/非法）一律 zh，与历史行为保持 byte-identity。
+# ---------------------------------------------------------------------------
+_VERIFICATION_MAIL_SCENE_TEMPLATES: Dict[str, Dict[str, Dict[str, str]]] = {
+    "register": {
+        "zh": {"title": "邮箱注册验证码", "desc": "欢迎注册 AIFictionForge。"},
+        "en": {"title": "Email registration verification code", "desc": "Welcome to AIFictionForge."},
+    },
+    "login": {
+        "zh": {"title": "邮箱登录验证码", "desc": "你正在使用邮箱验证码登录 AIFictionForge。"},
+        "en": {"title": "Email login verification code", "desc": "You are logging in to AIFictionForge with an email verification code."},
+    },
+    "reset_password": {
+        "zh": {"title": "重置密码验证码", "desc": "你正在重置 AIFictionForge 账号密码。"},
+        "en": {"title": "Password reset verification code", "desc": "You are resetting the password of your AIFictionForge account."},
+    },
+}
 
-    scene_title = scene_title_map.get(scene, "邮箱验证码")
-    scene_desc = scene_desc_map.get(scene, "你正在进行邮箱身份验证。")
-    subject = f"AIFictionForge {scene_title}"
-    text_body = (
-        f"{scene_desc}\n\n"
-        f"你的验证码是：{code}\n"
-        f"有效期：{ttl_minutes} 分钟\n\n"
-        f"如果这不是你的操作，请忽略本邮件。"
-    )
-    html_body = f"""
+# 未知场景兜底（形状与场景模板一致）
+_VERIFICATION_MAIL_FALLBACK_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "zh": {"title": "邮箱验证码", "desc": "你正在进行邮箱身份验证。"},
+    "en": {"title": "Email verification code", "desc": "You are verifying your email address."},
+}
+
+_VERIFICATION_MAIL_TEXT_BODY_TEMPLATES: Dict[str, str] = {
+    "zh": "{desc}\n\n你的验证码是：{code}\n有效期：{ttl_minutes} 分钟\n\n如果这不是你的操作，请忽略本邮件。",
+    "en": "{desc}\n\nYour verification code is: {code}\nValid for: {ttl_minutes} minutes\n\nIf this was not your operation, please ignore this email.",
+}
+
+_VERIFICATION_MAIL_HTML_BODY_TEMPLATES: Dict[str, str] = {
+    "zh": """
     <div style="font-family: Arial, PingFang SC, Microsoft YaHei, sans-serif; line-height: 1.8; color: #1f2937;">
-      <h2 style="margin-bottom: 16px;">AIFictionForge {scene_title}</h2>
-      <p>{scene_desc}</p>
+      <h2 style="margin-bottom: 16px;">AIFictionForge {title}</h2>
+      <p>{desc}</p>
       <p>你的验证码为：</p>
       <div style="display: inline-block; padding: 10px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 28px; font-weight: 700; letter-spacing: 4px; color: #2563eb;">
         {code}
@@ -317,7 +359,38 @@ def _build_verification_mail_content(scene: str, code: str, ttl_minutes: int) ->
       <p style="margin-top: 16px;">有效期：{ttl_minutes} 分钟</p>
       <p>如果这不是你的操作，请忽略本邮件。</p>
     </div>
-    """
+    """,
+    "en": """
+    <div style="font-family: Arial, PingFang SC, Microsoft YaHei, sans-serif; line-height: 1.8; color: #1f2937;">
+      <h2 style="margin-bottom: 16px;">AIFictionForge {title}</h2>
+      <p>{desc}</p>
+      <p>Your verification code is:</p>
+      <div style="display: inline-block; padding: 10px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 28px; font-weight: 700; letter-spacing: 4px; color: #2563eb;">
+        {code}
+      </div>
+      <p style="margin-top: 16px;">Valid for: {ttl_minutes} minutes</p>
+      <p>If this was not your operation, please ignore this email.</p>
+    </div>
+    """,
+}
+
+
+def _build_verification_mail_content(
+    scene: str, code: str, ttl_minutes: int, lang: str = "zh"
+) -> tuple[str, str, str]:
+    """组装验证码邮件 (subject, text_body, html_body)，lang 缺省 zh（历史行为）。"""
+    locale = "en" if lang == "en" else "zh"
+    scene_templates = _VERIFICATION_MAIL_SCENE_TEMPLATES.get(scene, _VERIFICATION_MAIL_FALLBACK_TEMPLATES)
+    title = scene_templates[locale]["title"]
+    desc = scene_templates[locale]["desc"]
+
+    subject = f"AIFictionForge {title}"
+    text_body = _VERIFICATION_MAIL_TEXT_BODY_TEMPLATES[locale].format(
+        desc=desc, code=code, ttl_minutes=ttl_minutes
+    )
+    html_body = _VERIFICATION_MAIL_HTML_BODY_TEMPLATES[locale].format(
+        title=title, desc=desc, code=code, ttl_minutes=ttl_minutes
+    )
     return subject, text_body, html_body
 
 
@@ -452,7 +525,8 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
 
     code = _generate_verification_code()
     expires_at = now + timedelta(minutes=ttl_minutes)
-    subject, text_body, html_body = _build_verification_mail_content(scene, code, ttl_minutes)
+    lang = await _resolve_recipient_language(existing_user)
+    subject, text_body, html_body = _build_verification_mail_content(scene, code, ttl_minutes, lang=lang)
     from_email = runtime["smtp_from_email"] or runtime["smtp_username"]
 
     await email_service.send_mail(
