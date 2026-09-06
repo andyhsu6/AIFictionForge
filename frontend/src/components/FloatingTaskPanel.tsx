@@ -377,16 +377,21 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
                         />
                       )}
 
-                      {task.error_message && (
+                      {task.error_message && import.meta.env.DEV && (
+                        // Task 14a: error_message is the raw backend
+                        // diagnostic (interpolated via {{message}});
+                        // DEV-only, same gate as the status_message
+                        // diagnostic above. The localized status message
+                        // already covers the production display.
                         <div
                           style={{
                             fontSize: 12,
                             color: token.colorError,
                             marginBottom: 4,
                           }}
-                          >
-                            {t('errorMessage', { message: task.error_message })}
-                          </div>
+                        >
+                          {t('errorMessage', { message: task.error_message })}
+                        </div>
                       )}
 
                       <div style={{ marginTop: 8 }}>
