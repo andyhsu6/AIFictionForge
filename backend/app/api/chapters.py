@@ -1543,7 +1543,7 @@ async def generate_chapter_content_stream(
                 )
                 current_chapter = chapter_result.scalar_one_or_none()
                 if not current_chapter:
-                    yield await tracker.error("章节不存在", 404)
+                    yield await tracker.error("章节不存在", 404, error_code="not_found.chapter")
                     return
             
                 yield await tracker.loading("加载项目信息...", 0.4)
@@ -1554,7 +1554,7 @@ async def generate_chapter_content_stream(
                 )
                 project = project_result.scalar_one_or_none()
                 if not project:
-                    yield await tracker.error("项目不存在", 404)
+                    yield await tracker.error("项目不存在", 404, error_code="not_found.project")
                     return
                 
                 # 获取项目的大纲模式
@@ -1944,7 +1944,7 @@ async def generate_chapter_content_stream(
                 yield await tracker.saving("章节保存完成", 0.8)
                 
                 # === 完成阶段 ===
-                yield await tracker.complete("创作完成！")
+                yield await tracker.complete("创作完成！", code="progress.done")
                 
                 # 发送结果数据
                 yield await tracker.result({
@@ -2141,7 +2141,7 @@ async def _run_chapter_generation_bg(
     )
     current_chapter = chapter_result.scalar_one_or_none()
     if not current_chapter:
-        await tracker.error("章节不存在")
+        await tracker.error("章节不存在", error_code="not_found.chapter")
         return
 
     await tracker.loading("加载项目信息...", 0.4)
@@ -2151,7 +2151,7 @@ async def _run_chapter_generation_bg(
     )
     project = project_result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -2373,7 +2373,7 @@ async def _run_chapter_generation_bg(
         )
         current_chapter = chapter_result.scalar_one_or_none()
         if not current_chapter:
-            await tracker.error("保存时章节不存在")
+            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
             return
 
         old_word_count = current_chapter.word_count or 0
@@ -2451,7 +2451,10 @@ async def _run_chapter_generation_bg(
         raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
+    await tracker.complete(
+        f"创作和分析完成！共 {new_word_count} 字",
+        code="progress.creation_done_words", params={"word_count": new_word_count},
+    )
 
 
 def _build_analysis_task_status_payload(
@@ -2661,7 +2664,7 @@ async def _run_chapter_generation_bg(
     )
     current_chapter = chapter_result.scalar_one_or_none()
     if not current_chapter:
-        await tracker.error("章节不存在")
+        await tracker.error("章节不存在", error_code="not_found.chapter")
         return
 
     await tracker.loading("加载项目信息...", 0.4)
@@ -2671,7 +2674,7 @@ async def _run_chapter_generation_bg(
     )
     project = project_result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -2914,7 +2917,7 @@ async def _run_chapter_generation_bg(
         )
         current_chapter = chapter_result.scalar_one_or_none()
         if not current_chapter:
-            await tracker.error("保存时章节不存在")
+            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
             return
 
         old_word_count = current_chapter.word_count or 0
@@ -2993,7 +2996,10 @@ async def _run_chapter_generation_bg(
         raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
+    await tracker.complete(
+        f"创作和分析完成！共 {new_word_count} 字",
+        code="progress.creation_done_words", params={"word_count": new_word_count},
+    )
 
 
 def _build_analysis_task_status_payload(
@@ -4807,7 +4813,7 @@ async def regenerate_chapter_stream(
                 yield await tracker.saving("保存完成", 0.9)
                 
                 # === 完成阶段 ===
-                yield await tracker.complete("重新生成完成！")
+                yield await tracker.complete("重新生成完成！", code="progress.done")
                 
                 # 发送结果数据
                 yield await tracker.result({
@@ -5214,7 +5220,7 @@ async def partial_regenerate_stream(
             logger.info(f"✅ 局部重写完成: 原文{original_word_count}字 -> 新文{new_word_count}字")
             
             # 完成
-            yield await tracker.complete("重写完成！")
+            yield await tracker.complete("重写完成！", code="progress.done")
             
             # 发送结果数据
             yield await tracker.result({

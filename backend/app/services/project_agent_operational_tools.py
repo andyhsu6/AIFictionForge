@@ -1306,7 +1306,7 @@ class ProjectAgentOperationalTools:
                     if extra_tasks.tasks:
                         self._detach(extra_tasks)
                     await tracker.set_result(result)
-                    await tracker.complete("生成任务完成")
+                    await tracker.complete("生成任务完成", code="progress.done")
             except Exception as exc:
                 # 取消接口已将任务置为 cancelled；不要再用 failed 覆盖终态。
                 if await tracker.check_cancelled():

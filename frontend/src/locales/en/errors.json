@@ -48,12 +48,23 @@
   },
   "http_error": "Request failed",
   "internal": {
+    "agent_execution_failed": "AI writing assistant failed: {{error}}",
+    "ai_chapter_plan_failed": "AI analysis failed: no chapter plan was generated",
+    "ai_empty_response": "AI service returned an empty response",
+    "ai_json_unparsable": "AI response could not be parsed as JSON: {{error}}",
+    "ai_service_failed": "AI service configuration error: {{error}}",
+    "career_retry_exhausted": "Career system generation failed (AI returned empty responses repeatedly)",
     "error": "Internal server error",
+    "generation_failed": "Generation failed: {{error}}",
     "import_preview_missing": "Preview data does not exist",
+    "outline_continue_failed": "Failed to continue the outline: {{error}}",
+    "outline_expand_failed": "Failed to expand the outline: {{error}}",
+    "outline_generation_failed": "Outline generation failed, please try again",
     "outline_import_failed": "Outline import failed. Please try again later",
     "plot_analysis_failed": "Plot analysis failed",
     "plugin_create_failed": "Plugin registration failed: {{plugin_name}}",
-    "relationship_type_create_failed": "Failed to create the relationship type"
+    "relationship_type_create_failed": "Failed to create the relationship type",
+    "user_id_missing_for_project": "User ID is missing: cannot create the project"
   },
   "network": {
     "error": "Network error, please check your connection"
@@ -76,6 +87,7 @@
     "organization": "Organization not found",
     "organization_member": "Member record not found",
     "outline": "Outline not found",
+    "outline_to_expand": "No outline found to expand",
     "plugin": "Plugin not found",
     "preset": "Preset not found",
     "preset_style": "Preset style '{{preset_id}}' not found",
@@ -91,6 +103,27 @@
     "task": "Task not found",
     "user": "User not found",
     "writing_style": "Writing style not found"
+  },
+  "progress": {
+    "career_done": "New careers generated! ({{total_main}} main, {{total_sub}} sub-careers)",
+    "creation_done_words": "Writing and analysis complete! {{word_count}} characters in total",
+    "done": "Generation complete",
+    "import_done": "Import complete!",
+    "import_retry_all_done": "All steps retried successfully!",
+    "import_retry_partial": "Retry finished, {{still_failed_count}} steps still failed",
+    "import_retry_start": "Retrying failed generation steps...",
+    "import_start": "Starting book data import...",
+    "outline_batch_parse_failed": "Batch {{batch_num}} failed to parse",
+    "outline_continue_done": "Successfully continued {{outline_count}} outlines",
+    "outline_done": "Successfully generated {{outline_count}} outlines",
+    "outline_expand_done": "\"{{outline_title}}\" expanded successfully",
+    "outline_expand_item_failed": "❌ {{outline_title}} expansion failed: {{error}}",
+    "outline_expand_skipped": "\"{{outline_title}}\" was already expanded, skipped",
+    "retry_ai_failed": "AI returned an empty response",
+    "retry_json_parse": "JSON parsing failed",
+    "retry_save_failed": "Failed to save",
+    "skill_in_use": "Using {{template_name}}...",
+    "start": "Starting generation..."
   },
   "rate_limit": {
     "verification_code_attempts": "Too many incorrect verification code attempts, please resend",

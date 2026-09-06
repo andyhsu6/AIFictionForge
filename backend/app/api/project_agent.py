@@ -280,7 +280,11 @@ async def chat_stream(
             yield await SSEResponse.send_done()
         except Exception as exc:
             await service.finalize_interrupted_turn(str(exc), cancelled=False)
-            yield await SSEResponse.send_error(f"灵创创作助手执行失败：{exc}", 500)
+            yield await SSEResponse.send_error(
+                error=f"灵创创作助手执行失败：{exc}",
+                code="internal.agent_execution_failed", params={"error": str(exc)},
+                raw=f"灵创创作助手执行失败：{exc}",
+            )
             yield await SSEResponse.send_done()
 
     return StreamingResponse(

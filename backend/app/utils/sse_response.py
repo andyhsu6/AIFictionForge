@@ -182,27 +182,64 @@ class WizardProgressTracker:
         msg = message or f"保存{self.task_name}到数据库..."
         return await SSEResponse.send_progress(msg, progress, "processing")
     
-    async def complete(self, message: str = None) -> str:
-        """完成阶段"""
+    async def complete(
+        self,
+        message: str = None,
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """完成阶段。
+
+        task i18n todo13：code 设置时走结构化通道（message_code/message_params），
+        旧 message 文案字节不变；缺省时 payload 形状与旧版完全一致。
+        """
         self.current_stage = ProgressStage.COMPLETE
         self.current_progress = 100
         msg = message or f"{self.task_name}生成完成!"
-        return await SSEResponse.send_progress(msg, 100, "success")
-    
-    async def warning(self, message: str) -> str:
-        """发送警告消息（保持当前进度）"""
+        return await SSEResponse.send_progress(
+            msg, 100, "success", code=code, params=params, raw=msg if code else None
+        )
+
+    async def warning(
+        self,
+        message: str,
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """发送警告消息（保持当前进度）。
+
+        code 设置时追加 message_code/message_params（旧 message 文本不变，
+        raw 回填未包装的 message 与 tracker.error 语义一致）。
+        """
         return await SSEResponse.send_progress(
             f"⚠️ {message}",
             self.current_progress,
-            "warning"
+            "warning",
+            code=code,
+            params=params,
+            raw=message if code else None,
         )
-    
-    async def retry(self, retry_count: int, max_retries: int, reason: str = "准备重试") -> str:
-        """发送重试消息"""
+
+    async def retry(
+        self,
+        retry_count: int,
+        max_retries: int,
+        reason: str = "准备重试",
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """发送重试消息。
+
+        code 设置时追加 message_code/message_params（旧 message 文本不变，
+        raw 回填未包装的 reason；动态 reason 调用点不传 code 保持旧形状）。
+        """
         return await SSEResponse.send_progress(
             f"⚠️ {reason}... ({retry_count}/{max_retries})",
             self.current_progress,
-            "warning"
+            "warning",
+            code=code,
+            params=params,
+            raw=reason if code else None,
         )
     
     async def error(
@@ -409,7 +446,7 @@ async def create_sse_generator(
     """
     try:
         if show_progress:
-            yield await SSEResponse.send_progress("开始生成...", 0)
+            yield await SSEResponse.send_progress("开始生成...", 0, code="progress.start", raw="开始生成...")
         
         # 累积内容用于进度计算
         accumulated_content = ""
@@ -427,7 +464,7 @@ async def create_sse_generator(
                 yield await SSEResponse.send_heartbeat()
         
         if show_progress:
-            yield await SSEResponse.send_progress("生成完成", 100, "success")
+            yield await SSEResponse.send_progress("生成完成", 100, "success", code="progress.done", raw="生成完成")
         
         # 发送完成信号
         yield await SSEResponse.send_done()

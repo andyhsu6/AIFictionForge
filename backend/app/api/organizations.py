@@ -6,7 +6,7 @@ from typing import List, Optional, AsyncGenerator
 from pydantic import BaseModel, Field
 import json
 
-from app.core.errors import ApiError, exc_status
+from app.core.errors import ApiError, exc_status, sse_code_for_exception
 from app.database import get_db
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.relationship import Organization, OrganizationMember
@@ -527,11 +527,11 @@ async def generate_organization_stream(
                         
             except Exception as ai_error:
                 logger.error(f"❌ AI服务调用异常：{str(ai_error)}")
-                yield await tracker.error(f"AI服务调用失败：{str(ai_error)}")
+                yield await tracker.error(f"AI服务调用失败：{str(ai_error)}", error_code="internal.ai_service_failed", params={"error": str(ai_error)})
                 return
             
             if not ai_content or not ai_content.strip():
-                yield await tracker.error("AI服务返回空响应")
+                yield await tracker.error("AI服务返回空响应", error_code="internal.ai_empty_response")
                 return
             
             yield await tracker.parsing("解析AI响应...", 0.5)
@@ -544,7 +544,7 @@ async def generate_organization_stream(
             except json.JSONDecodeError as e:
                 logger.error(f"❌ 组织JSON解析失败: {e}")
                 logger.debug(f"   原始响应预览: {safe_preview(ai_content, 200)}")
-                yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}")
+                yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}", error_code="internal.ai_json_unparsable", params={"error": str(e)})
                 return
             
             yield await tracker.saving("创建组织记录...", 0.3)
@@ -603,7 +603,7 @@ async def generate_organization_stream(
             
             logger.info(f"🎉 成功生成组织: {character.name}")
             
-            yield await tracker.complete("组织生成完成！")
+            yield await tracker.complete("组织生成完成！", code="progress.done")
             
             # 发送结果数据
             yield await tracker.result({
@@ -619,9 +619,10 @@ async def generate_organization_stream(
             
         except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, exc_status(he))
+            error_code, error_params = sse_code_for_exception(he)
+            yield await tracker.error(he.detail, exc_status(he), error_code=error_code, params=error_params or None)
         except Exception as e:
             logger.error(f"生成组织失败: {str(e)}")
-            yield await tracker.error(f"生成组织失败: {str(e)}")
+            yield await tracker.error(f"生成组织失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
     
     return create_sse_response(generate())

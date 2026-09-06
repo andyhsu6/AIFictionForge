@@ -163,6 +163,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "task.batch_status_waiting": ("等待中，共 {{total}} 章", 200),
     "task.cancel_invalid": ("无法取消任务（不存在或已完成）", 400),
     "task.cancelled": ("任务已取消", 200),
+    "task.failed": ("任务失败", 500),
     "task.not_completed": ("任务尚未完成，无法获取预览", 400),
     "task.running_mutation_blocked": ("无法删除进行中的任务，请先取消", 400),
     "validation.ai_config_missing": ("请先配置AI设置", 400),
@@ -296,6 +297,24 @@ def code_for_http_exception(exc: HTTPException) -> str:
     """把存量 HTTPException 归类到 registry code；未命中返回 http_error fallback。"""
     detail = exc.detail if isinstance(exc.detail, str) else ""
     return _STATUS_DETAIL_TO_CODE.get((exc.status_code, detail), HTTP_ERROR_FALLBACK_CODE)
+
+
+def sse_code_for_exception(exc: BaseException) -> Tuple[Optional[str], Dict[str, Any]]:
+    """SSE 通道的异常 → 结构化 (error_code, params) 映射（i18n todo13 part 2）。
+
+    - ApiError：自带 code/params，直接透传（raise 站点已在 todo12/13 part 1 码化）。
+    - HTTPException：经 (status, detail) 反查 registry；未注册（http_error 兜底）
+      返回 (None, {})，调用点保持旧 (detail, status) 通道，前端按 legacy 显示。
+    - 其余异常：(None, {})。
+    调用点负责把 error_code=None 时走旧路径；不为站点发明新 code。
+    """
+    if isinstance(exc, ApiError):
+        return exc.code, dict(exc.params or {})
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, str):
+        resolved = code_for_http_exception(exc)
+        if resolved != HTTP_ERROR_FALLBACK_CODE:
+            return resolved, {}
+    return None, {}
 
 
 def exc_status(exc: BaseException) -> int:

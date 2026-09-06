@@ -347,3 +347,150 @@ async def test_wizard_tracker_error_widened_signature():
         (await tracker.error("旧文案", 418)).split("data: ", 1)[1].strip()
     )
     assert legacy == {"type": "error", "error": "旧文案", "code": 418}
+
+
+# ---------------------------------------------------------------------------
+# i18n todo13 part 2：SSE / task 通道调用点结构化码
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_tracker_error_dual_shape_legacy_plus_structured():
+    """tracker.error 结构化模式：旧 (error, code) 字段保留 + error_code/error_params/error_raw 齐备。"""
+    from app.utils.sse_response import WizardProgressTracker
+
+    tracker = WizardProgressTracker("测试")
+
+    structured = json.loads(
+        (
+            await tracker.error(
+                f"生成失败: boom", 500,
+                error_code="internal.generation_failed", params={"error": "boom"},
+            )
+        ).split("data: ", 1)[1].strip()
+    )
+    # 旧字段：error 文案字节不变，code 取 registry 默认 status（T1 语义）
+    assert structured["type"] == "error"
+    assert structured["error"] == "生成失败: boom"
+    assert structured["code"] == 200
+    # 结构化字段
+    assert structured["error_code"] == "internal.generation_failed"
+    assert structured["error_params"] == {"error": "boom"}
+    assert structured["error_raw"] == "生成失败: boom"  # raw 缺省回填 error_message
+
+
+@pytest.mark.anyio
+async def test_tracker_warning_retry_structured_additive():
+    """tracker.warning/retry 扩展签名：旧 message 文本字节不变，追加 message_code/message_params/message_raw。"""
+    from app.utils.sse_response import WizardProgressTracker
+
+    tracker = WizardProgressTracker("测试")
+
+    legacy = json.loads(
+        (await tracker.warning("背景受限")).split("data: ", 1)[1].strip()
+    )
+    assert legacy == {"type": "progress", "message": "⚠️ 背景受限", "progress": 0, "status": "warning"}
+
+    coded = json.loads(
+        (
+            await tracker.warning(
+                "《X》已展开过，已跳过",
+                code="progress.outline_expand_skipped", params={"outline_title": "X"},
+            )
+        ).split("data: ", 1)[1].strip()
+    )
+    assert coded["message"] == "⚠️ 《X》已展开过，已跳过"  # 旧文案不变
+    assert coded["message_code"] == "progress.outline_expand_skipped"
+    assert coded["message_params"] == {"outline_title": "X"}
+    assert coded["message_raw"] == "《X》已展开过，已跳过"
+
+    legacy_retry = json.loads(
+        (await tracker.retry(1, 3, "JSON解析失败")).split("data: ", 1)[1].strip()
+    )
+    assert legacy_retry == {"type": "progress", "message": "⚠️ JSON解析失败... (1/3)", "progress": 0, "status": "warning"}
+
+    coded_retry = json.loads(
+        (
+            await tracker.retry(2, 3, "JSON解析失败", code="progress.retry_json_parse")
+        ).split("data: ", 1)[1].strip()
+    )
+    assert coded_retry["message"] == "⚠️ JSON解析失败... (2/3)"  # 旧文案不变
+    assert coded_retry["message_code"] == "progress.retry_json_parse"
+    assert coded_retry["message_raw"] == "JSON解析失败"
+
+
+@pytest.mark.anyio
+async def test_task_tracker_failure_persists_structured_columns(tmp_path, monkeypatch):
+    """TaskProgressTracker.error：中文 status_message 组装字节不变，
+    同一行写入结构化 status_code/status_params（动态文案 → task.failed，诊断在 error_message）。"""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.models.background_task import BackgroundTask
+    from app.services import background_task_service as bts
+
+    db_file = tmp_path / "task_channel.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    BackgroundTask.__table__.create(sync_engine)
+
+    aengine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+
+    async def fake_get_engine(user_id):
+        return aengine
+
+    monkeypatch.setattr(bts, "get_engine", fake_get_engine)
+
+    maker = async_sessionmaker(aengine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as session:
+        session.add(BackgroundTask(
+            id="tt1", user_id="u", project_id="p", task_type="chapter_generate",
+            status="running",
+        ))
+        await session.commit()
+
+    tracker = bts.TaskProgressTracker("tt1", "u", "章节")
+    await tracker.error("boom 诊断")
+
+    async with maker() as session:
+        row = (
+            await session.execute(select(BackgroundTask).where(BackgroundTask.id == "tt1"))
+        ).scalar_one()
+        assert row.status == "failed"
+        assert row.status_message == "失败: boom 诊断"  # 中文组装字节不变
+        assert row.error_message == "boom 诊断"  # 诊断原文独立成列
+        assert row.status_code == "task.failed"  # 结构化码默认 task.failed
+        assert row.status_params == {}
+
+
+@pytest.mark.anyio
+async def test_cancel_task_writes_structured_code(tmp_path):
+    """cancel_task：status_message '任务已取消' 不变，同一行写入 task.cancelled。"""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.models.background_task import BackgroundTask
+    from app.services.background_task_service import BackgroundTaskService
+
+    db_file = tmp_path / "task_cancel.db"
+    sync_engine = create_engine(f"sqlite:///{db_file}")
+    BackgroundTask.__table__.create(sync_engine)
+
+    aengine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+    maker = async_sessionmaker(aengine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as session:
+        session.add(BackgroundTask(
+            id="tt2", user_id="u", project_id="p", task_type="chapter_generate",
+            status="running",
+        ))
+        await session.commit()
+
+    async with maker() as session:
+        assert await BackgroundTaskService.cancel_task("tt2", "u", session) is True
+
+    async with maker() as session:
+        row = (
+            await session.execute(select(BackgroundTask).where(BackgroundTask.id == "tt2"))
+        ).scalar_one()
+        assert row.status == "cancelled"
+        assert row.status_message == "任务已取消"  # 中文文案字节不变
+        assert row.status_code == "task.cancelled"
+        assert row.status_params == {}

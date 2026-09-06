@@ -48,12 +48,23 @@
   },
   "http_error": "请求处理失败",
   "internal": {
+    "agent_execution_failed": "灵创创作助手执行失败：{{error}}",
+    "ai_chapter_plan_failed": "AI分析失败，未能生成章节规划",
+    "ai_empty_response": "AI服务返回空响应",
+    "ai_json_unparsable": "AI返回的内容无法解析为JSON：{{error}}",
+    "ai_service_failed": "AI 服务配置错误: {{error}}",
+    "career_retry_exhausted": "职业体系生成失败（AI多次返回为空）",
     "error": "服务器内部错误",
+    "generation_failed": "生成失败: {{error}}",
     "import_preview_missing": "预览数据不存在",
+    "outline_continue_failed": "续写失败: {{error}}",
+    "outline_expand_failed": "展开失败: {{error}}",
+    "outline_generation_failed": "大纲生成失败，请重试",
     "outline_import_failed": "大纲导入失败，请稍后重试",
     "plot_analysis_failed": "剧情分析失败",
     "plugin_create_failed": "插件注册失败: {{plugin_name}}",
-    "relationship_type_create_failed": "关系类型创建失败"
+    "relationship_type_create_failed": "关系类型创建失败",
+    "user_id_missing_for_project": "用户ID缺失，无法创建项目"
   },
   "network": {
     "error": "网络错误，请检查网络连接"
@@ -76,6 +87,7 @@
     "organization": "组织不存在",
     "organization_member": "成员记录不存在",
     "outline": "大纲不存在",
+    "outline_to_expand": "没有找到要展开的大纲",
     "plugin": "插件不存在",
     "preset": "预设不存在",
     "preset_style": "预设风格 '{{preset_id}}' 不存在",
@@ -91,6 +103,27 @@
     "task": "任务不存在",
     "user": "用户不存在",
     "writing_style": "写作风格不存在"
+  },
+  "progress": {
+    "career_done": "新职业生成完成！（主职业{{total_main}}个，副职业{{total_sub}}个）",
+    "creation_done_words": "创作和分析完成！共 {{word_count}} 字",
+    "done": "生成完成",
+    "import_done": "导入完成！",
+    "import_retry_all_done": "所有步骤重试成功！",
+    "import_retry_partial": "重试完成，仍有 {{still_failed_count}} 个步骤失败",
+    "import_retry_start": "开始重试失败的生成步骤...",
+    "import_start": "开始导入拆书数据...",
+    "outline_batch_parse_failed": "第{{batch_num}}批解析失败",
+    "outline_continue_done": "成功续写{{outline_count}}章大纲",
+    "outline_done": "成功生成{{outline_count}}章大纲",
+    "outline_expand_done": "《{{outline_title}}》展开完成",
+    "outline_expand_item_failed": "❌ {{outline_title}} 展开失败: {{error}}",
+    "outline_expand_skipped": "《{{outline_title}}》已展开过，已跳过",
+    "retry_ai_failed": "AI返回为空",
+    "retry_json_parse": "JSON解析失败",
+    "retry_save_failed": "保存失败",
+    "skill_in_use": "正在使用 {{template_name}}...",
+    "start": "开始生成..."
   },
   "rate_limit": {
     "verification_code_attempts": "验证码错误次数过多，请重新发送",

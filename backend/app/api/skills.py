@@ -112,7 +112,11 @@ async def skill_chat(
 
     if not skill:
         async def error_gen():
-            yield await SSEResponse.send_error(f"未找到 Skill: {request.skill_key}")
+            yield await SSEResponse.send_error(
+                error=f"未找到 Skill: {request.skill_key}",
+                code="not_found.skill", params={"skill_key": request.skill_key},
+                raw=f"未找到 Skill: {request.skill_key}",
+            )
         return create_sse_response(error_gen())
 
     # 获取系统提示词（Skill 内容）
@@ -138,13 +142,21 @@ async def skill_chat(
     except Exception as e:
         logger.error(f"创建 AI 服务失败: {e}")
         async def error_gen():
-            yield await SSEResponse.send_error(f"AI 服务配置错误: {str(e)}")
+            yield await SSEResponse.send_error(
+                error=f"AI 服务配置错误: {str(e)}",
+                code="internal.ai_service_failed", params={"error": str(e)},
+                raw=f"AI 服务配置错误: {str(e)}",
+            )
         return create_sse_response(error_gen())
 
     # 流式生成
     async def generate():
         try:
-            yield await SSEResponse.send_progress(f"正在使用 {skill['template_name']}...", 10)
+            yield await SSEResponse.send_progress(
+                f"正在使用 {skill['template_name']}...", 10,
+                code="progress.skill_in_use", params={"template_name": skill["template_name"]},
+                raw=f"正在使用 {skill['template_name']}...",
+            )
 
             stream = ai_service.generate_text_stream(
                 prompt=full_prompt,
@@ -158,12 +170,16 @@ async def skill_chat(
                     continue
                 yield await SSEResponse.send_chunk(item)
 
-            yield await SSEResponse.send_progress("回复完成", 100, "success")
+            yield await SSEResponse.send_progress("回复完成", 100, "success", code="progress.done", raw="回复完成")
             yield await SSEResponse.send_done()
 
         except Exception as e:
             logger.error(f"Skill 聊天生成失败: {e}")
-            yield await SSEResponse.send_error(f"生成失败: {str(e)}")
+            yield await SSEResponse.send_error(
+                error=f"生成失败: {str(e)}",
+                code="internal.generation_failed", params={"error": str(e)},
+                raw=f"生成失败: {str(e)}",
+            )
 
     return create_sse_response(generate())
 

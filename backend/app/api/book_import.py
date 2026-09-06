@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ApiError, exc_status
+from app.core.errors import ApiError, exc_status, sse_code_for_exception
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.book_import import (
@@ -179,10 +179,16 @@ async def apply_book_import_stream(
                 "project_id": result.project_id,
                 "statistics": result.statistics,
             }))
-            await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success"))
+            await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success", code="progress.import_done", raw="导入完成！"))
             await progress_queue.put(await SSEResponse.send_done())
         except (HTTPException, ApiError) as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
+            error_code, error_params = sse_code_for_exception(exc)
+            if error_code:
+                await progress_queue.put(await SSEResponse.send_error(
+                    error=exc.detail, code=error_code, params=error_params or None, raw=exc.detail
+                ))
+            else:
+                await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE导入失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -191,7 +197,7 @@ async def apply_book_import_stream(
             await progress_queue.put(None)
 
     async def _streaming_generator() -> AsyncGenerator[str, None]:
-        yield await SSEResponse.send_progress("开始导入拆书数据...", 0, "processing")
+        yield await SSEResponse.send_progress("开始导入拆书数据...", 0, "processing", code="progress.import_start", raw="开始导入拆书数据...")
 
         # 启动后台导入任务
         import_task = asyncio.create_task(_run_import())
@@ -255,13 +261,22 @@ async def retry_failed_steps_stream(
                     f"重试完成，仍有 {len(result['still_failed'])} 个步骤失败",
                     100,
                     "warning",
+                    code="progress.import_retry_partial",
+                    params={"still_failed_count": len(result["still_failed"])},
+                    raw=f"重试完成，仍有 {len(result['still_failed'])} 个步骤失败",
                 ))
             else:
-                await progress_queue.put(await SSEResponse.send_progress("所有步骤重试成功！", 100, "success"))
+                await progress_queue.put(await SSEResponse.send_progress("所有步骤重试成功！", 100, "success", code="progress.import_retry_all_done", raw="所有步骤重试成功！"))
 
             await progress_queue.put(await SSEResponse.send_done())
         except (HTTPException, ApiError) as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
+            error_code, error_params = sse_code_for_exception(exc)
+            if error_code:
+                await progress_queue.put(await SSEResponse.send_error(
+                    error=exc.detail, code=error_code, params=error_params or None, raw=exc.detail
+                ))
+            else:
+                await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE重试失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -269,7 +284,7 @@ async def retry_failed_steps_stream(
             await progress_queue.put(None)
 
     async def _streaming_generator() -> AsyncGenerator[str, None]:
-        yield await SSEResponse.send_progress("开始重试失败的生成步骤...", 0, "processing")
+        yield await SSEResponse.send_progress("开始重试失败的生成步骤...", 0, "processing", code="progress.import_retry_start", raw="开始重试失败的生成步骤...")
 
         retry_task = asyncio.create_task(_run_retry())
 
