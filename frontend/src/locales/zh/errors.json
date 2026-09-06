@@ -189,6 +189,7 @@
     "character_career_duplicate": "该角色已拥有此副职业",
     "character_in_organization": "该角色已在组织中",
     "characters_selected_min_one": "请至少选择一个角色/组织",
+    "characters_selected_min_other": "请至少选择一个角色/组织",
     "config": "配置数据格式错误",
     "cover_config_incomplete": "封面图片配置不完整，请填写 provider、api_key 和 model",
     "cover_provider_unsupported": "当前版本仅支持 Gemini 或 Grok",

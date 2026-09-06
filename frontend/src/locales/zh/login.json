@@ -1,116 +1,116 @@
 {
   "alert": {
-    "loginNotes": "alert.loginNotes",
-    "noAuthMethod": "alert.noAuthMethod",
-    "noAuthMethodDesc": "alert.noAuthMethodDesc",
-    "registerClosed": "alert.registerClosed",
-    "registerClosedDesc": "alert.registerClosedDesc"
+    "loginNotes": "登录说明",
+    "noAuthMethod": "当前未启用可用登录方式",
+    "noAuthMethodDesc": "请联系管理员在系统配置中启用本地登录、邮箱认证或 LinuxDO OAuth 登录。",
+    "registerClosed": "邮箱注册暂未开放",
+    "registerClosedDesc": "当前仅开放邮箱验证码登录与找回密码，如需注册请联系管理员。"
   },
   "email": {
-    "address": "email.address",
-    "addressRequired": "email.addressRequired",
-    "codeLength": "email.codeLength",
-    "codeLogin": "email.codeLogin",
-    "forgotPassword": "email.forgotPassword",
-    "invalidEmail": "email.invalidEmail",
-    "loginCode": "email.loginCode",
-    "loginCodePlaceholder": "email.loginCodePlaceholder",
-    "loginCodeRequired": "email.loginCodeRequired",
-    "passwordMin": "email.passwordMin",
-    "registeredPlaceholder": "email.registeredPlaceholder",
-    "registerEmail": "email.registerEmail",
-    "registerEmailPlaceholder": "email.registerEmailPlaceholder",
-    "registerEmailRequired": "email.registerEmailRequired",
-    "resendIn": "email.resendIn",
-    "sendCode": "email.sendCode"
+    "address": "邮箱地址",
+    "addressRequired": "请输入邮箱地址",
+    "codeLength": "验证码长度为 6 位",
+    "codeLogin": "验证码登录",
+    "forgotPassword": "忘记密码？点击重置",
+    "invalidEmail": "请输入有效的邮箱地址",
+    "loginCode": "登录验证码",
+    "loginCodePlaceholder": "请输入 6 位登录验证码",
+    "loginCodeRequired": "请输入登录验证码",
+    "passwordMin": "密码长度至少为 6 个字符",
+    "registeredPlaceholder": "请输入已注册邮箱",
+    "registerEmail": "注册邮箱",
+    "registerEmailPlaceholder": "请输入注册邮箱",
+    "registerEmailRequired": "请输入注册邮箱",
+    "resendIn": "{{s}}s 后重发",
+    "sendCode": "发送验证码"
   },
   "features": {
     "chapters": {
-      "desc": "features.chapters.desc",
-      "title": "features.chapters.title"
+      "desc": "支持章节生成、编辑、重写与润色，持续提升内容质量。",
+      "title": "章节创作闭环"
     },
     "characters": {
-      "desc": "features.characters.desc",
-      "title": "features.characters.title"
+      "desc": "人物关系、组织架构可视化管理，复杂设定也能清晰掌控。",
+      "title": "角色组织管理"
     },
     "multiModel": {
-      "desc": "features.multiModel.desc",
-      "title": "features.multiModel.title"
+      "desc": "支持 OpenAI、Gemini、Claude 等主流模型，按场景灵活切换。",
+      "title": "多 AI 模型协同"
     },
     "wizard": {
-      "desc": "features.wizard.desc",
-      "title": "features.wizard.title"
+      "desc": "自动生成大纲、角色与世界观，快速搭建完整故事骨架。",
+      "title": "智能向导驱动"
     }
   },
   "hero": {
-    "description": "hero.description",
-    "line1": "hero.line1",
-    "line2": "hero.line2"
+    "description": "从灵感到成稿，围绕「多模型协同、创作流程自动化、角色关系管理、章节精修」构建一体化创作工作台。",
+    "line1": "基于 AI 的",
+    "line2": "智能小说创作助手"
   },
   "linuxdo": {
-    "login": "linuxdo.login"
+    "login": "使用 LinuxDO OAuth 登录"
   },
   "local": {
-    "password": "local.password",
-    "passwordPlaceholder": "local.passwordPlaceholder",
-    "passwordRequired": "local.passwordRequired",
-    "submit": "local.submit",
-    "thirdParty": "local.thirdParty",
-    "username": "local.username",
-    "usernamePlaceholder": "local.usernamePlaceholder",
-    "usernameRequired": "local.usernameRequired"
+    "password": "访问密钥",
+    "passwordPlaceholder": "请输入访问密钥",
+    "passwordRequired": "请输入访问密钥",
+    "submit": "登录系统",
+    "thirdParty": "第三方登录",
+    "username": "管理账号",
+    "usernamePlaceholder": "请输入管理账号/邮箱",
+    "usernameRequired": "请输入管理账号/邮箱"
   },
   "panel": {
-    "subtitle": "panel.subtitle",
-    "welcomeBack": "panel.welcomeBack"
+    "subtitle": "登录 AIFictionForge，继续你的小说创作项目。",
+    "welcomeBack": "欢迎回来"
   },
   "register": {
-    "codePlaceholder": "register.codePlaceholder",
-    "confirmPassword": "register.confirmPassword",
-    "confirmPasswordPlaceholder": "register.confirmPasswordPlaceholder",
-    "confirmPasswordRequired": "register.confirmPasswordRequired",
-    "emailCode": "register.emailCode",
-    "emailCodeRequired": "register.emailCodeRequired",
-    "hint": "register.hint",
-    "nickname": "register.nickname",
-    "nicknameMax": "register.nicknameMax",
-    "nicknamePlaceholder": "register.nicknamePlaceholder",
-    "password": "register.password",
-    "passwordMismatch": "register.passwordMismatch",
-    "passwordPlaceholder": "register.passwordPlaceholder",
-    "passwordRequired": "register.passwordRequired",
-    "submit": "register.submit"
+    "codePlaceholder": "请输入 6 位验证码",
+    "confirmPassword": "确认密码",
+    "confirmPasswordPlaceholder": "请再次输入登录密码",
+    "confirmPasswordRequired": "请再次输入登录密码",
+    "emailCode": "邮箱验证码",
+    "emailCodeRequired": "请输入邮箱验证码",
+    "hint": "验证码将发送到你填写的邮箱，若未收到请检查垃圾箱或稍后重试。注册后可通过邮箱验证码登录，也支持邮箱重置密码。",
+    "nickname": "昵称",
+    "nicknameMax": "昵称长度不能超过 50 个字符",
+    "nicknamePlaceholder": "选填，默认使用邮箱前缀",
+    "password": "登录密码",
+    "passwordMismatch": "两次输入的密码不一致",
+    "passwordPlaceholder": "请输入登录密码",
+    "passwordRequired": "请输入登录密码",
+    "submit": "注册并登录"
   },
   "reset": {
-    "backToCodeLogin": "reset.backToCodeLogin",
-    "codeLabel": "reset.codeLabel",
-    "codePlaceholder": "reset.codePlaceholder",
-    "codeRequired": "reset.codeRequired",
-    "confirmNewPassword": "reset.confirmNewPassword",
-    "confirmNewPasswordPlaceholder": "reset.confirmNewPasswordPlaceholder",
-    "confirmNewPasswordRequired": "reset.confirmNewPasswordRequired",
-    "newPassword": "reset.newPassword",
-    "newPasswordPlaceholder": "reset.newPasswordPlaceholder",
-    "newPasswordRequired": "reset.newPasswordRequired",
-    "passwordMismatch": "reset.passwordMismatch",
-    "submit": "reset.submit",
-    "title": "reset.title"
+    "backToCodeLogin": "返回验证码登录",
+    "codeLabel": "重置验证码",
+    "codePlaceholder": "请输入重置验证码",
+    "codeRequired": "请输入重置验证码",
+    "confirmNewPassword": "确认新密码",
+    "confirmNewPasswordPlaceholder": "请再次输入新密码",
+    "confirmNewPasswordRequired": "请再次输入新密码",
+    "newPassword": "新密码",
+    "newPasswordPlaceholder": "请输入新密码",
+    "newPasswordRequired": "请输入新密码",
+    "passwordMismatch": "两次输入的新密码不一致",
+    "submit": "重置密码",
+    "title": "忘记密码 / 重置密码"
   },
   "tabs": {
-    "emailLogin": "tabs.emailLogin",
-    "emailRegister": "tabs.emailRegister",
-    "local": "tabs.local"
+    "emailLogin": "邮箱登录",
+    "emailRegister": "邮箱注册",
+    "local": "本地登录"
   },
   "tips": {
-    "emailResetPassword": "tips.emailResetPassword",
-    "linuxdoFirstLogin": "tips.linuxdoFirstLogin",
-    "localDefaultAccount": "tips.localDefaultAccount"
+    "emailResetPassword": "邮箱注册用户支持通过邮箱验证码重置密码。",
+    "linuxdoFirstLogin": "首次 LinuxDO 登录会自动创建账号。",
+    "localDefaultAccount": "本地登录默认账号：admin / admin123"
   },
   "toast": {
-    "authUrlFailed": "toast.authUrlFailed",
-    "codeSent": "toast.codeSent",
-    "loginSuccess": "toast.loginSuccess",
-    "registerSuccess": "toast.registerSuccess",
-    "resetSuccess": "toast.resetSuccess"
+    "authUrlFailed": "获取授权地址失败，请稍后重试",
+    "codeSent": "验证码已发送",
+    "loginSuccess": "登录成功！",
+    "registerSuccess": "注册成功，已自动登录",
+    "resetSuccess": "密码重置成功"
   }
 }

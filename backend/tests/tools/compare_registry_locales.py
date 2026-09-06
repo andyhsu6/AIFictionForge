@@ -30,6 +30,10 @@ FRONTEND_ONLY = {
     "validation.failed", "validation.int_parsing", "validation.string_type",
     "validation.missing",
     "security.url_invalid",  # frontend-defined generic for unregistered security codes
+    # _other sibling of the registry code validation.characters_selected_min_one
+    # (the suffix is baked into the CODE name; the sibling exists only to keep
+    # the frontend plural-group ratchet complete — never resolved with count)
+    "validation.characters_selected_min_other",
 } | {
     f"task.{k}" for k in (
         "batchListFailed", "cancelBatchFailed", "cancelFailed", "clearFailed",

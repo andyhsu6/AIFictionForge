@@ -2,7 +2,7 @@
   "add": "Add",
   "allCharactersAdded": "All characters added",
   "cancel": "Cancel",
-  "characterRequired": "",
+  "characterRequired": "Add at least one involved character",
   "charactersLabel": "Involved Characters",
   "charactersTooltip": "Select from the project's existing characters",
   "conflictTypeLabel": "Conflict Type",

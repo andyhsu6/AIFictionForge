@@ -2,8 +2,8 @@
   "aiGenerating": "AI generating...",
   "annotatedText": {
     "multipleAnnotations": "{{count}} annotations here",
-    "multipleAnnotations_one": "annotatedText.multipleAnnotations",
-    "multipleAnnotations_other": "annotatedText.multipleAnnotations"
+    "multipleAnnotations_one": "{{count}} annotation here",
+    "multipleAnnotations_other": "{{count}} annotations here"
   },
   "back": "Back",
   "cancel": "Cancel",
@@ -46,8 +46,8 @@
     "aiRewrite": "AI Rewrite",
     "rewriteTooltip": "AI rewrite selected content: \"{{text}}\"",
     "selectedChars": "{{count}} chars selected",
-    "selectedChars_one": "partialToolbar.selectedChars",
-    "selectedChars_other": "partialToolbar.selectedChars"
+    "selectedChars_one": "{{count}} char selected",
+    "selectedChars_other": "{{count}} chars selected"
   },
   "placeholder": "Placeholder text",
   "preparing": "Preparing to generate...",

@@ -20,42 +20,35 @@
  *      other is a hard error.
  *   3. Values: every leaf value in BOTH locales is a non-empty string.
  *      Empty, whitespace-only, or non-string leaves are hard errors.
+ *      (A value that merely repeats its own key path is NOT detectable here —
+ *      it is a translation-quality bug, covered by src/i18n-integrity tests.)
+ *   4. Plural-group completeness (per locale convention):
+ *        - en (CLDR _one/_other): every base key that has ANY plural-suffixed
+ *          member must have BOTH `_one` and `_other`. A group missing a member
+ *          renders raw key paths for the missing count category.
+ *        - zh (single plural form): all plural-suffixed members of a base key
+ *          must carry the IDENTICAL value — the suffix is meaningless in zh,
+ *          so divergent values indicate en-style plural text leaked into zh.
+ *          (A few registry error-code names bake `_one` into the CODE itself,
+ *          e.g. `validation.characters_selected_min_one`; those single
+ *          suffixed members are plain keys in practice and pass trivially.)
  *
- * Known, already-tracked gaps may be listed in scripts/locale-parity-baseline.json
- * (a ratchet: an entry tolerates exactly one finding; any finding NOT listed
- * fails the check, and any listed entry that no longer matches a real finding
- * also fails the check, so the baseline shrinks as gaps get fixed).
+ * There is no baseline/ratchet file: known gaps must be fixed, not tracked.
+ * (The former locale-parity-baseline.json was deleted when the last 87 empty
+ * en values were filled; an absent baseline previously meant empty tolerance
+ * sets, so deleting the ratchet code changes no behavior on a clean tree.)
  *
  * Prints a summary count and exits 0 on success, 1 on any failure.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 const ZH = 'zh';
 const EN = 'en';
 const PLURAL_SUFFIXES = ['zero', 'one', 'two', 'few', 'many', 'other'];
-const BASELINE_PATH = join(
-  dirname(fileURLToPath(import.meta.url)),
-  'locale-parity-baseline.json'
-);
 
 const localesDir = process.argv[2] || 'src/locales';
 const problems = [];
-
-function loadBaseline() {
-  let raw;
-  try {
-    raw = readFileSync(BASELINE_PATH, 'utf8');
-  } catch {
-    return { missingKeys: new Set(), emptyValues: new Set() };
-  }
-  const parsed = JSON.parse(raw);
-  return {
-    missingKeys: new Set(parsed.missingKeys ?? []),
-    emptyValues: new Set(parsed.emptyValues ?? []),
-  };
-}
 
 /** Recursively flatten a JSON object into a Map of dotted key -> leaf value. */
 function flatten(obj, prefix = '', out = new Map()) {
@@ -80,6 +73,15 @@ function baseKey(key) {
     if (seg.endsWith(`_${suffix}`)) return key.slice(0, -(suffix.length + 1));
   }
   return key;
+}
+
+/** Suffix of the last key segment if it is a plural form, else null. */
+function pluralSuffix(key) {
+  const seg = key.split('.').pop();
+  for (const suffix of PLURAL_SUFFIXES) {
+    if (seg.endsWith(`_${suffix}`)) return suffix;
+  }
+  return null;
 }
 
 function readNamespaces(locale) {
@@ -115,8 +117,41 @@ function checkValues(locale, file, flat) {
   }
 }
 
-const baseline = loadBaseline();
-const usedBaseline = { missingKeys: new Set(), emptyValues: new Set() };
+/**
+ * Plural-group completeness, per locale convention (see header doc).
+ * flat: namespace Map (key -> value); file: namespace file name.
+ */
+function checkPluralGroups(locale, file, flat) {
+  // base -> { suffix -> [values] } for suffixed members only
+  const groups = new Map();
+  for (const [key, value] of flat) {
+    const suffix = pluralSuffix(key);
+    if (!suffix) continue;
+    const base = baseKey(key);
+    if (!groups.has(base)) groups.set(base, new Map());
+    const bySuffix = groups.get(base);
+    if (!bySuffix.has(suffix)) bySuffix.set(suffix, []);
+    bySuffix.get(suffix).push(value);
+  }
+
+  for (const [base, bySuffix] of groups) {
+    if (locale === EN) {
+      // en: any suffixed member implies the complete _one/_other group.
+      for (const required of ['one', 'other']) {
+        if (!bySuffix.has(required)) {
+          problems.push(`pluralGroup:${file}:${base} missing _${required} (en requires _one+_other)`);
+        }
+      }
+    } else if (locale === ZH) {
+      // zh: single plural form — every suffixed member must be identical.
+      const values = [...bySuffix.values()].flat();
+      const distinct = new Set(values);
+      if (distinct.size > 1) {
+        problems.push(`pluralGroup:${file}:${base} has ${distinct.size} divergent zh plural values (zh has a single plural form; suffixes must carry identical text)`);
+      }
+    }
+  }
+}
 
 const zhFiles = readNamespaces(ZH);
 const enFiles = readNamespaces(EN);
@@ -139,6 +174,8 @@ for (const file of commonFiles) {
 
   checkValues(ZH, file, zhFlat);
   checkValues(EN, file, enFlat);
+  checkPluralGroups(ZH, file, zhFlat);
+  checkPluralGroups(EN, file, enFlat);
 
   const zhBase = new Set([...zhFlat.keys()].map(baseKey));
   const enBase = new Set([...enFlat.keys()].map(baseKey));
@@ -150,44 +187,17 @@ for (const file of commonFiles) {
   }
 }
 
-// Ratchet: split findings into baseline-tolerated vs actionable. Unknown
-// categories and stale baseline entries are always actionable.
-const tolerated = [];
-const actionable = [];
-for (const problem of problems) {
-  const category = problem.slice(0, problem.indexOf(':'));
-  const id = problem.slice(problem.indexOf(':') + 1);
-  if (category === 'missingKey' && baseline.missingKeys.has(id)) {
-    usedBaseline.missingKeys.add(id);
-    tolerated.push(problem);
-  } else if (category === 'emptyValue' && baseline.emptyValues.has(id)) {
-    usedBaseline.emptyValues.add(id);
-    tolerated.push(problem);
-  } else {
-    actionable.push(problem);
-  }
-}
-for (const id of baseline.missingKeys) {
-  if (!usedBaseline.missingKeys.has(id)) actionable.push(`stale baseline entry missingKeys:"${id}" (no matching finding; remove it from locale-parity-baseline.json)`);
-}
-for (const id of baseline.emptyValues) {
-  if (!usedBaseline.emptyValues.has(id)) actionable.push(`stale baseline entry emptyValues:"${id}" (no matching finding; remove it from locale-parity-baseline.json)`);
-}
-
 const totalKeysZh = [...zh.values()].reduce((sum, m) => sum + m.size, 0);
 const totalKeysEn = [...en.values()].reduce((sum, m) => sum + m.size, 0);
 
-if (actionable.length > 0) {
-  console.error(`i18n locale parity check FAILED with ${actionable.length} problem(s):\n`);
-  for (const p of actionable) console.error(`  - ${p}`);
-  if (tolerated.length > 0) {
-    console.error(`\n(${tolerated.length} known gap(s) tolerated via scripts/locale-parity-baseline.json — fix and remove those entries.)`);
-  }
+if (problems.length > 0) {
+  console.error(`i18n locale parity check FAILED with ${problems.length} problem(s):\n`);
+  for (const p of problems) console.error(`  - ${p}`);
   console.error(`\nChecked ${commonFiles.length} namespace files (zh: ${totalKeysZh} keys, en: ${totalKeysEn} keys).`);
   process.exit(1);
 }
 
 console.log(
   `i18n locale parity check OK: ${commonFiles.length} namespace files, zh ${totalKeysZh} keys / en ${totalKeysEn} keys, ` +
-  `${tolerated.length} known gap(s) tracked in locale-parity-baseline.json, all other values non-empty strings.`
+  `all values non-empty strings, plural groups complete per locale convention.`
 );

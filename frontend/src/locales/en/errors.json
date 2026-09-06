@@ -189,6 +189,7 @@
     "character_career_duplicate": "This character already has this sub-career",
     "character_in_organization": "This character is already in the organization",
     "characters_selected_min_one": "Select at least one character/organization",
+    "characters_selected_min_other": "Select at least one character/organization",
     "config": "Configuration data format error",
     "cover_config_incomplete": "Cover image configuration is incomplete. Please fill in provider, api_key and model",
     "cover_provider_unsupported": "The current version only supports Gemini or Grok",

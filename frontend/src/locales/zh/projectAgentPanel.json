@@ -1,8 +1,8 @@
 {
-  "approveAll": "approveAll",
+  "approveAll": "一键批准全部修改（{{count}} 项）",
   "approveAll_one": "一键批准全部修改（{{count}} 项）",
   "approveAll_other": "一键批准全部修改（{{count}} 项）",
-  "approvedExecuted": "approvedExecuted",
+  "approvedExecuted": "已批准并执行 {{count}} 项修改",
   "approvedExecuted_one": "已批准并执行 {{count}} 项修改",
   "approvedExecuted_other": "已批准并执行 {{count}} 项修改",
   "assistantName": "灵创创作助手",
@@ -61,7 +61,7 @@
   "placeholder": {
     "ask": "询问或修改当前项目……"
   },
-  "preparingToolCalls": "preparingToolCalls",
+  "preparingToolCalls": "🔧 准备调用 {{count}} 个工具...",
   "preparingToolCalls_one": "🔧 准备调用 {{count}} 个工具...",
   "preparingToolCalls_other": "🔧 准备调用 {{count}} 个工具...",
   "processChangeFailed": "处理修改失败",
@@ -75,7 +75,7 @@
     "running": "执行中",
     "waitingConfirmation": "等待确认"
   },
-  "stepCount": "stepCount",
+  "stepCount": "{{count}} 步",
   "stepCount_one": "{{count}} 步",
   "stepCount_other": "{{count}} 步",
   "stop": "停止",

@@ -18,7 +18,7 @@
     "pacing": "节奏把控",
     "quality": "整体质量",
     "regenerate": "根据建议重新生成",
-    "suggestions": "analysis.suggestions",
+    "suggestions": "AI已分析出 {{count}} 条改进建议，您可以根据这些建议重新生成章节内容。",
     "suggestions_one": "AI已分析出 {{count}} 条改进建议，您可以根据这些建议重新生成章节内容。",
     "suggestions_other": "AI已分析出 {{count}} 条改进建议，您可以根据这些建议重新生成章节内容。",
     "suggestionsTitle": "改进建议",

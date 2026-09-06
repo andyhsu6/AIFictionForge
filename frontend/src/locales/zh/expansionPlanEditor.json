@@ -2,7 +2,7 @@
   "add": "添加",
   "allCharactersAdded": "所有角色已添加",
   "cancel": "取消",
-  "characterRequired": "characterRequired",
+  "characterRequired": "请至少添加一个涉及角色",
   "charactersLabel": "涉及角色",
   "charactersTooltip": "从项目现有角色中选择",
   "conflictTypeLabel": "冲突类型",

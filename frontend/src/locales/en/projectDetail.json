@@ -26,9 +26,9 @@
     "chapters": "Chapters",
     "characters": "Cast",
     "outline": "Outline",
-    "unitChapters": "",
-    "unitCount": "",
-    "unitItems": "",
+    "unitChapters": "chapters",
+    "unitCount": "characters",
+    "unitItems": "items",
     "unitWords": "words",
     "written": "Written"
   },

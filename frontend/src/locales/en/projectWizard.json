@@ -5,7 +5,7 @@
     "bookNameRequired": "Please enter the book title",
     "characterCountPlaceholder": "Number of characters AI will generate",
     "characterCountRequired": "Please enter the character count",
-    "characterCountUnit": "",
+    "characterCountUnit": "characters",
     "descriptionPlaceholder": "Introduce your novel in a paragraph...",
     "descriptionRequired": "Please enter the synopsis",
     "genrePlaceholder": "Select or type genre tags (e.g. Xuanhuan, Urban, Xiuxian)",
