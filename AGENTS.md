@@ -51,6 +51,7 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008
 - **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
+- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`）；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制；浏览器自动化用 playwright(-core) 以 `executablePath` 指向本机 Brave（headless 截图/验收均如此）
 
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
