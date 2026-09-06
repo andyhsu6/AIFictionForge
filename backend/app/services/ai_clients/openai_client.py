@@ -87,6 +87,7 @@ class OpenAIClient(BaseAIClient):
         tools: Optional[list] = None,
         tool_choice: Optional[str] = None,
         stream: bool = False,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         # Command Code Provider API 网关限制单次输出 max_tokens 上限（对齐 models.dev 中
         # DeepSeek V4 Flash 的 limit.output=384000，小于网关硬上限 393216）
@@ -98,6 +99,9 @@ class OpenAIClient(BaseAIClient):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        # API 级 JSON 强制：服务端保证输出合法 JSON，仅当显式传入时生效
+        if response_format:
+            payload["response_format"] = response_format
         # 合并额外请求体参数（如关闭思考: chat_template_kwargs={"enable_thinking": False}）
         if self.extra_body:
             payload.update(self.extra_body)
@@ -174,6 +178,7 @@ class OpenAIClient(BaseAIClient):
         max_tokens: int,
         tools: Optional[list] = None,
         tool_choice: Optional[str] = None,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         流式生成，支持工具调用
@@ -184,7 +189,7 @@ class OpenAIClient(BaseAIClient):
             - tool_calls: list - 工具调用列表（如果有）
             - done: bool - 是否结束
         """
-        payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True)
+        payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True, response_format=response_format)
         
         tool_calls_buffer = {}  # 收集工具调用块
         content_chars = 0

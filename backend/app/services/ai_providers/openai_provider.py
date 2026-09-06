@@ -48,6 +48,7 @@ class OpenAIProvider(BaseAIProvider):
         tools: Optional[List[Dict]] = None,
         tool_choice: Optional[str] = None,
         user_id: Optional[str] = None,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[str, None]:
         messages = []
         if system_prompt:
@@ -68,6 +69,7 @@ class OpenAIProvider(BaseAIProvider):
                 max_tokens=max_tokens,
                 tools=tools,
                 tool_choice=actual_tool_choice,
+                response_format=response_format,
             ):
                 # 检查是否有工具调用
                 if chunk.get("tool_calls"):
@@ -115,6 +117,7 @@ class OpenAIProvider(BaseAIProvider):
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_format=response_format,
         ):
             if isinstance(chunk, dict):
                 if chunk.get("usage"):
