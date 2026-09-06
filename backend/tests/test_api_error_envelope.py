@@ -6,7 +6,8 @@
 - 未注册异常 → 500 internal.error，不外泄异常内部信息
 另验证 SSE send_error 双模式与 BackgroundTask 结构化列。
 """
-from typing import Any, Dict, Optional
+import json
+from typing import Any, Dict, Optional, Tuple
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 from app.core.errors import (
     DYNAMIC_DETAIL_CODE,
     ERROR_REGISTRY,
+    _STATUS_DETAIL_TO_CODE,
     ApiError,
     envelope,
     register_exception_handlers,
@@ -103,6 +105,38 @@ def test_seed_registry_and_dynamic_marker():
     assert ERROR_REGISTRY["not_found.outline"] == ("大纲不存在", 404)
     assert ERROR_REGISTRY["validation.config"] == ("配置数据格式错误", 500)
     assert DYNAMIC_DETAIL_CODE in ERROR_REGISTRY
+
+
+def test_status_detail_reverse_map_has_no_collisions():
+    """registry 完整性：(status, detail) 反查表不得有撞车。
+
+    _STATUS_DETAIL_TO_CODE 由 dict 推导式建表，两个 code 若共用同一
+    (默认 detail, 默认 status)，后注册的会被静默覆盖，导致
+    code_for_http_exception 永远归不到它。todo 11 全量扩充码表时此风险
+    陡增，故加硬约束；失败信息点名撞车的 (status, detail) 与相关 code。
+    """
+    # 除 dynamic_detail（不参与反查）外，每个 code 必须占一个唯一键
+    assert len(_STATUS_DETAIL_TO_CODE) == len(ERROR_REGISTRY) - 1, (
+        "ERROR_REGISTRY 撞车：多个 code 共用同一 (detail, status)，"
+        f"反查表 {len(_STATUS_DETAIL_TO_CODE)} 项 < 期望 {len(ERROR_REGISTRY) - 1} 项。"
+        f" 撞车项：{_collision_report()}"
+    )
+
+
+def _collision_report() -> str:
+    """列出 (status, detail) → [codes] 中 code 数 > 1 的项，供断言失败时定位。"""
+    from collections import defaultdict
+
+    buckets: Dict[Tuple[str, int], list] = defaultdict(list)
+    for code, (detail, status_code) in ERROR_REGISTRY.items():
+        if code == DYNAMIC_DETAIL_CODE:
+            continue
+        buckets[(status_code, detail)].append(code)
+    clashes = {key: codes for key, codes in buckets.items() if len(codes) > 1}
+    return json.dumps(
+        [{"status": s, "detail": d, "codes": c} for (s, d), c in sorted(clashes.items())],
+        ensure_ascii=False,
+    ) if clashes else "无（长度差异另有原因）"
 
 
 def test_envelope_helper():

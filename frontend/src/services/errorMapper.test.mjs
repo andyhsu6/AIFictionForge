@@ -79,6 +79,16 @@ const cases = [
   () => assert.equal(mapSSEError({ error: '章节不存在', error_code: 'not_found.chapter', error_params: {} }), '章节不存在'),
   () => assert.equal(mapSSEError({ error: '旧版中文错误' }), '旧版中文错误'),
   () => assert.equal(mapSSEError({}), '未知错误'),
+  // A1/A2: SSE error_raw is accepted but is display-inert (debug-only), on both
+  // the structured and the legacy path.
+  () => assert.equal(
+    mapSSEError({ error: '章节不存在', error_code: 'not_found.chapter', error_raw: '运行时诊断' }),
+    mapSSEError({ error: '章节不存在', error_code: 'not_found.chapter' })
+  ),
+  () => assert.equal(
+    getErrorDiagnostic({ detail: '章节不存在', code: 'not_found.chapter', raw: '运行时诊断' }),
+    '运行时诊断'
+  ),
   // SSE unregistered error_code → generic, raw error text never leaks
   () => {
     const shown = mapSSEError({ error: '原始中文错误', error_code: 'weird.x' });
@@ -98,11 +108,16 @@ const cases = [
   () => assert.equal(isUnauthenticatedError('auth.unauthorized', null), true),
   () => assert.equal(isUnauthenticatedError('http_error', 401), true),
   () => assert.equal(isUnauthenticatedError(null, null), false),
-  // getErrorDiagnostic: raw ?? detail ?? '' (debug surfaces only)
+  // getErrorDiagnostic: raw || detail || '' (debug surfaces only)
   () => assert.equal(getErrorDiagnostic({ raw: 'raw diag', detail: 'detail text' }), 'raw diag'),
   () => assert.equal(getErrorDiagnostic({ detail: 'detail text' }), 'detail text'),
   () => assert.equal(getErrorDiagnostic({ raw: null, detail: null }), ''),
   () => assert.equal(getErrorDiagnostic({}), ''),
+  // A4: an EMPTY-STRING raw (e.g. a backend `raw: ''`, or a message_raw that
+  // was truthiness-filtered out upstream) must fall through to detail rather
+  // than yield a blank diagnostic — this is why the chain uses `||` not `??`.
+  () => assert.equal(getErrorDiagnostic({ raw: '', detail: 'x' }), 'x'),
+  () => assert.equal(getErrorDiagnostic({ raw: '', detail: '' }), ''),
   // English locale switch
   async () => {
     await i18next.changeLanguage('en');

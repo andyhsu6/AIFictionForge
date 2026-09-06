@@ -6,6 +6,8 @@ export interface SSEMessage {
   message?: string;
   message_code?: string;
   message_params?: Record<string, unknown>;
+  /** Original diagnostic text (backend `raw` channel); debug views only, never displayed. */
+  message_raw?: string | null;
   progress?: number;
   word_count?: number;
   status?: 'processing' | 'success' | 'error' | 'warning';
@@ -15,6 +17,8 @@ export interface SSEMessage {
   code?: number;
   error_code?: string;
   error_params?: Record<string, unknown>;
+  /** Original diagnostic text (backend `raw` channel); debug views only, never displayed. */
+  error_raw?: string | null;
 }
 
 export interface SSEClientOptions {
@@ -174,7 +178,9 @@ export class SSEPostClient {
         });
 
         if (!response.ok) {
-          // Non-2xx SSE POST carries the {detail, code, params} envelope.
+          // Non-2xx SSE POST carries the {detail, code, params, raw?} envelope.
+          // `raw` is the diagnostic channel (task 14a): it never selects display
+          // text, it only rides along in the payload for debug/detail views.
           let body: any = null;
           try {
             body = await response.json();
@@ -186,6 +192,7 @@ export class SSEPostClient {
               detail: typeof body?.detail === 'string' ? body.detail : null,
               code: typeof body?.code === 'string' ? body.code : null,
               params: body?.params && typeof body.params === 'object' ? body.params : null,
+              raw: typeof body?.raw === 'string' ? body.raw : null,
               status: response.status,
             })
           );

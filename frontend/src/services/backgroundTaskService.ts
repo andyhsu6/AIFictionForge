@@ -10,6 +10,12 @@ interface ApiErrorEnvelope {
   detail?: string | null;
   code?: string | null;
   params?: Record<string, unknown> | null;
+  /**
+   * Original diagnostic text (backend task 14a `raw` channel). Debug/detail
+   * views only — it never wins display precedence: mapErrorPayload localizes
+   * from `code` and only falls back to `detail` for code-less legacy payloads.
+   */
+  raw?: string | null;
 }
 
 async function envelopeFromFailedResponse(response: Response): Promise<ApiErrorEnvelope> {
@@ -20,6 +26,7 @@ async function envelopeFromFailedResponse(response: Response): Promise<ApiErrorE
         detail: typeof body.detail === 'string' ? body.detail : null,
         code: typeof body.code === 'string' ? body.code : null,
         params: body.params && typeof body.params === 'object' ? body.params : null,
+        raw: typeof body.raw === 'string' ? body.raw : null,
       };
     }
   } catch {

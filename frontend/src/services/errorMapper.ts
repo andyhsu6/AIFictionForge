@@ -6,7 +6,9 @@
  * - SSE error event: `{ type: 'error', error, code, error_code?, error_params?, error_raw? }`
  * - SSE progress event: `{ type: 'progress', message, message_code?, message_params?, message_raw? }`
  * - Background task rows: `status_message` + `status_code`/`status_params`
- *   (NULL code = legacy raw text, show as-is).
+ *   (+ optional `raw`, which `_background_task_data` does not emit today —
+ *   the row's diagnostic lives in `status_message`).
+ *   NULL code = legacy raw text, show as-is.
  *
  * Display policy (task 14a — supersedes the old "never drop raw text" rule):
  * the raw backend text is preserved in the PAYLOAD (`raw` field / detail /
@@ -118,7 +120,10 @@ export function mapErrorPayload(payload: ErrorPayload): string {
     // (Checked on the RAW code — normalizeErrorCode would nest it under
     // `validation.` since 'http_error' is not a registry group head.)
     if (code === HTTP_ERROR_CODE) {
-      return tErrors(HTTP_ERROR_CODE, {});
+      // `status` is passed for symmetry with the known-code path so a future
+      // `http_error` template can interpolate {{status}}; the current locale
+      // string has no placeholder, so output is unchanged.
+      return tErrors(HTTP_ERROR_CODE, { status });
     }
     const key = normalizeErrorCode(code);
     if (hasErrorsKey(key)) {
@@ -143,26 +148,32 @@ export function mapErrorPayload(payload: ErrorPayload): string {
 /**
  * Original backend diagnostic text (task 14a `raw` channel, falling back to
  * the legacy `detail`): for debug/detail views only — never a display string.
+ * Uses `||` (not `??`) on purpose: an empty-string `raw` from any source must
+ * fall through to `detail` rather than yield an empty diagnostic.
  */
 export function getErrorDiagnostic(payload: ErrorPayload): string {
-  return payload.raw ?? payload.detail ?? '';
+  return payload.raw || payload.detail || '';
 }
 
 /**
  * SSE error-event payload → display string.
  * Prefers structured `{ error_code, error_params }`; legacy `{ error }`
  * shows as-is unless it is a registered code key (e.g. 'unknown').
+ * `error_raw` (task 14a) is accepted and forwarded for diagnostic consumers
+ * (`getErrorDiagnostic`) — it never influences the returned display string.
  */
 export function mapSSEError(payload: {
   error?: string | null;
   error_code?: string | null;
   error_params?: Record<string, unknown> | null;
+  error_raw?: string | null;
 }): string {
   if (payload.error_code) {
     return mapErrorPayload({
       code: payload.error_code,
       params: payload.error_params,
       detail: payload.error,
+      raw: payload.error_raw,
     });
   }
   const raw = payload.error || '';
@@ -174,11 +185,13 @@ export function mapSSEError(payload: {
  * SSE progress-event message: `message_code`/`message_params` → localized
  * template. Task 14a policy: missing code → raw `message` (legacy event);
  * unregistered code → localized generic text (raw message never leaks).
+ * `message_raw` is accepted for diagnostic consumers only.
  */
 export function mapSSEProgressMessage(payload: {
   message?: string | null;
   message_code?: string | null;
   message_params?: Record<string, unknown> | null;
+  message_raw?: string | null;
 }): string {
   const raw = payload.message || '';
   if (!payload.message_code) return raw;
@@ -190,16 +203,19 @@ export function mapSSEProgressMessage(payload: {
  * Background-task status: structured `status_code`/`status_params` when set
  * (known → template, unregistered → generic); NULL code (old rows) → raw
  * `status_message` untouched. Delegates to mapErrorPayload's task-14a policy.
+ * `raw` is accepted for diagnostic consumers only.
  */
 export function mapTaskStatusMessage(task: {
   status_message?: string | null;
   status_code?: string | null;
   status_params?: Record<string, unknown> | null;
+  raw?: string | null;
 }): string {
   return mapErrorPayload({
     code: task.status_code,
     params: task.status_params,
     detail: task.status_message,
+    raw: task.raw,
   });
 }
 
