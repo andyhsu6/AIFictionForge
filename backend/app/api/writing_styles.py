@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from typing import List
 
+from ..core.errors import ApiError
 from ..database import get_db
 from ..models.writing_style import WritingStyle
 from ..models.project import Project
@@ -25,7 +26,7 @@ def get_current_user_id(request: Request) -> str:
     """获取当前登录用户ID"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     return user_id
 
 
@@ -90,7 +91,11 @@ async def create_writing_style(
         preset = result.scalar_one_or_none()
         
         if not preset:
-            raise HTTPException(status_code=400, detail=f"预设风格 '{style_data.preset_id}' 不存在")
+            raise ApiError(
+            code="not_found.preset_style",
+            detail=f"预设风格 '{style_data.preset_id}' 不存在",
+            params={"preset_id": style_data.preset_id},
+        )
         
         # 使用预设内容填充（如果用户未提供）
         if not style_data.name:
@@ -102,10 +107,7 @@ async def create_writing_style(
     
     # 验证必填字段
     if not style_data.name or not style_data.prompt_content:
-        raise HTTPException(
-            status_code=400,
-            detail="name 和 prompt_content 是必填字段"
-        )
+        raise ApiError(code="validation.required_fields")
     
     # 获取当前用户的最大 order_index
     count_result = await db.execute(
@@ -223,7 +225,7 @@ async def get_project_styles(
     )
     project = result.scalar_one_or_none()
     if not project:
-        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+        raise ApiError(code="not_found.project_or_forbidden")
     
     # 获取该项目的默认风格ID
     result = await db.execute(
@@ -285,9 +287,9 @@ async def get_writing_style(
     )
     style = result.scalar_one_or_none()
     if not style:
-        raise HTTPException(status_code=404, detail="写作风格不存在")
+        raise ApiError(code="not_found.writing_style")
     if style.user_id is not None and style.user_id != user_id:
-        raise HTTPException(status_code=404, detail="写作风格不存在")
+        raise ApiError(code="not_found.writing_style")
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）
     result = await db.execute(
@@ -332,15 +334,15 @@ async def update_writing_style(
     )
     style = result.scalar_one_or_none()
     if not style:
-        raise HTTPException(status_code=404, detail="写作风格不存在")
+        raise ApiError(code="not_found.writing_style")
     
     # 检查是否为全局预设风格（不允许修改）
     if style.user_id is None:
-        raise HTTPException(status_code=403, detail="不能修改全局预设风格，只能修改自定义风格")
+        raise ApiError(code="forbidden.preset_style_readonly")
     
     # 验证用户权限（只能修改自己的风格）
     if style.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权修改其他用户的风格")
+        raise ApiError(code="forbidden.other_user_style")
     
     # 更新字段
     update_data = style_data.model_dump(exclude_unset=True)
@@ -399,15 +401,15 @@ async def delete_writing_style(
     )
     style = result.scalar_one_or_none()
     if not style:
-        raise HTTPException(status_code=404, detail="写作风格不存在")
+        raise ApiError(code="not_found.writing_style")
     
     # 检查是否为全局预设风格（不允许删除）
     if style.user_id is None:
-        raise HTTPException(status_code=403, detail="不能删除全局预设风格，只能删除自定义风格")
+        raise ApiError(code="forbidden.preset_style_readonly", detail="不能删除全局预设风格，只能删除自定义风格")
     
     # 验证用户权限（只能删除自己的风格）
     if style.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权删除其他用户的风格")
+        raise ApiError(code="forbidden.other_user_style", detail="无权删除其他用户的风格")
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）
     result = await db.execute(
@@ -415,10 +417,7 @@ async def delete_writing_style(
     )
     default_relation = result.scalars().first()
     if default_relation:
-        raise HTTPException(
-            status_code=400,
-            detail="不能删除默认风格，请先设置其他风格为默认"
-        )
+        raise ApiError(code="validation.style_default_delete_blocked")
     
     await db.delete(style)
     await db.commit()
@@ -457,7 +456,7 @@ async def set_default_style(
     )
     project = result.scalar_one_or_none()
     if not project:
-        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+        raise ApiError(code="not_found.project_or_forbidden")
     
     # 验证风格是否存在
     result = await db.execute(
@@ -465,11 +464,11 @@ async def set_default_style(
     )
     style = result.scalar_one_or_none()
     if not style:
-        raise HTTPException(status_code=404, detail="写作风格不存在")
+        raise ApiError(code="not_found.writing_style")
     
     # 验证风格是否属于该用户（自定义风格）或是全局预设风格
     if style.user_id is not None and style.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权操作其他用户的风格")
+        raise ApiError(code="forbidden.other_user_style", detail="无权操作其他用户的风格")
     
     # 使用 UPSERT 逻辑：先删除该项目的旧默认风格记录，再插入新的
     await db.execute(

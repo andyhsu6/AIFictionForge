@@ -19,6 +19,7 @@ from app.api.common import verify_project_access
 from app.config import settings as app_settings
 from app.database import get_engine
 from app.logger import get_logger
+from app.core.errors import ApiError
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.career import Career, CharacterCareer
@@ -285,9 +286,9 @@ class BookImportService:
     async def get_preview(self, *, task_id: str, user_id: str) -> BookImportPreviewResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         if task.status != "completed":
-            raise HTTPException(status_code=400, detail="任务尚未完成，无法获取预览")
+            raise ApiError(code="task.not_completed")
         if not task.preview:
-            raise HTTPException(status_code=500, detail="预览数据不存在")
+            raise ApiError(code="internal.import_preview_missing")
         return task.preview
 
     async def cancel_task(self, *, task_id: str, user_id: str) -> dict:
@@ -309,7 +310,7 @@ class BookImportService:
     ) -> BookImportApplyResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         if task.status != "completed":
-            raise HTTPException(status_code=400, detail="任务未完成，无法导入")
+            raise ApiError(code="task.not_completed", detail="任务未完成，无法导入")
 
         statistics = {
             "chapters": 0,
@@ -411,7 +412,7 @@ class BookImportService:
         """
         task = await self._get_task(task_id=task_id, user_id=user_id)
         if task.status != "completed":
-            raise HTTPException(status_code=400, detail="任务未完成，无法导入")
+            raise ApiError(code="task.not_completed", detail="任务未完成，无法导入")
 
         statistics: Dict[str, int] = {
             "chapters": 0,
@@ -642,15 +643,16 @@ class BookImportService:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         project_id = task.imported_project_id
         if not project_id:
-            raise HTTPException(status_code=400, detail="该任务尚未完成导入，无法重试")
+            raise ApiError(code="task.not_completed", detail="该任务尚未完成导入，无法重试")
 
         # 验证 steps_to_retry 都是合法的失败步骤
         failed_step_names = {f.step_name for f in task.failed_steps}
         invalid_steps = [s for s in steps_to_retry if s not in failed_step_names]
         if invalid_steps:
-            raise HTTPException(
-                status_code=400,
+            raise ApiError(
+                code="validation.import_retry_steps_invalid",
                 detail=f"以下步骤不在失败列表中，无法重试: {', '.join(invalid_steps)}",
+                params={"steps": ", ".join(invalid_steps)},
             )
 
         async def _notify(message: str, progress: int, status: str = "processing") -> None:
@@ -839,7 +841,7 @@ class BookImportService:
                     for f in still_failed
                 ],
             }
-        except HTTPException:
+        except (HTTPException, ApiError):
             await db.rollback()
             raise
         except Exception as exc:
@@ -936,7 +938,7 @@ class BookImportService:
             return project
 
         if not task.project_id:
-            raise HTTPException(status_code=400, detail="缺少目标项目ID")
+            raise ApiError(code="validation.import_target_project_missing")
 
         project = await verify_project_access(task.project_id, user_id, db)
 
@@ -2016,7 +2018,7 @@ class BookImportService:
         enable_mcp = any(plugin.enabled for plugin in mcp_plugins) if mcp_plugins else False
 
         if not user_settings.api_key:
-            raise HTTPException(status_code=400, detail="未配置AI Key，无法执行拆书反向生成")
+            raise ApiError(code="validation.ai_config_missing", detail="未配置AI Key，无法执行拆书反向生成")
 
         return create_user_ai_service_with_mcp(
             api_provider=user_settings.api_provider,
@@ -2958,9 +2960,9 @@ class BookImportService:
             task = self._tasks.get(task_id)
 
         if not task:
-            raise HTTPException(status_code=404, detail="任务不存在")
+            raise ApiError(code="not_found.task")
         if task.user_id != user_id:
-            raise HTTPException(status_code=403, detail="无权访问该任务")
+            raise ApiError(code="forbidden.task_access")
         return task
 
     def _to_status(self, task: _BookImportTask) -> BookImportTaskStatusResponse:

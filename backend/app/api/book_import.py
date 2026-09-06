@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.book_import import (
@@ -40,28 +41,28 @@ async def create_book_import_task(
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     if not file.filename or not file.filename.lower().endswith(".txt"):
-        raise HTTPException(status_code=400, detail="仅支持 .txt 文件")
+        raise ApiError(code="validation.txt_only")
 
     if import_mode not in {"append", "overwrite"}:
-        raise HTTPException(status_code=400, detail="import_mode 仅支持 append 或 overwrite")
+        raise ApiError(code="validation.book_import_mode")
 
     if extract_mode not in {"tail", "full"}:
-        raise HTTPException(status_code=400, detail="extract_mode 仅支持 tail 或 full")
+        raise ApiError(code="validation.book_import_extract_mode")
     if tail_chapter_count < 5:
-        raise HTTPException(status_code=400, detail="tail_chapter_count 不能小于 5")
+        raise ApiError(code="validation.tail_chapter_count")
     if tail_chapter_count % 5 != 0:
-        raise HTTPException(status_code=400, detail="tail_chapter_count 必须是 5 的倍数")
+        raise ApiError(code="validation.tail_chapter_count", detail="tail_chapter_count 必须是 5 的倍数")
 
     if tail_chapter_count > 50:
         extract_mode = "full"
 
     if project_id:
-        raise HTTPException(status_code=400, detail="当前仅支持新建项目导入，不支持指定 project_id")
+        raise ApiError(code="validation.book_import_new_project")
     if not create_new_project:
-        raise HTTPException(status_code=400, detail="当前仅支持新建项目导入")
+        raise ApiError(code="validation.book_import_new_project", detail="当前仅支持新建项目导入")
 
     create_payload = BookImportTaskCreateRequest(
         extract_mode=extract_mode,
@@ -70,7 +71,7 @@ async def create_book_import_task(
 
     content = await file.read()
     if len(content) > MAX_TXT_SIZE:
-        raise HTTPException(status_code=413, detail="文件大小超过 50MB 限制")
+        raise ApiError(code="validation.file_too_large", detail="文件大小超过 50MB 限制")
 
     task = await book_import_service.create_task(
         user_id=user_id,
@@ -89,7 +90,7 @@ async def create_book_import_task(
 async def get_book_import_task_status(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.get_task_status(task_id=task_id, user_id=user_id)
 
@@ -98,7 +99,7 @@ async def get_book_import_task_status(task_id: str, request: Request):
 async def get_book_import_preview(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.get_preview(task_id=task_id, user_id=user_id)
 
@@ -112,7 +113,7 @@ async def apply_book_import(
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.apply_import(
         task_id=task_id,
@@ -126,7 +127,7 @@ async def apply_book_import(
 async def cancel_book_import_task(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.cancel_task(task_id=task_id, user_id=user_id)
 
@@ -144,7 +145,7 @@ async def apply_book_import_stream(
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 使用 asyncio.Queue 实现实时进度推送
     progress_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -180,8 +181,8 @@ async def apply_book_import_stream(
             }))
             await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success"))
             await progress_queue.put(await SSEResponse.send_done())
-        except HTTPException as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc.status_code))
+        except (HTTPException, ApiError) as exc:
+            await progress_queue.put(await SSEResponse.send_error(exc.detail, getattr(exc, "status_code", None) or exc.status))
         except Exception as exc:
             logger.error(f"拆书SSE导入失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -222,7 +223,7 @@ async def retry_failed_steps_stream(
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     progress_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -259,8 +260,8 @@ async def retry_failed_steps_stream(
                 await progress_queue.put(await SSEResponse.send_progress("所有步骤重试成功！", 100, "success"))
 
             await progress_queue.put(await SSEResponse.send_done())
-        except HTTPException as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc.status_code))
+        except (HTTPException, ApiError) as exc:
+            await progress_queue.put(await SSEResponse.send_error(exc.detail, getattr(exc, "status_code", None) or exc.status))
         except Exception as exc:
             logger.error(f"拆书SSE重试失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))

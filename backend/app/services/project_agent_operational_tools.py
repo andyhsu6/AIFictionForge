@@ -11,6 +11,7 @@ from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
@@ -1036,7 +1037,7 @@ class ProjectAgentOperationalTools:
                 db=self.db, user_id=self.project.user_id, project_id=self.project.id,
                 overwrite=arguments.get("overwrite", True),
             )
-        except HTTPException as exc:
+        except (HTTPException, ApiError) as exc:
             raise ValueError(str(exc.detail)) from exc
         return self.project.id, result, result.get("message", "封面生成成功")
 

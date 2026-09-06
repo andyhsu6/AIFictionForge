@@ -9,7 +9,7 @@ from datetime import datetime
 import sys
 
 from app.config import settings as config_settings
-from app.core.errors import envelope, register_exception_handlers
+from app.core.errors import ApiError, envelope, register_exception_handlers
 from app.database import close_db, _session_stats
 from app.logger import setup_logging, get_logger
 from app.middleware import RequestIDMiddleware
@@ -157,7 +157,7 @@ async def db_session_stats(request: Request):
     - last_check: 最后检查时间
     """
     if not getattr(request.state, "is_admin", False):
-        raise HTTPException(status_code=403, detail="需要管理员权限")
+        raise ApiError(code="auth.admin_required")
     return {
         "status": "ok",
         "session_stats": _session_stats,

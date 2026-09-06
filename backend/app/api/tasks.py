@@ -5,6 +5,7 @@ from sqlalchemy import case, select, update
 from typing import Optional
 from datetime import datetime
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
@@ -150,7 +151,7 @@ async def get_task_status(
     """获取后台任务的状态和进度"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     task = await background_task_service.get_task(task_id, user_id, db)
     if task:
@@ -172,7 +173,7 @@ async def get_task_status(
             chapter.chapter_number if chapter else None,
             chapter.title if chapter else None,
         )
-    raise HTTPException(status_code=404, detail="任务不存在")
+    raise ApiError(code="not_found.task")
 
 
 @router.get("", summary="获取任务列表")
@@ -186,7 +187,7 @@ async def get_tasks(
     """获取项目后台任务列表，统一合并普通、批量生成和章节分析任务。"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 查询 BackgroundTask
     bg_tasks = await background_task_service.get_project_tasks(
@@ -260,7 +261,7 @@ async def cancel_task(
     """请求取消后台任务"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     success = await background_task_service.cancel_task(task_id, user_id, db)
     if success:
@@ -279,7 +280,7 @@ async def cancel_task(
         await db.commit()
         return {"message": "任务已取消", "task_id": task_id}
 
-    raise HTTPException(status_code=400, detail="无法取消任务（不存在或已完成）")
+    raise ApiError(code="task.cancel_invalid")
 
 
 @router.delete("/{task_id}", summary="删除任务记录")
@@ -291,13 +292,13 @@ async def delete_task(
     """删除或归档已完成/失败的任务记录。分析任务采用归档，保留章节分析状态。"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 先尝试从 BackgroundTask 查找
     task = await background_task_service.get_task(task_id, user_id, db)
     if task:
         if task.status in ("pending", "running"):
-            raise HTTPException(status_code=400, detail="无法删除进行中的任务，请先取消")
+            raise ApiError(code="task.running_mutation_blocked")
         await db.delete(task)
         await db.commit()
         return {"message": "任务记录已删除"}
@@ -312,7 +313,7 @@ async def delete_task(
     batch_task = result.scalar_one_or_none()
     if batch_task:
         if batch_task.status in ("pending", "running"):
-            raise HTTPException(status_code=400, detail="无法删除进行中的任务，请先取消")
+            raise ApiError(code="task.running_mutation_blocked")
         await db.delete(batch_task)
         await db.commit()
         return {"message": "任务记录已删除"}
@@ -326,13 +327,13 @@ async def delete_task(
     )).scalar_one_or_none()
     if analysis_task:
         if analysis_task.status in ("pending", "running"):
-            raise HTTPException(status_code=400, detail="无法归档进行中的分析任务")
+            raise ApiError(code="task.running_mutation_blocked", detail="无法归档进行中的分析任务")
         if analysis_task.archived_at is None:
             analysis_task.archived_at = datetime.now()
             await db.commit()
         return {"message": "分析任务已从任务面板归档"}
 
-    raise HTTPException(status_code=404, detail="任务不存在")
+    raise ApiError(code="not_found.task")
 
 
 @router.delete("/project/{project_id}/clear", summary="清理项目已结束的任务记录")
@@ -344,7 +345,7 @@ async def clear_project_tasks(
     """清理项目中已完成/失败/已取消的任务记录"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     from sqlalchemy import delete as sql_delete
 

@@ -1369,9 +1369,9 @@ async def generate_character_stream(
             
             yield await tracker.done()
             
-        except HTTPException as he:
+        except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, he.status_code)
+            yield await tracker.error(he.detail, getattr(he, "status_code", None) or he.status)
         except Exception as e:
             logger.error(f"生成角色失败: {str(e)}")
             yield await tracker.error(f"生成角色失败: {str(e)}")

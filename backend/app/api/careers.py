@@ -447,9 +447,9 @@ async def generate_career_system(
             
             yield await tracker.done()
             
-        except HTTPException as he:
+        except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, he.status_code)
+            yield await tracker.error(he.detail, getattr(he, "status_code", None) or he.status)
         except Exception as e:
             logger.error(f"生成职业体系失败: {str(e)}")
             yield await tracker.error(f"生成新职业失败: {str(e)}")

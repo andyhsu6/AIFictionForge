@@ -1247,15 +1247,26 @@ export default interface Resources {
       "verification_code_wrong": "验证码错误"
     },
     "conflict": {
+      "agent_modification_state": "该修改已处理或正在执行",
+      "agent_preview_stale": "数据已发生变化，差异预览已刷新，请重新确认",
+      "agent_tool_unavailable": "工具已不再可用",
       "career_in_use": "该职业被{{usage_count}}个角色使用，无法删除。请先移除角色的职业关联。",
       "chapter_order_exists": "第{{order_index}}章已存在，不能重复创建",
+      "cover_exists": "当前项目已存在封面，如需覆盖请传入 overwrite=true",
+      "cover_generating": "封面正在生成中，请勿重复提交",
       "error": "资源冲突",
       "plugin_name_exists": "插件名已存在: {{plugin_name}}",
+      "relationship_type_duplicate": "同项目已存在同名关系类型",
+      "relationship_type_in_use": "该类型仍被关系使用，无法删除",
       "username_exists": "用户名已存在"
     },
     "dynamic_detail": "请求处理失败，请稍后重试",
     "forbidden": {
-      "other_user_cache": "无权清理其他用户的缓存"
+      "other_user_cache": "无权清理其他用户的缓存",
+      "other_user_style": "无权修改其他用户的风格",
+      "preset_style_readonly": "不能修改全局预设风格，只能修改自定义风格",
+      "system_relationship_type_readonly": "系统预置类型不可修改",
+      "task_access": "无权访问该任务"
     },
     "http": {
       "badRequest": "请求参数错误",
@@ -1268,12 +1279,18 @@ export default interface Resources {
     "http_error": "请求处理失败",
     "internal": {
       "error": "服务器内部错误",
-      "plugin_create_failed": "插件注册失败: {{plugin_name}}"
+      "import_preview_missing": "预览数据不存在",
+      "outline_import_failed": "大纲导入失败，请稍后重试",
+      "plot_analysis_failed": "剧情分析失败",
+      "plugin_create_failed": "插件注册失败: {{plugin_name}}",
+      "relationship_type_create_failed": "关系类型创建失败"
     },
     "network": {
       "error": "网络错误，请检查网络连接"
     },
     "not_found": {
+      "agent_conversation": "对话不存在",
+      "agent_tool_call": "工具调用不存在",
       "api_route": "API路径不存在",
       "batch_task": "批量生成任务不存在",
       "career": "职业不存在",
@@ -1281,16 +1298,29 @@ export default interface Resources {
       "chapter_analysis": "该章节暂无分析结果",
       "character": "角色不存在",
       "character_career": "角色职业关联不存在",
+      "cover": "当前项目尚未生成可下载的封面",
+      "cover_file": "封面文件路径无效，请重新生成",
       "foreshadow": "伏笔不存在",
       "frontend_route": "页面不存在",
       "model_list": "未能从 API 获取到可用的模型列表",
+      "organization": "组织不存在",
+      "organization_member": "成员记录不存在",
       "outline": "大纲不存在",
       "plugin": "插件不存在",
       "preset": "预设不存在",
+      "preset_style": "预设风格 '{{preset_id}}' 不存在",
       "project": "项目不存在",
       "project_chapters": "项目没有章节",
+      "project_or_forbidden": "项目不存在或无权访问",
+      "prompt_template": "模板 {{template_key}} 不存在",
+      "relationship": "关系不存在",
+      "relationship_character": "角色A（ID: {{character_id}}）不存在",
+      "relationship_type": "关系类型不存在",
       "setting": "设置不存在，请先创建设置",
-      "user": "用户不存在"
+      "skill": "未找到 Skill: {{skill_key}}",
+      "task": "任务不存在",
+      "user": "用户不存在",
+      "writing_style": "写作风格不存在"
     },
     "rate_limit": {
       "verification_code_attempts": "验证码错误次数过多，请重新发送",
@@ -1298,7 +1328,15 @@ export default interface Resources {
     },
     "requestFailed": "请求失败",
     "security": {
-      "url_invalid": "URL 不允许访问"
+      "url_credentials": "URL不允许包含认证信息",
+      "url_empty": "URL不能为空",
+      "url_host_missing": "URL缺少主机名",
+      "url_host_unresolvable": "URL主机名无法解析",
+      "url_invalid": "URL 不允许访问",
+      "url_loopback": "URL不允许指向本机地址",
+      "url_private": "URL不允许指向内网或保留地址",
+      "url_reserved": "URL不允许指向链路本地、组播或未指定地址",
+      "url_scheme": "仅支持 HTTP/HTTPS URL"
     },
     "task": {
       "batchListFailed": "获取批量生成任务失败",
@@ -1312,23 +1350,35 @@ export default interface Resources {
       "deleteFailed": "删除任务失败",
       "failed": "任务失败",
       "listFailed": "获取任务列表失败",
-      "queryStatusFailed": "查询任务状态失败"
+      "not_completed": "任务尚未完成，无法获取预览",
+      "queryStatusFailed": "查询任务状态失败",
+      "running_mutation_blocked": "无法删除进行中的任务，请先取消"
     },
     "unknown": "未知错误",
     "validation": {
+      "ai_config_missing": "请先配置AI设置",
+      "book_import_extract_mode": "extract_mode 仅支持 tail 或 full",
+      "book_import_mode": "import_mode 仅支持 append 或 overwrite",
+      "book_import_new_project": "当前仅支持新建项目导入，不支持指定 project_id",
       "career_stage_out_of_range": "阶段超出范围，该职业最大阶段为{{max_stage}}",
       "career_type_mismatch": "该职业不是主职业类型，无法设置为主职业",
       "chapter_content_empty": "章节内容为空",
       "chapter_content_empty_for_analysis": "章节内容为空，无法分析",
       "chapter_content_empty_for_regenerate": "章节内容为空，无法重新生成",
       "character_career_duplicate": "该角色已拥有此副职业",
+      "character_in_organization": "该角色已在组织中",
       "characters_selected_min_one": "请至少选择一个角色/组织",
       "config": "配置数据格式错误",
+      "cover_config_incomplete": "封面图片配置不完整，请填写 provider、api_key 和 model",
+      "cover_provider_unsupported": "当前版本仅支持 Gemini 或 Grok",
       "email_format": "请输入有效的邮箱地址",
       "error": "请求参数验证失败",
+      "export_type_unsupported": "不支持的导出类型",
       "failed": "请求参数验证失败",
       "file_too_large": "文件大小超过 10MB 限制",
       "import_json_invalid": "JSON格式错误: {{error}}",
+      "import_retry_steps_invalid": "以下步骤不在失败列表中，无法重试: {{steps}}",
+      "import_target_project_missing": "缺少目标项目ID",
       "int_parsing": "参数格式不正确",
       "json_only": "只支持 JSON 格式文件",
       "last_admin_required": "无法撤销管理员权限，至少需要保留一个管理员",
@@ -1337,7 +1387,11 @@ export default interface Resources {
       "model_list_endpoint_unsupported": "该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {{api_base_url}}/models",
       "model_list_http_error": "无法从 API 获取模型列表 (HTTP {{status}})",
       "model_provider_unsupported": "不支持的提供商: {{provider}}",
+      "organization_detail_exists": "该角色已有组织详情记录",
+      "organization_type_required": "关联的角色不是组织类型",
       "outline_continue_requires_existing": "续写模式需要已有大纲",
+      "outline_import_file_invalid": "导入文件验证失败：{{error}}",
+      "outline_import_mode": "导入模式必须是 append 或 merge",
       "outline_mode_single_create_blocked": "当前项目为{{outline_mode}}模式，不支持一对一创建。请使用展开功能。",
       "outline_mode_unsupported": "不支持的模式: {{mode}}",
       "outline_plan_list_empty": "章节规划列表不能为空",
@@ -1354,10 +1408,18 @@ export default interface Resources {
       "polish_start_before_end": "起始位置必须小于结束位置",
       "preset_active_delete_blocked": "无法删除激活中的预设，请先激活其他预设",
       "qq_smtp_host": "QQ 邮箱 SMTP 主机必须为 smtp.qq.com",
+      "relationship_type_name_empty": "关系类型名称不能为空",
+      "required_fields": "name 和 prompt_content 是必填字段",
       "self_account_mutation": "不能禁用自己的账号",
+      "self_admin_revoke": "不能撤销自己的管理员权限",
+      "self_password_reset": "不能重置自己的密码，请使用修改密码功能",
       "smtp_fields_missing": "请先完善 SMTP 主机、用户名和授权码",
       "smtp_ssl_tls_conflict": "SSL 和 TLS 不能同时启用",
+      "style_default_delete_blocked": "不能删除默认风格，请先设置其他风格为默认",
       "sub_career_limit": "副职业数量已达上限（最多5个）",
+      "tail_chapter_count": "tail_chapter_count 不能小于 5",
+      "txt_only": "仅支持 .txt 文件",
+      "user_delete_blocked": "无法删除该用户（用户不存在或为管理员）",
       "verification_code_format": "请输入6位数字验证码",
       "verification_code_scene": "不支持的验证码场景"
     }

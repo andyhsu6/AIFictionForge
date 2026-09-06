@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, delete
 from typing import List, Optional
 from app.database import get_db
+from app.core.errors import ApiError
 from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.chapter import Chapter
 from app.models.project import Project
@@ -51,17 +52,17 @@ async def analyze_chapter(
         chapter = result.scalar_one_or_none()
         
         if not chapter:
-            raise HTTPException(status_code=404, detail="章节不存在")
+            raise ApiError(code="not_found.chapter")
         
         if not chapter.content:
-            raise HTTPException(status_code=400, detail="章节内容为空,无法分析")
+            raise ApiError(code="validation.chapter_content_empty_for_analysis", detail="章节内容为空,无法分析")
         
         # 获取用户AI设置
         settings_result = await db.execute(select(Settings).where(Settings.user_id == user_id))
         settings = settings_result.scalar_one_or_none()
         
         if not settings:
-            raise HTTPException(status_code=400, detail="请先配置AI设置")
+            raise ApiError(code="validation.ai_config_missing")
         
         runtime_config = resolve_runtime_ai_config(settings.api_provider, settings.api_key, settings.api_base_url)
 
@@ -95,7 +96,7 @@ async def analyze_chapter(
         )
         
         if not analysis_result:
-            raise HTTPException(status_code=500, detail="剧情分析失败")
+            raise ApiError(code="internal.plot_analysis_failed")
         
         # 保存分析结果到数据库
         plot_analysis = PlotAnalysis(
@@ -281,7 +282,7 @@ async def analyze_chapter(
             "entity_changes": entity_changes
         }
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"❌ 章节分析失败: {str(e)}")
@@ -324,6 +325,8 @@ async def get_project_memories(
             "total": len(memories)
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"❌ 获取记忆失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -354,14 +357,14 @@ async def get_chapter_analysis(
         analysis = result.scalar_one_or_none()
         
         if not analysis:
-            raise HTTPException(status_code=404, detail="该章节还未进行分析")
+            raise ApiError(code="not_found.chapter_analysis", detail="该章节还未进行分析")
         
         return {
             "success": True,
             "analysis": analysis.to_dict()
         }
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"❌ 获取分析失败: {str(e)}")
@@ -401,6 +404,8 @@ async def search_memories(
             "total": len(memories)
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"❌ 搜索记忆失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -433,6 +438,8 @@ async def get_unresolved_foreshadows(
             "total": len(foreshadows)
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"❌ 获取伏笔失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -461,6 +468,8 @@ async def get_memory_stats(
             "stats": stats
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"❌ 获取统计失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -508,6 +517,8 @@ async def delete_chapter_memories(
             "message": f"已删除{len(memories)}条记忆"
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"❌ 删除记忆失败: {str(e)}")
         await db.rollback()

@@ -21,6 +21,7 @@ from app.schemas.prompt_template import (
     PromptTemplatePreviewRequest
 )
 from app.services.prompt_service import PromptService
+from app.core.errors import ApiError
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -45,7 +46,7 @@ async def get_all_templates(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     query = select(PromptTemplate).where(PromptTemplate.user_id == user_id)
     
@@ -85,7 +86,7 @@ async def get_templates_by_category(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 1. 查询用户自定义模板
     result = await db.execute(
@@ -162,7 +163,7 @@ async def get_system_defaults(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 从PromptService获取所有系统默认模板
     system_templates = PromptService.get_all_system_templates()
@@ -185,7 +186,7 @@ async def get_template(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     result = await db.execute(
         select(PromptTemplate).where(
@@ -196,7 +197,11 @@ async def get_template(
     template = result.scalar_one_or_none()
     
     if not template:
-        raise HTTPException(status_code=404, detail=f"模板 {template_key} 不存在")
+        raise ApiError(
+            code="not_found.prompt_template",
+            detail=f"模板 {template_key} 不存在",
+            params={"template_key": template_key},
+        )
     
     return template
 
@@ -213,7 +218,7 @@ async def create_or_update_template(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 查找现有模板
     result = await db.execute(
@@ -257,7 +262,7 @@ async def update_template(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     result = await db.execute(
         select(PromptTemplate).where(
@@ -268,7 +273,11 @@ async def update_template(
     template = result.scalar_one_or_none()
     
     if not template:
-        raise HTTPException(status_code=404, detail=f"模板 {template_key} 不存在")
+        raise ApiError(
+            code="not_found.prompt_template",
+            detail=f"模板 {template_key} 不存在",
+            params={"template_key": template_key},
+        )
     
     # 更新模板
     update_data = data.model_dump(exclude_unset=True)
@@ -294,7 +303,7 @@ async def delete_template(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     result = await db.execute(
         select(PromptTemplate).where(
@@ -305,7 +314,11 @@ async def delete_template(
     template = result.scalar_one_or_none()
     
     if not template:
-        raise HTTPException(status_code=404, detail=f"模板 {template_key} 不存在")
+        raise ApiError(
+            code="not_found.prompt_template",
+            detail=f"模板 {template_key} 不存在",
+            params={"template_key": template_key},
+        )
     
     await db.delete(template)
     await db.commit()
@@ -326,12 +339,16 @@ async def reset_to_default(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证系统默认模板是否存在
     system_template = PromptService.get_system_template_info(template_key)
     if not system_template:
-        raise HTTPException(status_code=404, detail=f"系统默认模板 {template_key} 不存在")
+        raise ApiError(
+            code="not_found.prompt_template",
+            detail=f"系统默认模板 {template_key} 不存在",
+            params={"template_key": template_key},
+        )
     
     # 查找并删除用户的自定义模板
     result = await db.execute(
@@ -366,7 +383,7 @@ async def export_templates(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 1. 查询用户自定义模板
     result = await db.execute(
@@ -455,7 +472,7 @@ async def import_templates(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 获取所有系统默认模板用于比对
     system_templates = PromptService.get_all_system_templates()
@@ -602,7 +619,7 @@ async def preview_template(
     # 从认证中间件获取用户ID
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     try:
         # 使用PromptService的format_prompt方法

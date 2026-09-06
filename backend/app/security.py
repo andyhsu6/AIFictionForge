@@ -11,6 +11,7 @@ from typing import Iterable
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
+from app.core.errors import ApiError
 
 from app.config import settings
 
@@ -111,28 +112,28 @@ def validate_public_http_url(
     MCP plugins or other callers.
     """
     if not raw_url or not isinstance(raw_url, str):
-        raise HTTPException(status_code=400, detail="URL不能为空")
+        raise ApiError(code="security.url_empty")
 
     parsed = urlparse(raw_url.strip())
     if parsed.scheme not in set(allowed_schemes):
-        raise HTTPException(status_code=400, detail="仅支持 HTTP/HTTPS URL")
+        raise ApiError(code="security.url_scheme")
     if not parsed.hostname:
-        raise HTTPException(status_code=400, detail="URL缺少主机名")
+        raise ApiError(code="security.url_host_missing")
     if parsed.username or parsed.password:
-        raise HTTPException(status_code=400, detail="URL不允许包含认证信息")
+        raise ApiError(code="security.url_credentials")
 
     host = _normalize_hostname(parsed.hostname)
     host_allowed = allow_private or host in _parse_allowed_hosts(allowed_hosts)
 
     if host in {"localhost", "localhost.localdomain"} and not host_allowed:
-        raise HTTPException(status_code=400, detail="URL不允许指向本机地址")
+        raise ApiError(code="security.url_loopback")
 
     try:
         ip = ipaddress.ip_address(host)
         if _is_always_blocked_ip(ip):
-            raise HTTPException(status_code=400, detail="URL不允许指向链路本地、组播或未指定地址")
+            raise ApiError(code="security.url_reserved")
         if _is_forbidden_ip(ip) and not host_allowed:
-            raise HTTPException(status_code=400, detail="URL不允许指向内网或保留地址")
+            raise ApiError(code="security.url_private")
     except ValueError:
         try:
             infos = socket.getaddrinfo(
@@ -141,13 +142,13 @@ def validate_public_http_url(
                 type=socket.SOCK_STREAM,
             )
         except socket.gaierror:
-            raise HTTPException(status_code=400, detail="URL主机名无法解析")
+            raise ApiError(code="security.url_host_unresolvable")
         for info in infos:
             resolved_ip = ipaddress.ip_address(info[4][0])
             if _is_always_blocked_ip(resolved_ip):
-                raise HTTPException(status_code=400, detail="URL解析到链路本地、组播或未指定地址")
+                raise ApiError(code="security.url_reserved", detail="URL解析到链路本地、组播或未指定地址")
             if _is_forbidden_ip(resolved_ip) and not host_allowed:
-                raise HTTPException(status_code=400, detail="URL解析到内网或保留地址")
+                raise ApiError(code="security.url_private", detail="URL解析到内网或保留地址")
 
     return raw_url.strip().rstrip("/")
 
@@ -166,9 +167,10 @@ def validate_ai_http_url(raw_url: str) -> str:
             allow_private=allow_private,
             allowed_hosts=allowed_hosts,
         )
-    except HTTPException as exc:
+    except (HTTPException, ApiError) as exc:
         detail = str(exc.detail or "")
-        if exc.status_code == 400 and any(
+        exc_status = getattr(exc, "status_code", None) or exc.status
+        if exc_status == 400 and any(
             token in detail for token in ("本机", "内网", "链路本地")
         ):
             raise HTTPException(

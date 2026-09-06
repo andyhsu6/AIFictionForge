@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.user_manager import User
 from app.api.settings import require_login
@@ -174,8 +175,11 @@ async def get_skill_detail_api(skill_key: str, user: User = Depends(require_logi
     """获取 Skill 详细信息（包括原始内容和 references）"""
     detail = get_skill_detail(skill_key)
     if not detail:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=f"未找到 Skill: {skill_key}")
+        raise ApiError(
+            code="not_found.skill",
+            detail=f"未找到 Skill: {skill_key}",
+            params={"skill_key": skill_key},
+        )
     
     return {
         "template_key": detail["template_key"],

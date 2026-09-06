@@ -10,6 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.api.common import verify_project_access
 from app.api.settings import get_user_ai_service
@@ -47,7 +48,7 @@ router = APIRouter(prefix="/projects/{project_id}/agent", tags=["灵创创作助
 def _user_id(request: Request) -> str:
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     return user_id
 
 
@@ -111,7 +112,7 @@ async def download_agent_export(
         filename = f"characters_{safe_title}.json"
         media_type = "application/json; charset=utf-8"
     else:
-        raise HTTPException(status_code=404, detail="不支持的导出类型")
+        raise ApiError(code="validation.export_type_unsupported")
 
     return Response(
         content=content,
@@ -136,7 +137,7 @@ async def _get_conversation(
     )
     conversation = result.scalar_one_or_none()
     if conversation is None:
-        raise HTTPException(status_code=404, detail="对话不存在")
+        raise ApiError(code="not_found.agent_conversation")
     return conversation
 
 
@@ -321,8 +322,8 @@ async def _claim_tool_call(
             AgentToolCall.user_id == user_id,
         ))).scalar_one_or_none()
         if existing is None:
-            raise HTTPException(status_code=404, detail="工具调用不存在")
-        raise HTTPException(status_code=409, detail="该修改已处理或正在执行")
+            raise ApiError(code="not_found.agent_tool_call")
+        raise ApiError(code="conflict.agent_modification_state")
     await db.commit()
     tool_call = (await db.execute(select(AgentToolCall).where(
         AgentToolCall.id == tool_call_id,
@@ -370,7 +371,7 @@ async def confirm_tool_call(
         )
         if not is_mcp:
             await _restore_waiting_tool_call(db, tool_call, error="工具已不再可用")
-            raise HTTPException(status_code=409, detail="工具已不再可用")
+            raise ApiError(code="conflict.agent_tool_unavailable")
         from app.services.mcp_tools_loader import mcp_tools_loader
 
         available_mcp_tools = await mcp_tools_loader.get_user_tools(
@@ -381,7 +382,7 @@ async def confirm_tool_call(
         }
         if tool_call.tool_name not in available_names:
             await _restore_waiting_tool_call(db, tool_call, error="MCP 工具已禁用或不可用")
-            raise HTTPException(status_code=409, detail="MCP 工具已禁用或不可用")
+            raise ApiError(code="conflict.agent_tool_unavailable", detail="MCP 工具已禁用或不可用")
 
     try:
         current_preview = (
@@ -391,13 +392,17 @@ async def confirm_tool_call(
         )
     except ValueError as exc:
         await _restore_waiting_tool_call(db, tool_call, error=str(exc))
-        raise HTTPException(status_code=409, detail=f"修改目标已变化：{exc}") from exc
+        raise ApiError(
+            code="conflict.agent_preview_stale",
+            detail=f"修改目标已变化：{exc}",
+            params={"error": str(exc)},
+        ) from exc
 
     stored_preview = normalize_tool_preview(tool_call.preview, tool_call.arguments)
     if current_preview != stored_preview:
         tool_call.preview = current_preview
         await _restore_waiting_tool_call(db, tool_call, error="数据已发生变化")
-        raise HTTPException(status_code=409, detail="数据已发生变化，差异预览已刷新，请重新确认")
+        raise ApiError(code="conflict.agent_preview_stale")
     if tool_call.preview != current_preview:
         tool_call.preview = current_preview
 

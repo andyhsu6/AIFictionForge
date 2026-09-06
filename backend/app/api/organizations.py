@@ -6,6 +6,7 @@ from typing import List, Optional, AsyncGenerator
 from pydantic import BaseModel, Field
 import json
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.relationship import Organization, OrganizationMember
@@ -103,7 +104,7 @@ async def get_organization(
     org = result.scalar_one_or_none()
     
     if not org:
-        raise HTTPException(status_code=404, detail="组织不存在")
+        raise ApiError(code="not_found.organization")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -135,16 +136,16 @@ async def create_organization(
     char = char_result.scalar_one_or_none()
     
     if not char:
-        raise HTTPException(status_code=404, detail="关联的角色不存在")
+        raise ApiError(code="not_found.character", detail="关联的角色不存在")
     if not char.is_organization:
-        raise HTTPException(status_code=400, detail="关联的角色不是组织类型")
+        raise ApiError(code="validation.organization_type_required")
     
     # 检查是否已存在
     existing = await db.execute(
         select(Organization).where(Organization.character_id == organization.character_id)
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="该角色已有组织详情记录")
+        raise ApiError(code="validation.organization_detail_exists")
     
     # 创建组织
     db_org = Organization(**organization.model_dump())
@@ -170,7 +171,7 @@ async def update_organization(
     db_org = result.scalar_one_or_none()
     
     if not db_org:
-        raise HTTPException(status_code=404, detail="组织不存在")
+        raise ApiError(code="not_found.organization")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -201,7 +202,7 @@ async def delete_organization(
     db_org = result.scalar_one_or_none()
     
     if not db_org:
-        raise HTTPException(status_code=404, detail="组织不存在")
+        raise ApiError(code="not_found.organization")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -233,7 +234,7 @@ async def get_organization_members(
     )
     org = org_result.scalar_one_or_none()
     if not org:
-        raise HTTPException(status_code=404, detail="组织不存在")
+        raise ApiError(code="not_found.organization")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -293,7 +294,7 @@ async def add_organization_member(
     )
     org = org_result.scalar_one_or_none()
     if not org:
-        raise HTTPException(status_code=404, detail="组织不存在")
+        raise ApiError(code="not_found.organization")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -305,9 +306,9 @@ async def add_organization_member(
     )
     char = char_result.scalar_one_or_none()
     if not char:
-        raise HTTPException(status_code=404, detail="角色不存在")
+        raise ApiError(code="not_found.character")
     if char.is_organization:
-        raise HTTPException(status_code=400, detail="不能将组织添加为成员")
+        raise ApiError(code="validation.organization_type_required", detail="不能将组织添加为成员")
     
     # 检查是否已存在
     existing = await db.execute(
@@ -319,7 +320,7 @@ async def add_organization_member(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="该角色已在组织中")
+        raise ApiError(code="validation.character_in_organization")
     
     # 创建成员关系
     db_member = OrganizationMember(
@@ -353,7 +354,7 @@ async def update_organization_member(
     db_member = result.scalar_one_or_none()
     
     if not db_member:
-        raise HTTPException(status_code=404, detail="成员记录不存在")
+        raise ApiError(code="not_found.organization_member")
     
     # 通过成员所属的组织验证用户权限
     org_result = await db.execute(
@@ -392,7 +393,7 @@ async def remove_organization_member(
     db_member = result.scalar_one_or_none()
     
     if not db_member:
-        raise HTTPException(status_code=404, detail="成员记录不存在")
+        raise ApiError(code="not_found.organization_member")
     
     # 更新组织成员计数
     org_result = await db.execute(
@@ -616,9 +617,9 @@ async def generate_organization_stream(
             
             yield await tracker.done()
             
-        except HTTPException as he:
+        except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, he.status_code)
+            yield await tracker.error(he.detail, getattr(he, "status_code", None) or he.status)
         except Exception as e:
             logger.error(f"生成组织失败: {str(e)}")
             yield await tracker.error(f"生成组织失败: {str(e)}")
