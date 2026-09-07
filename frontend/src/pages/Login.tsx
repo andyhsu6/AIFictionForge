@@ -32,7 +32,7 @@ import {
 import { authApi } from '../services/api';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import ThemeSwitch from '../components/ThemeSwitch';
-import { syncLanguageWithServer } from '../utils/languageSync';
+import { markManualLanguageChoice, syncLanguageWithServer } from '../utils/languageSync';
 import { useTranslation } from 'react-i18next';
 
 const { Title, Paragraph, Text } = Typography;
@@ -812,7 +812,7 @@ export default function Login() {
             size="small"
             variant="borderless"
             value={i18n.language?.startsWith('zh') ? 'zh' : 'en'}
-            onChange={(value) => i18n.changeLanguage(value)}
+            onChange={(value) => { i18n.changeLanguage(value); markManualLanguageChoice(); }}
             style={{ minWidth: 96 }}
             options={[
               { value: 'zh', label: '简体中文' },

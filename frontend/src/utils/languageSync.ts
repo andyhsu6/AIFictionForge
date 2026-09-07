@@ -41,18 +41,48 @@ export function parseServerContentLanguage(rawPreferences?: string | null): Cont
 }
 
 /**
- * 登录后语言同步（i18n 优先级契约）：
- * - 服务端 preferences.language 存在 → 它是登录后唯一事实来源，覆盖本地 localStorage 残留
- *   （同浏览器多账号互不污染：每次登录都以该账号自己的服务端偏好为准）。
- * - 服务端无值 → 把当前前端语言（detector 由 localStorage/navigator 得出）镜像到后端，完成首次种子化。
- * - 任何失败（401/网络/后端写失败）→ 静默降级：保持 localStorage 引导的当前语言，绝不抛出。
+ * 登录后语言同步（优先级契约：手动切换 > 系统语言 > 浏览器语言）：
+ * - 登录页/任意入口的手动切换会在 sessionStorage 打 `lng_manual` 标记；
+ *   登录同步时若标记存在 → 手动选择优先级最高：推送到账号偏好并清除标记
+ *   （注意：这会有意覆盖账号旧偏好——产品决策，手动 > 账号）。
+ * - 无手动标记且服务端 preferences.language 存在 → 拉取服务端值（设置页的手动
+ *   切换已实时写服务端，等价于"最近一次手动"）。
+ * - 两者皆无 → 当前 detector 语言（localStorage → navigator；navigator 默认镜像
+ *   操作系统语言，即"系统其次浏览器"）镜像到服务端完成首次种子化。
+ * - 任何失败 → 静默降级：保持当前语言；手动标记保留，下次登录重试。
  *
  * changeLanguage 会触发 LanguageDetector 自动写入 localStorage 'lng'，无需手动 setItem。
  */
+export function markManualLanguageChoice(): void {
+  try {
+    sessionStorage.setItem('lng_manual', '1');
+  } catch {
+    /* sessionStorage 不可用时静默：退化为服务端优先 */
+  }
+}
+
 export async function syncLanguageWithServer(): Promise<void> {
   try {
+    let manualPick = false;
+    try {
+      manualPick = sessionStorage.getItem('lng_manual') === '1';
+    } catch {
+      /* ignore */
+    }
     const settings = await settingsApi.getSettings();
     const serverLang = parseServerLanguage(settings.preferences);
+
+    if (manualPick) {
+      // 手动切换优先级最高：本地选择写回账号（覆盖旧偏好），并清除标记
+      const local: 'zh' | 'en' = normalizeLanguage(i18n.language) === 'en' ? 'en' : 'zh';
+      await settingsApi.updatePreferences({ language: local });
+      try {
+        sessionStorage.removeItem('lng_manual');
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
 
     if (serverLang) {
       if (normalizeLanguage(i18n.language) !== serverLang) {
