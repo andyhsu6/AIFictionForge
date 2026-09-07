@@ -19,8 +19,10 @@ class BookImportWarning(BaseModel):
     code: str = Field(..., description="告警编码")
     message: str = Field(..., description="告警内容")
     level: WarningLevel = Field(default="warning", description="告警等级")
-    # i18n 双通道：结构化码参数（供前端按 code 模板化翻译；缺省 None 时
-    # 序列化不含变化——旧调用点与旧客户端不受影响）
+    # i18n 双通道：结构化码参数（供前端按 code 模板化翻译）。缺省 None 时序列化为
+    # "params": null——响应模型未配置 response_model_exclude_none，该键为增量字段
+    # （旧客户端可容忍）。严格字节形状（缺省键不出现）的保证只适用于 SSE progress
+    # payload（SSEResponse.send_progress），不适用于本 schema。
     params: Optional[dict] = Field(default=None, description="告警结构化参数（配合 code 供前端模板化翻译）")
 
 

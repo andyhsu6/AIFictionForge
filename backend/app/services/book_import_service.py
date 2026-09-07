@@ -1267,10 +1267,15 @@ class BookImportService:
         selected = chapters_data[-normalized_tail_count:]
         return selected, len(selected) < len(chapters_data)
 
-    def _get_extract_mode_label(self, extract_mode: BookImportExtractMode, selected_total: int) -> str:
-        if extract_mode == "full" or selected_total > 50:
-            return "整本"
-        return f"末{selected_total}章"
+    def _is_full_book_broadcast(self, extract_mode: BookImportExtractMode, selected_total: int) -> bool:
+        """是否按「整本」口径播报进度/告警（与旧 _get_extract_mode_label 的
+        「整本」分支条件完全一致：full 模式或选中章数超过 50）。
+
+        i18n：中文标签（整本/末N章）不能作为 locale 模板参数下发（en 用户会看到
+        中文值），因此按该布尔值拆分为 *Full/*Tail 两个 code，Tail 变体携带数值
+        参数（chapters/kept），由各语言模板自行措辞。
+        """
+        return extract_mode == "full" or selected_total > 50
 
     def _derive_world_settings(
         self,
@@ -1399,7 +1404,7 @@ class BookImportService:
             tail_chapter_count=task.tail_chapter_count,
         )
         selected_total = len(selected_chapters_raw)
-        selection_label = self._get_extract_mode_label(task.extract_mode, selected_total)
+        is_full_book = self._is_full_book_broadcast(task.extract_mode, selected_total)
 
         title_counter: Counter[str] = Counter()
         for idx, chapter in enumerate(selected_chapters_raw, start=1):
@@ -1441,14 +1446,26 @@ class BookImportService:
             # 章节构建进度：18% -> 20%（在这个区间内按比例推进）
             chapter_progress = 18 + int(2 * idx / max(1, selected_total))
             if idx % max(1, selected_total // 5) == 0 or idx == selected_total:
-                self._set_task_state(
-                    task,
-                    status="running",
-                    progress=chapter_progress,
-                    message=f"已处理{selection_label} {idx}/{selected_total} 个章节结构...",
-                    code="import.task.chapterStructures",
-                    params={"selection_label": selection_label, "index": idx, "total": selected_total},
-                )
+                # i18n：按整本/末章口径拆 code（Full 无标签参数；Tail 的章数为数值参数），
+                # 各模式 message 原文案与拆分前逐字节一致
+                if is_full_book:
+                    self._set_task_state(
+                        task,
+                        status="running",
+                        progress=chapter_progress,
+                        message=f"已处理整本 {idx}/{selected_total} 个章节结构...",
+                        code="import.task.chapterStructuresFull",
+                        params={"index": idx, "total": selected_total},
+                    )
+                else:
+                    self._set_task_state(
+                        task,
+                        status="running",
+                        progress=chapter_progress,
+                        message=f"已处理末{selected_total}章 {idx}/{selected_total} 个章节结构...",
+                        code="import.task.chapterStructuresTail",
+                        params={"chapters": selected_total, "index": idx, "total": selected_total},
+                    )
 
         for title, count in title_counter.items():
             if count > 1:
@@ -1462,12 +1479,16 @@ class BookImportService:
                 )
 
         if was_trimmed:
+            # i18n：filteredChapters 仅在 was_trimmed=True 时触发，而 _select_raw_
+            # chapters_for_preview 的 trim 前提即 tail 模式且选中数 <= 50，故此处
+            # 恒为 Tail 变体（chapters/kept 同为选中章数的数值参数）；Full 变体
+            # 仅为 registry/locale 对称而注册，当前无触发点。
             warnings.append(
                 BookImportWarning(
-                    code="import.warning.filteredChapters",
-                    message=f"已按解析配置仅保留{selection_label} {selected_total} 章用于导入（原始识别 {len(chapters_data)} 章）",
+                    code="import.warning.filteredChaptersTail",
+                    message=f"已按解析配置仅保留末{selected_total}章 {selected_total} 章用于导入（原始识别 {len(chapters_data)} 章）",
                     level="info",
-                    params={"selection_label": selection_label, "kept": selected_total, "detected": len(chapters_data)},
+                    params={"kept": selected_total, "detected": len(chapters_data)},
                 )
             )
 

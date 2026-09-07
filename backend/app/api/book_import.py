@@ -30,31 +30,6 @@ logger = get_logger(__name__)
 MAX_TXT_SIZE = 50 * 1024 * 1024  # 50MB
 
 
-def _progress_sse_payload(
-    message: str,
-    progress: int,
-    status: str = "processing",
-    code: Optional[str] = None,
-    params: Optional[dict] = None,
-) -> dict:
-    """构建 progress SSE payload。
-
-    i18n 双通道（与 SSEResponse.send_progress 字段语义一致）：code 设置时追加
-    message_code/message_params（params 缺省回填 {}）；code 为 None 时 payload
-    只含旧版 4 个键，字节形状与旧版完全一致。
-    """
-    payload: dict = {
-        "type": "progress",
-        "message": message,
-        "progress": progress,
-        "status": status,
-    }
-    if code is not None:
-        payload["message_code"] = code
-        payload["message_params"] = params or {}
-    return payload
-
-
 @router.post("/tasks", response_model=BookImportTaskCreateResponse, summary="创建拆书任务（上传TXT）")
 async def create_book_import_task(
     request: Request,
@@ -189,11 +164,11 @@ async def apply_book_import_stream(
         code: Optional[str] = None,
         params: Optional[dict] = None,
     ) -> None:
-        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，见 _progress_sse_payload）"""
-        sse_msg = SSEResponse.format_sse(
-            _progress_sse_payload(message, progress, status, code=code, params=params)
+        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，payload 契约
+        唯一来源为 SSEResponse.send_progress）"""
+        await progress_queue.put(
+            await SSEResponse.send_progress(message, progress, status, code=code, params=params)
         )
-        await progress_queue.put(sse_msg)
 
     async def _run_import() -> None:
         """在后台任务中执行导入并通过队列推送进度"""
@@ -275,11 +250,11 @@ async def retry_failed_steps_stream(
         code: Optional[str] = None,
         params: Optional[dict] = None,
     ) -> None:
-        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，见 _progress_sse_payload）"""
-        sse_msg = SSEResponse.format_sse(
-            _progress_sse_payload(message, progress, status, code=code, params=params)
+        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，payload 契约
+        唯一来源为 SSEResponse.send_progress）"""
+        await progress_queue.put(
+            await SSEResponse.send_progress(message, progress, status, code=code, params=params)
         )
-        await progress_queue.put(sse_msg)
 
     async def _run_retry() -> None:
         try:

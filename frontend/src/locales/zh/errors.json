@@ -111,7 +111,8 @@
       "aiProjectDone": "AI生成完成，正在整理项目信息...",
       "aiProjectFailedFallback": "AI生成失败，使用规则推断项目信息",
       "aiSummarizing": "AI正在整理生成结果...",
-      "chapterStructures": "已处理{{selection_label}} {{index}}/{{total}} 个章节结构...",
+      "chapterStructuresFull": "已处理整本 {{index}}/{{total}} 个章节结构...",
+      "chapterStructuresTail": "已处理末{{chapters}}章 {{index}}/{{total}} 个章节结构...",
       "chaptersDetected": "已识别 {{chapters}} 个章节，正在构建预览结构...",
       "detectEncoding": "正在识别编码并读取文本...",
       "filteringChapters": "正在按解析配置筛选章节并构建预览...",
@@ -132,7 +133,8 @@
       "chapterTooLong": "章节「{{title}}」内容较长，建议确认是否应继续拆分",
       "chapterTooShort": "章节「{{title}}」内容较短，建议检查切分结果",
       "duplicateTitles": "检测到重复章节标题「{{title}}」共 {{occurrences}} 次",
-      "filteredChapters": "已按解析配置仅保留{{selection_label}} {{kept}} 章用于导入（原始识别 {{detected}} 章）"
+      "filteredChaptersFull": "已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）",
+      "filteredChaptersTail": "已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）"
     }
   },
   "internal": {

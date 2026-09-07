@@ -141,7 +141,12 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "import.task.aiProjectDone": ("AI生成完成，正在整理项目信息...", 200),
     "import.task.aiProjectFailedFallback": ("AI生成失败，使用规则推断项目信息", 200),
     "import.task.aiSummarizing": ("AI正在整理生成结果...", 200),
-    "import.task.chapterStructures": ("已处理{{selection_label}} {{index}}/{{total}} 个章节结构...", 200),
+    # 按解析口径拆分：Full=整本（无标签参数）/ Tail=末N章（chapters 为数值参数）。
+    # 旧合并码 import.task.chapterStructures 的 selection_label 参数携带中文运行时
+    # 值（整本/末N章），会泄漏进 en 模板，故拆码；各变体 zh 模板与拆分前对应
+    # 模式的原文案字节一致。
+    "import.task.chapterStructuresFull": ("已处理整本 {{index}}/{{total}} 个章节结构...", 200),
+    "import.task.chapterStructuresTail": ("已处理末{{chapters}}章 {{index}}/{{total}} 个章节结构...", 200),
     "import.task.chaptersDetected": ("已识别 {{chapters}} 个章节，正在构建预览结构...", 200),
     "import.task.detectEncoding": ("正在识别编码并读取文本...", 200),
     "import.task.filteringChapters": ("正在按解析配置筛选章节并构建预览...", 200),
@@ -160,7 +165,11 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "import.warning.chapterTooLong": ("章节「{{title}}」内容较长，建议确认是否应继续拆分", 200),
     "import.warning.chapterTooShort": ("章节「{{title}}」内容较短，建议检查切分结果", 200),
     "import.warning.duplicateTitles": ("检测到重复章节标题「{{title}}」共 {{occurrences}} 次", 200),
-    "import.warning.filteredChapters": ("已按解析配置仅保留{{selection_label}} {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
+    # 按解析口径拆分（同 import.task.chapterStructures*）：Tail 为实际触发变体
+    # （trim 前提即 tail 模式且选中数 <= 50），Full 仅为对称注册；kept 数值参数
+    # 同时承担模板中的末章数与保留章数，zh 与拆分前原文案字节一致。
+    "import.warning.filteredChaptersFull": ("已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
+    "import.warning.filteredChaptersTail": ("已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
     "internal.agent_execution_failed": ("灵创创作助手执行失败：{{error}}", 200),
     "internal.ai_chapter_plan_failed": ("AI分析失败，未能生成章节规划", 200),
     "internal.ai_empty_response": ("AI服务返回空响应", 200),

@@ -111,7 +111,8 @@
       "aiProjectDone": "AI generation complete; organizing project info...",
       "aiProjectFailedFallback": "AI generation failed; inferring project info with rules",
       "aiSummarizing": "AI is organizing the generated results...",
-      "chapterStructures": "Processed {{index}}/{{total}} chapter structures ({{selection_label}})...",
+      "chapterStructuresFull": "Processed {{index}}/{{total}} chapter structures (full book)...",
+      "chapterStructuresTail": "Processed {{index}}/{{total}} chapter structures (last {{chapters}} chapters)...",
       "chaptersDetected": "Detected {{chapters}} chapters; building the preview structure...",
       "detectEncoding": "Detecting encoding and reading the text...",
       "filteringChapters": "Filtering chapters by the parsing configuration and building the preview...",
@@ -132,7 +133,8 @@
       "chapterTooLong": "Chapter \"{{title}}\" is quite long; confirm whether it should be split further",
       "chapterTooShort": "Chapter \"{{title}}\" is quite short; check the chapter splitting result",
       "duplicateTitles": "Duplicate chapter title \"{{title}}\" detected {{occurrences}} times",
-      "filteredChapters": "Kept only {{kept}} chapters ({{selection_label}}) for import per the parsing configuration ({{detected}} chapters originally detected)"
+      "filteredChaptersFull": "Kept {{kept}} chapters (full book) for import per the parsing configuration ({{detected}} chapters originally detected)",
+      "filteredChaptersTail": "Kept only the last {{kept}} chapters for import per the parsing configuration ({{detected}} chapters originally detected)"
     }
   },
   "internal": {

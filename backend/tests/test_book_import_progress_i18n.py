@@ -5,10 +5,13 @@
    结构化通道；纯数据通道（step_failures JSON）不带 code（legacy 形状）。
 2. _set_task_state 写 task.status_code/status_params；缺省时清空（legacy 行为）。
 3. BookImportWarning 序列化 params；_build_preview 真实告警路径携带新码 + params。
-4. API 层 _progress_sse_payload：带 code 追加 message_code/message_params；
+4. SSE 进度 payload 契约唯一来源为 SSEResponse.send_progress（API _progress_callback
+   直接透传，不再维护本地副本）：带 code 追加 message_code/message_params；
    不带 code 时 payload 与旧版 4 键字典字节形状一致。
 5. 所有新 import.* 码在 ERROR_REGISTRY + zh/en errors.json 三处注册，zh 与
    registry 模板字节一致，且不使用 i18next 保留参数名 count。
+6. 章节结构进度/告警按解析口径拆码：整本导入发 *Full 变体（无中文标签参数），
+   末章导入发 *Tail 变体（章数为数值参数）。
 """
 import asyncio
 import json
@@ -19,10 +22,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.api.book_import import _progress_sse_payload
 from app.core.errors import ERROR_REGISTRY
 from app.schemas.book_import import BookImportApplyRequest, BookImportWarning, ProjectSuggestion
 from app.services.book_import_service import BookImportService, _BookImportTask, _StepFailure
+from app.utils.sse_response import SSEResponse
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_DIR.parent
@@ -298,20 +301,95 @@ def test_build_preview_warnings_carry_codes_and_params(monkeypatch):
 
     # 全部告警码已切换到 import.warning.* 命名空间
     assert all(w.code.startswith("import.warning.") for w in preview.warnings)
-    # 章节结构任务态已携带结构化码与参数
-    chapter_state = [entry for entry in state_codes if entry[0] == "import.task.chapterStructures"]
-    assert chapter_state, "章节结构进度应携带 import.task.chapterStructures"
+    # 章节结构任务态已携带结构化码与参数（默认 tail 模式 → Tail 变体，含数值章数）
+    chapter_state = [entry for entry in state_codes if entry[0] == "import.task.chapterStructuresTail"]
+    assert chapter_state, "章节结构进度应携带 import.task.chapterStructuresTail"
     assert chapter_state[-1][1]["total"] == 3
     assert chapter_state[-1][1]["index"] == 3
+    assert chapter_state[-1][1]["chapters"] == 3
+    assert not [entry for entry in state_codes if entry[0] == "import.task.chapterStructuresFull"]
 
 
-def test_progress_sse_payload_with_code_adds_structured_fields():
-    """API _progress_sse_payload：带 code 追加 message_code/message_params。"""
-    payload = _progress_sse_payload(
-        "正在保存到数据库...", 96, "processing",
-        code="import.progress.savingDb", params={"x": 1},
-    )
-    assert payload == {
+def test_build_preview_extract_mode_picks_full_or_tail_code(monkeypatch):
+    """整本导入发 chapterStructuresFull（无章数标签参数）；末章导入发
+    chapterStructuresTail（chapters 数值参数），并触发 filteredChaptersTail；
+    各变体 message 与 zh 模板逐字节一致（模板占位符按 params 代入）。"""
+    svc = BookImportService()
+
+    chapters_data = [
+        {"title": f"第{i}章", "content": "内" * 500}
+        for i in range(1, 9)
+    ]
+
+    async def fake_reverse_suggestion(**kwargs):
+        return kwargs["suggestion"]
+
+    async def fake_reverse_outlines(**kwargs):
+        return []
+
+    monkeypatch.setattr(svc, "_generate_reverse_project_suggestion", fake_reverse_suggestion)
+    monkeypatch.setattr(svc, "_generate_reverse_outlines", fake_reverse_outlines)
+
+    state_codes: list[tuple] = []
+    original_set_state = svc._set_task_state
+
+    def spy_set_state(task_arg, **kwargs):
+        state_codes.append((kwargs.get("code"), kwargs.get("params"), kwargs.get("message")))
+        original_set_state(task_arg, **kwargs)
+
+    monkeypatch.setattr(svc, "_set_task_state", spy_set_state)
+
+    # ---- 整本导入：Full 变体，无 chapters 参数 ----
+    full_task = _completed_task("t-preview-full")
+    full_task.extract_mode = "full"
+    asyncio.run(svc._build_preview(
+        task=full_task, filename="book.txt", task_id=full_task.task_id, chapters_data=chapters_data,
+    ))
+    full_states = [e for e in state_codes if e[0] == "import.task.chapterStructuresFull"]
+    tail_states = [e for e in state_codes if e[0] == "import.task.chapterStructuresTail"]
+    assert full_states and not tail_states
+    assert full_states[-1][1] == {"index": 8, "total": 8}
+    assert full_states[-1][2] == "已处理整本 8/8 个章节结构..."
+    full_last = full_states[-1]
+
+    # ---- 末章导入（8 章仅取末 5 章）：Tail 变体 + filteredChaptersTail ----
+    state_codes.clear()
+    tail_task = _completed_task("t-preview-tail")
+    tail_task.extract_mode = "tail"
+    tail_task.tail_chapter_count = 5
+    preview = asyncio.run(svc._build_preview(
+        task=tail_task, filename="book.txt", task_id=tail_task.task_id, chapters_data=chapters_data,
+    ))
+    full_states = [e for e in state_codes if e[0] == "import.task.chapterStructuresFull"]
+    tail_states = [e for e in state_codes if e[0] == "import.task.chapterStructuresTail"]
+    assert tail_states and not full_states
+    assert tail_states[-1][1] == {"chapters": 5, "index": 5, "total": 5}
+    assert tail_states[-1][2] == "已处理末5章 5/5 个章节结构..."
+
+    trimmed = [w for w in preview.warnings if w.code == "import.warning.filteredChaptersTail"]
+    assert len(trimmed) == 1
+    assert trimmed[0].params == {"kept": 5, "detected": 8}
+    assert trimmed[0].message == "已按解析配置仅保留末5章 5 章用于导入（原始识别 8 章）"
+
+    # zh 模板按 params 代入后与运行时 message 逐字节一致（byte-identity 自证）
+    zh = json.loads((REPO_ROOT / "frontend" / "src" / "locales" / "zh" / "errors.json").read_text(encoding="utf-8"))
+
+    def _render(template: str, params: dict) -> str:
+        out = template
+        for key, value in params.items():
+            out = out.replace("{{" + key + "}}", str(value))
+        return out
+
+    assert _render(zh["import"]["task"]["chapterStructuresFull"], full_last[1]) == full_last[2]
+    assert _render(zh["import"]["task"]["chapterStructuresTail"], tail_states[-1][1]) == tail_states[-1][2]
+    assert _render(zh["import"]["warning"]["filteredChaptersTail"], trimmed[0].params) == trimmed[0].message
+
+
+def test_send_progress_with_code_adds_structured_fields():
+    """SSEResponse.send_progress（两条 _progress_callback 的唯一 payload 实现）：
+    带 code 追加 message_code/message_params（params 缺省回填 {}），SSE 字符串
+    形状与重构前 _progress_sse_payload + format_sse 完全一致。"""
+    payload = {
         "type": "progress",
         "message": "正在保存到数据库...",
         "progress": 96,
@@ -319,21 +397,24 @@ def test_progress_sse_payload_with_code_adds_structured_fields():
         "message_code": "import.progress.savingDb",
         "message_params": {"x": 1},
     }
+    sse = asyncio.run(SSEResponse.send_progress(
+        "正在保存到数据库...", 96, "processing",
+        code="import.progress.savingDb", params={"x": 1},
+    ))
+    assert sse == f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
     # params 缺省回填 {}
-    payload_no_params = _progress_sse_payload("m", 1, code="import.progress.savedDb")
-    assert payload_no_params["message_params"] == {}
+    sse_no_params = asyncio.run(SSEResponse.send_progress("m", 1, code="import.progress.savedDb"))
+    assert json.loads(sse_no_params.removeprefix("data: ").removesuffix("\n\n"))["message_params"] == {}
 
 
-def test_progress_sse_payload_without_code_byte_identical_to_legacy():
+def test_send_progress_without_code_byte_identical_to_legacy():
     """不带 code 时 payload 与旧版 4 键字典完全一致（无 message_code 键）。"""
     legacy = {"type": "progress", "message": "m", "progress": 50, "status": "processing"}
-    payload = _progress_sse_payload("m", 50)
-    assert "message_code" not in payload
-    assert "message_params" not in payload
-    assert json.dumps(payload, ensure_ascii=False) == json.dumps(legacy, ensure_ascii=False)
+    sse = asyncio.run(SSEResponse.send_progress("m", 50))
+    assert sse == f"data: {json.dumps(legacy, ensure_ascii=False)}\n\n"
     # params 为 None 时同样保持旧形状
-    payload_none_params = _progress_sse_payload("m", 50, params=None)
-    assert "message_code" not in payload_none_params
+    sse_none_params = asyncio.run(SSEResponse.send_progress("m", 50, params=None))
+    assert sse_none_params == sse
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:
