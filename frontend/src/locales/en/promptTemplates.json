@@ -8,6 +8,25 @@
   "card": {
     "templateKey": "Template key"
   },
+  "categories": {
+    "autoCharacter": "Auto Character",
+    "autoOrganization": "Auto Organization",
+    "bookImport": "Book Import",
+    "chapterRewrite": "Chapter Rewrite",
+    "chapterWriting": "Chapter Writing",
+    "characterGeneration": "Character Generation",
+    "coverGeneration": "Cover Generation",
+    "inspiration": "Inspiration",
+    "mcpEnhance": "MCP Enhanced",
+    "mcpTest": "MCP Testing",
+    "outlineGeneration": "Outline Generation",
+    "plotAnalysis": "Plot Analysis",
+    "plotExpansion": "Plot Expansion",
+    "skillLong": "Skill · Long-form",
+    "skillPolish": "Skill · Polish",
+    "skillShort": "Skill · Short-form",
+    "worldBuilding": "World Building"
+  },
   "editor": {
     "cancel": "Cancel",
     "contentLabel": "Template Content",

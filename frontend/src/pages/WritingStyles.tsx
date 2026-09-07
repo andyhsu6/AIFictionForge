@@ -204,7 +204,17 @@ export default function WritingStyles() {
             gutter={[0, gridConfig.gutter]}
             style={{ marginLeft: 0, marginRight: 0 }}
           >
-            {styles.map((style) => (
+            {styles.map((rawStyle) => {
+              const tPreset = t as (key: string, opts?: Record<string, unknown>) => string;
+              const style = rawStyle.preset_id
+                ? {
+                    ...rawStyle,
+                    name: tPreset(`preset.${rawStyle.preset_id}.name`, { defaultValue: rawStyle.name }),
+                    description: tPreset(`preset.${rawStyle.preset_id}.description`, { defaultValue: rawStyle.description }),
+                    prompt_content: tPreset(`preset.${rawStyle.preset_id}.requirements`, { defaultValue: rawStyle.prompt_content }),
+                  }
+                : rawStyle;
+              return (
               <Col
                 xs={gridConfig.xs}
                 sm={gridConfig.sm}
@@ -310,7 +320,8 @@ export default function WritingStyles() {
                   </div>
                 </Card>
               </Col>
-            ))}
+              );
+            })}
           </Row>
         )}
       </div>

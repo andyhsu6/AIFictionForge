@@ -53,9 +53,34 @@ interface CategoryGroup {
   count: number;
   templates: PromptTemplate[];
 }
+// 种子分类的稳定本地化映射；自定义分类（不在映射内）回退显示 DB 原名
+const CATEGORY_KEYS: Record<string, string> = {
+  '章节创作': 'chapterWriting',
+  '章节重写': 'chapterRewrite',
+  '大纲生成': 'outlineGeneration',
+  '世界构建': 'worldBuilding',
+  '角色生成': 'characterGeneration',
+  '情节分析': 'plotAnalysis',
+  '情节展开': 'plotExpansion',
+  '封面生成': 'coverGeneration',
+  '拆书导入': 'bookImport',
+  '灵感模式': 'inspiration',
+  '自动角色引入': 'autoCharacter',
+  '自动组织引入': 'autoOrganization',
+  'MCP增强': 'mcpEnhance',
+  'MCP测试': 'mcpTest',
+  'Skill·润色': 'skillPolish',
+  'Skill·短篇': 'skillShort',
+  'Skill·长篇': 'skillLong',
+};
 
 export default function PromptTemplates() {
   const { t } = useTranslation('promptTemplates');
+  const tCategory = t as (key: string, opts?: Record<string, unknown>) => string;
+  const categoryLabel = (name: string) => {
+    const key = CATEGORY_KEYS[name];
+    return key ? tCategory(`categories.${key}`, { defaultValue: name }) : name;
+  };
   const { token } = theme.useToken();
   const [modal, contextHolder] = Modal.useModal();
   const [categories, setCategories] = useState<CategoryGroup[]>([]);
@@ -396,7 +421,7 @@ export default function PromptTemplates() {
                     { key: '0', label: t('tabs.all', { n: categories.reduce((sum, cat) => sum + cat.count, 0) }) },
                     ...categories.map((cat, index) => ({
                       key: (index + 1).toString(),
-                      label: `${cat.category} (${cat.count})`
+                      label: `${categoryLabel(cat.category)} (${cat.count})`
                     }))
                   ]}
                 />
@@ -453,7 +478,7 @@ export default function PromptTemplates() {
                           </div>
                           <Space wrap>
                             <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? token.colorTextSecondary : token.colorWhite, border: 'none' }}>
-                              {template.category}
+                              {categoryLabel(template.category)}
                             </Tag>
                             <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? token.colorTextSecondary : token.colorWhite, border: 'none' }}>
                               {template.is_system_default ? t('tag.systemDefault') : t('tag.customized')}

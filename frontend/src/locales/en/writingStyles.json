@@ -35,6 +35,38 @@
     "createButton": "Create Custom Style",
     "title": "Writing Style Management"
   },
+  "preset": {
+    "classical": {
+      "description": "A classical, refined style for historical and xianxia themes.",
+      "name": "Classical Elegance",
+      "requirements": "Writing style requirements:\n1. Use classical or semi-classical Chinese\n2. Classical poetic imagery\n3. Focus on mood and lingering charm\n4. Keep dialogue and description classically beautiful"
+    },
+    "humorous": {
+      "description": "A witty, humorous style for light, funny stories.",
+      "name": "Lighthearted Humor",
+      "requirements": "Writing style requirements:\n1. Lively, playful language\n2. Comedic dialogue\n3. Well-placed exaggeration and reversals\n4. Keep the tone light and fun"
+    },
+    "literary": {
+      "description": "A literary, delicate style focused on psychology and atmosphere.",
+      "name": "Literary and Delicate",
+      "requirements": "Writing style requirements:\n1. Inner monologue and emotional detail\n2. Use setting to build atmosphere\n3. Beautiful, literary language\n4. Metaphor and symbolism"
+    },
+    "modern": {
+      "description": "A modern minimalist style for light novels and fast-paced web fiction.",
+      "name": "Modern Minimalist",
+      "requirements": "Writing style requirements:\n1. Direct, information-dense language\n2. Let dialogue drive the plot\n3. Avoid lengthy description; highlight key actions\n4. Brisk pacing for fast reading"
+    },
+    "natural": {
+      "description": "A natural, fluent narrative style for modern urban and real-life themes.",
+      "name": "Natural Flow",
+      "requirements": "Writing style requirements:\n1. Concise language close to modern speech\n2. Short sentences and smooth pacing\n3. Natural emotional detail\n4. Avoid over-embellishment and complex syntax"
+    },
+    "suspense": {
+      "description": "A tense suspense style for mystery and thriller themes.",
+      "name": "Tense Suspense",
+      "requirements": "Writing style requirements:\n1. Build oppressive tension\n2. Short sentences, faster rhythm\n3. Set up suspense and foreshadowing\n4. Detail-oriented, planting clues"
+    }
+  },
   "tag": {
     "default": "Default"
   },

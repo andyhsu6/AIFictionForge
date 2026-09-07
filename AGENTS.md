@@ -53,6 +53,10 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
 - **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`）；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制；浏览器自动化用 playwright(-core) 以 `executablePath` 指向本机 Brave（headless 截图/验收均如此）
 
+## 视觉验证约定
+- **UI 改动/验收指引必须先做视觉渲染验证**（playwright-core + 本机 Brave headless 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
+- **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
+
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
 - 涉及删除数据、修改 `.env`、改动数据库 schema 等破坏性操作时仍需确认。

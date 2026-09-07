@@ -9,6 +9,7 @@ import {
   Input,
   Layout,
   Row,
+  Select,
   Space,
   Spin,
   Tabs,
@@ -19,6 +20,7 @@ import {
 } from 'antd';
 import {
   BookOutlined,
+  GlobalOutlined,
   LockOutlined,
   MailOutlined,
   RobotOutlined,
@@ -68,7 +70,7 @@ interface ResetPasswordValues {
 }
 
 export default function Login() {
-  const { t } = useTranslation('login');
+  const { t, i18n } = useTranslation('login');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
@@ -799,8 +801,23 @@ export default function Login() {
             background: alphaColor(token.colorBgContainer, 0.9),
             border: `1px solid ${token.colorBorderSecondary}`,
             backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
           }}
         >
+          <GlobalOutlined />
+          <Select
+            size="small"
+            variant="borderless"
+            value={i18n.language?.startsWith('zh') ? 'zh' : 'en'}
+            onChange={(value) => i18n.changeLanguage(value)}
+            style={{ minWidth: 96 }}
+            options={[
+              { value: 'zh', label: '简体中文' },
+              { value: 'en', label: 'English' },
+            ]}
+          />
           <ThemeSwitch size="small" />
         </div>
         <Row style={{ minHeight: '100vh' }}>

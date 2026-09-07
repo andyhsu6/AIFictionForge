@@ -8,6 +8,25 @@
   "card": {
     "templateKey": "模板键"
   },
+  "categories": {
+    "autoCharacter": "自动角色引入",
+    "autoOrganization": "自动组织引入",
+    "bookImport": "拆书导入",
+    "chapterRewrite": "章节重写",
+    "chapterWriting": "章节创作",
+    "characterGeneration": "角色生成",
+    "coverGeneration": "封面生成",
+    "inspiration": "灵感模式",
+    "mcpEnhance": "MCP增强",
+    "mcpTest": "MCP测试",
+    "outlineGeneration": "大纲生成",
+    "plotAnalysis": "情节分析",
+    "plotExpansion": "情节展开",
+    "skillLong": "Skill·长篇",
+    "skillPolish": "Skill·润色",
+    "skillShort": "Skill·短篇",
+    "worldBuilding": "世界构建"
+  },
   "editor": {
     "cancel": "取消",
     "contentLabel": "模板内容",
