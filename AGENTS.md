@@ -57,6 +57,11 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **UI 改动/验收指引必须先做视觉渲染验证**（playwright-core + 本机 Brave headless 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
 - **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
 
+## 服务与测试身份约定（硬约束）
+- **宣称"可以测试"前必须先跑 `./aistoryforge.sh verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + /health 分支双核对）才允许开始测试/验收；verify 不通过禁止宣称就绪。
+- **服务脚本必须用绝对路径调用**（如 `/Users/andyhsu/codehouse/aff-i18n-internationalization/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
+- `start` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
+
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
 - 涉及删除数据、修改 `.env`、改动数据库 schema 等破坏性操作时仍需确认。

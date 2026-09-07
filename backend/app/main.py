@@ -137,10 +137,27 @@ else:
     )
 
 
+def _git_info() -> dict:
+    """服务代码身份（分支+commit），供验收前核对端口上跑的是哪个 checkout。"""
+    import subprocess
+    try:
+        root = Path(__file__).resolve().parents[1]
+        branch = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        commit = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        return {"branch": branch or "unknown", "commit": commit or "unknown"}
+    except Exception:
+        return {"branch": "unknown", "commit": "unknown"}
+
+
+GIT_INFO = _git_info()
+
+
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok"}
+    return {"status": "ok", "branch": GIT_INFO["branch"], "commit": GIT_INFO["commit"]}
 
 
 @app.get("/health/db-sessions")
