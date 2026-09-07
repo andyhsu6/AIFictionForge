@@ -238,6 +238,10 @@ class _BookImportTask:
     imported_project_id: Optional[str] = None
     # 步骤级失败记录
     failed_steps: list[_StepFailure] = field(default_factory=list)
+    # i18n 双通道：任务状态最近一次结构化码/参数（_set_task_state 写入；
+    # None 表示纯旧通道，状态响应形状与旧版完全一致）
+    status_code: Optional[str] = None
+    status_params: Optional[dict] = None
 
 
 class BookImportService:
@@ -303,7 +307,7 @@ class BookImportService:
             return {"success": True, "message": f"任务已是终态：{task.status}"}
 
         task.cancelled = True
-        self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消")
+        self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消", code="task.cancelled")
         return {"success": True, "message": "取消成功"}
 
     async def apply_import(
@@ -333,9 +337,10 @@ class BookImportService:
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="apply_trimmed_for_extract_mode",
+                    code="import.warning.applyTrimmed",
                     message=f"导入阶段已按解析配置仅保留 {len(chapters_to_import)} 章",
                     level="info",
+                    params={"kept": len(chapters_to_import)},
                 )
             )
 
@@ -437,19 +442,27 @@ class BookImportService:
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="apply_trimmed_for_extract_mode",
+                    code="import.warning.applyTrimmed",
                     message=f"导入阶段已按解析配置仅保留 {len(chapters_to_import)} 章",
                     level="info",
+                    params={"kept": len(chapters_to_import)},
                 )
             )
 
-        async def _notify(message: str, progress: int, status: str = "processing") -> None:
+        async def _notify(
+            message: str,
+            progress: int,
+            status: str = "processing",
+            code: Optional[str] = None,
+            params: Optional[dict] = None,
+        ) -> None:
+            """i18n 双通道：code 设置时随进度附结构化码，message 文案字节不变。"""
             if progress_callback:
-                await progress_callback(message, progress, status)
+                await progress_callback(message, progress, status, code=code, params=params)
 
         try:
             # -- 步骤1: 创建项目 (0-5%)
-            await _notify("正在创建项目...", 2)
+            await _notify("正在创建项目...", 2, code="import.progress.creatingProject")
             project = await self._prepare_project(
                 db=db,
                 user_id=user_id,
@@ -458,10 +471,10 @@ class BookImportService:
                 chapters=chapters_to_import,
                 import_mode=payload.import_mode,
             )
-            await _notify("项目创建完成", 5)
+            await _notify("项目创建完成", 5, code="import.progress.projectCreated")
 
             # -- 步骤2: 导入大纲 (5-10%)
-            await _notify("正在导入大纲...", 6)
+            await _notify("正在导入大纲...", 6, code="import.progress.importingOutlines")
             outline_id_map = await self._import_outlines(
                 db=db,
                 project_id=project.id,
@@ -469,10 +482,18 @@ class BookImportService:
                 import_mode=payload.import_mode,
             )
             statistics["outlines"] = len(outlines_to_import)
-            await _notify(f"已导入 {len(outlines_to_import)} 个大纲", 10)
+            await _notify(
+                f"已导入 {len(outlines_to_import)} 个大纲", 10,
+                code="import.progress.outlinesImported",
+                params={"outlines": len(outlines_to_import)},
+            )
 
             # -- 步骤3: 导入章节 (10-20%)
-            await _notify(f"正在导入 {len(chapters_to_import)} 个章节...", 12)
+            await _notify(
+                f"正在导入 {len(chapters_to_import)} 个章节...", 12,
+                code="import.progress.importingChapters",
+                params={"chapters": len(chapters_to_import)},
+            )
             chapter_count, words_delta = await self._import_chapters(
                 db=db,
                 project_id=project.id,
@@ -486,12 +507,16 @@ class BookImportService:
                 project.current_words = words_delta
             else:
                 project.current_words = (project.current_words or 0) + words_delta
-            await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）", 20)
+            await _notify(
+                f"已导入 {chapter_count} 个章节（{words_delta}字）", 20,
+                code="import.progress.chaptersImported",
+                params={"chapters": chapter_count, "words": words_delta},
+            )
 
             # -- 步骤4: 生成世界观 (20-40%)
             failed_steps: list[_StepFailure] = []
 
-            await _notify("🌍 正在生成世界观...", 22)
+            await _notify("🌍 正在生成世界观...", 22, code="import.progress.generatingWorld")
             try:
                 generated_world = await self._generate_world_building_from_project(
                     db=db,
@@ -505,7 +530,7 @@ class BookImportService:
                     content_language=task.content_language,
                 )
                 statistics["generated_world_building"] = generated_world
-                await _notify("🌍 世界观生成完成", 40)
+                await _notify("🌍 世界观生成完成", 40, code="import.progress.worldDone")
             except Exception as exc:
                 logger.warning(f"拆书导入：世界观生成失败（将继续后续步骤）: {exc}")
                 failed_steps.append(_StepFailure(
@@ -513,10 +538,14 @@ class BookImportService:
                     step_label="世界观生成",
                     error_message=str(exc),
                 ))
-                await _notify(f"⚠️ 世界观生成失败：{str(exc)[:80]}，将继续后续步骤", 40, "warning")
+                await _notify(
+                    f"⚠️ 世界观生成失败：{str(exc)[:80]}，将继续后续步骤", 40, "warning",
+                    code="import.progress.worldFailed",
+                    params={"error": str(exc)[:80]},
+                )
 
             # -- 步骤5: 生成职业体系 (40-65%)
-            await _notify("💼 正在生成职业体系...", 42)
+            await _notify("💼 正在生成职业体系...", 42, code="import.progress.generatingCareers")
             try:
                 generated_careers = await self._generate_career_system_from_project(
                     db=db,
@@ -529,7 +558,11 @@ class BookImportService:
                     content_language=task.content_language,
                 )
                 statistics["generated_careers"] = generated_careers
-                await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
+                await _notify(
+                    f"💼 职业体系生成完成（{generated_careers}个）", 65,
+                    code="import.progress.careersDone",
+                    params={"careers": generated_careers},
+                )
             except Exception as exc:
                 logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
                 failed_steps.append(_StepFailure(
@@ -537,11 +570,15 @@ class BookImportService:
                     step_label="职业体系生成",
                     error_message=str(exc),
                 ))
-                await _notify(f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning")
+                await _notify(
+                    f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
+                    code="import.progress.careersFailed",
+                    params={"error": str(exc)[:80]},
+                )
 
             # -- 步骤6: 生成角色/组织 (65-92%)
             character_count_target = max(project.character_count or 0, 5)
-            await _notify("👥 正在生成角色与组织...", 67)
+            await _notify("👥 正在生成角色与组织...", 67, code="import.progress.generatingCharacters")
             try:
                 generated_entities = await self._generate_characters_and_organizations_from_project(
                     db=db,
@@ -554,7 +591,11 @@ class BookImportService:
                     content_language=task.content_language,
                 )
                 statistics["generated_entities"] = generated_entities
-                await _notify(f"👥 角色/组织生成完成（{generated_entities}个）", 92)
+                await _notify(
+                    f"👥 角色/组织生成完成（{generated_entities}个）", 92,
+                    code="import.progress.charactersDone",
+                    params={"entities": generated_entities},
+                )
             except Exception as exc:
                 logger.warning(f"拆书导入：角色/组织生成失败: {exc}")
                 failed_steps.append(_StepFailure(
@@ -562,10 +603,14 @@ class BookImportService:
                     step_label="角色与组织生成",
                     error_message=str(exc),
                 ))
-                await _notify(f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning")
+                await _notify(
+                    f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning",
+                    code="import.progress.charactersFailed",
+                    params={"error": str(exc)[:80]},
+                )
 
             # -- 步骤6.5: 原文关系抽取 (92-95%)
-            await _notify("🔗 正在从原文抽取人物关系...", 93)
+            await _notify("🔗 正在从原文抽取人物关系...", 93, code="import.progress.extractingRelationships")
             try:
                 extracted = await self._extract_relationships_from_chapters(
                     db=db,
@@ -581,6 +626,8 @@ class BookImportService:
                 await _notify(
                     f"🔗 原文关系抽取完成（{extracted['extracted_relationships']}条关系）",
                     95,
+                    code="import.progress.relationshipsDone",
+                    params={"relationships": extracted["extracted_relationships"]},
                 )
             except Exception as exc:
                 logger.warning(f"拆书导入：原文关系抽取失败（将继续后续步骤）: {exc}")
@@ -589,7 +636,11 @@ class BookImportService:
                     step_label="原文关系抽取",
                     error_message=str(exc),
                 ))
-                await _notify(f"⚠️ 原文关系抽取失败：{str(exc)[:80]}，将继续后续步骤", 95, "warning")
+                await _notify(
+                    f"⚠️ 原文关系抽取失败：{str(exc)[:80]}，将继续后续步骤", 95, "warning",
+                    code="import.progress.relationshipsFailed",
+                    params={"error": str(exc)[:80]},
+                )
 
             # 标记向导完成并将项目置为创作中
             project.wizard_step = 3
@@ -597,9 +648,9 @@ class BookImportService:
             project.status = "writing"
 
             # -- 步骤7: 提交数据库 (95-98%)
-            await _notify("正在保存到数据库...", 96)
+            await _notify("正在保存到数据库...", 96, code="import.progress.savingDb")
             await db.commit()
-            await _notify("数据保存完成", 98)
+            await _notify("数据保存完成", 98, code="import.progress.savedDb")
 
             # 记录失败步骤和项目ID到任务中，供重试使用
             task.imported_project_id = project.id
@@ -615,6 +666,8 @@ class BookImportService:
                     f"⚠️ 导入完成，但有 {len(failed_steps)} 个生成步骤失败，可点击重试",
                     98,
                     "warning",
+                    code="import.progress.doneWithFailures",
+                    params={"failed_count": len(failed_steps)},
                 )
                 # 通过特殊的 progress 消息推送失败步骤列表
                 if progress_callback:
@@ -668,9 +721,16 @@ class BookImportService:
                 params={"steps": ", ".join(invalid_steps)},
             )
 
-        async def _notify(message: str, progress: int, status: str = "processing") -> None:
+        async def _notify(
+            message: str,
+            progress: int,
+            status: str = "processing",
+            code: Optional[str] = None,
+            params: Optional[dict] = None,
+        ) -> None:
+            """i18n 双通道：code 设置时随进度附结构化码，message 文案字节不变。"""
             if progress_callback:
-                await progress_callback(message, progress, status)
+                await progress_callback(message, progress, status, code=code, params=params)
 
         try:
             from app.api.common import verify_project_access
@@ -689,7 +749,7 @@ class BookImportService:
                 retry_count = (original_failure.retry_count if original_failure else 0) + 1
 
                 if step_name == "world_building":
-                    await _notify("🔄 正在重试世界观生成...", step_start_pct)
+                    await _notify("🔄 正在重试世界观生成...", step_start_pct, code="import.progress.retryWorld")
                     try:
                         chapters_for_retry = [
                             BookImportChapter(
@@ -717,7 +777,7 @@ class BookImportService:
                             content_language=task.content_language,
                         )
                         retry_results["generated_world_building"] = result
-                        await _notify("✅ 世界观重试成功", step_end_pct)
+                        await _notify("✅ 世界观重试成功", step_end_pct, code="import.progress.retryWorldDone")
                     except Exception as exc:
                         logger.warning(f"世界观重试失败 (第{retry_count}次): {exc}")
                         still_failed.append(_StepFailure(
@@ -726,10 +786,14 @@ class BookImportService:
                             error_message=str(exc),
                             retry_count=retry_count,
                         ))
-                        await _notify(f"⚠️ 世界观重试失败：{str(exc)[:80]}", step_end_pct, "warning")
+                        await _notify(
+                            f"⚠️ 世界观重试失败：{str(exc)[:80]}", step_end_pct, "warning",
+                            code="import.progress.retryWorldFailed",
+                            params={"error": str(exc)[:80]},
+                        )
 
                 elif step_name == "career_system":
-                    await _notify("🔄 正在重试职业体系生成...", step_start_pct)
+                    await _notify("🔄 正在重试职业体系生成...", step_start_pct, code="import.progress.retryCareers")
                     try:
                         chapters_for_retry = [
                             BookImportChapter(
@@ -756,7 +820,11 @@ class BookImportService:
                             content_language=task.content_language,
                         )
                         retry_results["generated_careers"] = result
-                        await _notify(f"✅ 职业体系重试成功（{result}个）", step_end_pct)
+                        await _notify(
+                            f"✅ 职业体系重试成功（{result}个）", step_end_pct,
+                            code="import.progress.retryCareersDone",
+                            params={"careers": result},
+                        )
                     except Exception as exc:
                         logger.warning(f"职业体系重试失败 (第{retry_count}次): {exc}")
                         still_failed.append(_StepFailure(
@@ -765,11 +833,15 @@ class BookImportService:
                             error_message=str(exc),
                             retry_count=retry_count,
                         ))
-                        await _notify(f"⚠️ 职业体系重试失败：{str(exc)[:80]}", step_end_pct, "warning")
+                        await _notify(
+                            f"⚠️ 职业体系重试失败：{str(exc)[:80]}", step_end_pct, "warning",
+                            code="import.progress.retryCareersFailed",
+                            params={"error": str(exc)[:80]},
+                        )
 
                 elif step_name == "characters":
                     character_count_target = max(project.character_count or 0, 5)
-                    await _notify("🔄 正在重试角色与组织生成...", step_start_pct)
+                    await _notify("🔄 正在重试角色与组织生成...", step_start_pct, code="import.progress.retryCharacters")
                     try:
                         result = await self._generate_characters_and_organizations_from_project(
                             db=db,
@@ -782,7 +854,11 @@ class BookImportService:
                             content_language=task.content_language,
                         )
                         retry_results["generated_entities"] = result
-                        await _notify(f"✅ 角色/组织重试成功（{result}个）", step_end_pct)
+                        await _notify(
+                            f"✅ 角色/组织重试成功（{result}个）", step_end_pct,
+                            code="import.progress.retryCharactersDone",
+                            params={"entities": result},
+                        )
                     except Exception as exc:
                         logger.warning(f"角色/组织重试失败 (第{retry_count}次): {exc}")
                         still_failed.append(_StepFailure(
@@ -791,10 +867,14 @@ class BookImportService:
                             error_message=str(exc),
                             retry_count=retry_count,
                         ))
-                        await _notify(f"⚠️ 角色/组织重试失败：{str(exc)[:80]}", step_end_pct, "warning")
+                        await _notify(
+                            f"⚠️ 角色/组织重试失败：{str(exc)[:80]}", step_end_pct, "warning",
+                            code="import.progress.retryCharactersFailed",
+                            params={"error": str(exc)[:80]},
+                        )
 
                 elif step_name == "relationship_extraction":
-                    await _notify("🔄 正在重试原文关系抽取...", step_start_pct)
+                    await _notify("🔄 正在重试原文关系抽取...", step_start_pct, code="import.progress.retryRelationships")
                     try:
                         result = await self._extract_relationships_from_chapters(
                             db=db,
@@ -818,7 +898,7 @@ class BookImportService:
                             content_language=task.content_language,
                         )
                         retry_results["relationship_extraction"] = result
-                        await _notify("✅ 原文关系抽取重试成功", step_end_pct)
+                        await _notify("✅ 原文关系抽取重试成功", step_end_pct, code="import.progress.retryRelationshipsDone")
                     except Exception as exc:
                         logger.warning(f"原文关系抽取重试失败 (第{retry_count}次): {exc}")
                         still_failed.append(_StepFailure(
@@ -827,12 +907,16 @@ class BookImportService:
                             error_message=str(exc),
                             retry_count=retry_count,
                         ))
-                        await _notify(f"⚠️ 原文关系抽取重试失败：{str(exc)[:80]}", step_end_pct, "warning")
+                        await _notify(
+                            f"⚠️ 原文关系抽取重试失败：{str(exc)[:80]}", step_end_pct, "warning",
+                            code="import.progress.retryRelationshipsFailed",
+                            params={"error": str(exc)[:80]},
+                        )
 
             # 提交数据库
-            await _notify("正在保存到数据库...", 93)
+            await _notify("正在保存到数据库...", 93, code="import.progress.savingDb")
             await db.commit()
-            await _notify("数据保存完成", 96)
+            await _notify("数据保存完成", 96, code="import.progress.savedDb")
 
             # 更新任务的失败步骤记录
             task.failed_steps = still_failed
@@ -874,13 +958,17 @@ class BookImportService:
 
         try:
             # 进度分配：编码识别 5%，文本清洗 10%，章节切分 15%，按配置筛选章节 18%，AI反向生成 20%-95%，完成 100%
-            self._set_task_state(task, status="running", progress=5, message="正在识别编码并读取文本...")
+            self._set_task_state(task, status="running", progress=5, message="正在识别编码并读取文本...", code="import.task.detectEncoding")
             self._check_cancelled(task)
 
             text, encoding = txt_parser_service.decode_bytes(file_content)
             cleaned = txt_parser_service.clean_text(text)
 
-            self._set_task_state(task, status="running", progress=10, message=f"文本清洗完成（编码：{encoding}）")
+            self._set_task_state(
+                task, status="running", progress=10,
+                message=f"文本清洗完成（编码：{encoding}）",
+                code="import.task.textCleaned", params={"encoding": encoding},
+            )
             self._check_cancelled(task)
 
             chapters_data = txt_parser_service.split_chapters(cleaned)
@@ -890,10 +978,11 @@ class BookImportService:
             self._set_task_state(
                 task, status="running", progress=15,
                 message=f"已识别 {len(chapters_data)} 个章节，正在构建预览结构...",
+                code="import.task.chaptersDetected", params={"chapters": len(chapters_data)},
             )
             self._check_cancelled(task)
 
-            self._set_task_state(task, status="running", progress=18, message="正在按解析配置筛选章节并构建预览...")
+            self._set_task_state(task, status="running", progress=18, message="正在按解析配置筛选章节并构建预览...", code="import.task.filteringChapters")
             preview = await self._build_preview(
                 task=task,
                 filename=task.filename,
@@ -903,9 +992,9 @@ class BookImportService:
 
             self._check_cancelled(task)
             task.preview = preview
-            self._set_task_state(task, status="completed", progress=100, message="解析完成，可预览并确认导入")
+            self._set_task_state(task, status="completed", progress=100, message="解析完成，可预览并确认导入", code="import.task.parseCompleted")
         except asyncio.CancelledError:
-            self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消")
+            self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消", code="task.cancelled")
         except Exception as exc:
             logger.error(f"拆书任务失败 task_id={task_id}: {exc}", exc_info=True)
             self._set_task_state(
@@ -914,6 +1003,7 @@ class BookImportService:
                 progress=task.progress,
                 message="解析失败",
                 error=str(exc),
+                code="import.task.parseFailed",
             )
 
     async def _prepare_project(
@@ -1332,17 +1422,19 @@ class BookImportService:
             if len(content) < 300:
                 warnings.append(
                     BookImportWarning(
-                        code="chapter_too_short",
+                        code="import.warning.chapterTooShort",
                         message=f"章节「{title}」内容较短，建议检查切分结果",
                         level="warning",
+                        params={"title": title},
                     )
                 )
             if len(content) > 12000:
                 warnings.append(
                     BookImportWarning(
-                        code="chapter_too_long",
+                        code="import.warning.chapterTooLong",
                         message=f"章节「{title}」内容较长，建议确认是否应继续拆分",
                         level="info",
+                        params={"title": title},
                     )
                 )
 
@@ -1354,24 +1446,28 @@ class BookImportService:
                     status="running",
                     progress=chapter_progress,
                     message=f"已处理{selection_label} {idx}/{selected_total} 个章节结构...",
+                    code="import.task.chapterStructures",
+                    params={"selection_label": selection_label, "index": idx, "total": selected_total},
                 )
 
         for title, count in title_counter.items():
             if count > 1:
                 warnings.append(
                     BookImportWarning(
-                        code="duplicate_chapter_title",
+                        code="import.warning.duplicateTitles",
                         message=f"检测到重复章节标题「{title}」共 {count} 次",
                         level="warning",
+                        params={"title": title, "occurrences": count},
                     )
                 )
 
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
-                    code="trimmed_for_extract_mode",
+                    code="import.warning.filteredChapters",
                     message=f"已按解析配置仅保留{selection_label} {selected_total} 章用于导入（原始识别 {len(chapters_data)} 章）",
                     level="info",
+                    params={"selection_label": selection_label, "kept": selected_total, "detected": len(chapters_data)},
                 )
             )
 
@@ -1381,6 +1477,7 @@ class BookImportService:
             status="running",
             progress=20,
             message="正在调用AI反向生成项目信息（标题/简介/主题/类型）...",
+            code="import.task.reverseProjectSuggestion",
         )
         suggestion = await self._generate_reverse_project_suggestion(
             user_id=task.user_id,
@@ -1430,12 +1527,12 @@ class BookImportService:
 
         if not sampled_text:
             if task:
-                self._set_task_state(task, status="running", progress=95, message="文本样本不足，使用规则推断项目信息")
+                self._set_task_state(task, status="running", progress=95, message="文本样本不足，使用规则推断项目信息", code="import.task.sampleInsufficientFallback")
             return fallback
 
         try:
             if task:
-                self._set_task_state(task, status="running", progress=25, message="正在初始化AI服务...")
+                self._set_task_state(task, status="running", progress=25, message="正在初始化AI服务...", code="import.task.initAiService")
 
             engine = await get_engine(user_id)
             session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -1443,7 +1540,7 @@ class BookImportService:
                 ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
 
                 if task:
-                    self._set_task_state(task, status="running", progress=30, message="正在准备AI提示词...")
+                    self._set_task_state(task, status="running", progress=30, message="正在准备AI提示词...", code="import.task.preparingPrompt")
 
                 template = await PromptService.get_template("BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION", user_id, db)
                 # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
@@ -1458,7 +1555,7 @@ class BookImportService:
                 )
 
                 if task:
-                    self._set_task_state(task, status="running", progress=35, message="AI正在分析文本内容...")
+                    self._set_task_state(task, status="running", progress=35, message="AI正在分析文本内容...", code="import.task.aiAnalyzing")
 
                 # 启动一个模拟进度推进的协程，在AI调用期间持续更新进度
                 ai_done = asyncio.Event()
@@ -1475,15 +1572,27 @@ class BookImportService:
                         "AI正在生成项目简介...",
                         "AI正在整理生成结果...",
                     ]
+                    # 与 messages 一一对应的结构化码（i18n 双通道；message 文案不变）
+                    message_codes = [
+                        "import.task.aiAnalyzing",
+                        "import.task.aiDetectingTheme",
+                        "import.task.aiInferringPerspective",
+                        "import.task.aiGeneratingDescription",
+                        "import.task.aiSummarizing",
+                    ]
                     msg_idx = 0
                     while not ai_done.is_set() and current < 85:
                         await asyncio.sleep(2)
                         if ai_done.is_set():
                             break
                         current = min(current + 5, 85)
-                        msg = messages[min(msg_idx, len(messages) - 1)]
+                        tick_idx = min(msg_idx, len(messages) - 1)
+                        msg = messages[tick_idx]
                         msg_idx += 1
-                        self._set_task_state(task, status="running", progress=current, message=msg)
+                        self._set_task_state(
+                            task, status="running", progress=current, message=msg,
+                            code=message_codes[tick_idx],
+                        )
 
                 ticker_task = asyncio.create_task(_progress_ticker())
 
@@ -1498,7 +1607,7 @@ class BookImportService:
                     await ticker_task
 
                 if task:
-                    self._set_task_state(task, status="running", progress=90, message="AI生成完成，正在整理项目信息...")
+                    self._set_task_state(task, status="running", progress=90, message="AI生成完成，正在整理项目信息...", code="import.task.aiProjectDone")
 
                 result = ProjectSuggestion(
                     title=suggestion.title,
@@ -1516,13 +1625,13 @@ class BookImportService:
                 )
 
                 if task:
-                    self._set_task_state(task, status="running", progress=95, message="项目信息生成完毕，准备预览...")
+                    self._set_task_state(task, status="running", progress=95, message="项目信息生成完毕，准备预览...", code="import.task.projectSuggestionReady")
 
                 return result
         except Exception as exc:
             logger.warning(f"反向生成项目信息失败，回退规则推断: {exc}")
             if task:
-                self._set_task_state(task, status="running", progress=95, message="AI生成失败，使用规则推断项目信息")
+                self._set_task_state(task, status="running", progress=95, message="AI生成失败，使用规则推断项目信息", code="import.task.aiProjectFailedFallback")
             return fallback
 
     async def _generate_reverse_outlines(
@@ -1552,7 +1661,7 @@ class BookImportService:
 
         try:
             if task:
-                self._set_task_state(task, status="running", progress=95, message="正在反向生成章节大纲（分批5章）...")
+                self._set_task_state(task, status="running", progress=95, message="正在反向生成章节大纲（分批5章）...", code="import.task.reverseOutlinesStart")
 
             engine = await get_engine(user_id)
             session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -1585,6 +1694,8 @@ class BookImportService:
                             status="running",
                             progress=progress,
                             message=f"正在生成大纲批次 {batch_idx}/{total_batches}（第{start_chapter}-{end_chapter}章）...",
+                            code="import.task.outlineBatch",
+                            params={"batch": batch_idx, "total": total_batches, "start": start_chapter, "end": end_chapter},
                         )
 
                     prompt = PromptService.format_prompt(
@@ -1628,13 +1739,13 @@ class BookImportService:
                 ]
 
                 if task:
-                    self._set_task_state(task, status="running", progress=99, message="大纲反向生成完成，正在整理预览...")
+                    self._set_task_state(task, status="running", progress=99, message="大纲反向生成完成，正在整理预览...", code="import.task.outlinesReady")
 
                 return outlines
         except Exception as exc:
             logger.warning(f"反向生成章节大纲失败，回退规则大纲: {exc}")
             if task:
-                self._set_task_state(task, status="running", progress=99, message="AI大纲生成失败，使用规则大纲")
+                self._set_task_state(task, status="running", progress=99, message="AI大纲生成失败，使用规则大纲", code="import.task.aiOutlinesFailedFallback")
             return fallback_outlines
 
     def _build_reverse_outline_chapters_text(self, chapters: list[BookImportChapter]) -> str:
@@ -2132,16 +2243,22 @@ class BookImportService:
         让世界观基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
         """
 
-        async def _notify(msg: str, sub: float) -> None:
+        async def _notify(
+            msg: str,
+            sub: float,
+            code: Optional[str] = None,
+            params: Optional[dict] = None,
+        ) -> None:
+            """i18n 双通道：code 设置时随进度附结构化码，message 文案字节不变。"""
             if progress_callback:
                 p = progress_range[0] + int((progress_range[1] - progress_range[0]) * sub)
-                await progress_callback(msg, p)
+                await progress_callback(msg, p, code=code, params=params)
 
         try:
-            await _notify("🌍 正在初始化AI服务...", 0.1)
+            await _notify("🌍 正在初始化AI服务...", 0.1, code="import.progress.worldInitAi")
             ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
-            await _notify("🌍 正在准备世界观提示词...", 0.2)
+            await _notify("🌍 正在准备世界观提示词...", 0.2, code="import.progress.worldPreparingPrompt")
             template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
             full_book_context = ""
             if chapters:
@@ -2160,7 +2277,7 @@ class BookImportService:
                 content_language=generation_language,
             )
 
-            await _notify("🌍 AI正在生成世界观...", 0.3)
+            await _notify("🌍 AI正在生成世界观...", 0.3, code="import.progress.worldAiGenerating")
             world_data = await ai_service.call_with_json_retry(
                 prompt=prompt,
                 max_retries=3,
@@ -2170,7 +2287,7 @@ class BookImportService:
             if not isinstance(world_data, dict):
                 return 0
 
-            await _notify("🌍 正在解析世界观数据...", 0.8)
+            await _notify("🌍 正在解析世界观数据...", 0.8, code="import.progress.worldParsing")
             time_period = str(world_data.get("time_period") or "").strip()
             location = str(world_data.get("location") or "").strip()
             atmosphere = str(world_data.get("atmosphere") or "").strip()
@@ -2190,7 +2307,7 @@ class BookImportService:
                 project.world_rules = rules
                 updated = 1
 
-            await _notify("🌍 世界观写入完成", 1.0)
+            await _notify("🌍 世界观写入完成", 1.0, code="import.progress.worldWritten")
             return updated
         except Exception as exc:
             logger.warning(f"拆书导入阶段生成世界观失败，沿用现有世界观: {exc}")
@@ -2217,15 +2334,21 @@ class BookImportService:
         让职业体系基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
         """
 
-        async def _notify(msg: str, sub: float) -> None:
+        async def _notify(
+            msg: str,
+            sub: float,
+            code: Optional[str] = None,
+            params: Optional[dict] = None,
+        ) -> None:
+            """i18n 双通道：code 设置时随进度附结构化码，message 文案字节不变。"""
             if progress_callback:
                 p = progress_range[0] + int((progress_range[1] - progress_range[0]) * sub)
-                await progress_callback(msg, p)
+                await progress_callback(msg, p, code=code, params=params)
 
-        await _notify("💼 正在初始化AI服务...", 0.1)
+        await _notify("💼 正在初始化AI服务...", 0.1, code="import.progress.careersInitAi")
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
-        await _notify("💼 正在准备职业体系提示词...", 0.2)
+        await _notify("💼 正在准备职业体系提示词...", 0.2, code="import.progress.careersPreparingPrompt")
         template = await PromptService.get_template("CAREER_SYSTEM_GENERATION", user_id, db)
         full_book_context = ""
         if chapters:
@@ -2248,7 +2371,7 @@ class BookImportService:
             content_language=generation_language,
         )
 
-        await _notify("💼 AI正在生成职业体系...", 0.3)
+        await _notify("💼 AI正在生成职业体系...", 0.3, code="import.progress.careersAiGenerating")
         career_data = await ai_service.call_with_json_retry(
             prompt=prompt,
             max_retries=3,
@@ -2256,7 +2379,7 @@ class BookImportService:
             validator=validate_career_system,
         )
 
-        await _notify("💼 正在解析职业数据...", 0.7)
+        await _notify("💼 正在解析职业数据...", 0.7, code="import.progress.careersParsing")
         main_careers = career_data.get("main_careers", [])
         sub_careers = career_data.get("sub_careers", [])
         if not isinstance(main_careers, list):
@@ -2328,10 +2451,16 @@ class BookImportService:
     ) -> int:
         """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。"""
 
-        async def _notify(msg: str, sub: float) -> None:
+        async def _notify(
+            msg: str,
+            sub: float,
+            code: Optional[str] = None,
+            params: Optional[dict] = None,
+        ) -> None:
+            """i18n 双通道：code 设置时随进度附结构化码，message 文案字节不变。"""
             if progress_callback:
                 p = progress_range[0] + int((progress_range[1] - progress_range[0]) * sub)
-                await progress_callback(msg, p)
+                await progress_callback(msg, p, code=code, params=params)
 
         def _to_int(value: Any, default: int) -> int:
             try:
@@ -2339,7 +2468,7 @@ class BookImportService:
             except (TypeError, ValueError):
                 return default
 
-        await _notify("👥 正在初始化AI服务...", 0.05)
+        await _notify("👥 正在初始化AI服务...", 0.05, code="import.progress.charactersInitAi")
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
         # 控制数量区间，避免过多生成（上限 10，#13 防单次输出过大）
@@ -2353,7 +2482,7 @@ class BookImportService:
         main_career_map = {c.name: c for c in main_careers}
         sub_career_map = {c.name: c for c in sub_careers}
 
-        await _notify("👥 正在准备角色生成提示词...", 0.15)
+        await _notify("👥 正在准备角色生成提示词...", 0.15, code="import.progress.charactersPreparingPrompt")
         template = await PromptService.get_template("CHARACTERS_BATCH_GENERATION", user_id, db)
         # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
@@ -2432,6 +2561,8 @@ class BookImportService:
             await _notify(
                 f"👥 AI正在生成角色与组织（第 {batch_idx + 1}/{total_batches} 批）...",
                 0.25 + 0.4 * (batch_idx / max(total_batches, 1)),
+                code="import.progress.charactersBatch",
+                params={"batch": batch_idx + 1, "total": total_batches},
             )
             batch_data = await ai_service.call_with_json_retry(
                 prompt=batch_prompt,
@@ -2444,7 +2575,7 @@ class BookImportService:
             elif isinstance(batch_data, list):
                 generated_entities.extend(batch_data)
 
-        await _notify("👥 正在解析角色数据...", 0.7)
+        await _notify("👥 正在解析角色数据...", 0.7, code="import.progress.charactersParsing")
 
         # 预加载角色/组织，便于去重和兼容 append 场景的名称引用
         existing_chars_result = await db.execute(select(Character).where(Character.project_id == project.id))
@@ -3032,11 +3163,21 @@ class BookImportService:
         progress: int,
         message: Optional[str],
         error: Optional[str] = None,
+        code: Optional[str] = None,
+        params: Optional[dict] = None,
     ) -> None:
+        """写入任务状态。
+
+        i18n 双通道：code/params 设置时随任务状态记录结构化码（task.status_code/
+        status_params），message 原文案字节不变；缺省（None）时两字段清空，
+        与旧版行为完全一致。
+        """
         task.status = status
         task.progress = max(0, min(100, progress))
         task.message = message
         task.error = error
+        task.status_code = code
+        task.status_params = params
         task.updated_at = datetime.utcnow()
 
     def _check_cancelled(self, task: _BookImportTask) -> None:
