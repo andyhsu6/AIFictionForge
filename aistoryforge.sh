@@ -52,7 +52,7 @@ start_backend() {
   fi
   cd "$PROJECT_ROOT"
   DATABASE_URL="$DB_URL" SESSION_COOKIE_SECURE=false PYTHONPATH=backend \
-    nohup "$VENV_PY" -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" \
+    nohup "$VENV_PY" -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload \
     > "$BACKEND_LOG" 2>&1 &
   sleep 8
   if is_service_running "$BACKEND_PORT"; then ok "后端已启动 (PID $(port_owner_pid "$BACKEND_PORT"), 端口 $BACKEND_PORT) — $(identity_of "$BACKEND_PORT")"; else fail "后端启动失败，查看日志: $BACKEND_LOG"; return 1; fi

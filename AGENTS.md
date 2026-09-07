@@ -50,6 +50,7 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **后端启动**：必须从项目根目录以 `PYTHONPATH=backend` 启动（否则 pydantic 读不到根目录 `.env`）；venv 在 `backend/.venv`（Python 3.12）
 - **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008
 - **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
+- **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
 - **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`）；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制；浏览器自动化用 playwright(-core) 以 `executablePath` 指向本机 Brave（headless 截图/验收均如此）
 
