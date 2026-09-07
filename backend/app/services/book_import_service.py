@@ -3172,6 +3172,8 @@ class BookImportService:
             progress=task.progress,
             message=task.message,
             error=task.error,
+            status_code=task.status_code,
+            status_params=task.status_params,
             created_at=task.created_at,
             updated_at=task.updated_at,
         )

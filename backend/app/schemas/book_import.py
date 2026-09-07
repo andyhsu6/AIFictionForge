@@ -73,6 +73,14 @@ class BookImportTaskStatusResponse(BaseModel):
     progress: int = Field(..., ge=0, le=100)
     message: Optional[str] = None
     error: Optional[str] = None
+    # i18n 双通道轮询出口：任务态最近一次结构化码/参数（_set_task_state 写入）。
+    # last-state 语义：任意不带 code 的 _set_task_state 调用会把两字段清空为
+    # None，此时前端按旧版逻辑原样展示 message。缺省 None 序列化为
+    # "status_code": null，为增量字段（旧客户端可容忍）。严格字节形状（缺省键
+    # 不出现）的保证只适用于 SSE progress payload（SSEResponse.send_progress），
+    # 不适用于本 schema。
+    status_code: Optional[str] = None
+    status_params: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 

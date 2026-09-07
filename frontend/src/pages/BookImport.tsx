@@ -26,6 +26,8 @@ import {
 import type { UploadFile } from 'antd/es/upload/interface';
 import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined } from '@ant-design/icons';
 import { bookImportApi } from '../services/api';
+import { mapTaskStatusMessage } from '../services/errorMapper';
+import { resolveImportWarningText } from '../utils/importWarnings';
 import type {
   BookImportApplyPayload,
   BookImportExtractMode,
@@ -821,7 +823,13 @@ export default function BookImport() {
               </Text>
               {taskStatus?.message && (
                 <div style={{ marginTop: 8 }}>
-                  <Text type="secondary">{taskStatus.message}</Text>
+                  <Text type="secondary">
+                    {mapTaskStatusMessage({
+                      status_message: taskStatus.message,
+                      status_code: taskStatus.status_code,
+                      status_params: taskStatus.status_params,
+                    })}
+                  </Text>
                 </div>
               )}
             </div>
@@ -871,7 +879,7 @@ export default function BookImport() {
                   description={
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {preview.warnings.map((w, idx) => (
-                        <li key={`${w.code}-${idx}`}>[{w.level}] {w.message}</li>
+                        <li key={`${w.code}-${idx}`}>[{w.level}] {resolveImportWarningText(t, w)}</li>
                       ))}
                     </ul>
                   }

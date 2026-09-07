@@ -229,6 +229,30 @@ def test_set_task_state_without_code_keeps_legacy_none():
     assert task.status_params is None
 
 
+def test_get_task_status_polling_carries_status_code_and_last_state_none():
+    """轮询响应（get_task_status）透传任务态结构化码/参数；last-state 语义：
+    任意不带 code 的 _set_task_state 写入后，响应两字段回 None（前端按旧版
+    逻辑原样展示 message）。"""
+    svc = BookImportService()
+    task = _completed_task("t-poll")
+    svc._tasks[task.task_id] = task
+
+    svc._set_task_state(
+        task, status="running", progress=30, message="正在初始化AI服务...",
+        code="import.task.initAiService", params={"attempt": 2},
+    )
+    resp = asyncio.run(svc.get_task_status(task_id=task.task_id, user_id=task.user_id))
+    assert resp.status_code == "import.task.initAiService"
+    assert resp.status_params == {"attempt": 2}
+    assert resp.message == "正在初始化AI服务..."
+
+    svc._set_task_state(task, status="running", progress=40, message="无码状态写入")
+    resp = asyncio.run(svc.get_task_status(task_id=task.task_id, user_id=task.user_id))
+    assert resp.status_code is None
+    assert resp.status_params is None
+    assert resp.message == "无码状态写入"
+
+
 def test_warning_schema_serializes_params_and_tolerates_none():
     """BookImportWarning.params 序列化；旧构造（无 params）容忍为 None。"""
     w = BookImportWarning(

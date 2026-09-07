@@ -1295,6 +1295,90 @@ export default interface Resources {
       "unauthorized": "登录状态已失效，请重新登录"
     },
     "http_error": "请求处理失败，请稍后重试",
+    "import": {
+      "progress": {
+        "careersAiGenerating": "💼 AI正在生成职业体系...",
+        "careersDone": "💼 职业体系生成完成（{{careers}}个）",
+        "careersFailed": "⚠️ 职业体系生成失败：{{error}}，将继续后续步骤",
+        "careersInitAi": "💼 正在初始化AI服务...",
+        "careersParsing": "💼 正在解析职业数据...",
+        "careersPreparingPrompt": "💼 正在准备职业体系提示词...",
+        "chaptersImported": "已导入 {{chapters}} 个章节（{{words}}字）",
+        "charactersBatch": "👥 AI正在生成角色与组织（第 {{batch}}/{{total}} 批）...",
+        "charactersDone": "👥 角色/组织生成完成（{{entities}}个）",
+        "charactersFailed": "⚠️ 角色/组织生成失败：{{error}}",
+        "charactersInitAi": "👥 正在初始化AI服务...",
+        "charactersParsing": "👥 正在解析角色数据...",
+        "charactersPreparingPrompt": "👥 正在准备角色生成提示词...",
+        "creatingProject": "正在创建项目...",
+        "doneWithFailures": "⚠️ 导入完成，但有 {{failed_count}} 个生成步骤失败，可点击重试",
+        "extractingRelationships": "🔗 正在从原文抽取人物关系...",
+        "generatingCareers": "💼 正在生成职业体系...",
+        "generatingCharacters": "👥 正在生成角色与组织...",
+        "generatingWorld": "🌍 正在生成世界观...",
+        "importingChapters": "正在导入 {{chapters}} 个章节...",
+        "importingOutlines": "正在导入大纲...",
+        "outlinesImported": "已导入 {{outlines}} 个大纲",
+        "projectCreated": "项目创建完成",
+        "relationshipsDone": "🔗 原文关系抽取完成（{{relationships}}条关系）",
+        "relationshipsFailed": "⚠️ 原文关系抽取失败：{{error}}，将继续后续步骤",
+        "retryCareers": "🔄 正在重试职业体系生成...",
+        "retryCareersDone": "✅ 职业体系重试成功（{{careers}}个）",
+        "retryCareersFailed": "⚠️ 职业体系重试失败：{{error}}",
+        "retryCharacters": "🔄 正在重试角色与组织生成...",
+        "retryCharactersDone": "✅ 角色/组织重试成功（{{entities}}个）",
+        "retryCharactersFailed": "⚠️ 角色/组织重试失败：{{error}}",
+        "retryRelationships": "🔄 正在重试原文关系抽取...",
+        "retryRelationshipsDone": "✅ 原文关系抽取重试成功",
+        "retryRelationshipsFailed": "⚠️ 原文关系抽取重试失败：{{error}}",
+        "retryWorld": "🔄 正在重试世界观生成...",
+        "retryWorldDone": "✅ 世界观重试成功",
+        "retryWorldFailed": "⚠️ 世界观重试失败：{{error}}",
+        "savedDb": "数据保存完成",
+        "savingDb": "正在保存到数据库...",
+        "worldAiGenerating": "🌍 AI正在生成世界观...",
+        "worldDone": "🌍 世界观生成完成",
+        "worldFailed": "⚠️ 世界观生成失败：{{error}}，将继续后续步骤",
+        "worldInitAi": "🌍 正在初始化AI服务...",
+        "worldParsing": "🌍 正在解析世界观数据...",
+        "worldPreparingPrompt": "🌍 正在准备世界观提示词...",
+        "worldWritten": "🌍 世界观写入完成"
+      },
+      "task": {
+        "aiAnalyzing": "AI正在分析文本内容...",
+        "aiDetectingTheme": "AI正在识别故事主题与类型...",
+        "aiGeneratingDescription": "AI正在生成项目简介...",
+        "aiInferringPerspective": "AI正在推断叙事角度...",
+        "aiOutlinesFailedFallback": "AI大纲生成失败，使用规则大纲",
+        "aiProjectDone": "AI生成完成，正在整理项目信息...",
+        "aiProjectFailedFallback": "AI生成失败，使用规则推断项目信息",
+        "aiSummarizing": "AI正在整理生成结果...",
+        "chapterStructuresFull": "已处理整本 {{index}}/{{total}} 个章节结构...",
+        "chapterStructuresTail": "已处理末{{chapters}}章 {{index}}/{{total}} 个章节结构...",
+        "chaptersDetected": "已识别 {{chapters}} 个章节，正在构建预览结构...",
+        "detectEncoding": "正在识别编码并读取文本...",
+        "filteringChapters": "正在按解析配置筛选章节并构建预览...",
+        "initAiService": "正在初始化AI服务...",
+        "outlineBatch": "正在生成大纲批次 {{batch}}/{{total}}（第{{start}}-{{end}}章）...",
+        "outlinesReady": "大纲反向生成完成，正在整理预览...",
+        "parseCompleted": "解析完成，可预览并确认导入",
+        "parseFailed": "解析失败",
+        "preparingPrompt": "正在准备AI提示词...",
+        "projectSuggestionReady": "项目信息生成完毕，准备预览...",
+        "reverseOutlinesStart": "正在反向生成章节大纲（分批5章）...",
+        "reverseProjectSuggestion": "正在调用AI反向生成项目信息（标题/简介/主题/类型）...",
+        "sampleInsufficientFallback": "文本样本不足，使用规则推断项目信息",
+        "textCleaned": "文本清洗完成（编码：{{encoding}}）"
+      },
+      "warning": {
+        "applyTrimmed": "导入阶段已按解析配置仅保留 {{kept}} 章",
+        "chapterTooLong": "章节「{{title}}」内容较长，建议确认是否应继续拆分",
+        "chapterTooShort": "章节「{{title}}」内容较短，建议检查切分结果",
+        "duplicateTitles": "检测到重复章节标题「{{title}}」共 {{occurrences}} 次",
+        "filteredChaptersFull": "已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）",
+        "filteredChaptersTail": "已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）"
+      }
+    },
     "internal": {
       "agent_execution_failed": "灵创创作助手执行失败：{{error}}",
       "ai_chapter_plan_failed": "AI分析失败，未能生成章节规划",
@@ -2824,6 +2908,25 @@ export default interface Resources {
     "card": {
       "templateKey": "模板键"
     },
+    "categories": {
+      "autoCharacter": "自动角色引入",
+      "autoOrganization": "自动组织引入",
+      "bookImport": "拆书导入",
+      "chapterRewrite": "章节重写",
+      "chapterWriting": "章节创作",
+      "characterGeneration": "角色生成",
+      "coverGeneration": "封面生成",
+      "inspiration": "灵感模式",
+      "mcpEnhance": "MCP增强",
+      "mcpTest": "MCP测试",
+      "outlineGeneration": "大纲生成",
+      "plotAnalysis": "情节分析",
+      "plotExpansion": "情节展开",
+      "skillLong": "Skill·长篇",
+      "skillPolish": "Skill·润色",
+      "skillShort": "Skill·短篇",
+      "worldBuilding": "世界构建"
+    },
     "editor": {
       "cancel": "取消",
       "contentLabel": "模板内容",
@@ -3719,6 +3822,38 @@ export default interface Resources {
     "page": {
       "createButton": "创建自定义风格",
       "title": "写作风格管理"
+    },
+    "preset": {
+      "classical": {
+        "description": "古典文雅的写作风格，适合古装、仙侠题材",
+        "name": "古典优雅",
+        "requirements": "写作风格要求：\n1. 使用文言、半文言或典雅的白话\n2. 适当运用古典诗词意象\n3. 注重意境营造和韵味\n4. 对话和描写保持古典美感"
+      },
+      "humorous": {
+        "description": "幽默诙谐风格，适合轻松搞笑题材",
+        "name": "幽默诙谐",
+        "requirements": "写作风格要求：\n1. 语言活泼风趣，善用俏皮话\n2. 注重对话的喜剧效果\n3. 适当夸张和反转制造笑点\n4. 保持轻松愉快的基调"
+      },
+      "literary": {
+        "description": "文艺细腻风格，注重心理描写和氛围营造",
+        "name": "文艺细腻",
+        "requirements": "写作风格要求：\n1. 注重心理活动和情感细节\n2. 善用环境描写烘托氛围\n3. 语言优美，富有文学性\n4. 适当使用比喻、象征等修辞手法"
+      },
+      "modern": {
+        "description": "现代简约风格，适合轻小说、网文快节奏叙事",
+        "name": "现代简约",
+        "requirements": "写作风格要求：\n1. 语言直白简练，信息密度高\n2. 多用对话推进情节\n3. 避免冗长描写，突出关键动作\n4. 节奏明快，适合快速阅读"
+      },
+      "natural": {
+        "description": "自然流畅的叙事风格，适合现代都市、现实题材",
+        "name": "自然流畅",
+        "requirements": "写作风格要求：\n1. 语言简洁明快，贴近现代口语\n2. 多用短句，节奏流畅\n3. 注重情感细节的自然流露\n4. 避免过度修饰和复杂句式"
+      },
+      "suspense": {
+        "description": "紧张悬疑风格，适合推理、惊悚题材",
+        "name": "紧张悬疑",
+        "requirements": "写作风格要求：\n1. 营造紧张压迫的氛围\n2. 多用短句加快节奏\n3. 善于设置悬念和伏笔\n4. 注重细节描写，为推理埋下线索"
+      }
     },
     "tag": {
       "default": "默认"

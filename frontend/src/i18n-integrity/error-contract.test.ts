@@ -30,6 +30,7 @@ import {
   mapTaskStatusMessage,
 } from '../services/errorMapper';
 import { getProjectTasks, pollTaskUntilComplete } from '../services/backgroundTaskService';
+import { resolveImportWarningText } from '../utils/importWarnings';
 
 beforeAll(async () => {
   await i18n.changeLanguage('en');
@@ -130,6 +131,66 @@ describe('mapTaskStatusMessage', () => {
   it('unregistered status_code -> generic; raw/error_message never displayed', () => {
     const shown = mapTaskStatusMessage({ status_message: 'raw status', status_code: 'weird.task_code' });
     expect(shown).toBe('Unknown error');
+  });
+
+  // issue #27: book-import polling rows now carry status_code/status_params
+  // (backend BookImportTaskStatusResponse); these use the real import.task.*
+  // locale entries.
+  it('book-import polling row: import.task.* code -> localized template', () => {
+    expect(
+      mapTaskStatusMessage({
+        status_message: '正在初始化AI服务...',
+        status_code: 'import.task.initAiService',
+        status_params: null,
+      })
+    ).toBe('Initializing AI service...');
+  });
+
+  it('book-import polling row: import.task.* code + params -> interpolated template', () => {
+    expect(
+      mapTaskStatusMessage({
+        status_message: '已处理末5章 5/5 个章节结构...',
+        status_code: 'import.task.chapterStructuresTail',
+        status_params: { chapters: 5, index: 5, total: 5 },
+      })
+    ).toBe('Processed 5/5 chapter structures (last 5 chapters)...');
+  });
+});
+
+describe('resolveImportWarningText (book-import preview warnings)', () => {
+  // Runtime book-data params (chapter titles etc.) stay original in the
+  // localized output — they are values, not keys.
+  it('registered warning code + params -> errors-ns template with interpolation', () => {
+    expect(
+      resolveImportWarningText(i18n.t, {
+        code: 'import.warning.duplicateTitles',
+        message: '检测到重复章节标题「开端」（出现 2 次）',
+        level: 'warning',
+        params: { title: '开端', occurrences: 2 },
+      })
+    ).toBe('Duplicate chapter title "开端" detected 2 times');
+  });
+
+  it('registered warning code + multiple params -> all interpolated', () => {
+    expect(
+      resolveImportWarningText(i18n.t, {
+        code: 'import.warning.filteredChaptersTail',
+        message: '已按解析配置仅保留末5章 5 章用于导入（原始识别 8 章）',
+        level: 'info',
+        params: { kept: 5, detected: 8 },
+      })
+    ).toBe('Kept only the last 5 chapters for import per the parsing configuration (8 chapters originally detected)');
+  });
+
+  it('unregistered/unknown warning code -> raw backend message verbatim (defaultValue fallback)', () => {
+    expect(
+      resolveImportWarningText(i18n.t, {
+        code: 'import.warning.notRegisteredAnywhere',
+        message: '原始告警文案保持原样',
+        level: 'warning',
+        params: { title: 'ignored' },
+      })
+    ).toBe('原始告警文案保持原样');
   });
 });
 
