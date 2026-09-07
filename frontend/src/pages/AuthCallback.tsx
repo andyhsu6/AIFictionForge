@@ -30,7 +30,8 @@ export default function AuthCallback() {
         // 后端会通过 Cookie 自动设置认证信息
         // 这里只需要验证登录状态
         const currentUser = await authApi.getCurrentUser();
-        syncLanguageWithServer();
+        // 等语言同步完成再继续，保证跳转后第一帧就是服务器偏好语言
+        await syncLanguageWithServer();
 
         // 检查是否是首次登录（通过 Cookie 标记）
         const isFirstLogin = document.cookie.includes('first_login=true');

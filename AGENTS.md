@@ -61,6 +61,7 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **宣称"可以测试"前必须先跑 `./aistoryforge.sh verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + /health 分支双核对）才允许开始测试/验收；verify 不通过禁止宣称就绪。
 - **服务脚本必须用绝对路径调用**（如 `/Users/andyhsu/codehouse/aff-i18n-internationalization/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
 - `start` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
+- **i18n 语言语义**：未登录启动顺序 = localStorage 手动选择 → navigator（浏览器语言，默认镜像操作系统语言，即"系统优先其次浏览器"的落地）；登录页切换器仅本地预览；**登录成功后服务器偏好覆盖本地**（无服务器值时才把本地选择种子化到服务器）；`syncLanguageWithServer()` 在跳转前必须 await（登录/回调所有路径），落地第一帧即服务器偏好语言。
 
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。

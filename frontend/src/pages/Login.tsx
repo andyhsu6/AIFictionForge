@@ -156,9 +156,10 @@ export default function Login() {
     checkAuth();
   }, [navigate, searchParams]);
 
-  const handleLoginSuccess = () => {
+  const handleLoginSuccess = async () => {
     message.success(t('toast.loginSuccess'));
-    syncLanguageWithServer();
+    // 等语言同步完成再跳转：登录后第一帧就是服务器偏好语言，避免先英后中的闪烁
+    await syncLanguageWithServer();
     const redirect = searchParams.get('redirect') || '/';
     navigate(redirect);
   };
@@ -168,7 +169,7 @@ export default function Login() {
       setLoading(true);
       const response = await authApi.localLogin(values.username, values.password);
       if (response.success) {
-        handleLoginSuccess();
+        await handleLoginSuccess();
       }
     } catch (error) {
       console.error('本地登录失败:', error);
@@ -185,7 +186,7 @@ export default function Login() {
         code: values.code,
       });
       if (response.success) {
-        handleLoginSuccess();
+        await handleLoginSuccess();
       }
     } catch (error) {
       console.error('邮箱验证码登录失败:', error);
@@ -249,7 +250,7 @@ export default function Login() {
         message.success(t('toast.registerSuccess'));
         emailRegisterForm.resetFields(['code', 'password', 'confirmPassword']);
         setRegisterCountdown(0);
-        handleLoginSuccess();
+        await handleLoginSuccess();
       }
     } catch (error) {
       console.error('邮箱注册失败:', error);
