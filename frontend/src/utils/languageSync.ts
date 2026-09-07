@@ -56,8 +56,9 @@ export function parseServerContentLanguage(rawPreferences?: string | null): Cont
 export function markManualLanguageChoice(): void {
   try {
     sessionStorage.setItem('lng_manual', '1');
-  } catch {
-    /* sessionStorage 不可用时静默：退化为服务端优先 */
+    console.info('[i18n] manual flag set (sessionStorage ok)');
+  } catch (e) {
+    console.warn('[i18n] manual flag SET FAILED — sessionStorage unavailable:', e);
   }
 }
 
@@ -66,16 +67,18 @@ export async function syncLanguageWithServer(): Promise<void> {
     let manualPick = false;
     try {
       manualPick = sessionStorage.getItem('lng_manual') === '1';
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn('[i18n] manual flag READ FAILED:', e);
     }
     const settings = await settingsApi.getSettings();
     const serverLang = parseServerLanguage(settings.preferences);
+    console.info(`[i18n] sync start: i18n=${i18n.language} server=${serverLang ?? '(none)'} manualFlag=${manualPick}`);
 
     if (manualPick) {
       // 手动切换优先级最高：本地选择写回账号（覆盖旧偏好），并清除标记
       const local: 'zh' | 'en' = normalizeLanguage(i18n.language) === 'en' ? 'en' : 'zh';
       await settingsApi.updatePreferences({ language: local });
+      console.info(`[i18n] sync branch: MANUAL-PUSH ${local} (account preference overwritten)`);
       try {
         sessionStorage.removeItem('lng_manual');
       } catch {
@@ -86,7 +89,10 @@ export async function syncLanguageWithServer(): Promise<void> {
 
     if (serverLang) {
       if (normalizeLanguage(i18n.language) !== serverLang) {
+        console.info(`[i18n] sync branch: SERVER-PULL ${serverLang} (no manual flag this login)`);
         await i18n.changeLanguage(serverLang);
+      } else {
+        console.info(`[i18n] sync branch: server already matches (${serverLang})`);
       }
       return;
     }
