@@ -1,0 +1,92 @@
+{
+  "aiGenerating": "AI generating...",
+  "annotatedText": {
+    "multipleAnnotations": "{{count}} annotations here",
+    "multipleAnnotations_one": "{{count}} annotation here",
+    "multipleAnnotations_other": "{{count}} annotations here"
+  },
+  "back": "Back",
+  "cancel": "Cancel",
+  "cancelTask": "Cancel Task",
+  "changelog": {
+    "empty": "No changelog entries",
+    "fetchFailed": "Failed to fetch changelog",
+    "loadingTip": "Loading changelog...",
+    "sourceNote": "💡 Changelog comes from the local CHANGELOG.md file",
+    "title": "Changelog",
+    "viewTooltip": "View changelog"
+  },
+  "close": "Close",
+  "doNotClosePage": "Please do not close the page; generation may take some time",
+  "indexPanel": {
+    "chapterItem": "Chapter {{number}}: {{title}}",
+    "noMatch": "No matching chapters found",
+    "searchPlaceholder": "Search chapter titles",
+    "title": "Chapter Directory"
+  },
+  "loading": "Loading...",
+  "markdown": {
+    "announceImage": "Announcement image",
+    "emptyContent": "No content"
+  },
+  "memorySidebar": {
+    "empty": "No analysis data",
+    "overview": "📊 Analysis Overview",
+    "planted": "Planted",
+    "resolved": "Resolved",
+    "strength": "Strength: {{value}}/10",
+    "typeLabels": {
+      "characterEvent": "Character Event",
+      "foreshadow": "Foreshadow",
+      "hook": "Hook",
+      "plotPoint": "Plot Point"
+    }
+  },
+  "partialToolbar": {
+    "aiRewrite": "AI Rewrite",
+    "rewriteTooltip": "AI rewrite selected content: \"{{text}}\"",
+    "selectedChars": "{{count}} chars selected",
+    "selectedChars_one": "{{count}} char selected",
+    "selectedChars_other": "{{count}} chars selected"
+  },
+  "placeholder": "Placeholder text",
+  "preparing": "Preparing to generate...",
+  "refresh": "Refresh",
+  "saving": "Saving...",
+  "springFestival": {
+    "toggleOff": "Disable Spring Festival decoration",
+    "toggleOn": "Enable Spring Festival decoration"
+  },
+  "stream": {
+    "readFailed": "Unable to read the assistant response stream"
+  },
+  "theme": {
+    "dark": "Dark mode",
+    "light": "Light mode",
+    "system": "Follow system"
+  },
+  "unknownError": "Unknown error",
+  "userMenu": {
+    "admin": "Admin",
+    "adminBadge": "👑 Admin",
+    "adminOnly": "Only administrators can access user management",
+    "changePassword": "Change Password",
+    "confirmPassword": "Confirm Password",
+    "confirmPasswordPlaceholder": "Re-enter your new password",
+    "confirmPasswordRequired": "Please confirm your new password",
+    "loggedOut": "Logged out",
+    "logout": "Log Out",
+    "logoutFailed": "Logout failed",
+    "newPassword": "New Password",
+    "newPasswordPlaceholder": "Enter your new password (at least 6 characters)",
+    "newPasswordRequired": "Please enter your new password",
+    "passwordChanged": "Password changed successfully",
+    "passwordChangeFailed": "Password change failed",
+    "passwordMin": "Password must be at least 6 characters",
+    "passwordMismatch": "The two passwords do not match",
+    "submitChanges": "Confirm",
+    "trustLevel": "Trust Level: {{level}}",
+    "trustLevelBadge": "🎖️ Trust Level {{level}}",
+    "userManagement": "User Management"
+  }
+}

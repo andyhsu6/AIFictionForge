@@ -1,0 +1,160 @@
+{
+  "addPlugin": "Add Plugin",
+  "button": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "delete": "Delete",
+    "edit": "Edit",
+    "save": "Save",
+    "test": "Test",
+    "tools": "Tools"
+  },
+  "category": {
+    "analysis": "Analysis (Analysis) - Data analysis, text processing",
+    "api": "API (API) - Third-party service interfaces",
+    "database": "Database (Database) - Database queries",
+    "filesystem": "FileSystem (FileSystem) - File read/write operations",
+    "general": "General (General) - Other functions",
+    "generation": "Generation (Generation) - Content generation tools",
+    "search": "Search (Search) - Web search, information lookup"
+  },
+  "configChange": {
+    "content": "You have changed the AI model or API endpoint. To prevent erroneous calls, the system automatically paused all MCP plugins. Please re-run the \"Model Capability Check\" and confirm the new model supports Function Calling before enabling plugins again.",
+    "ok": "Got it",
+    "title": "Configuration Change Notice"
+  },
+  "deleteModal": {
+    "cancel": "Cancel",
+    "content": "Are you sure you want to delete the plugin \"{{name}}\"?",
+    "ok": "Delete",
+    "title": "Delete Plugin"
+  },
+  "empty": {
+    "addFirst": "Add your first plugin",
+    "noPlugins": "No plugins added yet",
+    "noTools": "This plugin does not provide any tools"
+  },
+  "fcCheck": {
+    "apiProvider": "API provider",
+    "detailTitle": "📊 Check details",
+    "errorInfo": "Error details:",
+    "failTitle": "❌ Function Calling Support Check",
+    "modelInfo": "🔧 Model info",
+    "responsePreview": "📝 Model response (first 200 characters)",
+    "responseTime": "Response time",
+    "responseType": "✓ Response type: {{type}}",
+    "successTitle": "✅ Function Calling Support Check",
+    "suggestions": "💡 Suggestions",
+    "testTool": "✓ Test tool: {{tool}}",
+    "toolCallCount": "✓ Tool call count: {{count}}",
+    "toolCallCount_one": "fcCheck.toolCallCount",
+    "toolCallCount_other": "fcCheck.toolCallCount",
+    "toolCallExample": "🔨 Tool call example",
+    "unsupportedMessage": "Model does not support Function Calling"
+  },
+  "form": {
+    "categoryExtra": "Select the plugin's functional category for AI smart matching of usage scenarios",
+    "categoryLabel": "Plugin Category",
+    "categoryPlaceholder": "Please select a category",
+    "categoryRequired": "Please select a plugin category",
+    "configJsonExtra": "Paste a standard MCP config. The plugin name is extracted automatically. Supports HTTP and Stdio types",
+    "configJsonLabel": "MCP Config JSON",
+    "configJsonPlaceholder": "Example:",
+    "configJsonRequired": "Please enter the config JSON"
+  },
+  "formModal": {
+    "addTitle": "Add Plugin",
+    "editTitle": "Edit Plugin"
+  },
+  "modelCheck": {
+    "reCheck": "Re-check",
+    "startCheck": "Start Check",
+    "statusSupported": "The current model supports Function Calling and can use MCP plugins normally",
+    "statusUnknown": "Please check whether the model supports Function Calling first",
+    "statusUnsupported": "The current model does not support Function Calling and cannot use MCP plugins",
+    "title": "Model Capability Check"
+  },
+  "modelCheckModal": {
+    "cancel": "Cancel",
+    "content": "To ensure MCP plugins work correctly, the AI model you are currently using must support Function Calling (tool calling). Please run the model capability check first.",
+    "ok": "Run Check",
+    "title": "Model Capability Check"
+  },
+  "pluginList": {
+    "lastError": "Error: {{error}}"
+  },
+  "status": {
+    "active": "Running",
+    "disabled": "Disabled",
+    "error": "Error",
+    "inactive": "Inactive"
+  },
+  "subtitle": "Extend AI capabilities by connecting external tools and services",
+  "switch": {
+    "off": "Off",
+    "on": "On"
+  },
+  "testFailed": {
+    "errorInfo": "Error details:",
+    "message": "MCP plugin test failed",
+    "suggestions": "💡 Suggestions:",
+    "title": "Test Failed",
+    "updatedCheck": "Plugin status has been updated. Please check the configuration and retry"
+  },
+  "testSuccess": {
+    "aiSelectedTool": "🤖 Tool selected by AI",
+    "autoUpdatedActive": "Plugin status has been automatically updated to \"Running\"",
+    "availableTools": "Available tools",
+    "callParams": "📝 Call parameters",
+    "resultPreview": "📊 Result preview",
+    "title": "🎉 Test Successful",
+    "totalResponseTime": "Total response time"
+  },
+  "title": "MCP Plugin Management",
+  "toast": {
+    "autoDisableLoading": "Model configuration change detected. Automatically disabling plugins for safety...",
+    "autoDisableSuccess": "All plugins have been automatically disabled. Please re-check model capabilities",
+    "checkFailed": "Check failed. Please try again later",
+    "configChanged": "Model configuration has changed. Please re-check model capabilities",
+    "configureModelFirst": "Please configure the model on the settings page first",
+    "deleteFailed": "Failed to delete the plugin",
+    "getToolsFailed": "Failed to fetch the tool list",
+    "initFailed": "Failed to initialize the page",
+    "jsonFormatError": "Invalid config JSON format. Please check",
+    "loadListFailed": "Failed to load the plugin list",
+    "operationFailed": "Operation failed",
+    "pluginCreated": "Plugin created",
+    "pluginDeleted": "Plugin deleted",
+    "pluginDisabled": "Plugin disabled",
+    "pluginEnabled": "Plugin enabled",
+    "pluginUpdated": "Plugin updated",
+    "testFailed": "Failed to test the plugin",
+    "toggleFailed": "Failed to toggle plugin status"
+  },
+  "toolsModal": {
+    "close": "Close",
+    "description": "Description:",
+    "inputSchema": "Input parameters:",
+    "title": "Available Tools",
+    "toolCount": "{{count}} tools",
+    "toolCount_one": "toolsModal.toolCount",
+    "toolCount_other": "toolsModal.toolCount"
+  },
+  "tooltip": {
+    "checkFirst": "Please complete the model capability check first",
+    "delete": "Delete",
+    "disablePlugin": "Disable plugin",
+    "edit": "Edit",
+    "enablePlugin": "Enable plugin",
+    "testConnect": "Test connection",
+    "viewTools": "View tools"
+  },
+  "warning": {
+    "checkRequired": "Please complete the model capability check before operating plugins",
+    "unsupported": "The current model does not support Function Calling. All plugin operations are disabled"
+  },
+  "whatIsMCP": {
+    "content": "The MCP (Model Context Protocol) protocol allows AI to call external tools to retrieve data. By adding plugins, AI can access search engines, databases, API services, and more, greatly enhancing creation capabilities.",
+    "title": "What is an MCP plugin?"
+  }
+}

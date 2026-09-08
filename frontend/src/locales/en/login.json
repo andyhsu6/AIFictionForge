@@ -1,0 +1,116 @@
+{
+  "alert": {
+    "loginNotes": "Sign-In Notes",
+    "noAuthMethod": "No sign-in method enabled",
+    "noAuthMethodDesc": "Ask an administrator to enable local login, email authentication or LinuxDO OAuth in the system settings.",
+    "registerClosed": "Email registration is not available yet",
+    "registerClosedDesc": "Only email code login and password reset are open for now. Contact an administrator to register."
+  },
+  "email": {
+    "address": "Email Address",
+    "addressRequired": "Enter your email address",
+    "codeLength": "The verification code must be 6 digits",
+    "codeLogin": "Sign In with Code",
+    "forgotPassword": "Forgot password? Reset it here",
+    "invalidEmail": "Enter a valid email address",
+    "loginCode": "Login Code",
+    "loginCodePlaceholder": "Enter the 6-digit login code",
+    "loginCodeRequired": "Enter your login code",
+    "passwordMin": "Password must be at least 6 characters",
+    "registeredPlaceholder": "Enter your registered email",
+    "registerEmail": "Email Address",
+    "registerEmailPlaceholder": "Enter your email address",
+    "registerEmailRequired": "Enter your email address",
+    "resendIn": "Resend in {{s}}s",
+    "sendCode": "Send Code"
+  },
+  "features": {
+    "chapters": {
+      "desc": "Generate, edit, rewrite and polish chapters to keep improving your content.",
+      "title": "End-to-End Chapter Writing"
+    },
+    "characters": {
+      "desc": "Visual management of character relationships and organizations keeps even complex settings under control.",
+      "title": "Characters & Organizations"
+    },
+    "multiModel": {
+      "desc": "Works with mainstream models such as OpenAI, Gemini and Claude; switch freely per scenario.",
+      "title": "Multi-Model Collaboration"
+    },
+    "wizard": {
+      "desc": "Automatically generates outline, characters and worldbuilding to assemble a complete story skeleton fast.",
+      "title": "Guided Wizard"
+    }
+  },
+  "hero": {
+    "description": "From inspiration to finished drafts — an all-in-one writing workbench built around multi-model collaboration, automated workflows, character relationship management and chapter-level refinement.",
+    "line1": "AI-Powered",
+    "line2": "Novel Writing Assistant"
+  },
+  "linuxdo": {
+    "login": "Sign in with LinuxDO OAuth"
+  },
+  "local": {
+    "password": "Access Key",
+    "passwordPlaceholder": "Enter your access key",
+    "passwordRequired": "Enter your access key",
+    "submit": "Sign In",
+    "thirdParty": "Third-Party Sign-In",
+    "username": "Admin Account",
+    "usernamePlaceholder": "Enter your admin account or email",
+    "usernameRequired": "Enter your admin account or email"
+  },
+  "panel": {
+    "subtitle": "Sign in to AIFictionForge and continue your novel projects.",
+    "welcomeBack": "Welcome Back"
+  },
+  "register": {
+    "codePlaceholder": "Enter the 6-digit code",
+    "confirmPassword": "Confirm Password",
+    "confirmPasswordPlaceholder": "Re-enter your password",
+    "confirmPasswordRequired": "Re-enter your password",
+    "emailCode": "Email Code",
+    "emailCodeRequired": "Enter your email code",
+    "hint": "The verification code will be sent to the email you provide. If it does not arrive, check your spam folder or try again later. After registering you can sign in with an email verification code, and email-based password reset is supported as well.",
+    "nickname": "Nickname",
+    "nicknameMax": "Nickname cannot exceed 50 characters",
+    "nicknamePlaceholder": "Optional; defaults to your email prefix",
+    "password": "Password",
+    "passwordMismatch": "The two passwords do not match",
+    "passwordPlaceholder": "Enter your password",
+    "passwordRequired": "Enter your password",
+    "submit": "Register & Sign In"
+  },
+  "reset": {
+    "backToCodeLogin": "Back to code login",
+    "codeLabel": "Reset Code",
+    "codePlaceholder": "Enter the reset code",
+    "codeRequired": "Enter the reset code",
+    "confirmNewPassword": "Confirm New Password",
+    "confirmNewPasswordPlaceholder": "Re-enter the new password",
+    "confirmNewPasswordRequired": "Re-enter the new password",
+    "newPassword": "New Password",
+    "newPasswordPlaceholder": "Enter a new password",
+    "newPasswordRequired": "Enter a new password",
+    "passwordMismatch": "The two new passwords do not match",
+    "submit": "Reset Password",
+    "title": "Forgot Password / Reset"
+  },
+  "tabs": {
+    "emailLogin": "Email Login",
+    "emailRegister": "Email Registration",
+    "local": "Local Login"
+  },
+  "tips": {
+    "emailResetPassword": "Users registered by email can reset their password with an email verification code.",
+    "linuxdoFirstLogin": "Your account is created automatically on your first LinuxDO sign-in.",
+    "localDefaultAccount": "Default local account: admin / admin123"
+  },
+  "toast": {
+    "authUrlFailed": "Failed to get the authorization URL. Please try again later.",
+    "codeSent": "Verification code sent",
+    "loginSuccess": "Signed in successfully!",
+    "registerSuccess": "Registered successfully — you are now signed in",
+    "resetSuccess": "Password reset successfully"
+  }
+}

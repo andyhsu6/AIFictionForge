@@ -1,0 +1,96 @@
+{
+  "actions": {
+    "addSkill": "Add Skill",
+    "close": "Close",
+    "delete": "Delete",
+    "edit": "Edit",
+    "refresh": "Refresh",
+    "view": "View"
+  },
+  "buttons": {
+    "cancel": "Cancel",
+    "create": "Create",
+    "save": "Save"
+  },
+  "createModal": {
+    "title": "Add New Skill"
+  },
+  "deleteConfirm": {
+    "cancel": "Cancel",
+    "description": "This cannot be undone; related files will be permanently deleted.",
+    "ok": "Delete",
+    "title": "Delete this Skill?"
+  },
+  "editModal": {
+    "title": "Edit Skill"
+  },
+  "empty": {
+    "noSkills": "No Skills yet — click \"Add Skill\" to create one"
+  },
+  "form": {
+    "body": "Workflow Instructions",
+    "bodyPlaceholderCreate": "# my-new-skill: Skill Title\n\nYou are an xxx expert. Your task is to help the user accomplish xxx.\n\n## Core Principles\n\n- Principle 1...\n\n## Workflow\n\n### Phase 1: Requirements\n...",
+    "bodyPlaceholderEdit": "Enter the Skill's complete workflow instructions...",
+    "bodyRequired": "Please enter the workflow instructions",
+    "bodyTooltipCreate": "The Skill's core Markdown content",
+    "bodyTooltipEdit": "Markdown body after the YAML frontmatter in SKILL.md",
+    "category": "Category",
+    "categoryPlaceholder": "Select or enter a category",
+    "categorySelectRequired": "Please select a category",
+    "categoryTooltip": "Skill category shown in the table and toolbox",
+    "description": "Description",
+    "descriptionPlaceholder": "Briefly describe the Skill's function, scenarios and usage...",
+    "descriptionRequired": "Please enter a description",
+    "descriptionTooltip": "Explains the Skill's purpose; no longer carries name/trigger configuration",
+    "displayName": "Display Name",
+    "displayNamePlaceholderCreate": "e.g. My New Skill",
+    "displayNamePlaceholderEdit": "e.g. Long-form Web Novel Analyzer",
+    "displayNameRequired": "Please enter the display name",
+    "displayNameTooltip": "Name shown in the table and toolbox",
+    "internalName": "Internal ID",
+    "internalNameTooltip": "From the name field in SKILL.md; not editable",
+    "references": "References (JSON)",
+    "referencesOptional": "References (JSON, optional)",
+    "referencesPlaceholderCreate": "{\"tips\": \"Reference tips...\", \"examples\": \"Examples...\"}",
+    "referencesPlaceholderEdit": "{\"anti-ai-tips\": \"Tips for removing AI flavor...\", \"quality-check\": \"Quality checklist...\"}",
+    "referencesTooltipCreate": "Format: {\"filename\": \"content\"}",
+    "referencesTooltipEdit": "Format: {\"filename\": \"content\"}. Leave empty to keep existing references",
+    "skillName": "Skill Name (English)",
+    "skillNameRequired": "Please enter a name",
+    "skillNameTooltip": "Lowercase English with hyphens, e.g. my-new-skill. Used as directory name and internal ID",
+    "triggers": "Triggers",
+    "triggersPlaceholderCreate": "/my-new-skill\nMy new Skill",
+    "triggersPlaceholderEdit": "/story-long-analyze\n/analyze-long-novel\nHelp me break down this book",
+    "triggersRequired": "Enter at least one trigger",
+    "triggersTooltip": "One per line; commas and ideographic commas also work. Including /skill-name is recommended"
+  },
+  "page": {
+    "subtitle": "Manage Skill workflows online: add, edit or delete",
+    "title": "Skill Management"
+  },
+  "table": {
+    "actions": "Actions",
+    "category": "Category",
+    "description": "Description",
+    "name": "Name",
+    "triggers": "Triggers"
+  },
+  "toast": {
+    "categoryRequired": "Please select or enter a category",
+    "createFailed": "Creation failed",
+    "createSuccess": "Skill created",
+    "deleteFailed": "Deletion failed",
+    "deleteSuccess": "Deleted successfully",
+    "getContentFailed": "Failed to fetch content",
+    "getDetailFailed": "Failed to fetch Skill detail",
+    "loadListFailed": "Failed to load Skill list",
+    "refsJsonError": "Invalid references JSON format",
+    "saveFailed": "Save failed",
+    "triggerRequired": "Enter at least one trigger",
+    "updateFailed": "Update failed",
+    "updateSuccess": "Skill updated"
+  },
+  "viewModal": {
+    "title": "SKILL.md Raw Content"
+  }
+}

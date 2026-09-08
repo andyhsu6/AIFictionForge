@@ -1,7 +1,21 @@
 """设置相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Annotated
 from datetime import datetime
+
+from app.schemas.common import ContentLanguageLiteral
+
+# ========== AI 生成内容语言（i18n plan todo 16/17）==========
+# 语义：None / "auto" = 跟随界面语言；"zh" = 简体中文；"en" = English。
+# 词表统一定义在 app/schemas/common.py（todo 17 prelude）；
+# 注入生成提示词的解析链在 app/services/language_resolver.py。
+ContentLanguage = Annotated[
+    Optional[ContentLanguageLiteral],
+    Field(
+        default=None,
+        description="AI 生成内容语言：None 或 'auto' 表示跟随界面语言，'zh' 简体中文，'en' English",
+    ),
+]
 
 
 class SettingsBase(BaseModel):
@@ -42,6 +56,18 @@ class SettingsResponse(SettingsBase):
     user_id: str
     created_at: datetime
     updated_at: datetime
+
+
+class PreferencesUpdate(BaseModel):
+    """用户偏好设置更新请求模型（写入 preferences JSON 列，非独立数据库字段）"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    language: Optional[str] = Field(
+        default=None,
+        pattern=r"^(zh|en)$",
+        description="界面语言，仅接受标准化短码 zh / en；为 None 表示不更新该项",
+    )
+    content_language: ContentLanguage
 
 
 class SystemSMTPSettingsBase(BaseModel):

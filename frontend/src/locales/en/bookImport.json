@@ -1,0 +1,139 @@
+{
+  "format": {
+    "alertMsg": "Supported TXT format requirements for import",
+    "example": "Chapter 1: Entering the Jianghu\nThis is the first paragraph of Chapter 1.\nThis is the second paragraph of Chapter 1.\n\nChapter 2: Night Rain Pursuit\nThis is the content of Chapter 2.",
+    "exampleLabel": "Example:",
+    "line1": "1. Only <strong>.txt</strong> files are supported. It is recommended to use a separate chapter title line for each chapter.",
+    "line2": "2. Recommended format: <strong>Chapter 1 Title</strong>, then the main content begins on the next line.",
+    "line3": "3. The main text should be wrapped by paragraphs, and the first line can be indented by two characters.",
+    "line4": "4. Keep a blank line between chapters. Do not add extra dividers, \"The End\", export timestamps, or other distracting content."
+  },
+  "header": {
+    "currentProgress": "Current progress: {{step}}",
+    "subtitle": "Upload a TXT file, auto-parse it into chapters, preview and import into a project",
+    "title": "Import Book"
+  },
+  "modal": {
+    "cancel": "Cancel"
+  },
+  "msg": {
+    "importDone": "Import complete!",
+    "importFailedServer": "Failed to confirm import. Could not connect to the server.",
+    "preparing": "Preparing import...",
+    "restoreHint": "Page cache restored. Please click \"Confirm Import\" to continue.",
+    "retryDone": "Retry complete",
+    "retrying": "Retrying failed generation steps..."
+  },
+  "parse": {
+    "cancel": "Cancel Task",
+    "cardTitle": "Parsing Task Status",
+    "empty": "No task created yet",
+    "refresh": "Refresh Status",
+    "statusCancelled": "Cancelled",
+    "statusCompleted": "Parsing complete! Generating preview...",
+    "statusFailed": "Parsing failed",
+    "statusPending": "Waiting for scheduling...",
+    "statusRunning": "Parsing the TXT file..."
+  },
+  "preview": {
+    "addonTitle": "Title",
+    "cardTitle": "Preview & Correct",
+    "chapterLabel": "Chapter {{number}} · {{title}}",
+    "chaptersTitle": "Chapters ({{count}})",
+    "chaptersTitle_one": "preview.chaptersTitle",
+    "chaptersTitle_other": "preview.chaptersTitle",
+    "confirmImport": "Confirm Import",
+    "empty": "The preview data will appear once parsing is complete",
+    "labelDescription": "Description",
+    "labelGenre": "Genre",
+    "labelPerspective": "Narrative Perspective",
+    "labelTargetWords": "Target Word Count",
+    "labelTheme": "Theme",
+    "labelTitle": "Title",
+    "narrativeFirst": "First Person",
+    "narrativeOmniscient": "Omniscient",
+    "narrativeThird": "Third Person",
+    "phContent": "Chapter content",
+    "phSummary": "Chapter summary",
+    "projectInfo": "Project Information",
+    "warnings": "Warnings detected"
+  },
+  "progress": {
+    "autoDone": "All steps completed. You will be redirected automatically.",
+    "autoInfo": "During the import, the AI will automatically fill in:<br/>• Worldview settings (time, place, atmosphere, rules)<br/>• Career system (primary and secondary careers)<br/>• Core characters and related organizations",
+    "autoWait": "Please wait; you will be redirected automatically when complete.",
+    "cardTitle": "Generation Import Progress",
+    "error": "Import error",
+    "failedStepsCount": "{{count}} generation step(s) failed",
+    "failedStepsCount_one": "progress.failedStepsCount",
+    "failedStepsCount_other": "progress.failedStepsCount",
+    "retriedCount": "Retried {{count}} time(s)",
+    "retriedCount_one": "progress.retriedCount",
+    "retriedCount_other": "progress.retriedCount",
+    "retryAll": "Smart Retry All Failed Steps",
+    "retryDesc": "The following AI generation steps could not complete, but the base data (chapters, outline) was imported successfully. You can choose to retry or skip them.",
+    "retrying": "Retrying...",
+    "skip": "Skip and Go to Project",
+    "titleGenerating": "Generating and importing project content for you",
+    "titlePartialRetry": "Import complete, some steps need retry",
+    "titleRetrying": "Retrying failed generation steps"
+  },
+  "range": {
+    "hintAutoFull": "The input exceeds 50 chapters; it will be processed as a full-book split automatically.",
+    "hintFull": "Currently reverse-generating based on the entire book, suitable for a complete split but may take longer.",
+    "hintTail": "Currently extracting the last {{count}} chapters for reverse generation; the chapter count must be a multiple of 5, up to 50 chapters.",
+    "hintTail_one": "range.hintTail",
+    "hintTail_other": "range.hintTail"
+  },
+  "restart": {
+    "button": "Restart",
+    "confirmDesc": "This will clear the current import task and cache, and return to the file upload step.",
+    "confirmTitle": "Restart from scratch?",
+    "ok": "Restart"
+  },
+  "step": {
+    "generate": "Generate Import",
+    "parsing": "Parsing",
+    "preview": "Review Preview",
+    "upload": "Upload File"
+  },
+  "toast": {
+    "cacheRestored": "Book import page cache restored",
+    "cancelTaskFailed": "Failed to cancel the task",
+    "confirmImportFailed": "Failed to confirm the import",
+    "createTaskFailed": "Failed to create the import task",
+    "importError": "Import failed: {{error}}",
+    "importPartial": "Import completed, but {{count}} generation step(s) failed. You can retry.",
+    "importPartial_one": "toast.importPartial",
+    "importPartial_other": "toast.importPartial",
+    "importSuccess": "Import successful: generated {{careers}} careers and {{entities}} characters/organizations",
+    "previewFailed": "Failed to fetch the preview",
+    "previewMissing": "The import task preview no longer exists (possibly due to a server restart). Cache cleared. Please re-upload the TXT file.",
+    "restarted": "Restarted. Please re-upload the TXT file and parse it again.",
+    "retryAllSuccess": "All steps retried successfully!",
+    "retryFailed": "Retry failed: {{error}}",
+    "retryRequestFailed": "Retry request failed. Could not connect to the server.",
+    "retryStillFailed": "Retry completed, but {{count}} step(s) still failed",
+    "retryStillFailed_one": "toast.retryStillFailed",
+    "retryStillFailed_other": "toast.retryStillFailed",
+    "selectFile": "Please select a TXT file first",
+    "skippedSteps": "Skipped failed steps, redirecting to the project...",
+    "taskCancelled": "Task cancelled",
+    "taskCreated": "Import task created",
+    "taskInvalid": "The import task is no longer valid (possibly due to a server restart). Please re-upload the TXT file and start parsing again.",
+    "taskNotFound": "The task does not exist. Local cache cleared. Please create the import task again."
+  },
+  "upload": {
+    "cardTitle": "Upload TXT and Start Parsing",
+    "dragText": "Click or drag the TXT file to this area",
+    "hint": "Only .txt is supported for now. Recommended size under 50MB",
+    "modeFull": "Reverse-generate the entire book",
+    "modeTail": "Extract the last x chapters and reverse-generate",
+    "rangeLockedDesc": "The import task will run according to the parsing scope set when the task was created. To change the scope, click \"Restart\" above and re-upload and parse.",
+    "rangeLockedMsg": "The parsing scope for the current task is locked",
+    "rangeTitle": "Parsing Scope Settings",
+    "startParse": "Start Parsing",
+    "tailCountLabel": "Number of tail chapters",
+    "taskIdLabel": "Task ID: {{id}}"
+  }
+}

@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import SSEProgressModal from '../components/SSEProgressModal';
 import { eventBus, EventNames } from '../store/eventBus';
+import { Trans, useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Title, Text, Paragraph } = Typography;
@@ -31,6 +32,7 @@ interface Career {
 }
 
 export default function Careers() {
+    const { t } = useTranslation('careers');
     const { projectId } = useParams<{ projectId: string }>();
     const [mainCareers, setMainCareers] = useState<Career[]>([]);
     const [subCareers, setSubCareers] = useState<Career[]>([]);
@@ -136,14 +138,14 @@ export default function Careers() {
 
             if (editingCareer) {
                 await api.put(`/careers/${editingCareer.id}`, data);
-                message.success('职业更新成功');
+                message.success(t('toast.updateSuccess'));
             } else {
                 await api.post('/careers', {
                     ...data,
                     project_id: projectId,
                     source: 'manual'
                 });
-                message.success('职业创建成功');
+                message.success(t('toast.createSuccess'));
             }
 
             setIsModalOpen(false);
@@ -151,23 +153,23 @@ export default function Careers() {
             fetchCareers();
         } catch (error: unknown) {
             const axiosError = error as { response?: { data?: { detail?: string } } };
-            message.error(axiosError.response?.data?.detail || '操作失败');
+            message.error(axiosError.response?.data?.detail || t('toast.actionFailed'));
         }
     };
 
     const handleDelete = async (id: string) => {
         modal.confirm({
-            title: '确认删除',
-            content: '确定要删除这个职业吗？如果有角色使用了该职业，将无法删除。',
+            title: t('delete.title'),
+            content: t('delete.content'),
             centered: true,
             onOk: async () => {
                 try {
                     await api.delete(`/careers/${id}`);
-                    message.success('职业删除成功');
+                    message.success(t('toast.deleteSuccess'));
                     fetchCareers();
                 } catch (error: unknown) {
                     const axiosError = error as { response?: { data?: { detail?: string } } };
-                    message.error(axiosError.response?.data?.detail || '删除失败');
+                    message.error(axiosError.response?.data?.detail || t('toast.deleteFailed'));
                 }
             }
         });
@@ -181,7 +183,7 @@ export default function Careers() {
         setIsAIModalOpen(false);
         setAiGenerating(true);
         setAiProgress(0);
-        setAiMessage('开始生成新职业...');
+        setAiMessage(t('ai.startMessage'));
 
         try {
             const userRequirements = values.user_requirements?.trim() || '';
@@ -204,7 +206,7 @@ export default function Careers() {
 
             if (!response.ok || !response.body) {
                 setAiGenerating(false);
-                message.error(`请求失败: ${response.status}`);
+                message.error(t('ai.requestFailed', { status: response.status }));
                 return;
             }
 
@@ -231,12 +233,12 @@ export default function Careers() {
                             } else if (data.type === 'done') {
                                 setTimeout(() => {
                                     setAiGenerating(false);
-                                    message.success('AI新职业生成完成！');
+                                    message.success(t('ai.doneMessage'));
                                     fetchCareers();
                                 }, 1000);
                             } else if (data.type === 'error') {
                                 setAiGenerating(false);
-                                message.error(data.error || data.message || '生成失败');
+                                message.error(data.error || data.message || t('ai.generateFailed'));
                             }
                         } catch {
                             // 忽略非JSON行（如心跳注释）
@@ -249,7 +251,7 @@ export default function Careers() {
         } catch (err: unknown) {
             setAiGenerating(false);
             const error = err as Error;
-            message.error(error.message || '启动生成失败');
+            message.error(error.message || t('ai.startFailed'));
         }
     };
 
@@ -261,7 +263,7 @@ export default function Careers() {
                     <TrophyOutlined />
                     {career.name}
                     <Tag color={career.source === 'ai' ? 'blue' : 'default'}>
-                        {career.source === 'ai' ? 'AI生成' : '手动创建'}
+                        {career.source === 'ai' ? t('tag.aiGenerated') : t('tag.manual')}
                     </Tag>
                     {career.category && <Tag>{career.category}</Tag>}
                 </Space>
@@ -274,9 +276,9 @@ export default function Careers() {
             }
             style={{ marginBottom: 16 }}
         >
-            <Paragraph ellipsis={{ rows: 2 }}>{career.description || '暂无描述'}</Paragraph>
+            <Paragraph ellipsis={{ rows: 2 }}>{career.description || t('card.noDescription')}</Paragraph>
             <Divider style={{ margin: '12px 0' }} />
-            <Text strong>阶段体系（共{career.max_stage}个）：</Text>
+            <Text strong>{t('card.stageSystem', { n: career.max_stage })}</Text>
             <div style={{ maxHeight: 120, overflowY: 'auto', marginTop: 8 }}>
                 {career.stages.slice(0, 5).map(stage => (
                     <div key={stage.level} style={{ marginLeft: 16, marginBottom: 4 }}>
@@ -285,13 +287,13 @@ export default function Careers() {
                     </div>
                 ))}
                 {career.stages.length > 5 && (
-                    <Text type="secondary" style={{ marginLeft: 16 }}>...还有{career.stages.length - 5}个阶段</Text>
+                    <Text type="secondary" style={{ marginLeft: 16 }}>{t('card.moreStages', { n: career.stages.length - 5 })}</Text>
                 )}
             </div>
             {career.special_abilities && (
                 <>
                     <Divider style={{ margin: '12px 0' }} />
-                    <Text strong>特殊能力：</Text>
+                    <Text strong>{t('card.specialAbilities')}</Text>
                     <Paragraph ellipsis={{ rows: 2 }} style={{ marginTop: 4 }}>{career.special_abilities}</Paragraph>
                 </>
             )}
@@ -301,20 +303,20 @@ export default function Careers() {
     const tabItems = [
         {
             key: 'main',
-            label: `主职业 (${mainCareers.length})`,
+            label: t('tabs.main', { n: mainCareers.length }),
             children: mainCareers.length > 0 ? (
                 <div>{mainCareers.map(renderCareerCard)}</div>
             ) : (
-                <Empty description="还没有主职业" />
+                <Empty description={t('empty.main')} />
             )
         },
         {
             key: 'sub',
-            label: `副职业 (${subCareers.length})`,
+            label: t('tabs.sub', { n: subCareers.length }),
             children: subCareers.length > 0 ? (
                 <div>{subCareers.map(renderCareerCard)}</div>
             ) : (
-                <Empty description="还没有副职业" />
+                <Empty description={t('empty.sub')} />
             )
         }
     ];
@@ -343,7 +345,7 @@ export default function Careers() {
                 }}>
                     <Title level={3} style={{ margin: 0 }}>
                         <TrophyOutlined style={{ marginRight: 8 }} />
-                        职业管理
+                        {t('page.title')}
                     </Title>
                     <Space wrap>
                         <Button
@@ -354,14 +356,14 @@ export default function Careers() {
                                 setIsAIModalOpen(true);
                             }}
                         >
-                            AI生成新职业
+                            {t('page.aiGenerate')}
                         </Button>
                         <Button
                             type="primary"
                             icon={<PlusOutlined />}
                             onClick={() => handleOpenModal()}
                         >
-                            新增职业
+                            {t('page.addCareer')}
                         </Button>
                     </Space>
                 </div>
@@ -378,7 +380,7 @@ export default function Careers() {
 
             {/* 创建/编辑对话框 */}
             <Modal
-                title={editingCareer ? '编辑职业' : '新增职业'}
+                title={editingCareer ? t('form.editTitle') : t('form.addTitle')}
                 open={isModalOpen}
                 onCancel={() => {
                     setIsModalOpen(false);
@@ -390,52 +392,52 @@ export default function Careers() {
                 <Form form={form} layout="vertical" onFinish={handleSubmit}>
                     <Row gutter={16}>
                         <Col span={16}>
-                            <Form.Item label="职业名称" name="name" rules={[{ required: true }]}>
-                                <Input placeholder="如：剑修、炼丹师" />
+                            <Form.Item label={t('form.name')} name="name" rules={[{ required: true }]}>
+                                <Input placeholder={t('form.namePlaceholder')} />
                             </Form.Item>
                         </Col>
                         <Col span={8}>
-                            <Form.Item label="类型" name="type" rules={[{ required: true }]} initialValue="main">
+                            <Form.Item label={t('form.type')} name="type" rules={[{ required: true }]} initialValue="main">
                                 <Select>
-                                    <Select.Option value="main">主职业</Select.Option>
-                                    <Select.Option value="sub">副职业</Select.Option>
+                                    <Select.Option value="main">{t('form.typeMain')}</Select.Option>
+                                    <Select.Option value="sub">{t('form.typeSub')}</Select.Option>
                                 </Select>
                             </Form.Item>
                         </Col>
                     </Row>
 
-                    <Form.Item label="职业描述" name="description">
-                        <TextArea rows={2} placeholder="描述这个职业..." />
+                    <Form.Item label={t('form.description')} name="description">
+                        <TextArea rows={2} placeholder={t('form.descriptionPlaceholder')} />
                     </Form.Item>
 
-                    <Form.Item label="职业分类" name="category">
-                        <Input placeholder="如：战斗系、生产系、辅助系" />
+                    <Form.Item label={t('form.category')} name="category">
+                        <Input placeholder={t('form.categoryPlaceholder')} />
                     </Form.Item>
 
-                    <Form.Item label="职业阶段" name="stages" tooltip="每行一个阶段，格式：1. 阶段名 - 描述">
+                    <Form.Item label={t('form.stages')} name="stages" tooltip={t('form.stagesTooltip')}>
                         <TextArea
                             rows={8}
-                            placeholder="示例：&#10;1. 炼气期 - 初窥门径&#10;2. 筑基期 - 根基稳固&#10;3. 金丹期 - 凝结金丹"
+                            placeholder={t('form.stagesPlaceholder')}
                         />
                     </Form.Item>
 
-                    <Form.Item label="职业要求" name="requirements">
-                        <TextArea rows={2} placeholder="需要什么条件才能修炼..." />
+                    <Form.Item label={t('form.requirements')} name="requirements">
+                        <TextArea rows={2} placeholder={t('form.requirementsPlaceholder')} />
                     </Form.Item>
 
-                    <Form.Item label="特殊能力" name="special_abilities">
-                        <TextArea rows={2} placeholder="这个职业的特殊能力..." />
+                    <Form.Item label={t('form.specialAbilities')} name="special_abilities">
+                        <TextArea rows={2} placeholder={t('form.specialAbilitiesPlaceholder')} />
                     </Form.Item>
 
-                    <Form.Item label="世界观规则" name="worldview_rules">
-                        <TextArea rows={2} placeholder="如何融入世界观..." />
+                    <Form.Item label={t('form.worldviewRules')} name="worldview_rules">
+                        <TextArea rows={2} placeholder={t('form.worldviewRulesPlaceholder')} />
                     </Form.Item>
 
                     <Form.Item>
                         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                            <Button onClick={() => setIsModalOpen(false)}>取消</Button>
+                            <Button onClick={() => setIsModalOpen(false)}>{t('buttons.cancel')}</Button>
                             <Button type="primary" htmlType="submit">
-                                {editingCareer ? '更新' : '创建'}
+                                {editingCareer ? t('buttons.update') : t('buttons.create')}
                             </Button>
                         </Space>
                     </Form.Item>
@@ -444,42 +446,40 @@ export default function Careers() {
 
             {/* AI生成对话框 */}
             <Modal
-                title="AI生成新职业（增量式）"
+                title={t('ai.modalTitle')}
                 open={isAIModalOpen}
                 onCancel={() => setIsAIModalOpen(false)}
                 footer={null}
             >
                 <Form form={aiForm} layout="vertical" onFinish={handleAIGenerate}>
                     <Paragraph type="secondary">
-                        AI将分析当前世界观和已有职业，智能生成新的补充职业。
-                        <br />
-                        💡 可以多次生成，逐步完善职业体系，不会替换已有职业。
+                        <Trans ns="careers" i18nKey="ai.modalDesc" components={{ br: <br /> }} />
                     </Paragraph>
                     <Divider style={{ margin: '12px 0' }} />
-                    <Form.Item label="本次新增主职业数量" name="main_career_count" initialValue={3}>
+                    <Form.Item label={t('ai.mainCount')} name="main_career_count" initialValue={3}>
                         <InputNumber min={1} max={10} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Form.Item label="本次新增副职业数量" name="sub_career_count" initialValue={5}>
+                    <Form.Item label={t('ai.subCount')} name="sub_career_count" initialValue={5}>
                         <InputNumber min={0} max={15} style={{ width: '100%' }} />
                     </Form.Item>
                     <Form.Item
-                        label="职业要求"
+                        label={t('ai.userRequirements')}
                         name="user_requirements"
-                        rules={[{ max: 500, message: '额外要求最多500字' }]}
-                        extra="可选。可描述希望新增的职业方向、能力侧重、限制条件或希望避开的职业类型，AI会结合世界观与已有职业综合生成。"
+                        rules={[{ max: 500, message: t('ai.userRequirementsMax') }]}
+                        extra={t('ai.userRequirementsExtra')}
                     >
                         <TextArea
                             rows={4}
                             showCount
                             maxLength={500}
-                            placeholder="例如：希望新增一个偏情报收集与潜伏渗透的主职业；副职业偏医术、经营或制造方向；避免再出现纯正面战斗型职业。"
+                            placeholder={t('ai.userRequirementsPlaceholder')}
                         />
                     </Form.Item>
                     <Form.Item>
                         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                            <Button onClick={() => setIsAIModalOpen(false)}>取消</Button>
+                            <Button onClick={() => setIsAIModalOpen(false)}>{t('buttons.cancel')}</Button>
                             <Button type="primary" icon={<ThunderboltOutlined />} htmlType="submit">
-                                开始生成
+                                {t('ai.start')}
                             </Button>
                         </Space>
                     </Form.Item>
@@ -491,7 +491,7 @@ export default function Careers() {
                 visible={aiGenerating}
                 progress={aiProgress}
                 message={aiMessage}
-                title="AI生成新职业中..."
+                title={t('ai.progressTitle')}
                 onCancel={() => setAiGenerating(false)}
             />
             </div>

@@ -1,0 +1,68 @@
+{
+  "form": {
+    "backHome": "返回首页",
+    "bookNamePlaceholder": "输入你的小说标题",
+    "bookNameRequired": "请输入书名",
+    "characterCountPlaceholder": "AI生成的角色数量",
+    "characterCountRequired": "请输入角色数量",
+    "characterCountUnit": "个",
+    "descriptionPlaceholder": "用一段话介绍你的小说...",
+    "descriptionRequired": "请输入小说简介",
+    "genrePlaceholder": "选择或输入类型标签（如：玄幻、都市、修仙）",
+    "genreRequired": "请选择小说类型",
+    "labelBookName": "书名",
+    "labelCharacterCount": "角色数量",
+    "labelDescription": "小说简介",
+    "labelGenre": "类型",
+    "labelOutlineMode": "大纲章节模式",
+    "labelPerspective": "叙事视角",
+    "labelTargetWords": "目标字数",
+    "labelTheme": "主题",
+    "outlineModeRequired": "请选择大纲章节模式",
+    "outlineModeTooltip": "创建后不可更改，请根据创作习惯选择",
+    "perspectivePlaceholder": "选择小说的叙事视角",
+    "perspectiveRequired": "请选择叙事视角",
+    "startCreate": "开始创建项目",
+    "subtitle": "填写基本信息后，AI将自动为您生成世界观、角色和大纲节点（大纲可在项目内手动展开为章节）",
+    "targetWordsPlaceholder": "整部小说的目标字数",
+    "targetWordsRequired": "请输入目标字数",
+    "targetWordsUnit": "字",
+    "themePlaceholder": "描述你的小说主题...",
+    "themeRequired": "请输入主题",
+    "title": "创建新项目"
+  },
+  "genre": {
+    "fantasy": "奇幻",
+    "historical": "历史",
+    "mystery": "悬疑",
+    "romance": "言情",
+    "scifi": "科幻",
+    "urban": "都市",
+    "wuxia": "武侠",
+    "xianxia": "仙侠",
+    "xiuxian": "修仙",
+    "xuanhuan": "玄幻"
+  },
+  "header": {
+    "back": "返回",
+    "backHome": "返回首页",
+    "title": "项目创建向导"
+  },
+  "outlineMode": {
+    "detailed": "细化模式 (1→N) 推荐",
+    "detailedDesc": "一个大纲可展开为多个章节，灵活控制",
+    "detailedSuitable": "💡 适合：复杂剧情、长篇创作、需要细化控制",
+    "traditional": "传统模式 (1→1)",
+    "traditionalDesc": "一个大纲对应一个章节，简单直接",
+    "traditionalSuitable": "💡 适合：简单剧情、快速创作、短篇小说"
+  },
+  "perspective": {
+    "firstPerson": "第一人称",
+    "omniscient": "全知视角",
+    "thirdPerson": "第三人称"
+  },
+  "resume": {
+    "fetchProjectFailed": "获取项目信息失败",
+    "generateFailed": "恢复生成失败,请重试"
+  }
+}

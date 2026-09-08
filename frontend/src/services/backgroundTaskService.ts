@@ -1,8 +1,60 @@
 /**
  * 后台任务服务 - 轮询任务进度，替代SSE
  */
+import i18n from '../i18n';
+import { mapErrorPayload, mapTaskStatusMessage } from './errorMapper';
 
 const API_BASE = '/api/tasks';
+
+interface ApiErrorEnvelope {
+  detail?: string | null;
+  code?: string | null;
+  params?: Record<string, unknown> | null;
+  /**
+   * Original diagnostic text (backend task 14a `raw` channel). Debug/detail
+   * views only — it never wins display precedence: mapErrorPayload localizes
+   * from `code` and only falls back to `detail` for code-less legacy payloads.
+   */
+  raw?: string | null;
+}
+
+async function envelopeFromFailedResponse(response: Response): Promise<ApiErrorEnvelope> {
+  try {
+    const body = await response.json();
+    if (body && typeof body === 'object') {
+      return {
+        detail: typeof body.detail === 'string' ? body.detail : null,
+        code: typeof body.code === 'string' ? body.code : null,
+        params: body.params && typeof body.params === 'object' ? body.params : null,
+        raw: typeof body.raw === 'string' ? body.raw : null,
+      };
+    }
+  } catch {
+    // Non-JSON body → envelope stays empty, status fallback applies.
+  }
+  return {};
+}
+
+type TaskErrorKey =
+  | 'task.queryStatusFailed'
+  | 'task.listFailed'
+  | 'task.batchListFailed'
+  | 'task.cancelBatchFailed'
+  | 'task.cancelFailed'
+  | 'task.clearFailed'
+  | 'task.deleteFailed'
+  | 'task.createFailed'
+  | 'task.createChapterFailed'
+  | 'task.failed'
+  | 'task.cancelled';
+
+function taskRequestError(actionKey: TaskErrorKey, envelope: ApiErrorEnvelope, statusText: string, status: number): Error {
+  const action = i18n.t(actionKey, { ns: 'errors' });
+  if (envelope.code || envelope.detail) {
+    return new Error(`${action}: ${mapErrorPayload({ ...envelope, status })}`);
+  }
+  return new Error(`${action}: ${statusText}`);
+}
 
 export interface TaskStatus {
   id: string;
@@ -11,6 +63,8 @@ export interface TaskStatus {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number; // 0-100
   status_message: string | null;
+  status_code?: string | null;
+  status_params?: Record<string, unknown> | null;
   progress_details: {
     stage?: string;
     message?: string;
@@ -67,7 +121,7 @@ interface ActiveBatchTaskResponse {
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   const response = await fetch(`${API_BASE}/${taskId}`);
   if (!response.ok) {
-    throw new Error(`查询任务状态失败: ${response.statusText}`);
+    throw taskRequestError('task.queryStatusFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
   return response.json();
 }
@@ -84,7 +138,7 @@ export async function getProjectTasks(
   if (taskType) params.set('task_type', taskType);
   const response = await fetch(`${API_BASE}?${params}`);
   if (!response.ok) {
-    throw new Error(`获取任务列表失败: ${response.statusText}`);
+    throw taskRequestError('task.listFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
   return response.json();
 }
@@ -95,7 +149,7 @@ export async function getProjectTasks(
 export async function getActiveBatchTasks(projectId: string): Promise<BatchTaskStatus[]> {
   const response = await fetch(`/api/chapters/project/${projectId}/batch-generate/active`);
   if (!response.ok) {
-    throw new Error(`获取批量生成任务失败: ${response.statusText}`);
+    throw taskRequestError('task.batchListFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
   const data: ActiveBatchTaskResponse = await response.json();
   return data.has_active_task && data.task ? [data.task] : [];
@@ -107,8 +161,7 @@ export async function getActiveBatchTasks(projectId: string): Promise<BatchTaskS
 export async function cancelBatchTask(batchId: string): Promise<void> {
   const response = await fetch(`/api/chapters/batch-generate/${batchId}/cancel`, { method: 'POST' });
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(`取消批量生成任务失败: ${err.detail || response.statusText}`);
+    throw taskRequestError('task.cancelBatchFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
 }
 
@@ -118,7 +171,7 @@ export async function cancelBatchTask(batchId: string): Promise<void> {
 export async function cancelTask(taskId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/${taskId}/cancel`, { method: 'POST' });
   if (!response.ok) {
-    throw new Error(`取消任务失败: ${response.statusText}`);
+    throw taskRequestError('task.cancelFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
 }
 
@@ -128,7 +181,7 @@ export async function cancelTask(taskId: string): Promise<void> {
 export async function clearProjectTasks(projectId: string): Promise<{ deleted_count: number }> {
   const response = await fetch(`${API_BASE}/project/${projectId}/clear`, { method: 'DELETE' });
   if (!response.ok) {
-    throw new Error(`清理任务记录失败: ${response.statusText}`);
+    throw taskRequestError('task.clearFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
   return response.json();
 }
@@ -139,7 +192,7 @@ export async function clearProjectTasks(projectId: string): Promise<{ deleted_co
 export async function deleteTask(taskId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/${taskId}`, { method: 'DELETE' });
   if (!response.ok) {
-    throw new Error(`删除任务失败: ${response.statusText}`);
+    throw taskRequestError('task.deleteFailed', await envelopeFromFailedResponse(response), response.statusText, response.status);
   }
 }
 
@@ -183,12 +236,16 @@ export function pollTaskUntilComplete(
       }
 
       if (status.status === 'failed') {
-        onError(status.error_message || '任务失败', status);
+        // Task 14a: the mapped (localized) status wins; error_message is raw
+        // backend text and no longer leaks to the default display. Legacy
+        // NULL-code rows still pass status_message through verbatim.
+        const detail = mapTaskStatusMessage(status) || i18n.t('task.failed', { ns: 'errors' });
+        onError(detail, status);
         return;
       }
 
       if (status.status === 'cancelled') {
-        onError('任务已取消', status);
+        onError(i18n.t('task.cancelled', { ns: 'errors' }), status);
         return;
       }
 
@@ -197,7 +254,7 @@ export function pollTaskUntilComplete(
       timerId = setTimeout(poll, nextInterval);
     } catch (err) {
       if (!cancelled) {
-        onError(err instanceof Error ? err.message : '查询任务状态失败', {} as TaskStatus);
+        onError(err instanceof Error ? err.message : i18n.t('task.queryStatusFailed', { ns: 'errors' }), {} as TaskStatus);
       }
     }
   };
@@ -235,8 +292,13 @@ export async function generateOutlineBackground(
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    onError(err.detail || '创建任务失败', {} as TaskStatus);
+    const envelope = await envelopeFromFailedResponse(response);
+    onError(
+      envelope.code || envelope.detail
+        ? mapErrorPayload({ ...envelope, status: response.status })
+        : i18n.t('task.createFailed', { ns: 'errors' }),
+      {} as TaskStatus
+    );
     return () => {};
   }
 
@@ -276,8 +338,13 @@ export async function generateChapterBackground(
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    onError(err.detail || '创建章节生成任务失败', {} as TaskStatus);
+    const envelope = await envelopeFromFailedResponse(response);
+    onError(
+      envelope.code || envelope.detail
+        ? mapErrorPayload({ ...envelope, status: response.status })
+        : i18n.t('task.createChapterFailed', { ns: 'errors' }),
+      {} as TaskStatus
+    );
     return () => {};
   }
 

@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.database import get_db
 from app.models.generation_history import GenerationHistory
 from app.schemas.polish import PolishRequest, PolishResponse
@@ -81,9 +82,12 @@ async def polish_text(
             word_count_after=word_count_after
         )
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"AI去味失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI去味失败: {str(e)}")
+        detail = f"AI去味失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/batch", summary="批量AI去味")
@@ -136,6 +140,9 @@ async def polish_batch(
             "results": results
         }
         
+    except (HTTPException, ApiError):
+        raise
     except Exception as e:
         logger.error(f"批量AI去味失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"批量AI去味失败: {str(e)}")
+        detail = f"批量AI去味失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

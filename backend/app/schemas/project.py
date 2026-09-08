@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Literal
 from datetime import datetime
 
+from app.schemas.settings import ContentLanguage
+
 
 class ProjectBase(BaseModel):
     """项目基础模型"""
@@ -86,6 +88,7 @@ class ProjectWizardRequest(BaseModel):
         default="one-to-many",
         description="大纲章节模式"
     )
+    content_language: ContentLanguage
 
 
 class WorldBuildingResponse(BaseModel):

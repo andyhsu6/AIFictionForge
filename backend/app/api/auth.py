@@ -4,14 +4,16 @@
 from fastapi import APIRouter, HTTPException, Response, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Dict, Optional
 import hashlib
+import json
 import secrets
 import re
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import DYNAMIC_DETAIL_CODE, ApiError
 from app.services.oauth_service import LinuxDOOAuthService
 from app.user_manager import user_manager, User as UserDTO
 from app.user_password import password_manager
@@ -183,6 +185,31 @@ async def _find_user_by_email(email: str) -> Optional[UserDTO]:
         return UserDTO(**user.to_dict())
 
 
+async def _resolve_recipient_language(user: Optional[UserDTO]) -> str:
+    """按收件人 Settings.preferences.language 解析邮件语言（i18n todo13 part 4）。
+
+    - user 为空（register 场景发送时收件人尚未注册，无偏好可读）→ 默认 zh
+    - 无 Settings 行 / preferences 缺失或非法 JSON / language != 'en' → 默认 zh
+    仅 'en' 切换英文；其余一切情况保持 zh，与历史行为 byte-identity。
+    """
+    if not user:
+        return "zh"
+    async with await _get_global_session() as session:
+        result = await session.execute(
+            select(SettingsModel).where(SettingsModel.user_id == user.user_id)
+        )
+        settings_row = result.scalar_one_or_none()
+    if not settings_row:
+        return "zh"
+    try:
+        prefs = json.loads(settings_row.preferences or "{}")
+    except (TypeError, ValueError):
+        return "zh"
+    if not isinstance(prefs, dict):
+        return "zh"
+    return "en" if prefs.get("language") == "en" else "zh"
+
+
 async def _create_email_user(email: str, display_name: Optional[str]) -> UserDTO:
     """创建邮箱注册用户"""
     normalized_email = email.strip().lower()
@@ -199,7 +226,7 @@ async def _create_email_user(email: str, display_name: Optional[str]) -> UserDTO
         user = existing.scalar_one_or_none()
 
         if user:
-            raise HTTPException(status_code=400, detail="该邮箱已注册")
+            raise ApiError(code="auth.email_already_registered")
 
         user = UserModel(
             user_id=user_id,
@@ -236,13 +263,13 @@ async def _touch_user_last_login(user_id: str):
 def _validate_email(email: str) -> str:
     normalized_email = email.strip().lower()
     if not normalized_email or len(normalized_email) > 255 or not EMAIL_REGEX.match(normalized_email):
-        raise HTTPException(status_code=400, detail="请输入有效的邮箱地址")
+        raise ApiError(code="validation.email_format")
     return normalized_email
 
 
 def _validate_password(password: str):
     if len(password) < 6:
-        raise HTTPException(status_code=400, detail="密码长度至少为6个字符")
+        raise ApiError(code="validation.password_too_short")
 
 
 def _is_session_cookie_secure() -> bool:
@@ -284,31 +311,47 @@ def _generate_verification_code() -> str:
     return f"{secrets.randbelow(1000000):06d}"
 
 
-def _build_verification_mail_content(scene: str, code: str, ttl_minutes: int) -> tuple[str, str, str]:
-    scene_title_map = {
-        "register": "邮箱注册验证码",
-        "login": "邮箱登录验证码",
-        "reset_password": "重置密码验证码",
-    }
-    scene_desc_map = {
-        "register": "欢迎注册 AIFictionForge。",
-        "login": "你正在使用邮箱验证码登录 AIFictionForge。",
-        "reset_password": "你正在重置 AIFictionForge 账号密码。",
-    }
+# ---------------------------------------------------------------------------
+# 邮箱双语模板（i18n todo13 part 4 / issue #27）
+#
+# 结构：场景 -> locale -> {title, desc}；正文与 HTML 为 per-locale 组装模板。
+# zh 文案逐字保留转换前 f-string 的拼装结果（旧用户 byte-identity）；en 为同结构
+# 同变量（{code} / {ttl_minutes}）的等义翻译。邮件由后端直接渲染发送，不走前端
+# envelope/errorMapper，因此不进 errors.json。
+# 语言选择见 _resolve_recipient_language：仅 preferences.language == 'en' 时用 en，
+# 其余（含缺失/非法）一律 zh，与历史行为保持 byte-identity。
+# ---------------------------------------------------------------------------
+_VERIFICATION_MAIL_SCENE_TEMPLATES: Dict[str, Dict[str, Dict[str, str]]] = {
+    "register": {
+        "zh": {"title": "邮箱注册验证码", "desc": "欢迎注册 AIFictionForge。"},
+        "en": {"title": "Email registration verification code", "desc": "Welcome to AIFictionForge."},
+    },
+    "login": {
+        "zh": {"title": "邮箱登录验证码", "desc": "你正在使用邮箱验证码登录 AIFictionForge。"},
+        "en": {"title": "Email login verification code", "desc": "You are logging in to AIFictionForge with an email verification code."},
+    },
+    "reset_password": {
+        "zh": {"title": "重置密码验证码", "desc": "你正在重置 AIFictionForge 账号密码。"},
+        "en": {"title": "Password reset verification code", "desc": "You are resetting the password of your AIFictionForge account."},
+    },
+}
 
-    scene_title = scene_title_map.get(scene, "邮箱验证码")
-    scene_desc = scene_desc_map.get(scene, "你正在进行邮箱身份验证。")
-    subject = f"AIFictionForge {scene_title}"
-    text_body = (
-        f"{scene_desc}\n\n"
-        f"你的验证码是：{code}\n"
-        f"有效期：{ttl_minutes} 分钟\n\n"
-        f"如果这不是你的操作，请忽略本邮件。"
-    )
-    html_body = f"""
+# 未知场景兜底（形状与场景模板一致）
+_VERIFICATION_MAIL_FALLBACK_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "zh": {"title": "邮箱验证码", "desc": "你正在进行邮箱身份验证。"},
+    "en": {"title": "Email verification code", "desc": "You are verifying your email address."},
+}
+
+_VERIFICATION_MAIL_TEXT_BODY_TEMPLATES: Dict[str, str] = {
+    "zh": "{desc}\n\n你的验证码是：{code}\n有效期：{ttl_minutes} 分钟\n\n如果这不是你的操作，请忽略本邮件。",
+    "en": "{desc}\n\nYour verification code is: {code}\nValid for: {ttl_minutes} minutes\n\nIf this was not your operation, please ignore this email.",
+}
+
+_VERIFICATION_MAIL_HTML_BODY_TEMPLATES: Dict[str, str] = {
+    "zh": """
     <div style="font-family: Arial, PingFang SC, Microsoft YaHei, sans-serif; line-height: 1.8; color: #1f2937;">
-      <h2 style="margin-bottom: 16px;">AIFictionForge {scene_title}</h2>
-      <p>{scene_desc}</p>
+      <h2 style="margin-bottom: 16px;">AIFictionForge {title}</h2>
+      <p>{desc}</p>
       <p>你的验证码为：</p>
       <div style="display: inline-block; padding: 10px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 28px; font-weight: 700; letter-spacing: 4px; color: #2563eb;">
         {code}
@@ -316,7 +359,38 @@ def _build_verification_mail_content(scene: str, code: str, ttl_minutes: int) ->
       <p style="margin-top: 16px;">有效期：{ttl_minutes} 分钟</p>
       <p>如果这不是你的操作，请忽略本邮件。</p>
     </div>
-    """
+    """,
+    "en": """
+    <div style="font-family: Arial, PingFang SC, Microsoft YaHei, sans-serif; line-height: 1.8; color: #1f2937;">
+      <h2 style="margin-bottom: 16px;">AIFictionForge {title}</h2>
+      <p>{desc}</p>
+      <p>Your verification code is:</p>
+      <div style="display: inline-block; padding: 10px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 28px; font-weight: 700; letter-spacing: 4px; color: #2563eb;">
+        {code}
+      </div>
+      <p style="margin-top: 16px;">Valid for: {ttl_minutes} minutes</p>
+      <p>If this was not your operation, please ignore this email.</p>
+    </div>
+    """,
+}
+
+
+def _build_verification_mail_content(
+    scene: str, code: str, ttl_minutes: int, lang: str = "zh"
+) -> tuple[str, str, str]:
+    """组装验证码邮件 (subject, text_body, html_body)，lang 缺省 zh（历史行为）。"""
+    locale = "en" if lang == "en" else "zh"
+    scene_templates = _VERIFICATION_MAIL_SCENE_TEMPLATES.get(scene, _VERIFICATION_MAIL_FALLBACK_TEMPLATES)
+    title = scene_templates[locale]["title"]
+    desc = scene_templates[locale]["desc"]
+
+    subject = f"AIFictionForge {title}"
+    text_body = _VERIFICATION_MAIL_TEXT_BODY_TEMPLATES[locale].format(
+        desc=desc, code=code, ttl_minutes=ttl_minutes
+    )
+    html_body = _VERIFICATION_MAIL_HTML_BODY_TEMPLATES[locale].format(
+        title=title, desc=desc, code=code, ttl_minutes=ttl_minutes
+    )
     return subject, text_body, html_body
 
 
@@ -328,7 +402,7 @@ def _validate_verification_scene(scene: str) -> str:
     normalized_scene = scene.strip().lower()
     allowed_scenes = {"register", "login", "reset_password"}
     if normalized_scene not in allowed_scenes:
-        raise HTTPException(status_code=400, detail="不支持的验证码场景")
+        raise ApiError(code="validation.verification_code_scene")
     return normalized_scene
 
 
@@ -348,7 +422,7 @@ async def get_auth_config():
 async def local_login(request: LocalLoginRequest, response: Response):
     """本地账户登录（支持.env配置的管理员账号和Linux DO授权后绑定的账号）"""
     if not settings.LOCAL_AUTH_ENABLED:
-        raise HTTPException(status_code=403, detail="本地账户登录未启用")
+        raise ApiError(code="auth.local_login_disabled")
 
     logger.info(f"[本地登录] 尝试登录用户名: {request.username}")
 
@@ -365,11 +439,11 @@ async def local_login(request: LocalLoginRequest, response: Response):
     if target_user:
         if not await password_manager.has_password(target_user.user_id):
             logger.warning(f"[本地登录] 用户 {target_user.user_id} 没有设置密码")
-            raise HTTPException(status_code=401, detail="用户名或密码错误")
+            raise ApiError(code="auth.login_failed")
 
         if not await password_manager.verify_password(target_user.user_id, request.password):
             logger.warning(f"[本地登录] 用户 {target_user.user_id} 密码验证失败")
-            raise HTTPException(status_code=401, detail="用户名或密码错误")
+            raise ApiError(code="auth.login_failed")
 
         logger.info(f"[本地登录] Linux DO 授权用户 {target_user.user_id} 登录成功")
         user = target_user
@@ -377,14 +451,14 @@ async def local_login(request: LocalLoginRequest, response: Response):
         logger.info(f"[本地登录] 未找到 Linux DO 用户，检查 .env 管理员账号")
 
         if not settings.LOCAL_AUTH_USERNAME or not settings.LOCAL_AUTH_PASSWORD:
-            raise HTTPException(status_code=401, detail="用户名或密码错误")
+            raise ApiError(code="auth.login_failed")
 
         user_id = f"local_{hashlib.md5(request.username.encode()).hexdigest()[:16]}"
         user = await user_manager.get_user(user_id)
 
         if not user:
             if request.username != settings.LOCAL_AUTH_USERNAME or request.password != settings.LOCAL_AUTH_PASSWORD:
-                raise HTTPException(status_code=401, detail="用户名或密码错误")
+                raise ApiError(code="auth.login_failed")
 
             user = await user_manager.create_or_update_from_linuxdo(
                 linuxdo_id=user_id,
@@ -398,7 +472,7 @@ async def local_login(request: LocalLoginRequest, response: Response):
             logger.info(f"[本地登录] 管理员用户 {user.user_id} 初始密码已设置到数据库")
         else:
             if not await password_manager.verify_password(user.user_id, request.password):
-                raise HTTPException(status_code=401, detail="用户名或密码错误")
+                raise ApiError(code="auth.login_failed")
 
             logger.info(f"[本地登录] 管理员用户 {user.user_id} 登录成功")
 
@@ -417,7 +491,7 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
     """发送邮箱验证码（注册 / 登录 / 重置密码）"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     scene = _validate_verification_scene(request.scene)
@@ -425,15 +499,15 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
 
     if scene == "register":
         if not runtime["email_register_enabled"]:
-            raise HTTPException(status_code=403, detail="邮箱注册未启用")
+            raise ApiError(code="auth.email_register_disabled")
         if existing_user:
-            raise HTTPException(status_code=400, detail="该邮箱已注册")
+            raise ApiError(code="auth.email_already_registered")
     else:
         if not existing_user:
-            raise HTTPException(status_code=404, detail="该邮箱尚未注册")
+            raise ApiError(code="auth.email_not_registered")
 
     if not runtime["smtp_host"] or not runtime["smtp_username"] or not runtime["smtp_password"]:
-        raise HTTPException(status_code=400, detail="系统 SMTP 未配置完整，暂无法发送验证码")
+        raise ApiError(code="auth.smtp_not_configured")
 
     now = get_china_now()
     storage_key = _get_verification_storage_key(scene, email)
@@ -443,11 +517,16 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
 
     if cached and cached["last_sent_at"] + timedelta(seconds=resend_interval) > now:
         remain_seconds = int((cached["last_sent_at"] + timedelta(seconds=resend_interval) - now).total_seconds())
-        raise HTTPException(status_code=429, detail=f"验证码发送过于频繁，请 {remain_seconds} 秒后重试")
+        raise ApiError(
+            code="rate_limit.verification_code_send",
+            detail=f"验证码发送过于频繁，请 {remain_seconds} 秒后重试",
+            params={"remain_seconds": remain_seconds},
+        )
 
     code = _generate_verification_code()
     expires_at = now + timedelta(minutes=ttl_minutes)
-    subject, text_body, html_body = _build_verification_mail_content(scene, code, ttl_minutes)
+    lang = await _resolve_recipient_language(existing_user)
+    subject, text_body, html_body = _build_verification_mail_content(scene, code, ttl_minutes, lang=lang)
     from_email = runtime["smtp_from_email"] or runtime["smtp_username"]
 
     await email_service.send_mail(
@@ -486,37 +565,37 @@ async def email_register(request: EmailRegisterRequest, response: Response):
     """邮箱验证码注册并自动登录"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
     if not runtime["email_register_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱注册未启用")
+        raise ApiError(code="auth.email_register_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
     _validate_password(request.password)
 
     if len(code) != 6 or not code.isdigit():
-        raise HTTPException(status_code=400, detail="请输入6位数字验证码")
+        raise ApiError(code="validation.verification_code_format")
 
     cached = _email_verification_storage.get(_get_verification_storage_key("register", email))
     if not cached:
-        raise HTTPException(status_code=400, detail="请先发送验证码")
+        raise ApiError(code="auth.verification_code_required", params={"scene": "register"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(_get_verification_storage_key("register", email), None)
-        raise HTTPException(status_code=400, detail="验证码已过期，请重新发送")
+        raise ApiError(code="auth.verification_code_expired", params={"scene": "register"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(_get_verification_storage_key("register", email), None)
-            raise HTTPException(status_code=429, detail="验证码错误次数过多，请重新发送")
-        raise HTTPException(status_code=400, detail="验证码错误")
+            raise ApiError(code="rate_limit.verification_code_attempts")
+        raise ApiError(code="auth.verification_code_wrong", params={"scene": "register"})
 
     existing_user = await _find_user_by_email(email)
     if existing_user:
         _email_verification_storage.pop(_get_verification_storage_key("register", email), None)
-        raise HTTPException(status_code=400, detail="该邮箱已注册")
+        raise ApiError(code="auth.email_already_registered")
 
     user = await _create_email_user(email, request.display_name)
     await password_manager.set_password(user.user_id, email, request.password)
@@ -537,33 +616,33 @@ async def email_login(request: EmailLoginRequest, response: Response):
     """邮箱验证码登录"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
     user = await _find_user_by_email(email)
     if not user:
-        raise HTTPException(status_code=404, detail="该邮箱尚未注册")
+        raise ApiError(code="auth.email_not_registered")
 
     if len(code) != 6 or not code.isdigit():
-        raise HTTPException(status_code=400, detail="请输入6位数字验证码")
+        raise ApiError(code="validation.verification_code_format")
 
     storage_key = _get_verification_storage_key("login", email)
     cached = _email_verification_storage.get(storage_key)
     if not cached:
-        raise HTTPException(status_code=400, detail="请先发送登录验证码")
+        raise ApiError(code="auth.verification_code_required", detail="请先发送登录验证码", params={"scene": "login"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(storage_key, None)
-        raise HTTPException(status_code=400, detail="登录验证码已过期，请重新发送")
+        raise ApiError(code="auth.verification_code_expired", detail="登录验证码已过期，请重新发送", params={"scene": "login"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(storage_key, None)
-            raise HTTPException(status_code=429, detail="验证码错误次数过多，请重新发送")
-        raise HTTPException(status_code=400, detail="登录验证码错误")
+            raise ApiError(code="rate_limit.verification_code_attempts")
+        raise ApiError(code="auth.verification_code_wrong", detail="登录验证码错误", params={"scene": "login"})
 
     _email_verification_storage.pop(storage_key, None)
     await _touch_user_last_login(user.user_id)
@@ -586,7 +665,7 @@ async def email_reset_password(request: EmailResetPasswordRequest):
     """通过邮箱验证码重置密码"""
     runtime = await _get_auth_runtime_settings()
     if not runtime["email_auth_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱认证未启用")
+        raise ApiError(code="auth.email_auth_disabled")
 
     email = _validate_email(request.email)
     code = request.code.strip()
@@ -594,27 +673,27 @@ async def email_reset_password(request: EmailResetPasswordRequest):
 
     user = await _find_user_by_email(email)
     if not user:
-        raise HTTPException(status_code=404, detail="该邮箱尚未注册")
+        raise ApiError(code="auth.email_not_registered")
 
     if len(code) != 6 or not code.isdigit():
-        raise HTTPException(status_code=400, detail="请输入6位数字验证码")
+        raise ApiError(code="validation.verification_code_format")
 
     storage_key = _get_verification_storage_key("reset_password", email)
     cached = _email_verification_storage.get(storage_key)
     if not cached:
-        raise HTTPException(status_code=400, detail="请先发送重置密码验证码")
+        raise ApiError(code="auth.verification_code_required", detail="请先发送重置密码验证码", params={"scene": "reset"})
 
     now = get_china_now()
     if cached["expires_at"] < now:
         _email_verification_storage.pop(storage_key, None)
-        raise HTTPException(status_code=400, detail="重置密码验证码已过期，请重新发送")
+        raise ApiError(code="auth.verification_code_expired", detail="重置密码验证码已过期，请重新发送", params={"scene": "reset"})
 
     if cached["code"] != code:
         cached["attempts"] = cached.get("attempts", 0) + 1
         if cached["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
             _email_verification_storage.pop(storage_key, None)
-            raise HTTPException(status_code=429, detail="验证码错误次数过多，请重新发送")
-        raise HTTPException(status_code=400, detail="重置密码验证码错误")
+            raise ApiError(code="rate_limit.verification_code_attempts")
+        raise ApiError(code="auth.verification_code_wrong", detail="重置密码验证码错误", params={"scene": "reset"})
 
     await password_manager.set_password(user.user_id, email, request.new_password)
     _email_verification_storage.pop(storage_key, None)
@@ -649,25 +728,26 @@ async def _handle_callback(
     成功后重定向到前端首页，并设置 user_id Cookie
     """
     if error:
-        raise HTTPException(status_code=400, detail=f"授权失败: {error}")
+        detail = f"授权失败: {error}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
 
     if not code or not state:
-        raise HTTPException(status_code=400, detail="缺少 code 或 state 参数")
+        raise ApiError(code="auth.oauth_params_missing")
 
     if state not in _state_storage:
-        raise HTTPException(status_code=400, detail="无效的 state 参数")
+        raise ApiError(code="auth.oauth_request_invalid")
 
     del _state_storage[state]
 
     token_data = await oauth_service.get_access_token(code)
     if not token_data or "access_token" not in token_data:
-        raise HTTPException(status_code=400, detail="获取访问令牌失败")
+        raise ApiError(code="auth.oauth_upstream_failed", detail="获取访问令牌失败", params={"stage": "token"})
 
     access_token = token_data["access_token"]
 
     user_info = await oauth_service.get_user_info(access_token)
     if not user_info:
-        raise HTTPException(status_code=400, detail="获取用户信息失败")
+        raise ApiError(code="auth.oauth_upstream_failed", detail="获取用户信息失败", params={"stage": "userinfo"})
 
     linuxdo_id = str(user_info.get("id"))
     username = user_info.get("username", "")
@@ -735,7 +815,7 @@ async def callback_alias(
 async def refresh_session(request: Request, response: Response):
     """刷新会话 - 延长登录状态"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="未登录，无法刷新会话")
+        raise ApiError(code="auth.identity_missing", detail="未登录，无法刷新会话")
 
     user = request.state.user
 
@@ -793,7 +873,7 @@ async def logout(request: Request, response: Response):
 async def get_current_user(request: Request):
     """获取当前登录用户信息"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return request.state.user.dict()
 
@@ -802,7 +882,7 @@ async def get_current_user(request: Request):
 async def get_password_status(request: Request):
     """获取当前用户的密码状态"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     user = request.state.user
     has_password = await password_manager.has_password(user.user_id)
@@ -823,7 +903,7 @@ async def get_password_status(request: Request):
 async def set_user_password(request: Request, password_req: SetPasswordRequest):
     """设置当前用户的密码"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     user = request.state.user
     _validate_password(password_req.password)
@@ -845,12 +925,12 @@ async def initialize_user_password(request: Request, password_req: SetPasswordRe
     用于首次通过 Linux DO 授权登录的用户，可以选择设置自定义密码或使用默认密码
     """
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     user = request.state.user
 
     if await password_manager.has_password(user.user_id):
-        raise HTTPException(status_code=400, detail="密码已经初始化，请使用密码修改功能")
+        raise ApiError(code="auth.password_already_initialized")
 
     _validate_password(password_req.password)
 
@@ -883,18 +963,18 @@ async def bind_account_login(request: LocalLoginRequest, response: Response):
 
     if not target_user:
         logger.warning(f"[绑定账号登录] 用户名 {request.username} 未找到")
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        raise ApiError(code="auth.login_failed")
 
     has_pwd = await password_manager.has_password(target_user.user_id)
     if not has_pwd:
         logger.warning(f"[绑定账号登录] 用户 {target_user.user_id} 没有设置密码")
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        raise ApiError(code="auth.login_failed")
 
     is_valid = await password_manager.verify_password(target_user.user_id, request.password)
     logger.info(f"[绑定账号登录] 用户 {target_user.user_id} 密码验证结果: {is_valid}")
 
     if not is_valid:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        raise ApiError(code="auth.login_failed")
 
     _set_login_cookies(response, target_user.user_id)
     logger.info(f"✅ [绑定账号登录] 用户 {target_user.user_id} ({request.username}) 登录成功，会话有效期 {settings.SESSION_EXPIRE_MINUTES} 分钟")

@@ -8,6 +8,7 @@ from sqlalchemy.orm import declarative_base
 from fastapi import Request, HTTPException
 from app.config import settings
 from app.logger import get_logger
+from app.core.errors import ApiError
 
 logger = get_logger(__name__)
 
@@ -152,7 +153,7 @@ async def get_db(request: Request):
     user_id = getattr(request.state, "user_id", None)
     
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录或用户ID缺失")
+        raise ApiError(code="auth.identity_missing")
     
     engine = await get_engine(user_id)
     

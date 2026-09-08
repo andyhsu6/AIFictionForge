@@ -4,6 +4,7 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
 from typing import List, Optional
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.user_manager import user_manager, User
 from app.user_password import password_manager
 
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/users", tags=["用户管理"])
 def require_login(request: Request):
     """依赖：要求用户已登录"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="需要登录")
+        raise ApiError(code="auth.unauthorized", detail="需要登录")
     return request.state.user
 
 
@@ -21,7 +22,7 @@ def require_admin(request: Request):
     """依赖：要求用户为管理员"""
     user = require_login(request)
     if not request.state.is_admin:
-        raise HTTPException(status_code=403, detail="需要管理员权限")
+        raise ApiError(code="auth.admin_required")
     return user
 
 
@@ -65,25 +66,16 @@ async def set_admin(
     """
     # 检查是否尝试撤销自己的权限
     if data.user_id == admin_user.user_id and not data.is_admin:
-        raise HTTPException(
-            status_code=400,
-            detail="不能撤销自己的管理员权限"
-        )
+        raise ApiError(code="validation.self_admin_revoke")
     
     # 尝试设置管理员权限
     success = await user_manager.set_admin(data.user_id, data.is_admin)
     
     if not success:
         if not data.is_admin:
-            raise HTTPException(
-                status_code=400,
-                detail="无法撤销管理员权限，至少需要保留一个管理员"
-            )
+            raise ApiError(code="validation.last_admin_required")
         else:
-            raise HTTPException(
-                status_code=404,
-                detail="用户不存在"
-            )
+            raise ApiError(code="not_found.user")
     
     return {
         "message": f"已{'授予' if data.is_admin else '撤销'}管理员权限",
@@ -106,10 +98,7 @@ async def delete_user(
     success = await user_manager.delete_user(user_id)
     
     if not success:
-        raise HTTPException(
-            status_code=400,
-            detail="无法删除该用户（用户不存在或为管理员）"
-        )
+        raise ApiError(code="validation.user_delete_blocked")
     
     return {
         "message": "用户已删除",
@@ -126,7 +115,7 @@ async def get_user(
     user = await user_manager.get_user(user_id)
     
     if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
+        raise ApiError(code="not_found.user")
     
     return user.dict()
 
@@ -147,18 +136,12 @@ async def reset_user_password(
     """
     # 检查是否尝试重置自己的密码
     if data.user_id == admin_user.user_id:
-        raise HTTPException(
-            status_code=400,
-            detail="不能重置自己的密码，请使用修改密码功能"
-        )
+        raise ApiError(code="validation.self_password_reset")
     
     # 检查目标用户是否存在
     target_user = await user_manager.get_user(data.user_id)
     if not target_user:
-        raise HTTPException(
-            status_code=404,
-            detail="目标用户不存在"
-        )
+        raise ApiError(code="not_found.user", detail="目标用户不存在")
     
     # 重置密码
     try:
@@ -188,7 +171,5 @@ async def reset_user_password(
         return response_data
         
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"重置密码失败: {str(e)}"
-        )
+        detail = f"重置密码失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

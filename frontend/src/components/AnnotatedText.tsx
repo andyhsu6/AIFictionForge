@@ -1,4 +1,5 @@
 import React, { useMemo, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { theme } from 'antd';
 
 // 标注数据类型
@@ -59,6 +60,7 @@ const AnnotatedText: React.FC<AnnotatedTextProps> = ({
   const annotationRefs = useRef<Record<string, HTMLSpanElement | null>>({});
 
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const typeColors: Record<MemoryAnnotation['type'], string> = {
     hook: token.colorError,
     foreshadow: token.colorInfo,
@@ -221,7 +223,7 @@ const AnnotatedText: React.FC<AnnotatedTextProps> = ({
 
     // 简化工具提示内容，不再使用复杂的React元素，改为纯文本或移除Tooltip
     const tooltipText = annotations && annotations.length > 1
-      ? `此处有 ${annotations.length} 个标注`
+      ? t('annotatedText.multipleAnnotations', { count: annotations.length })
       : `${annotation.title}: ${annotation.content.slice(0, 100)}${annotation.content.length > 100 ? '...' : ''}`;
 
     return (

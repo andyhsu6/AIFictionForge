@@ -71,7 +71,13 @@ class TaskProgressTracker:
         )
 
     async def generating(self, current_chars: int = 0, estimated_total: int = 5000,
-                         message: str = None, retry_count: int = 0, max_retries: int = 3):
+                         message: str = None, retry_count: int = 0, max_retries: int = 3,
+                         code: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
+        """生成阶段进度。
+
+        i18n todo15：code 设置时同一行写入 status_code/status_params（结构化列，
+        与 complete/warning 同一模式、opt-in），status_message 组装保持字节不变。
+        """
         sub_progress = min(current_chars / max(estimated_total, 1), 1.0)
         progress = 20 + int(65 * sub_progress)
         if progress < self._last_generating_progress:
@@ -82,10 +88,14 @@ class TaskProgressTracker:
 
         retry_suffix = f" (重试 {retry_count}/{max_retries})" if retry_count > 0 else ""
         msg = message or f"生成{self.task_name}中... ({current_chars}字符){retry_suffix}"
-        await self._update_task(
+        update_kwargs: Dict[str, Any] = dict(
             progress=progress, status_message=msg,
             progress_details={"stage": "generating", "message": msg, "current_chars": current_chars}
         )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
     async def parsing(self, message: str = None):
         self.current_progress = 88
@@ -122,35 +132,66 @@ class TaskProgressTracker:
     async def set_result(self, task_result: Dict[str, Any]):
         await self._update_task(task_result=task_result)
 
-    async def complete(self, message: str = None):
+    async def complete(self, message: Optional[str] = None, code: Optional[str] = None,
+                       params: Optional[Dict[str, Any]] = None):
+        """完成任务。
+
+        i18n todo13 part 2：code 设置时同一行写入 status_code/status_params
+        （结构化列），中文 status_message 组装保持字节不变。
+        """
         self.current_progress = 100
         msg = message or f"{self.task_name}生成完成!"
-        await self._update_task(
+        update_kwargs: Dict[str, Any] = dict(
             status="completed", progress=100, status_message=msg,
             completed_at=datetime.now(),
             progress_details={"stage": "complete", "message": msg}
         )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
-    async def error(self, error_message: str):
-        await self._update_task(
+    async def error(self, error_message: str, error_code: Optional[str] = "task.failed",
+                    params: Optional[Dict[str, Any]] = None):
+        """失败收尾。
+
+        i18n todo13 part 2：失败行默认写 status_code="task.failed"（文案动态，
+        诊断原文在 error_message 列）；error_code=None 退回旧行为（无结构化列）。
+        中文 status_message 组装保持字节不变。
+        """
+        update_kwargs: Dict[str, Any] = dict(
             status="failed", error_message=error_message,
             status_message=f"失败: {error_message}",
             completed_at=datetime.now(),
             progress_details={"stage": "error", "message": error_message}
         )
+        if error_code:
+            update_kwargs["status_code"] = error_code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
-    async def warning(self, message: str):
-        await self._update_task(
+    async def warning(self, message: str, code: Optional[str] = None,
+                      params: Optional[Dict[str, Any]] = None):
+        update_kwargs: Dict[str, Any] = dict(
             status_message=f"⚠️ {message}",
             progress_details={"stage": "warning", "message": message}
         )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
-    async def retry(self, retry_count: int, max_retries: int, reason: str = "准备重试"):
+    async def retry(self, retry_count: int, max_retries: int, reason: str = "准备重试",
+                    code: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
         msg = f"⚠️ {reason}... ({retry_count}/{max_retries})"
-        await self._update_task(
+        update_kwargs: Dict[str, Any] = dict(
             status_message=msg, retry_count=retry_count,
             progress_details={"stage": "retry", "message": msg, "retry_count": retry_count}
         )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = params or {}
+        await self._update_task(**update_kwargs)
 
     def reset_generating_progress(self):
         self._last_generating_progress = 20
@@ -230,6 +271,10 @@ class BackgroundTaskService:
                                     task.status = "failed"
                                     task.error_message = str(e)
                                     task.status_message = f"任务失败: {str(e)}"
+                                    # i18n todo13 part 2：文案动态 → 结构化码 task.failed
+                                    # （诊断原文保留在 error_message 列）。
+                                    task.status_code = "task.failed"
+                                    task.status_params = {}
                                     task.completed_at = datetime.now()
                                     await session.commit()
                         except Exception as update_err:
@@ -345,6 +390,9 @@ class BackgroundTaskService:
         task.cancel_requested = True
         task.status = "cancelled"
         task.status_message = "任务已取消"
+        # i18n todo13 part 2：同一行写入结构化码（registry task.cancelled）。
+        task.status_code = "task.cancelled"
+        task.status_params = {}
         task.completed_at = datetime.now()
         await db.commit()
         logger.info(f"🚫 取消任务: {task_id[:8]}")

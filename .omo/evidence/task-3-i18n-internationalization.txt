@@ -1,0 +1,128 @@
+===================================================================
+QA REPORT - todo 3: persist UI language to localStorage + backend
+           user settings (preferences JSON -> language field)
+===================================================================
+
+FILES CHANGED:
+  backend/app/schemas/settings.py
+    - NEW PreferencesUpdate: language: Optional[str], pattern ^(zh|en)$
+      (invalid values -> Pydantic ValidationError -> FastAPI 422 via todo-4
+      envelope handler; None = remove key)
+  backend/app/api/settings.py
+    - NEW endpoint PUT /settings/preferences (require_login):
+      get_user_settings -> _safe_load_preferences -> incremental merge of
+      language key -> json.dumps back to existing `preferences` Text/JSON
+      column (models/settings.py:45). NO new DB column, NO migration.
+      Other preference keys (api_presets, chapter_analysis_preset_id...)
+      preserved untouched.
+  backend/tests/test_settings_preferences_language.py (NEW, git add -f:
+    backend/tests/ is gitignored but existing tests are tracked - same
+    convention as test_api_error_envelope.py in f37c4e6)
+  frontend/src/utils/languageSync.ts (NEW)
+    - parseServerLanguage(rawPreferences): safe JSON parse, only 'zh'/'en'
+    - syncLanguageWithServer(): server truth -> changeLanguage (detector
+      caches to localStorage 'lng'); server missing -> seed-mirror current
+      local language via updatePreferences; ALL failures caught + console.
+      warn (never throws, works on 401/network/backend-write failure).
+  frontend/src/services/api.ts
+    - settingsApi.updatePreferences({ language }) -> PUT /settings/preferences
+  frontend/src/pages/Login.tsx
+    - handleLoginSuccess(): syncLanguageWithServer() (covers local login,
+      email-code login, email register flows - all route through it)
+  frontend/src/pages/AuthCallback.tsx
+    - after getCurrentUser() success: syncLanguageWithServer() (LinuxDO OAuth)
+  frontend/src/components/ProtectedRoute.tsx
+    - after auth check passes: syncLanguageWithServer() - idempotent
+      convergence guard: covers page refresh / direct entry into protected
+      pages without going through a login handler. When server value equals
+      current language this is a no-op (changeLanguage skipped, no write).
+  frontend/src/pages/Settings.tsx
+    - NEW "界面语言 / Interface language" Card above config Tabs:
+      Select (简体中文 / English), bound to uiLanguage state.
+      on change: i18n.changeLanguage (=> localStorage 'lng' via detector
+      cache) THEN settingsApi.updatePreferences (=> backend mirror).
+      Backend write failure -> warning toast, local switch stays effective.
+      loadSettings() (runs on mount + tab switch): parses server
+      preferences.language; if present and different from current ->
+      changeLanguage overrides stale localStorage residue; selector shows
+      server value.
+
+PRIORITY-CONTRACT IMPLEMENTATION MAP:
+  1) Not logged in (Login page pre-auth / pre-AuthCallback):
+     detector order [localStorage, navigator, htmlTag] guides language
+     (todo 1, untouched). No sync call happens before authentication:
+     Login.tsx only calls syncLanguageWithServer() inside
+     handleLoginSuccess (after cookie session exists); AuthCallback only
+     after getCurrentUser() resolves; ProtectedRoute only in its
+     post-getCurrentUser success branch.
+  2) After authentication server = single source of truth:
+     syncLanguageWithServer() on every auth success + every protected-route
+     mount: server preferences.language present -> changeLanguage(server)
+     over local residue. Seed case: server has no language yet -> current
+     local language is mirrored UP (first-write wins, then server rules).
+  3) User actively switches (Settings page):
+     handleLanguageChange writes BOTH directions:
+     (a) i18n.changeLanguage -> detector caches localStorage 'lng'
+     (b) PUT /settings/preferences -> preferences.language
+  4) Logout keeps localStorage:
+     UserMenu.handleLogout untouched (authApi.logout + redirect only);
+     nothing in this task clears 'lng'. Next login re-syncs from that
+     account's server preference (rule 2 overrides residue).
+  5) Same-browser multi-account no pollution:
+     localStorage is transient residue; each login/protected-mount runs
+     syncLanguageWithServer which reads THAT account's settings row
+     (require_login -> per-user_id Settings), so account A's preference
+     never survives into account B's session beyond a refresh cycle.
+     Backend merge-write keeps other preference keys per-account.
+
+VERIFICATION OUTPUTS (run in /Users/andyhsu/codehouse/aff-i18n-internationalization):
+  1. cd frontend && npm run build -> 'built in 3.87s', exit 0.
+  2. cd backend && .venv/bin/python -m pytest tests/ -q -> 80 passed
+     (baseline 71 + 9 new from test_settings_preferences_language.py).
+  3. New backend tests:
+     - test_language_round_trip (zh -> en via endpoint, DB re-read)
+     - test_language_merge_preserves_other_keys (api_presets/theme_seed kept)
+     - test_language_none_removes_key (explicit null clears, others kept)
+     - test_invalid_language_rejected [zh-CN / en-US / fr / '' / ZH]
+     - test_valid_languages_accepted (zh/en)
+  4. git status after commit: clean (see commit hash below).
+
+MANUAL-QA NOTES (F3 browser pass, documented steps):
+  a) Switch language: /settings -> 界面语言 card -> pick English ->
+     UI re-renders (antd locale via todo 2), localStorage 'lng'==='en',
+     PUT /settings/preferences 200; DevTools Network confirms body
+     {"language":"en"}.
+  b) Refresh keeps: F5 -> still English (localStorage); re-login ->
+     still English (server mirror).
+  c) Logout/relogin keeps via backend mirror: logout (UserMenu) ->
+     login same account -> language restored even if 'lng' manually
+     cleared: localStorage.removeItem('lng') before login proves the
+     server value, not residue, drives post-auth language.
+  d) Cross-account: account A=en, account B=zh. Same browser: login A
+     (UI en, logout) -> login B -> UI zh. B's server row never received
+     A's value (seed/PUT only carries current-account writes).
+  e) Backend write failure (e.g. stop backend ./aistoryforge.sh stop
+     backend, switch language in Settings): changeLanguage succeeds,
+     PUT fails -> warning toast '已在本地生效，但同步到服务器失败...',
+     app keeps working, 'lng' persisted; same on syncLanguageWithServer
+     path (console.warn, silent). Restart backend -> next login
+     re-seeds/re-syncs.
+  f) Stale residue: localStorage.setItem('lng','zh') while server pref
+     is 'en' -> login/protected mount -> UI becomes en (server truth).
+
+DEVIATIONS:
+  - syncLanguageWithServer() also called from ProtectedRoute auth-success
+    (task only named "login/AuthCallback flow"): refreshes and direct
+    protected-page entry never pass through a login handler, so server
+    truth could not be enforced there otherwise. Idempotent; same
+    contract rules, no extra writes when values already match.
+  - Selector secondary text and toast copy are literal zh/en (no t()) per
+    task constraint "Do NOT use t() in this task" - todo 8 will migrate.
+  - Invalid language -> 422 (Pydantic pattern), not coercion, per task
+    option "reject with 422 or coerce".
+
+CONCURRENCY NOTE: during implementation a parallel todo-6 worker
+extracted common-namespace t() keys in this worktree (commit 3a6a561);
+its api.ts touch briefly overlapped this task's updatePreferences edit
+(verified both coexist post-merge: line 210 survives, t('stream.readFailed')
+intact). This commit builds and tests on top of 3a6a561.

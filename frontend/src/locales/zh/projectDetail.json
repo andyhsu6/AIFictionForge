@@ -1,0 +1,42 @@
+{
+  "agent": {
+    "alt": "灵创创作助手"
+  },
+  "header": {
+    "backHome": "返回主页",
+    "home": "主页"
+  },
+  "menu": {
+    "careers": "职业管理",
+    "chapterAnalysis": "剧情分析",
+    "chapters": "章节管理",
+    "characters": "角色管理",
+    "foreshadows": "伏笔管理",
+    "groupCreation": "创作管理",
+    "groupTools": "创作工具",
+    "organizations": "组织管理",
+    "outline": "大纲管理",
+    "relationships": "关系管理",
+    "skillChat": "Skill 工具箱",
+    "skillManage": "Skill 管理",
+    "worldSetting": "世界设定",
+    "writingStyles": "写作风格"
+  },
+  "stats": {
+    "chapters": "章节",
+    "characters": "角色",
+    "outline": "大纲",
+    "unitChapters": "章",
+    "unitCount": "个",
+    "unitItems": "条",
+    "unitWords": "字",
+    "written": "已写"
+  },
+  "theme": {
+    "cycleTooltip": "主题模式：{{mode}}（点击切换）",
+    "dark": "深色",
+    "light": "浅色",
+    "mode": "主题模式",
+    "system": "跟随系统"
+  }
+}

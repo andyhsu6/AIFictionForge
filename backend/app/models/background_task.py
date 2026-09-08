@@ -20,6 +20,11 @@ class BackgroundTask(Base):
     status = Column(String(20), default="pending", comment="任务状态: pending/running/completed/failed/cancelled")
     progress = Column(Integer, default=0, comment="进度百分比(0-100)")
     status_message = Column(String(500), comment="当前状态消息")
+    # i18n 结构化状态（机制先行，调用点后续 todo 迁移）:
+    # status_code 为 registry 错误码/进度码，status_params 为模板参数;
+    # 存量行为 NULL，前端视为 raw status_message 直接展示（向后兼容）
+    status_code = Column(String(100), comment="结构化状态消息码(NULL=旧raw文案)")
+    status_params = Column(JSON, comment="结构化状态消息参数(配合status_code)")
     
     # 任务输入/输出
     task_input = Column(JSON, comment="任务输入参数(JSON)")

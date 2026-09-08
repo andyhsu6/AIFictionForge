@@ -5,11 +5,13 @@ import { useStore } from '../store';
 import { worldSettingCardStyles } from '../components/CardStyles';
 import { projectApi, wizardStreamApi } from '../services/api';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
+import { useTranslation } from 'react-i18next';
 
 const { Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
 export default function WorldSetting() {
+  const { t } = useTranslation('worldSetting');
   const { currentProject, setCurrentProject } = useStore();
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editForm] = Form.useForm();
@@ -36,15 +38,15 @@ export default function WorldSetting() {
     if (!currentProject) return;
 
     modal.confirm({
-      title: '确认重新生成',
-      content: '确定要使用AI重新生成世界观设定吗？这将替换当前的世界观内容。',
+      title: t('regenerate.confirmTitle'),
+      content: t('regenerate.confirmContent'),
       centered: true,
-      okText: '确认重新生成',
-      cancelText: '取消',
+      okText: t('regenerate.confirmOk'),
+      cancelText: t('regenerate.confirmCancel'),
       onOk: async () => {
         setIsRegenerating(true);
         setRegenerateProgress(0);
-        setRegenerateMessage('准备重新生成世界观...');
+        setRegenerateMessage(t('regenerate.preparing'));
 
         try {
           await wizardStreamApi.regenerateWorldBuildingStream(
@@ -71,7 +73,7 @@ export default function WorldSetting() {
               },
               onError: (errorMsg: string) => {
                 console.error('重新生成失败:', errorMsg);
-                message.error(errorMsg || '重新生成失败，请重试');
+                message.error(errorMsg || t('regenerate.failed'));
               },
               onComplete: () => {
                 setIsRegenerating(false);
@@ -84,7 +86,7 @@ export default function WorldSetting() {
           );
         } catch (error) {
           console.error('重新生成出错:', error);
-          message.error('重新生成出错，请重试');
+          message.error(t('regenerate.error'));
           setIsRegenerating(false);
           setRegenerateProgress(0);
           setRegenerateMessage('');
@@ -107,12 +109,12 @@ export default function WorldSetting() {
       });
 
       setCurrentProject(updatedProject);
-      message.success('世界观已更新！');
+      message.success(t('regenerate.updated'));
       setIsPreviewModalVisible(false);
       setNewWorldData(null);
     } catch (error) {
       console.error('保存失败:', error);
-      message.error('保存失败，请重试');
+      message.error(t('regenerate.saveFailed'));
     } finally {
       setIsSavingPreview(false);
     }
@@ -122,7 +124,7 @@ export default function WorldSetting() {
   const handleCancelSave = () => {
     setIsPreviewModalVisible(false);
     setNewWorldData(null);
-    message.info('已取消，保持原有内容');
+    message.info(t('regenerate.cancelled'));
   };
 
   if (!currentProject) return null;
@@ -149,17 +151,17 @@ export default function WorldSetting() {
           alignItems: 'center'
         }}>
           <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: token.colorPrimary }} />
-          <h2 style={{ margin: 0 }}>世界设定</h2>
+          <h2 style={{ margin: 0 }}>{t('page.title')}</h2>
         </div>
 
         {/* 可滚动内容区域 */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <Empty
-            description="暂无世界设定信息"
+            description={t('empty.description')}
             style={{ marginTop: 60 }}
           >
             <Paragraph type="secondary">
-              世界设定信息在创建项目向导中生成，用于构建小说的世界观背景。
+              {t('empty.hint')}
             </Paragraph>
           </Empty>
         </div>
@@ -188,7 +190,7 @@ export default function WorldSetting() {
         >
           <div style={{ display: 'flex', alignItems: 'center', minWidth: 'fit-content' }}>
             <GlobalOutlined style={{ fontSize: 24, marginRight: 12, color: token.colorPrimary }} />
-            <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>世界设定</h2>
+            <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('page.title')}</h2>
           </div>
           <Flex gap={8} wrap="wrap" style={{ flex: '0 1 auto' }}>
             <Button
@@ -200,7 +202,7 @@ export default function WorldSetting() {
                 flex: '1 1 auto'
               }}
             >
-              <span className="button-text-mobile">AI重新生成</span>
+              <span className="button-text-mobile">{t('page.aiRegenerate')}</span>
             </Button>
             <Button
               type="primary"
@@ -221,7 +223,7 @@ export default function WorldSetting() {
                 flex: '1 1 auto'
               }}
             >
-              <span className="button-text-mobile">编辑基础信息</span>
+              <span className="button-text-mobile">{t('page.editBasics')}</span>
             </Button>
             <Button
               type="primary"
@@ -240,7 +242,7 @@ export default function WorldSetting() {
                 flex: '1 1 auto'
               }}
             >
-              <span className="button-text-mobile">编辑世界观</span>
+              <span className="button-text-mobile">{t('page.editWorld')}</span>
             </Button>
           </Flex>
         </Flex>
@@ -255,20 +257,20 @@ export default function WorldSetting() {
           }}
           title={
             <span style={{ fontSize: 18, fontWeight: 500 }}>
-              基础信息
+              {t('basics.title')}
             </span>
           }
         >
           <Descriptions bordered column={1} styles={{ label: { width: 120, fontWeight: 500 } }}>
-            <Descriptions.Item label="小说名称">{currentProject.title}</Descriptions.Item>
+            <Descriptions.Item label={t('basics.novelName')}>{currentProject.title}</Descriptions.Item>
             {currentProject.description && (
-              <Descriptions.Item label="小说简介">{currentProject.description}</Descriptions.Item>
+              <Descriptions.Item label={t('basics.novelDesc')}>{currentProject.description}</Descriptions.Item>
             )}
-            <Descriptions.Item label="小说主题">{currentProject.theme || '未设定'}</Descriptions.Item>
-            <Descriptions.Item label="小说类型">{currentProject.genre || '未设定'}</Descriptions.Item>
-            <Descriptions.Item label="叙事视角">{currentProject.narrative_perspective || '未设定'}</Descriptions.Item>
-            <Descriptions.Item label="目标字数">
-              {currentProject.target_words ? `${currentProject.target_words.toLocaleString()} 字` : '未设定'}
+            <Descriptions.Item label={t('basics.novelTheme')}>{currentProject.theme || t('basics.notSet')}</Descriptions.Item>
+            <Descriptions.Item label={t('basics.novelGenre')}>{currentProject.genre || t('basics.notSet')}</Descriptions.Item>
+            <Descriptions.Item label={t('basics.perspective')}>{currentProject.narrative_perspective || t('basics.notSet')}</Descriptions.Item>
+            <Descriptions.Item label={t('basics.targetWords')}>
+              {currentProject.target_words ? t('basics.wordsValue', { n: currentProject.target_words.toLocaleString() }) : t('basics.notSet')}
             </Descriptions.Item>
           </Descriptions>
         </Card>
@@ -281,7 +283,7 @@ export default function WorldSetting() {
           title={
             <span style={{ fontSize: 18, fontWeight: 500 }}>
               <GlobalOutlined style={{ marginRight: 8 }} />
-              小说世界观
+              {t('world.title')}
             </span>
           }
         >
@@ -289,7 +291,7 @@ export default function WorldSetting() {
             {currentProject.world_time_period && (
               <div style={{ marginBottom: 24 }}>
                 <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
-                  时间设定
+                  {t('world.timePeriod')}
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
@@ -307,7 +309,7 @@ export default function WorldSetting() {
             {currentProject.world_location && (
               <div style={{ marginBottom: 24 }}>
                 <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
-                  地点设定
+                  {t('world.location')}
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
@@ -325,7 +327,7 @@ export default function WorldSetting() {
             {currentProject.world_atmosphere && (
               <div style={{ marginBottom: 24 }}>
                 <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
-                  氛围设定
+                  {t('world.atmosphere')}
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
@@ -343,7 +345,7 @@ export default function WorldSetting() {
             {currentProject.world_rules && (
               <div style={{ marginBottom: 0 }}>
                 <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
-                  规则设定
+                  {t('world.rules')}
                 </Title>
                 <Paragraph style={{
                   fontSize: 15,
@@ -363,7 +365,7 @@ export default function WorldSetting() {
 
       {/* 编辑世界观模态框 */}
       <Modal
-        title="编辑世界观"
+        title={t('editWorld.title')}
         open={isEditModalVisible}
         centered
         onCancel={() => {
@@ -383,20 +385,20 @@ export default function WorldSetting() {
             });
 
             setCurrentProject(updatedProject);
-            message.success('世界观更新成功');
+            message.success(t('editWorld.updateSuccess'));
             setIsEditModalVisible(false);
             editForm.resetFields();
           } catch (error) {
             console.error('更新世界观失败:', error);
-            message.error('更新失败，请重试');
+            message.error(t('editWorld.updateFailed'));
           } finally {
             setIsSaving(false);
           }
         }}
         confirmLoading={isSaving}
         width={800}
-        okText="保存"
-        cancelText="取消"
+        okText={t('buttons.save')}
+        cancelText={t('buttons.cancel')}
       >
         <Form
           form={editForm}
@@ -404,52 +406,52 @@ export default function WorldSetting() {
           style={{ marginTop: 16 }}
         >
           <Form.Item
-            label="时间设定"
+            label={t('world.timePeriod')}
             name="world_time_period"
-            rules={[{ required: true, message: '请输入时间设定' }]}
+            rules={[{ required: true, message: t('editWorld.timeRequired') }]}
           >
             <TextArea
               rows={4}
-              placeholder="描述故事发生的时代背景..."
+              placeholder={t('editWorld.timePlaceholder')}
               showCount
               maxLength={1000}
             />
           </Form.Item>
 
           <Form.Item
-            label="地点设定"
+            label={t('world.location')}
             name="world_location"
-            rules={[{ required: true, message: '请输入地点设定' }]}
+            rules={[{ required: true, message: t('editWorld.locationRequired') }]}
           >
             <TextArea
               rows={4}
-              placeholder="描述故事发生的地理位置和环境..."
+              placeholder={t('editWorld.locationPlaceholder')}
               showCount
               maxLength={1000}
             />
           </Form.Item>
 
           <Form.Item
-            label="氛围设定"
+            label={t('world.atmosphere')}
             name="world_atmosphere"
-            rules={[{ required: true, message: '请输入氛围设定' }]}
+            rules={[{ required: true, message: t('editWorld.atmosphereRequired') }]}
           >
             <TextArea
               rows={4}
-              placeholder="描述故事的整体氛围和基调..."
+              placeholder={t('editWorld.atmospherePlaceholder')}
               showCount
               maxLength={1000}
             />
           </Form.Item>
 
           <Form.Item
-            label="规则设定"
+            label={t('world.rules')}
             name="world_rules"
-            rules={[{ required: true, message: '请输入规则设定' }]}
+            rules={[{ required: true, message: t('editWorld.rulesRequired') }]}
           >
             <TextArea
               rows={4}
-              placeholder="描述这个世界的特殊规则和设定..."
+              placeholder={t('editWorld.rulesPlaceholder')}
               showCount
               maxLength={1000}
             />
@@ -459,7 +461,7 @@ export default function WorldSetting() {
 
       {/* 编辑项目基础信息模态框 */}
       <Modal
-        title="编辑项目基础信息"
+        title={t('editBasics.title')}
         open={isEditProjectModalVisible}
         centered
         onCancel={() => {
@@ -481,20 +483,20 @@ export default function WorldSetting() {
             });
 
             setCurrentProject(updatedProject);
-            message.success('项目基础信息更新成功');
+            message.success(t('editBasics.updateSuccess'));
             setIsEditProjectModalVisible(false);
             editProjectForm.resetFields();
           } catch (error) {
             console.error('更新项目基础信息失败:', error);
-            message.error('更新失败，请重试');
+            message.error(t('editBasics.updateFailed'));
           } finally {
             setIsSavingProject(false);
           }
         }}
         confirmLoading={isSavingProject}
         width={800}
-        okText="保存"
-        cancelText="取消"
+        okText={t('buttons.save')}
+        cancelText={t('buttons.cancel')}
       >
         <Form
           form={editProjectForm}
@@ -502,94 +504,94 @@ export default function WorldSetting() {
           style={{ marginTop: 16 }}
         >
           <Form.Item
-            label="小说名称"
+            label={t('basics.novelName')}
             name="title"
             rules={[
-              { required: true, message: '请输入小说名称' },
-              { max: 200, message: '名称不能超过200字' }
+              { required: true, message: t('editBasics.nameRequired') },
+              { max: 200, message: t('editBasics.nameMax') }
             ]}
           >
             <Input
-              placeholder="请输入小说名称"
+              placeholder={t('editBasics.namePlaceholder')}
               showCount
               maxLength={200}
             />
           </Form.Item>
 
           <Form.Item
-            label="小说简介"
+            label={t('basics.novelDesc')}
             name="description"
             rules={[
-              { max: 1000, message: '简介不能超过1000字' }
+              { max: 1000, message: t('editBasics.descMax') }
             ]}
           >
             <TextArea
               rows={4}
-              placeholder="请输入小说简介（选填）"
+              placeholder={t('editBasics.descPlaceholder')}
               showCount
               maxLength={1000}
             />
           </Form.Item>
 
           <Form.Item
-            label="小说主题"
+            label={t('basics.novelTheme')}
             name="theme"
             rules={[
-              { max: 500, message: '主题不能超过500字' }
+              { max: 500, message: t('editBasics.themeMax') }
             ]}
           >
             <TextArea
               rows={3}
-              placeholder="请输入小说主题（选填）"
+              placeholder={t('editBasics.themePlaceholder')}
               showCount
               maxLength={500}
             />
           </Form.Item>
 
           <Form.Item
-            label="小说类型"
+            label={t('basics.novelGenre')}
             name="genre"
             rules={[
-              { max: 100, message: '类型不能超过100字' }
+              { max: 100, message: t('editBasics.genreMax') }
             ]}
           >
             <Input
-              placeholder="请输入小说类型，如：玄幻、都市、科幻等（选填）"
+              placeholder={t('editBasics.genrePlaceholder')}
               showCount
               maxLength={100}
             />
           </Form.Item>
 
           <Form.Item
-            label="叙事视角"
+            label={t('basics.perspective')}
             name="narrative_perspective"
           >
             <Select
-              placeholder="请选择叙事视角（选填）"
+              placeholder={t('editBasics.perspectivePlaceholder')}
               allowClear
               options={[
-                { label: '第一人称', value: '第一人称' },
-                { label: '第三人称', value: '第三人称' },
-                { label: '全知视角', value: '全知视角' }
+                { label: t('perspective.firstPerson'), value: '第一人称' },
+                { label: t('perspective.thirdPerson'), value: '第三人称' },
+                { label: t('perspective.omniscient'), value: '全知视角' }
               ]}
             />
           </Form.Item>
 
           <Form.Item
-            label="目标字数"
+            label={t('basics.targetWords')}
             name="target_words"
             rules={[
-              { type: 'number', min: 0, message: '目标字数不能为负数' },
-              { type: 'number', max: 2147483647, message: '目标字数超出范围' }
+              { type: 'number', min: 0, message: t('editBasics.wordsNegative') },
+              { type: 'number', max: 2147483647, message: t('editBasics.wordsOutOfRange') }
             ]}
           >
             <InputNumber
               style={{ width: '100%' }}
-              placeholder="请输入目标字数（选填，最大21亿字）"
+              placeholder={t('editBasics.wordsPlaceholder')}
               min={0}
               max={2147483647}
               step={1000}
-              addonAfter="字"
+              addonAfter={t('editBasics.wordsUnit')}
             />
           </Form.Item>
         </Form>
@@ -604,28 +606,28 @@ export default function WorldSetting() {
 
       {/* 预览重新生成的内容模态框 */}
       <Modal
-        title="预览重新生成的世界观"
+        title={t('preview.title')}
         open={isPreviewModalVisible}
         centered
         width={900}
         onOk={handleConfirmSave}
         onCancel={handleCancelSave}
         confirmLoading={isSavingPreview}
-        okText="确认替换"
-        cancelText="取消"
+        okText={t('preview.okReplace')}
+        cancelText={t('preview.cancel')}
         okButtonProps={{ danger: true }}
       >
         {newWorldData && (
           <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
             <div style={{ marginBottom: 24, padding: 16, background: token.colorWarningBg, border: `1px solid ${token.colorWarningBorder}`, borderRadius: 8 }}>
               <Typography.Text type="warning" strong>
-                ⚠️ 注意：点击"确认替换"将会用新内容替换当前的世界观设定
+                {t('preview.warning')}
               </Typography.Text>
             </div>
 
             <div style={{ marginBottom: 24 }}>
               <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
-                时间设定
+                {t('world.timePeriod')}
               </Title>
               <Paragraph style={{
                 fontSize: 15,
@@ -641,7 +643,7 @@ export default function WorldSetting() {
 
             <div style={{ marginBottom: 24 }}>
               <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
-                地点设定
+                {t('world.location')}
               </Title>
               <Paragraph style={{
                 fontSize: 15,
@@ -657,7 +659,7 @@ export default function WorldSetting() {
 
             <div style={{ marginBottom: 24 }}>
               <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
-                氛围设定
+                {t('world.atmosphere')}
               </Title>
               <Paragraph style={{
                 fontSize: 15,
@@ -673,7 +675,7 @@ export default function WorldSetting() {
 
             <div style={{ marginBottom: 0 }}>
               <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
-                规则设定
+                {t('world.rules')}
               </Title>
               <Paragraph style={{
                 fontSize: 15,

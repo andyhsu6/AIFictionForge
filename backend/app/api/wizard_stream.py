@@ -24,6 +24,7 @@ from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
+from app.services.language_resolver import resolve_user_generation_language
 from app.logger import get_logger, safe_preview
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
 from app.api.settings import get_user_ai_service
@@ -75,11 +76,19 @@ async def world_building_generator(
         user_id = data.get("user_id")  # 从中间件注入
         
         if not title or not description or not theme or not genre:
-            yield await tracker.error("title、description、theme 和 genre 是必需的参数", 400)
+            yield await tracker.error(
+                "title、description、theme 和 genre 是必需的参数", 400,
+                error_code="validation.wizard_fields_missing",
+                params={"fields": "title、description、theme 和 genre"},
+            )
             return
         
         # 获取基础提示词（支持自定义）
         yield await tracker.preparing("准备AI提示词...")
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
         template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
         base_prompt = PromptService.format_prompt(
             template,
@@ -88,6 +97,7 @@ async def world_building_generator(
             genre=genre or "通用类型",
             description=description or "暂无简介",
             full_book_context="",
+            content_language=generation_language,
         )
         
         # 设置用户信息以启用MCP
@@ -150,7 +160,7 @@ async def world_building_generator(
                     logger.warning(f"⚠️ AI返回空世界观（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
-                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "AI返回为空")
+                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "AI返回为空", code="progress.retry_ai_failed")
                         continue
                     else:
                         # 达到最大重试次数，使用默认值
@@ -186,7 +196,7 @@ async def world_building_generator(
                     logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
-                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")
+                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                         continue
                     else:
                         # 达到最大重试次数，使用默认值
@@ -202,7 +212,7 @@ async def world_building_generator(
                 logger.error(f"❌ 世界构建生成异常（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {type(e).__name__}: {e}")
                 world_retry_count += 1
                 if world_retry_count < MAX_WORLD_RETRIES:
-                    yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "生成异常")
+                    yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "生成异常", code="progress.retry_ai_failed")
                     continue
                 else:
                     # 最后一次重试仍失败，抛出异常
@@ -214,7 +224,11 @@ async def world_building_generator(
         
         # 确保user_id存在
         if not user_id:
-            yield await SSEResponse.send_error("用户ID缺失，无法创建项目", 401)
+            yield await SSEResponse.send_error(
+                error="用户ID缺失，无法创建项目",
+                code="internal.user_id_missing_for_project",
+                raw="用户ID缺失，无法创建项目",
+            )
             return
         
         project = Project(
@@ -299,7 +313,7 @@ async def world_building_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("世界构建事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 
 @router.post("/world-building", summary="流式生成世界构建")
@@ -340,14 +354,18 @@ async def career_system_generator(
         user_id = data.get("user_id")
         
         if not project_id:
-            yield await tracker.error("project_id 是必需的参数", 400)
+            yield await tracker.error(
+                "project_id 是必需的参数", 400,
+                error_code="validation.wizard_fields_missing",
+                params={"fields": "project_id"},
+            )
             return
         
         # 获取项目信息
         yield await tracker.loading("加载项目信息...")
         project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在或无权访问", 404)
+            yield await tracker.error("项目不存在或无权访问", 404, error_code="not_found.project_or_forbidden")
             return
         
         # 设置用户信息以启用MCP
@@ -365,6 +383,10 @@ async def career_system_generator(
         
         # 获取职业生成提示词模板（支持用户自定义）
         yield await tracker.preparing("准备AI提示词...")
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
         template = await PromptService.get_template("CAREER_SYSTEM_GENERATION", user_id, db)
         career_prompt = PromptService.format_prompt(
             template,
@@ -377,6 +399,7 @@ async def career_system_generator(
             atmosphere=world_data.get('atmosphere', '未设定'),
             rules=world_data.get('rules', '未设定'),
             full_book_context="",
+            content_language=generation_language,
         )
         
         estimated_total = 5000
@@ -430,10 +453,10 @@ async def career_system_generator(
                     logger.warning(f"⚠️ AI返回空职业体系（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）")
                     career_retry_count += 1
                     if career_retry_count < MAX_CAREER_RETRIES:
-                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "AI返回为空")
+                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "AI返回为空", code="progress.retry_ai_failed")
                         continue
                     else:
-                        yield await tracker.error("职业体系生成失败（AI多次返回为空）")
+                        yield await tracker.error("职业体系生成失败（AI多次返回为空）", error_code="internal.career_retry_exhausted")
                         return
                 
                 yield await tracker.parsing("解析职业体系数据...")
@@ -534,29 +557,29 @@ async def career_system_generator(
                     logger.error(f"❌ 职业体系JSON解析失败（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）: {e}")
                     career_retry_count += 1
                     if career_retry_count < MAX_CAREER_RETRIES:
-                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "JSON解析失败")
+                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                         continue
                     else:
-                        yield await tracker.error("职业体系解析失败（已达最大重试次数）")
+                        yield await tracker.error("职业体系解析失败（已达最大重试次数）", error_code="internal.career_parse_exhausted")
                         return
                 except Exception as e:
                     logger.error(f"❌ 职业体系保存失败（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）: {e}")
                     career_retry_count += 1
                     if career_retry_count < MAX_CAREER_RETRIES:
-                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "保存失败")
+                        yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "保存失败", code="progress.retry_save_failed")
                         continue
                     else:
-                        yield await tracker.error("职业体系保存失败（已达最大重试次数）")
+                        yield await tracker.error("职业体系保存失败（已达最大重试次数）", error_code="internal.career_save_exhausted")
                         return
             
             except Exception as e:
                 logger.error(f"❌ 职业体系生成异常（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）: {e}")
                 career_retry_count += 1
                 if career_retry_count < MAX_CAREER_RETRIES:
-                    yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "生成异常")
+                    yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "生成异常", code="progress.retry_ai_failed")
                     continue
                 else:
-                    yield await tracker.error(f"职业体系生成失败: {str(e)}")
+                    yield await tracker.error(f"职业体系生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
                     return
         
     except GeneratorExit:
@@ -569,7 +592,7 @@ async def career_system_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("职业体系事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 
 @router.post("/career-system", summary="流式生成职业体系")
@@ -618,7 +641,7 @@ async def characters_generator(
         yield await tracker.loading("验证项目...", 0.3)
         project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在或无权访问", 404)
+            yield await tracker.error("项目不存在或无权访问", 404, error_code="not_found.project_or_forbidden")
             return
         
         project.wizard_step = 2
@@ -634,7 +657,12 @@ async def characters_generator(
         if user_id:
             user_ai_service.user_id = user_id
             user_ai_service.db_session = db
-        
+
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
+
         # 获取项目的职业列表，用于角色职业分配
         yield await tracker.loading("加载职业体系...", 0.8)
         career_result = await db.execute(
@@ -739,7 +767,8 @@ async def characters_generator(
                         rules=world_context.get("rules", ""),
                         theme=theme or project.theme or "",
                         genre=genre or project.genre or "",
-                        requirements=batch_requirements + careers_context  # 添加职业上下文
+                        requirements=batch_requirements + careers_context,  # 添加职业上下文
+                        content_language=generation_language
                     )
                     
                     prompt = base_prompt
@@ -807,13 +836,13 @@ async def characters_generator(
                     batch_error_message = f"JSON解析失败: {str(e)}"
                     retry_count += 1
                     if retry_count < MAX_RETRIES:
-                        yield await tracker.retry(retry_count, MAX_RETRIES, "JSON解析失败")
+                        yield await tracker.retry(retry_count, MAX_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                 except Exception as e:
                     logger.error(f"批次{batch_idx+1}生成异常(尝试{retry_count+1}/{MAX_RETRIES}): {e}")
                     batch_error_message = f"生成异常: {str(e)}"
                     retry_count += 1
                     if retry_count < MAX_RETRIES:
-                        yield await tracker.retry(retry_count, MAX_RETRIES, "生成异常")
+                        yield await tracker.retry(retry_count, MAX_RETRIES, "生成异常", code="progress.retry_ai_failed")
             
             # 检查批次是否成功
             if not batch_success:
@@ -1229,7 +1258,7 @@ async def characters_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("角色生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 
 @router.post("/characters", summary="流式批量生成角色")
@@ -1278,7 +1307,7 @@ async def outline_generator(
         yield await tracker.loading("加载项目信息...", 0.3)
         project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在或无权访问", 404)
+            yield await tracker.error("项目不存在或无权访问", 404, error_code="not_found.project_or_forbidden")
             return
 
         # 设置用户信息以启用MCP，并确保后续自动角色/组织补全使用当前请求的AI服务上下文
@@ -1307,7 +1336,12 @@ async def outline_generator(
         outline_requirements += "3. 展开初期情节，为后续发展埋下伏笔\n"
         outline_requirements += "4. 不要试图完结故事，这只是开始部分\n"
         outline_requirements += "5. 不要在JSON字符串值中使用中文引号（""''），请使用【】或《》标记\n"
-        
+
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
+
         # 获取自定义提示词模板
         template = await PromptService.get_template("OUTLINE_CREATE", user_id, db)
         outline_prompt = PromptService.format_prompt(
@@ -1324,7 +1358,8 @@ async def outline_generator(
             rules=project.world_rules or "未设定",
             characters_info=characters_info or "暂无角色信息",
             mcp_references="",
-            requirements=outline_requirements
+            requirements=outline_requirements,
+            content_language=generation_language
         )
         
         # 流式生成大纲
@@ -1367,7 +1402,7 @@ async def outline_generator(
                 outline_data = [outline_data]
         except json.JSONDecodeError as e:
             logger.error(f"大纲JSON解析失败: {e}")
-            yield await tracker.error("大纲生成失败，请重试")
+            yield await tracker.error("大纲生成失败，请重试", error_code="internal.outline_generation_failed")
             return
         
         # 保存大纲到数据库
@@ -1529,7 +1564,7 @@ async def outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 @router.post("/outline", summary="流式生成完整大纲")
 async def generate_outline_stream(
@@ -1572,11 +1607,15 @@ async def world_building_regenerate_generator(
         yield await tracker.loading("加载项目信息...")
         project = await get_owned_project(db, project_id, user_id)
         if not project:
-            yield await tracker.error("项目不存在或无权访问", 404)
+            yield await tracker.error("项目不存在或无权访问", 404, error_code="not_found.project_or_forbidden")
             return
         
         # 获取基础提示词（支持自定义）
         yield await tracker.preparing("准备AI提示词...")
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
         template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
         base_prompt = PromptService.format_prompt(
             template,
@@ -1585,13 +1624,14 @@ async def world_building_regenerate_generator(
             genre=project.genre or "通用",
             description=project.description or "暂无简介",
             full_book_context="",
+            content_language=generation_language,
         )
-        
+
         # 设置用户信息以启用MCP
         if user_id:
             user_ai_service.user_id = user_id
             user_ai_service.db_session = db
-        
+
         # ===== 流式生成世界观（带重试机制） =====
         MAX_WORLD_RETRIES = 3  # 最多重试3次
         world_retry_count = 0
@@ -1647,7 +1687,7 @@ async def world_building_regenerate_generator(
                     logger.warning(f"⚠️ AI返回空世界观（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
-                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "AI返回为空")
+                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "AI返回为空", code="progress.retry_ai_failed")
                         continue
                     else:
                         # 达到最大重试次数，使用默认值
@@ -1679,7 +1719,7 @@ async def world_building_regenerate_generator(
                     logger.debug(f"   原始内容预览: {safe_preview(accumulated_text, 200)}")
                     world_retry_count += 1
                     if world_retry_count < MAX_WORLD_RETRIES:
-                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败")
+                        yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                         continue
                     else:
                         # 达到最大重试次数，使用默认值
@@ -1695,7 +1735,7 @@ async def world_building_regenerate_generator(
                 logger.error(f"❌ 世界观重新生成异常（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {type(e).__name__}: {e}")
                 world_retry_count += 1
                 if world_retry_count < MAX_WORLD_RETRIES:
-                    yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "生成异常")
+                    yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, "生成异常", code="progress.retry_ai_failed")
                     continue
                 else:
                     # 最后一次重试仍失败，抛出异常
@@ -1727,7 +1767,7 @@ async def world_building_regenerate_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("世界观重新生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 
 @router.post("/world-building/{project_id}/regenerate", summary="流式重新生成世界观")

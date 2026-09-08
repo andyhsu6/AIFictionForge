@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import verify_project_access
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.outline_transfer import (
@@ -26,16 +27,16 @@ MAX_IMPORT_SIZE = 10 * 1024 * 1024
 
 async def _read_import_file(file: UploadFile) -> bytes:
     if not file.filename or not file.filename.lower().endswith(".json"):
-        raise HTTPException(status_code=400, detail="只支持 JSON 格式文件")
+        raise ApiError(code="validation.json_only")
     content = await file.read(MAX_IMPORT_SIZE + 1)
     if len(content) > MAX_IMPORT_SIZE:
-        raise HTTPException(status_code=413, detail="文件大小超过 10MB 限制")
+        raise ApiError(code="validation.file_too_large", detail="文件大小超过 10MB 限制", params={"max_mb": 10})
     return content
 
 
 def _parse_mode(mode: str) -> OutlineImportMode:
     if mode not in {"append", "merge"}:
-        raise HTTPException(status_code=422, detail="导入模式必须是 append 或 merge")
+        raise ApiError(code="validation.outline_import_mode")
     return cast(OutlineImportMode, mode)
 
 
@@ -54,7 +55,7 @@ async def export_outlines(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(exc), status=400, raw=str(exc)) from exc
 
     safe_title = "".join(char for char in project.title if char.isalnum() or char in (" ", "-", "_"))
     filename = f"outlines_{safe_title or 'project'}.json"
@@ -109,10 +110,14 @@ async def import_outlines(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"导入文件验证失败：{exc}") from exc
+        raise ApiError(
+            code="validation.outline_import_file_invalid",
+            detail=f"导入文件验证失败：{exc}",
+            params={"error": str(exc)},
+        ) from exc
     except Exception as exc:
         logger.error("大纲导入失败: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="大纲导入失败，请稍后重试") from exc
+        raise ApiError(code="internal.outline_import_failed") from exc
 
     logger.info(
         "用户 %s 向项目 %s 导入大纲：新增 %s，更新 %s",

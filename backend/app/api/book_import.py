@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError, exc_status, sse_code_for_exception
 from app.database import get_db
 from app.logger import get_logger
+from app.schemas.common import ContentLanguageLiteral
 from app.schemas.book_import import (
     BookImportApplyRequest,
     BookImportApplyResponse,
@@ -37,40 +39,45 @@ async def create_book_import_task(
     import_mode: str = Form(default="append", description="导入模式：append/overwrite"),
     extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
     tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
+    content_language: Optional[ContentLanguageLiteral] = Form(
+        default=None,
+        description="AI 生成内容语言：None/auto 跟随用户偏好链，zh/en 为本次导入生成内容的语言覆盖（todo 17）",
+    ),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     if not file.filename or not file.filename.lower().endswith(".txt"):
-        raise HTTPException(status_code=400, detail="仅支持 .txt 文件")
+        raise ApiError(code="validation.txt_only")
 
     if import_mode not in {"append", "overwrite"}:
-        raise HTTPException(status_code=400, detail="import_mode 仅支持 append 或 overwrite")
+        raise ApiError(code="validation.book_import_mode")
 
     if extract_mode not in {"tail", "full"}:
-        raise HTTPException(status_code=400, detail="extract_mode 仅支持 tail 或 full")
+        raise ApiError(code="validation.book_import_extract_mode")
     if tail_chapter_count < 5:
-        raise HTTPException(status_code=400, detail="tail_chapter_count 不能小于 5")
+        raise ApiError(code="validation.tail_chapter_count")
     if tail_chapter_count % 5 != 0:
-        raise HTTPException(status_code=400, detail="tail_chapter_count 必须是 5 的倍数")
+        raise ApiError(code="validation.tail_chapter_count", detail="tail_chapter_count 必须是 5 的倍数")
 
     if tail_chapter_count > 50:
         extract_mode = "full"
 
     if project_id:
-        raise HTTPException(status_code=400, detail="当前仅支持新建项目导入，不支持指定 project_id")
+        raise ApiError(code="validation.book_import_new_project")
     if not create_new_project:
-        raise HTTPException(status_code=400, detail="当前仅支持新建项目导入")
+        raise ApiError(code="validation.book_import_new_project", detail="当前仅支持新建项目导入")
 
     create_payload = BookImportTaskCreateRequest(
         extract_mode=extract_mode,
         tail_chapter_count=tail_chapter_count,
+        content_language=content_language,
     )
 
     content = await file.read()
     if len(content) > MAX_TXT_SIZE:
-        raise HTTPException(status_code=413, detail="文件大小超过 50MB 限制")
+        raise ApiError(code="validation.file_too_large", detail="文件大小超过 50MB 限制", params={"max_mb": 50})
 
     task = await book_import_service.create_task(
         user_id=user_id,
@@ -81,6 +88,7 @@ async def create_book_import_task(
         import_mode=import_mode,
         extract_mode=create_payload.extract_mode,
         tail_chapter_count=create_payload.tail_chapter_count,
+        content_language=create_payload.content_language,
     )
     return task
 
@@ -89,7 +97,7 @@ async def create_book_import_task(
 async def get_book_import_task_status(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.get_task_status(task_id=task_id, user_id=user_id)
 
@@ -98,7 +106,7 @@ async def get_book_import_task_status(task_id: str, request: Request):
 async def get_book_import_preview(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.get_preview(task_id=task_id, user_id=user_id)
 
@@ -112,7 +120,7 @@ async def apply_book_import(
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.apply_import(
         task_id=task_id,
@@ -126,7 +134,7 @@ async def apply_book_import(
 async def cancel_book_import_task(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     return await book_import_service.cancel_task(task_id=task_id, user_id=user_id)
 
@@ -144,20 +152,23 @@ async def apply_book_import_stream(
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 使用 asyncio.Queue 实现实时进度推送
     progress_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-    async def _progress_callback(message: str, progress: int, status: str = "processing") -> None:
-        """进度回调：放入队列供 SSE 生成器消费"""
-        sse_msg = SSEResponse.format_sse({
-            "type": "progress",
-            "message": message,
-            "progress": progress,
-            "status": status,
-        })
-        await progress_queue.put(sse_msg)
+    async def _progress_callback(
+        message: str,
+        progress: int,
+        status: str = "processing",
+        code: Optional[str] = None,
+        params: Optional[dict] = None,
+    ) -> None:
+        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，payload 契约
+        唯一来源为 SSEResponse.send_progress）"""
+        await progress_queue.put(
+            await SSEResponse.send_progress(message, progress, status, code=code, params=params)
+        )
 
     async def _run_import() -> None:
         """在后台任务中执行导入并通过队列推送进度"""
@@ -178,10 +189,16 @@ async def apply_book_import_stream(
                 "project_id": result.project_id,
                 "statistics": result.statistics,
             }))
-            await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success"))
+            await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success", code="progress.import_done", raw="导入完成！"))
             await progress_queue.put(await SSEResponse.send_done())
-        except HTTPException as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc.status_code))
+        except (HTTPException, ApiError) as exc:
+            error_code, error_params = sse_code_for_exception(exc)
+            if error_code:
+                await progress_queue.put(await SSEResponse.send_error(
+                    error=exc.detail, code=error_code, params=error_params or None, raw=exc.detail
+                ))
+            else:
+                await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE导入失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -190,7 +207,7 @@ async def apply_book_import_stream(
             await progress_queue.put(None)
 
     async def _streaming_generator() -> AsyncGenerator[str, None]:
-        yield await SSEResponse.send_progress("开始导入拆书数据...", 0, "processing")
+        yield await SSEResponse.send_progress("开始导入拆书数据...", 0, "processing", code="progress.import_start", raw="开始导入拆书数据...")
 
         # 启动后台导入任务
         import_task = asyncio.create_task(_run_import())
@@ -222,18 +239,22 @@ async def retry_failed_steps_stream(
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     progress_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-    async def _progress_callback(message: str, progress: int, status: str = "processing") -> None:
-        sse_msg = SSEResponse.format_sse({
-            "type": "progress",
-            "message": message,
-            "progress": progress,
-            "status": status,
-        })
-        await progress_queue.put(sse_msg)
+    async def _progress_callback(
+        message: str,
+        progress: int,
+        status: str = "processing",
+        code: Optional[str] = None,
+        params: Optional[dict] = None,
+    ) -> None:
+        """进度回调：放入队列供 SSE 生成器消费（i18n 双通道透传，payload 契约
+        唯一来源为 SSEResponse.send_progress）"""
+        await progress_queue.put(
+            await SSEResponse.send_progress(message, progress, status, code=code, params=params)
+        )
 
     async def _run_retry() -> None:
         try:
@@ -254,13 +275,22 @@ async def retry_failed_steps_stream(
                     f"重试完成，仍有 {len(result['still_failed'])} 个步骤失败",
                     100,
                     "warning",
+                    code="progress.import_retry_partial",
+                    params={"still_failed_count": len(result["still_failed"])},
+                    raw=f"重试完成，仍有 {len(result['still_failed'])} 个步骤失败",
                 ))
             else:
-                await progress_queue.put(await SSEResponse.send_progress("所有步骤重试成功！", 100, "success"))
+                await progress_queue.put(await SSEResponse.send_progress("所有步骤重试成功！", 100, "success", code="progress.import_retry_all_done", raw="所有步骤重试成功！"))
 
             await progress_queue.put(await SSEResponse.send_done())
-        except HTTPException as exc:
-            await progress_queue.put(await SSEResponse.send_error(exc.detail, exc.status_code))
+        except (HTTPException, ApiError) as exc:
+            error_code, error_params = sse_code_for_exception(exc)
+            if error_code:
+                await progress_queue.put(await SSEResponse.send_error(
+                    error=exc.detail, code=error_code, params=error_params or None, raw=exc.detail
+                ))
+            else:
+                await progress_queue.put(await SSEResponse.send_error(exc.detail, exc_status(exc)))
         except Exception as exc:
             logger.error(f"拆书SSE重试失败: {exc}", exc_info=True)
             await progress_queue.put(await SSEResponse.send_error(str(exc), 500))
@@ -268,7 +298,7 @@ async def retry_failed_steps_stream(
             await progress_queue.put(None)
 
     async def _streaming_generator() -> AsyncGenerator[str, None]:
-        yield await SSEResponse.send_progress("开始重试失败的生成步骤...", 0, "processing")
+        yield await SSEResponse.send_progress("开始重试失败的生成步骤...", 0, "processing", code="progress.import_retry_start", raw="开始重试失败的生成步骤...")
 
         retry_task = asyncio.create_task(_run_retry())
 

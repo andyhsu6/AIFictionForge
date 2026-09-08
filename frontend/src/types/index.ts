@@ -1122,6 +1122,8 @@ export interface BookImportWarning {
   code: string;
   message: string;
   level: BookImportWarningLevel;
+  /** 告警结构化参数（配合 code 供前端按 errors ns 模板化翻译）；缺省 = 无参旧告警 */
+  params?: Record<string, unknown> | null;
 }
 
 export interface BookImportProjectSuggestion {
@@ -1154,6 +1156,9 @@ export interface BookImportTask {
   progress: number;
   message?: string;
   error?: string;
+  /** i18n 结构化状态码（issue #27）：null/缺省 = 旧行，message 原样展示（last-state 语义） */
+  status_code?: string | null;
+  status_params?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }

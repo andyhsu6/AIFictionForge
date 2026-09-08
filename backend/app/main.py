@@ -1,15 +1,15 @@
 """FastAPI应用主入口"""
-from fastapi import FastAPI, Request, status, HTTPException, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 import sys
 
 from app.config import settings as config_settings
+from app.core.errors import ApiError, envelope, register_exception_handlers
 from app.database import close_db, _session_stats
 from app.logger import setup_logging, get_logger
 from app.middleware import RequestIDMiddleware
@@ -46,6 +46,15 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(
                 lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
             )
+            # 补齐 i18n 结构化状态列（无迁移框架，旧库 ALTER ADD COLUMN，存量行保持 NULL）
+            from sqlalchemy import text
+            existing_cols = {
+                row[1] for row in await conn.execute(text("PRAGMA table_info(background_tasks)"))
+            }
+            for col, decl in (("status_code", "VARCHAR(100)"), ("status_params", "JSON")):
+                if col not in existing_cols:
+                    await conn.execute(text(f"ALTER TABLE background_tasks ADD COLUMN {col} {decl}"))
+                    logger.info(f"background_tasks 表已补列: {col}")
             interrupted_at = datetime.now()
             await conn.execute(
                 sql_update(BackgroundTask)
@@ -105,29 +114,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """处理请求验证错误"""
-    logger.error(f"请求验证失败: {exc.errors()}")
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "detail": "请求参数验证失败",
-            "errors": exc.errors()
-        }
-    )
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """处理所有未捕获的异常"""
-    logger.error(f"未处理的异常: {type(exc).__name__}: {str(exc)}", exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": "服务器内部错误",
-            "message": str(exc) if config_settings.debug else "请稍后重试"
-        }
-    )
+register_exception_handlers(app)
 
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(AuthMiddleware)
@@ -150,10 +137,27 @@ else:
     )
 
 
+def _git_info() -> dict:
+    """服务代码身份（分支+commit），供验收前核对端口上跑的是哪个 checkout。"""
+    import subprocess
+    try:
+        root = Path(__file__).resolve().parents[1]
+        branch = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        commit = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        return {"branch": branch or "unknown", "commit": commit or "unknown"}
+    except Exception:
+        return {"branch": "unknown", "commit": "unknown"}
+
+
+GIT_INFO = _git_info()
+
+
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok"}
+    return {"status": "ok", "branch": GIT_INFO["branch"], "commit": GIT_INFO["commit"]}
 
 
 @app.get("/health/db-sessions")
@@ -170,7 +174,7 @@ async def db_session_stats(request: Request):
     - last_check: 最后检查时间
     """
     if not getattr(request.state, "is_admin", False):
-        raise HTTPException(status_code=403, detail="需要管理员权限")
+        raise ApiError(code="auth.admin_required")
     return {
         "status": "ok",
         "session_stats": _session_stats,
@@ -232,7 +236,7 @@ if static_dir.exists():
         if full_path.startswith("api/"):
             return JSONResponse(
                 status_code=404,
-                content={"detail": "API路径不存在"}
+                content=envelope("API路径不存在", "not_found.api_route")
             )
         
         file_path = static_dir / full_path
@@ -243,7 +247,7 @@ if static_dir.exists():
         except ValueError:
             return JSONResponse(
                 status_code=404,
-                content={"detail": "页面不存在"}
+                content=envelope("页面不存在", "not_found.frontend_route")
             )
 
         if resolved_file.is_file():
@@ -255,7 +259,7 @@ if static_dir.exists():
         
         return JSONResponse(
             status_code=404,
-            content={"detail": "页面不存在"}
+            content=envelope("页面不存在", "not_found.frontend_route")
         )
 else:
     logger.warning("静态文件目录不存在，请先构建前端: cd frontend && npm run build")

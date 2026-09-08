@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Card, Input, Button, Space, Typography, message, Spin, Modal, theme } from 'antd';
 import { SendOutlined, ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { inspirationApi } from '../services/api';
@@ -52,6 +53,7 @@ const CACHE_KEY = 'inspiration_conversation_cache';
 const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
 const Inspiration: React.FC = () => {
+  const { t } = useTranslation('inspiration');
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<Step>('idea');
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -68,7 +70,7 @@ const Inspiration: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       type: 'ai',
-      content: '你好！我是你的AI创作助手。让我们一起创作一部精彩的小说吧！\n\n请告诉我，你想写一本什么样的小说？',
+      content: t('greeting.welcome'),
     }
   ]);
   const [inputValue, setInputValue] = useState('');
@@ -179,7 +181,7 @@ const Inspiration: React.FC = () => {
       }
 
       console.log('✅ 已恢复上次的对话进度');
-      message.success('已恢复上次的对话进度', 2);
+      message.success(t('toast.restored'), 2);
       return true;
     } catch (error) {
       console.error('恢复缓存失败:', error);
@@ -263,7 +265,7 @@ const Inspiration: React.FC = () => {
 
       const aiMessage: Message = {
         type: 'ai',
-        content: response.prompt || '请选择一个选项，或者输入你自己的：',
+        content: response.prompt || t('prompt.chooseOption'),
         options: response.options || [],
         isMultiSelect: failedRequest.step === 'genre',
         canRefine: true,
@@ -274,7 +276,7 @@ const Inspiration: React.FC = () => {
       setLastFailedRequest(null);
     } catch (error: unknown) {
       console.error('重试失败:', error);
-      message.error('重试失败，请稍后再试');
+      message.error(t('error.retryFailed'));
     } finally {
       if (sessionVersion === sessionVersionRef.current) setLoading(false);
     }
@@ -283,7 +285,7 @@ const Inspiration: React.FC = () => {
   // 处理用户反馈，重新生成选项
   const handleRefineOptions = async (messageIndex: number, feedback: string) => {
     if (!feedback.trim() || refining || loading) {
-      message.warning('请输入您的反馈意见');
+      message.warning(t('toast.enterFeedback'));
       return;
     }
 
@@ -314,7 +316,7 @@ const Inspiration: React.FC = () => {
       // 添加用户反馈消息
       const feedbackMessage: Message = {
         type: 'user',
-        content: `💭 ${feedback}`,
+        content: t('aiMessage.feedback', { feedback }),
       };
       setMessages(prev => [...prev, feedbackMessage]);
 
@@ -351,7 +353,7 @@ const Inspiration: React.FC = () => {
       // 添加新的AI消息
       const aiMessage: Message = {
         type: 'ai',
-        content: response.prompt || `根据您的反馈，我重新生成了一些${step === 'title' ? '书名' : step === 'description' ? '简介' : step === 'theme' ? '主题' : '类型'}选项：`,
+        content: response.prompt || t('refine.prompt', { type: step === 'title' ? t('refine.typeTitle') : step === 'description' ? t('refine.typeDesc') : step === 'theme' ? t('refine.typeTheme') : t('refine.typeGenre') }),
         options: response.options || [],
         isMultiSelect: step === 'genre',
         canRefine: true,
@@ -359,7 +361,7 @@ const Inspiration: React.FC = () => {
       };
       setMessages(prev => [...prev, aiMessage]);
 
-      message.success('已根据您的反馈重新生成选项');
+      message.success(t('refine.success'));
     } catch (error: unknown) {
       if (sessionVersion !== sessionVersionRef.current) return;
       setMessages(prev => prev.map((item, index) => index === messageIndex
@@ -368,7 +370,7 @@ const Inspiration: React.FC = () => {
       setFeedbackValue(feedback);
       setShowFeedbackInput(messageIndex);
       console.error('优化选项失败:', error);
-      const errMsg = error instanceof Error ? error.message : '优化失败，请重试';
+      const errMsg = error instanceof Error ? error.message : t('error.optimizeFailed');
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
@@ -381,7 +383,7 @@ const Inspiration: React.FC = () => {
 
   const handleSendMessage = async () => {
     if (!inputValue.trim() || loading || refining) {
-      message.warning('请输入内容');
+      message.warning(t('toast.enterContent'));
       return;
     }
 
@@ -416,8 +418,8 @@ const Inspiration: React.FC = () => {
           const errorMessage: Message = {
             type: 'ai',
             content: response.error
-              ? `生成书名时出错：${response.error}\n\n你可以选择：`
-              : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
+              ? `${t('error.titleError', { msg: response.error })}${t('error.promptContinuation')}`
+              : `${t('error.invalidOptions')}${t('error.promptContinuation')}`,
             options: ['重新生成', '我自己输入书名'],
             failedRequest: requestData,
           };
@@ -428,7 +430,7 @@ const Inspiration: React.FC = () => {
 
         const aiMessage: Message = {
           type: 'ai',
-          content: response.prompt || '请选择一个书名，或者输入你自己的：',
+          content: response.prompt || t('prompt.chooseTitle'),
           options: response.options,
           canRefine: true,
           step: 'title'
@@ -442,7 +444,7 @@ const Inspiration: React.FC = () => {
     } catch (error: unknown) {
       if (sessionVersion !== sessionVersionRef.current) return;
       console.error('发送消息失败:', error);
-      const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
+      const errMsg = error instanceof Error ? error.message : t('error.generateFailed');
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
@@ -460,7 +462,7 @@ const Inspiration: React.FC = () => {
     if (loading || refining) return;
 
     if (option === '我自己输入书名' || option === '我自己输入') {
-      message.info('请在下方输入框中输入您的内容');
+      message.info(t('toast.selfInput'));
       return;
     }
 
@@ -499,13 +501,7 @@ const Inspiration: React.FC = () => {
       // 询问大纲模式
       const aiMessage: Message = {
         type: 'ai',
-        content: `很好！现在请选择你想要的大纲模式：
-
-📋 一对一模式：传统模式，一个大纲对应一个章节，适合结构清晰、章节独立的小说。
-
-📚 一对多模式：细化模式，一个大纲可以展开成多个章节，适合需要详细展开情节的小说。
-
-请选择：`,
+        content: t('prompt.outlineMode'),
         options: ['📋 一对一模式', '📚 一对多模式']
       };
       setMessages(prev => [...prev, aiMessage]);
@@ -532,19 +528,15 @@ const Inspiration: React.FC = () => {
       setWizardData(updatedData);
 
       // 显示摘要
-      const modeText = modeValue === 'one-to-one' ? '一对一模式' : '一对多模式';
-      const summary = `
-太棒了！你的小说设定已完成，请确认：
-
-📖 书名：${updatedData.title}
-📝 简介：${updatedData.description}
-🎯 主题：${updatedData.theme}
-🏷️ 类型：${updatedData.genre.join('、')}
-👁️ 视角：${updatedData.narrative_perspective}
-📋 大纲模式：${modeText}
-
-请选择下一步操作：
-      `.trim();
+      const modeText = modeValue === 'one-to-one' ? t('mode.oneToOne') : t('mode.oneToMany');
+      const summary = t('summary.block', {
+        title: updatedData.title,
+        description: updatedData.description,
+        theme: updatedData.theme,
+        genre: updatedData.genre.join('、'),
+        perspective: updatedData.narrative_perspective,
+        mode: modeText,
+      });
 
       const aiMessage: Message = {
         type: 'ai',
@@ -560,13 +552,13 @@ const Inspiration: React.FC = () => {
       if (option === '✅ 确认创建') {
         const userMessage: Message = {
           type: 'user',
-          content: '确认创建',
+          content: t('aiMessage.confirmCreate'),
         };
         setMessages(prev => [...prev, userMessage]);
 
         const aiMessage: Message = {
           type: 'ai',
-          content: '好的！正在为你创建项目，这可能需要几分钟时间...'
+          content: t('aiMessage.confirmContent')
         };
         setMessages(prev => [...prev, aiMessage]);
 
@@ -618,7 +610,7 @@ const Inspiration: React.FC = () => {
     } catch (error: unknown) {
       if (sessionVersion !== sessionVersionRef.current) return;
       console.error('选择选项失败:', error);
-      const errMsg = error instanceof Error ? error.message : '生成失败，请重试';
+      const errMsg = error instanceof Error ? error.message : t('error.generateFailed');
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
@@ -647,13 +639,7 @@ const Inspiration: React.FC = () => {
         // 直接进入大纲模式选择
         const aiMessage: Message = {
           type: 'ai',
-          content: `很好！现在请选择你想要的大纲模式：
-
-📋 一对一模式：传统模式，一个大纲对应一个章节，适合结构清晰、章节独立的小说。
-
-📚 一对多模式：细化模式，一个大纲可以展开成多个章节，适合需要详细展开情节的小说。
-
-请选择：`,
+          content: t('prompt.outlineMode'),
           options: ['📋 一对一模式', '📚 一对多模式']
         };
         setMessages(prev => [...prev, aiMessage]);
@@ -662,7 +648,7 @@ const Inspiration: React.FC = () => {
         return;
       } else if (currentStep === 'outline_mode') {
         // 大纲模式不支持自定义输入
-        message.warning('请从选项中选择一个大纲模式');
+        message.warning(t('toast.selectOutlineMode'));
         setLoading(false);
         return;
       }
@@ -672,7 +658,7 @@ const Inspiration: React.FC = () => {
     } catch (error: unknown) {
       if (sessionVersion !== sessionVersionRef.current) return;
       console.error('处理自定义输入失败:', error);
-      const errMsg = error instanceof Error ? error.message : '处理失败，请重试';
+      const errMsg = error instanceof Error ? error.message : t('error.processFailed');
       const axiosError = error as { response?: { data?: { detail?: string } } };
       message.error(axiosError.response?.data?.detail || errMsg);
     } finally {
@@ -682,7 +668,7 @@ const Inspiration: React.FC = () => {
 
   const handleConfirmGenres = async () => {
     if (selectedOptions.length === 0) {
-      message.warning('请至少选择一个类型');
+      message.warning(t('toast.selectGenre'));
       return;
     }
 
@@ -713,7 +699,7 @@ const Inspiration: React.FC = () => {
     try {
       const aiMessage: Message = {
         type: 'ai',
-        content: '很好！接下来，请选择小说的叙事视角：',
+        content: t('prompt.choosePerspective'),
         options: ['第一人称', '第三人称', '全知视角']
       };
       setMessages(prev => [...prev, aiMessage]);
@@ -732,7 +718,7 @@ const Inspiration: React.FC = () => {
       // genre 步骤完成后，进入 perspective
       const aiMessage: Message = {
         type: 'ai',
-        content: '很好！接下来，请选择小说的叙事视角：',
+        content: t('prompt.choosePerspective'),
         options: ['第一人称', '第三人称', '全知视角']
       };
       setMessages(prev => [...prev, aiMessage]);
@@ -753,8 +739,8 @@ const Inspiration: React.FC = () => {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
-            ? `生成简介时出错：${response.error}\n\n你可以选择：`
-            : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
+            ? `${t('error.descError', { msg: response.error })}${t('error.promptContinuation')}`
+            : `${t('error.invalidOptions')}${t('error.promptContinuation')}`,
           options: ['重新生成', '我自己输入'],
           failedRequest: requestData,
         };
@@ -765,7 +751,7 @@ const Inspiration: React.FC = () => {
 
       const aiMessage: Message = {
         type: 'ai',
-        content: response.prompt || '请选择一个简介，或者输入你自己的：',
+        content: response.prompt || t('prompt.chooseDesc'),
         options: response.options,
         canRefine: true,
         step: 'description'
@@ -791,8 +777,8 @@ const Inspiration: React.FC = () => {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
-            ? `生成主题时出错：${response.error}\n\n你可以选择：`
-            : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
+            ? `${t('error.themeError', { msg: response.error })}${t('error.promptContinuation')}`
+            : `${t('error.invalidOptions')}${t('error.promptContinuation')}`,
           options: ['重新生成', '我自己输入'],
           failedRequest: requestData,
         };
@@ -803,7 +789,7 @@ const Inspiration: React.FC = () => {
 
       const aiMessage: Message = {
         type: 'ai',
-        content: response.prompt || '请选择一个主题，或者输入你自己的：',
+        content: response.prompt || t('prompt.chooseTheme'),
         options: response.options,
         canRefine: true,
         step: 'theme'
@@ -830,8 +816,8 @@ const Inspiration: React.FC = () => {
         const errorMessage: Message = {
           type: 'ai',
           content: response.error
-            ? `生成类型时出错：${response.error}\n\n你可以选择：`
-            : `生成的选项格式不正确（至少需要3个有效选项）\n\n你可以选择：`,
+            ? `${t('error.genreError', { msg: response.error })}${t('error.promptContinuation')}`
+            : `${t('error.invalidOptions')}${t('error.promptContinuation')}`,
           options: ['重新生成', '我自己输入'],
           isMultiSelect: false,
           failedRequest: requestData,
@@ -843,7 +829,7 @@ const Inspiration: React.FC = () => {
 
       const aiMessage: Message = {
         type: 'ai',
-        content: response.prompt || '请选择类型标签（可多选）：',
+        content: response.prompt || t('prompt.chooseGenre'),
         options: response.options,
         isMultiSelect: true,
         canRefine: true,
@@ -867,7 +853,7 @@ const Inspiration: React.FC = () => {
     setMessages([
       {
         type: 'ai',
-        content: '好的，让我们重新开始！\n\n请告诉我，你想写一本什么样的小说？',
+        content: t('greeting.restart'),
       }
     ]);
     setWizardData({});
@@ -1000,7 +986,7 @@ const Inspiration: React.FC = () => {
                         onClick={handleConfirmGenres}
                         disabled={selectedOptions.length === 0}
                       >
-                        确认选择 ({selectedOptions.length})
+                        {t('ui.confirmSelection', { num: selectedOptions.length })}
                       </Button>
                     )}
 
@@ -1012,7 +998,7 @@ const Inspiration: React.FC = () => {
                             <TextArea
                               value={feedbackValue}
                               onChange={(e) => setFeedbackValue(e.target.value)}
-                              placeholder="例如：我想要更悲剧的主题、能不能更简短一些、偏向古风..."
+                               placeholder={t('ui.refinePlaceholder')}
                               autoSize={{ minRows: 2, maxRows: 3 }}
                               disabled={refining}
                               onPressEnter={(e) => {
@@ -1031,7 +1017,7 @@ const Inspiration: React.FC = () => {
                                 }}
                                 disabled={refining}
                               >
-                                取消
+                                {t('ui.cancel')}
                               </Button>
                               <Button
                                 type="primary"
@@ -1040,7 +1026,7 @@ const Inspiration: React.FC = () => {
                                 loading={refining}
                                 disabled={!feedbackValue.trim()}
                               >
-                                根据反馈生成
+                                {t('ui.refineGenerate')}
                               </Button>
                             </Space>
                           </Space>
@@ -1051,7 +1037,7 @@ const Inspiration: React.FC = () => {
                             onClick={() => setShowFeedbackInput(index)}
                             style={{ padding: 0, height: 'auto' }}
                           >
-                            💡 不太满意？告诉我你的想法
+                            {t('ui.feedbackPrompt')}
                           </Button>
                         )}
                       </div>
@@ -1068,7 +1054,7 @@ const Inspiration: React.FC = () => {
               padding: 20,
               animation: 'fadeIn 0.3s ease-in'
             }}>
-              <Spin tip={refining ? "正在根据您的反馈重新生成..." : "AI思考中..."} />
+              <Spin tip={refining ? t("ui.spinRefining") : t("ui.spinThinking")} />
             </div>
           )}
 
@@ -1086,8 +1072,8 @@ const Inspiration: React.FC = () => {
             onChange={(e) => setInputValue(e.target.value)}
             placeholder={
               currentStep === 'idea'
-                ? '例如：我想写一本关于时间旅行的科幻小说...'
-                : '输入自定义内容，或点击上方选项卡片...'
+                ? t('prompt.placeholderIdea')
+                : t('prompt.placeholderOther')
             }
             autoSize={{ minRows: 2, maxRows: 4 }}
             onPressEnter={(e) => {
@@ -1105,11 +1091,11 @@ const Inspiration: React.FC = () => {
             loading={loading}
             style={{ height: 'auto' }}
           >
-            发送
+            {t('ui.send')}
           </Button>
         </Space.Compact>
         <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
-          💡 提示：按 Enter 发送，Shift+Enter 换行
+          {t('ui.tip')}
         </Text>
       </Card>
     </>
@@ -1185,7 +1171,7 @@ const Inspiration: React.FC = () => {
               color: token.colorWhite,
             }}
           >
-            {isMobile ? '返回' : '返回首页'}
+            {isMobile ? t('ui.return') : t('ui.returnHome')}
           </Button>
 
           <div style={{ textAlign: 'center' }}>
@@ -1198,7 +1184,7 @@ const Inspiration: React.FC = () => {
                 lineHeight: 1.2
               }}
             >
-              ✨ 灵感模式
+              {t('ui.title')}
             </Title>
           </div>
 
@@ -1208,10 +1194,10 @@ const Inspiration: React.FC = () => {
               icon={<ReloadOutlined />}
               onClick={() => {
                 modal.confirm({
-                  title: '确认重新开始',
-                  content: '确定要重新开始吗？当前的对话进度将会丢失。',
-                  okText: '确认',
-                  cancelText: '取消',
+                  title: t('confirm.title'),
+                  content: t('confirm.content'),
+                  okText: t('confirm.ok'),
+                  cancelText: t('confirm.cancel'),
                   centered: true,
                   okButtonProps: { danger: true },
                   onOk: () => {
@@ -1226,7 +1212,7 @@ const Inspiration: React.FC = () => {
                 color: token.colorWhite,
               }}
             >
-              {isMobile ? '重新' : '重新开始'}
+              {isMobile ? t('ui.restartShort') : t('ui.restart')}
             </Button>
           ) : (
             <div style={{ width: isMobile ? 60 : 120 }}></div>

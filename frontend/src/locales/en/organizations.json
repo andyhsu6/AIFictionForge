@@ -1,0 +1,102 @@
+{
+  "actions": {
+    "edit": "Edit",
+    "remove": "Remove"
+  },
+  "addMember": {
+    "character": "Character",
+    "characterPlaceholder": "Select the character to add",
+    "characterRequired": "Please select a character",
+    "initialLoyalty": "Initial Loyalty",
+    "title": "Add Organization Member"
+  },
+  "buttons": {
+    "add": "Add",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "editMember": {
+    "notes": "Notes",
+    "notesPlaceholder": "Notes about this member",
+    "title": "Edit Member Info"
+  },
+  "editOrg": {
+    "colorPlaceholder": "e.g. crimson, gold, black",
+    "locationPlaceholder": "Main area of activity or headquarters",
+    "mottoPlaceholder": "Organization's creed, motto or slogan",
+    "powerRequired": "Please enter the power level",
+    "powerTooltip": "A 0-100 value representing the organization's influence",
+    "title": "Edit Organization Info"
+  },
+  "memberForm": {
+    "joinedAt": "Joined At",
+    "joinedAtPlaceholder": "e.g. at the founding ceremony, three years ago, at establishment",
+    "position": "Position",
+    "positionPlaceholder": "e.g. Sect Leader, Elder, Disciple",
+    "positionRequired": "Please enter the position",
+    "rank": "Position Rank",
+    "rankTooltip": "Higher number = higher rank",
+    "status": "Status"
+  },
+  "members": {
+    "add": "Add Member",
+    "titleWithCount": "Members ({{n}})",
+    "total": "{{n}} members in total"
+  },
+  "memberStatus": {
+    "active": "Active",
+    "deceased": "Deceased",
+    "expelled": "Expelled",
+    "retired": "Retired"
+  },
+  "memberTable": {
+    "actions": "Actions",
+    "contribution": "Contribution",
+    "joinedAt": "Joined",
+    "loyalty": "Loyalty",
+    "name": "Name",
+    "position": "Position",
+    "rankSuffix": "(Rank {{rank}})",
+    "status": "Status"
+  },
+  "orgDetail": {
+    "color": "Signature Color",
+    "location": "Location",
+    "memberCount": "Members",
+    "motto": "Motto / Slogan",
+    "name": "Name",
+    "powerLevel": "Power Level",
+    "purpose": "Purpose",
+    "title": "Organization Details",
+    "type": "Type"
+  },
+  "orgList": {
+    "empty": "No organizations yet",
+    "listButton": "List",
+    "select": "Select Organization",
+    "selectHint": "Select an organization to view details",
+    "summary": "Members: {{members}} | Power: {{power}}",
+    "title": "Organizations",
+    "titleWithCount": "Organizations ({{n}})"
+  },
+  "page": {
+    "title": "Organization Management"
+  },
+  "removeConfirm": {
+    "cancel": "Cancel",
+    "content": "Remove this member?",
+    "ok": "Remove",
+    "title": "Confirm Removal"
+  },
+  "toast": {
+    "loadMembersFailed": "Failed to load member list",
+    "loadOrgFailed": "Failed to load organization list",
+    "memberAdded": "Member added",
+    "memberAddFailed": "Failed to add member",
+    "memberRemoved": "Member removed",
+    "memberRemoveFailed": "Removal failed",
+    "memberUpdated": "Member info updated",
+    "orgUpdated": "Organization info updated",
+    "updateFailed": "Update failed"
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "addPlugin": "添加插件",
+  "button": {
+    "cancel": "取消",
+    "close": "关闭",
+    "delete": "删除",
+    "edit": "编辑",
+    "save": "保存",
+    "test": "测试",
+    "tools": "工具"
+  },
+  "category": {
+    "analysis": "分析类 (Analysis) - 数据分析、文本处理",
+    "api": "API调用 (API) - 第三方服务接口",
+    "database": "数据库 (Database) - 数据库查询",
+    "filesystem": "文件系统 (FileSystem) - 文件读写操作",
+    "general": "通用 (General) - 其他功能",
+    "generation": "生成类 (Generation) - 内容生成工具",
+    "search": "搜索类 (Search) - 网络搜索、信息查询"
+  },
+  "configChange": {
+    "content": "检测到您更换了 AI 模型或接口地址。为了防止错误调用，系统已自动暂停所有 MCP 插件。请重新进行\"模型能力检查\"，确认新模型支持 Function Calling 后再启用插件。",
+    "ok": "知道了",
+    "title": "配置变更提醒"
+  },
+  "deleteModal": {
+    "cancel": "取消",
+    "content": "确定要删除插件 \"{{name}}\" 吗？",
+    "ok": "确定",
+    "title": "删除插件"
+  },
+  "empty": {
+    "addFirst": "添加第一个插件",
+    "noPlugins": "还没有添加任何插件",
+    "noTools": "该插件没有提供任何工具"
+  },
+  "fcCheck": {
+    "apiProvider": "API 提供商",
+    "detailTitle": "📊 检测详情",
+    "errorInfo": "错误信息:",
+    "failTitle": "❌ Function Calling 支持检测",
+    "modelInfo": "🔧 模型信息",
+    "responsePreview": "📝 模型返回内容（前200字符）",
+    "responseTime": "响应时间",
+    "responseType": "✓ 响应类型: {{type}}",
+    "successTitle": "✅ Function Calling 支持检测",
+    "suggestions": "💡 建议",
+    "testTool": "✓ 测试工具: {{tool}}",
+    "toolCallCount": "✓ 工具调用数量: {{count}}",
+    "toolCallExample": "🔨 工具调用示例",
+    "unsupportedMessage": "模型不支持 Function Calling"
+  },
+  "form": {
+    "categoryExtra": "选择插件的功能类别，用于AI智能匹配使用场景",
+    "categoryLabel": "插件分类",
+    "categoryPlaceholder": "请选择分类",
+    "categoryRequired": "请选择插件分类",
+    "configJsonExtra": "粘贴标准MCP配置，系统自动提取插件名称。支持HTTP和Stdio类型",
+    "configJsonLabel": "MCP配置JSON",
+    "configJsonPlaceholder": "示例：",
+    "configJsonRequired": "请输入配置JSON"
+  },
+  "formModal": {
+    "addTitle": "添加插件",
+    "editTitle": "编辑插件"
+  },
+  "modelCheck": {
+    "reCheck": "重新检测",
+    "startCheck": "开始检测",
+    "statusSupported": "当前模型支持 Function Calling，可正常使用 MCP 插件",
+    "statusUnknown": "请先检测模型是否支持 Function Calling 能力",
+    "statusUnsupported": "当前模型不支持 Function Calling，无法使用 MCP 插件",
+    "title": "模型能力检查"
+  },
+  "modelCheckModal": {
+    "cancel": "取消",
+    "content": "为了确保 MCP 插件正常工作，您当前使用的 AI 模型必须支持 Function Calling（工具调用）能力。请先进行模型支持检测。",
+    "ok": "去检测",
+    "title": "模型能力检查"
+  },
+  "pluginList": {
+    "lastError": "错误: {{error}}"
+  },
+  "status": {
+    "active": "运行中",
+    "disabled": "已禁用",
+    "error": "错误",
+    "inactive": "未激活"
+  },
+  "subtitle": "扩展AI能力，连接外部工具与服务",
+  "switch": {
+    "off": "关",
+    "on": "开"
+  },
+  "testFailed": {
+    "errorInfo": "错误信息:",
+    "message": "MCP插件测试失败",
+    "suggestions": "💡 建议:",
+    "title": "测试失败",
+    "updatedCheck": "插件状态已更新，请检查配置后重试"
+  },
+  "testSuccess": {
+    "aiSelectedTool": "🤖 AI选择的工具",
+    "autoUpdatedActive": "插件状态已自动更新为\"运行中\"",
+    "availableTools": "可用工具数",
+    "callParams": "📝 调用参数",
+    "resultPreview": "📊 返回结果预览",
+    "title": "🎉 测试成功",
+    "totalResponseTime": "总响应时间"
+  },
+  "title": "MCP插件管理",
+  "toast": {
+    "autoDisableLoading": "检测到模型配置变更，正在为了安全自动禁用插件...",
+    "autoDisableSuccess": "已自动禁用所有插件，请重新检测模型能力",
+    "checkFailed": "检测失败，请稍后重试",
+    "configChanged": "检测到模型配置已变更，请重新检测模型能力",
+    "configureModelFirst": "请先在设置页面配置模型",
+    "deleteFailed": "删除插件失败",
+    "getToolsFailed": "获取工具列表失败",
+    "initFailed": "页面初始化失败",
+    "jsonFormatError": "配置JSON格式错误，请检查",
+    "loadListFailed": "加载插件列表失败",
+    "operationFailed": "操作失败",
+    "pluginCreated": "插件已创建",
+    "pluginDeleted": "插件已删除",
+    "pluginDisabled": "插件已禁用",
+    "pluginEnabled": "插件已启用",
+    "pluginUpdated": "插件已更新",
+    "testFailed": "测试插件失败",
+    "toggleFailed": "切换插件状态失败"
+  },
+  "toolsModal": {
+    "close": "关闭",
+    "description": "描述：",
+    "inputSchema": "输入参数：",
+    "title": "可用工具列表",
+    "toolCount": "{{count}} 个工具"
+  },
+  "tooltip": {
+    "checkFirst": "请先完成模型能力检查",
+    "delete": "删除",
+    "disablePlugin": "禁用插件",
+    "edit": "编辑",
+    "enablePlugin": "启用插件",
+    "testConnect": "测试连接",
+    "viewTools": "查看工具"
+  },
+  "warning": {
+    "checkRequired": "请先完成模型能力检查，才能操作插件",
+    "unsupported": "当前模型不支持 Function Calling，所有插件操作已禁用"
+  },
+  "whatIsMCP": {
+    "content": "MCP (Model Context Protocol) 协议允许 AI 调用外部工具获取数据。通过添加插件，AI 可以访问搜索引擎、数据库、API 等服务，大幅增强创作能力。",
+    "title": "什么是 MCP 插件？"
+  }
+}

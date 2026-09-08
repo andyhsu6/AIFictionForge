@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Spin, theme } from 'antd';
 import { LoadingOutlined } from '@ant-design/icons';
 
@@ -14,6 +15,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
   message
 }) => {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
 
   if (!loading) return null;
 
@@ -52,7 +54,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
             marginTop: 16,
             color: token.colorTextHeading
           }}>
-            AI生成中...
+            {t('aiGenerating')}
           </div>
         </div>
 
@@ -99,7 +101,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
           minHeight: 24,
           padding: '0 20px'
         }}>
-          {message || '准备生成...'}
+          {message || t('preparing')}
         </div>
 
         {/* 提示文字 */}
@@ -109,7 +111,7 @@ export const SSELoadingOverlay: React.FC<SSELoadingOverlayProps> = ({
           color: token.colorTextTertiary,
           marginTop: 16
         }}>
-          请勿关闭页面,生成过程需要一定时间
+          {t('doNotClosePage')}
         </div>
       </div>
     </div>

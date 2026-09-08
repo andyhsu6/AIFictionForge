@@ -182,31 +182,88 @@ class WizardProgressTracker:
         msg = message or f"保存{self.task_name}到数据库..."
         return await SSEResponse.send_progress(msg, progress, "processing")
     
-    async def complete(self, message: str = None) -> str:
-        """完成阶段"""
+    async def complete(
+        self,
+        message: str = None,
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """完成阶段。
+
+        task i18n todo13：code 设置时走结构化通道（message_code/message_params），
+        旧 message 文案字节不变；缺省时 payload 形状与旧版完全一致。
+        """
         self.current_stage = ProgressStage.COMPLETE
         self.current_progress = 100
         msg = message or f"{self.task_name}生成完成!"
-        return await SSEResponse.send_progress(msg, 100, "success")
-    
-    async def warning(self, message: str) -> str:
-        """发送警告消息（保持当前进度）"""
+        return await SSEResponse.send_progress(
+            msg, 100, "success", code=code, params=params, raw=msg if code else None
+        )
+
+    async def warning(
+        self,
+        message: str,
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """发送警告消息（保持当前进度）。
+
+        code 设置时追加 message_code/message_params（旧 message 文本不变，
+        raw 回填未包装的 message 与 tracker.error 语义一致）。
+        """
         return await SSEResponse.send_progress(
             f"⚠️ {message}",
             self.current_progress,
-            "warning"
+            "warning",
+            code=code,
+            params=params,
+            raw=message if code else None,
         )
-    
-    async def retry(self, retry_count: int, max_retries: int, reason: str = "准备重试") -> str:
-        """发送重试消息"""
+
+    async def retry(
+        self,
+        retry_count: int,
+        max_retries: int,
+        reason: str = "准备重试",
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """发送重试消息。
+
+        code 设置时追加 message_code/message_params（旧 message 文本不变，
+        raw 回填未包装的 reason；动态 reason 调用点不传 code 保持旧形状）。
+        """
         return await SSEResponse.send_progress(
             f"⚠️ {reason}... ({retry_count}/{max_retries})",
             self.current_progress,
-            "warning"
+            "warning",
+            code=code,
+            params=params,
+            raw=reason if code else None,
         )
     
-    async def error(self, error_message: str, code: int = 500) -> str:
-        """发送错误消息"""
+    async def error(
+        self,
+        error_message: str,
+        code: int = 500,
+        error_code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
+    ) -> str:
+        """发送错误消息。
+
+        task 14a：error_code 设置时走结构化通道（raw 缺省回填 error_message，
+        现场 error_message 即诊断原文）；未设置时保持旧 (str, int) 形状不变。
+        注意默认为 opt-in（error_code=None），与 TaskProgressTracker.error 的默认
+        task.failed 相反；error_code 设置时旧 int code 参数被忽略（改发 registry 默认 status）。
+        """
+        if error_code is not None:
+            return await SSEResponse.send_error(
+                error=error_message,
+                code=error_code,
+                params=params,
+                raw=raw or error_message,
+            )
         return await SSEResponse.send_error(error_message, code)
     
     async def result(self, data: Dict[str, Any]) -> str:
@@ -262,22 +319,34 @@ class SSEResponse:
     async def send_progress(
         message: str,
         progress: int,
-        status: str = "processing"
+        status: str = "processing",
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
     ) -> str:
         """
         发送进度消息
-        
+
         Args:
             message: 进度消息
             progress: 进度百分比(0-100)
             status: 状态(processing/success/error)
+            code: 结构化消息码（可选，i18n 机制；缺省时 payload 形状与旧版完全一致）
+            params: 结构化消息参数（可选，配合 code 供前端模板化翻译）
+            raw: 原始诊断文案（可选，task 14a 双通道；真值时追加 message_raw）
         """
-        return SSEResponse.format_sse({
+        payload: Dict[str, Any] = {
             "type": "progress",
             "message": message,
             "progress": progress,
             "status": status
-        })
+        }
+        if code is not None:
+            payload["message_code"] = code
+            payload["message_params"] = params or {}
+        if raw:
+            payload["message_raw"] = raw
+        return SSEResponse.format_sse(payload)
     
     @staticmethod
     async def send_chunk(content: str) -> str:
@@ -317,19 +386,38 @@ class SSEResponse:
         return SSEResponse.format_sse(data, event=event)
     
     @staticmethod
-    async def send_error(error: str, code: int = 500) -> str:
+    async def send_error(
+        error: Optional[str] = None,
+        code: Any = 500,
+        params: Optional[Dict[str, Any]] = None,
+        raw: Optional[str] = None,
+    ) -> str:
         """
         发送错误消息
-        
-        Args:
-            error: 错误描述
-            code: 错误码
+
+        双模式（i18n envelope 契约，机制先行，调用点后续 todo 迁移）:
+        - 旧模式: send_error("中文描述", 500) → {type, error, code} 不变
+        - 结构化模式: send_error(code="not_found.chapter", params={...}) →
+          追加 error_code/error_params 字段，同时保留旧字段形状（error 回填默认 detail，
+          code 回填 registry 默认 status），旧客户端不受影响。
+        - raw（task 14a 双通道）: 结构化模式下真值 raw 追加 error_raw 字段；
+          前端对未注册 code 只显示本地化通用文案，原文仅调试界面使用。
+          旧 `error` 字段保持原样，旧客户端仍能拿到文本。
         """
-        return SSEResponse.format_sse({
-            "type": "error",
-            "error": error,
-            "code": code
-        })
+        payload: Dict[str, Any] = {"type": "error"}
+        if isinstance(code, str):
+            from app.core.errors import ERROR_REGISTRY
+            default_detail, default_status = ERROR_REGISTRY.get(code, ("", 500))
+            payload["error"] = error if error is not None else default_detail
+            payload["code"] = default_status
+            payload["error_code"] = code
+            payload["error_params"] = params or {}
+            if raw:
+                payload["error_raw"] = raw
+        else:
+            payload["error"] = error or ""
+            payload["code"] = code
+        return SSEResponse.format_sse(payload)
     
     @staticmethod
     async def send_done() -> str:
@@ -360,7 +448,7 @@ async def create_sse_generator(
     """
     try:
         if show_progress:
-            yield await SSEResponse.send_progress("开始生成...", 0)
+            yield await SSEResponse.send_progress("开始生成...", 0, code="progress.start", raw="开始生成...")
         
         # 累积内容用于进度计算
         accumulated_content = ""
@@ -378,7 +466,7 @@ async def create_sse_generator(
                 yield await SSEResponse.send_heartbeat()
         
         if show_progress:
-            yield await SSEResponse.send_progress("生成完成", 100, "success")
+            yield await SSEResponse.send_progress("生成完成", 100, "success", code="progress.done", raw="生成完成")
         
         # 发送完成信号
         yield await SSEResponse.send_done()

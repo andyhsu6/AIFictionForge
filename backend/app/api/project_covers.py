@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.services.cover_generation_service import cover_generation_service
 
@@ -35,7 +36,7 @@ async def generate_project_cover(
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     result = await cover_generation_service.generate_cover(
         db=db,
@@ -54,7 +55,7 @@ async def download_project_cover(
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     project, file_path = await cover_generation_service.get_cover_download_path(
         db=db,

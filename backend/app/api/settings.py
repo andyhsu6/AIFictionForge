@@ -13,6 +13,7 @@ import json
 import time
 
 from app.database import get_db
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.models.settings import Settings
 from app.services.cover_generation_service import cover_generation_service
 from app.schemas.settings import (
@@ -20,7 +21,8 @@ from app.schemas.settings import (
     APIKeyPreset, APIKeyPresetConfig, PresetCreateRequest,
     PresetUpdateRequest, PresetResponse, PresetListResponse,
     ChapterAnalysisPresetSelectionRequest,
-    SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
+    SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest,
+    PreferencesUpdate
 )
 from app.user_manager import User
 from app.logger import get_logger, safe_preview
@@ -165,14 +167,14 @@ def _build_ai_service_from_config(
 def require_login(request: Request):
     """依赖：要求用户已登录"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="需要登录")
+        raise ApiError(code="auth.unauthorized", detail="需要登录")
     return request.state.user
 
 
 def require_admin(user: User = Depends(require_login)):
     """依赖：要求管理员权限"""
     if not user.is_admin:
-        raise HTTPException(status_code=403, detail="仅管理员可访问系统设置")
+        raise ApiError(code="auth.admin_required", detail="仅管理员可访问系统设置")
     return user
 
 
@@ -417,7 +419,7 @@ async def update_system_smtp_settings(
         update_data.setdefault("smtp_use_tls", False)
 
     if update_data.get("smtp_use_ssl") and update_data.get("smtp_use_tls"):
-        raise HTTPException(status_code=400, detail="SSL 和 TLS 不能同时启用")
+        raise ApiError(code="validation.smtp_ssl_tls_conflict")
 
     for key, value in update_data.items():
         setattr(settings, key, value)
@@ -438,17 +440,17 @@ async def test_system_smtp_settings(
     settings = await get_or_create_admin_settings(db, user)
 
     if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password:
-        raise HTTPException(status_code=400, detail="请先完善 SMTP 主机、用户名和授权码")
+        raise ApiError(code="validation.smtp_fields_missing")
 
     if settings.smtp_provider == "qq" and settings.smtp_host != "smtp.qq.com":
-        raise HTTPException(status_code=400, detail="QQ 邮箱 SMTP 主机必须为 smtp.qq.com")
+        raise ApiError(code="validation.qq_smtp_host")
 
     if "@" not in data.to_email or "." not in data.to_email.split("@")[-1]:
-        raise HTTPException(status_code=400, detail="测试收件邮箱格式不正确")
+        raise ApiError(code="validation.email_format", detail="测试收件邮箱格式不正确")
 
     from_email = settings.smtp_from_email or settings.smtp_username
     if not from_email:
-        raise HTTPException(status_code=400, detail="请先配置发件人邮箱或 SMTP 用户名")
+        raise ApiError(code="validation.smtp_fields_missing", detail="请先配置发件人邮箱或 SMTP 用户名")
 
     subject = "AIFictionForge SMTP 测试邮件"
     text_body = (
@@ -488,7 +490,8 @@ async def test_system_smtp_settings(
         )
     except Exception as exc:
         logger.exception(f"SMTP 测试邮件发送失败: {exc}")
-        raise HTTPException(status_code=400, detail=f"SMTP 测试邮件发送失败: {str(exc)}") from exc
+        detail = f"SMTP 测试邮件发送失败: {str(exc)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail) from exc
 
     return {
         "success": True,
@@ -590,7 +593,7 @@ async def update_settings(
     settings = result.scalar_one_or_none()
     
     if not settings:
-        raise HTTPException(status_code=404, detail="设置不存在，请先创建设置")
+        raise ApiError(code="not_found.setting")
     
     # 更新设置
     update_data = data.model_dump(exclude_unset=True)
@@ -602,6 +605,46 @@ async def update_settings(
     logger.info(f"用户 {user.user_id} 更新设置")
     
     return settings
+
+
+@router.put("/preferences")
+async def update_preferences(
+    data: PreferencesUpdate,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    更新当前用户的偏好设置（preferences JSON 列，无独立数据库字段）。
+
+    当前支持 language（界面语言，zh/en）与 content_language（AI 生成内容语言，
+    auto/zh/en；None 或 auto 表示跟随界面语言，注入行为在后续 todo 接入）。
+    采用增量合并：仅覆盖请求中显式提供的键，保留 preferences 中的其他既有键（如 api_presets）。
+    键为 None（显式传 null）时不写该项并移除既有值；GET /settings 的 preferences 原样返回供前端读取。
+    """
+    settings = await get_user_settings(user.user_id, db)
+    prefs = _safe_load_preferences(settings.preferences)
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "language" in update_data:
+        if update_data["language"] is None:
+            prefs.pop("language", None)
+        else:
+            prefs["language"] = update_data["language"]
+
+    if "content_language" in update_data:
+        if update_data["content_language"] is None:
+            prefs.pop("content_language", None)
+        else:
+            prefs["content_language"] = update_data["content_language"]
+
+    settings.preferences = json.dumps(prefs, ensure_ascii=False)
+    await db.commit()
+    await db.refresh(settings)
+    logger.info(
+        f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')} content_language={prefs.get('content_language')}"
+    )
+
+    return {"message": "偏好设置已更新", "preferences": settings.preferences}
 
 
 @router.delete("")
@@ -618,7 +661,7 @@ async def delete_settings(
     settings = result.scalar_one_or_none()
     
     if not settings:
-        raise HTTPException(status_code=404, detail="设置不存在")
+        raise ApiError(code="not_found.setting", detail="设置不存在")
     
     await db.delete(settings)
     await db.commit()
@@ -679,9 +722,8 @@ async def get_available_models(
                             })
                 
                 if not models:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="未能从 API 获取到可用的模型列表"
+                    raise ApiError(
+                        code="not_found.model_list",
                     )
                 
                 logger.info(f"成功获取 {len(models)} 个模型")
@@ -715,33 +757,35 @@ async def get_available_models(
                 return {"provider": provider, "models": models, "count": len(models)}
             
             else:
-                raise HTTPException(status_code=400, detail=f"不支持的提供商: {provider}")
+                raise ApiError(
+                    code="validation.model_provider_unsupported",
+                    detail=f"不支持的提供商: {provider}",
+                    params={"provider": provider},
+                )
             
     except httpx.HTTPStatusError as e:
         logger.error(f"获取模型列表失败 (HTTP {e.response.status_code}): {safe_preview(e.response.text, 500)}")
         if e.response.status_code == 404:
-            raise HTTPException(
-                status_code=400,
-                detail=f"该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {api_base_url.rstrip('/')}/models"
+            raise ApiError(
+                code="validation.model_list_endpoint_unsupported",
+                detail=f"该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {api_base_url.rstrip('/')}/models",
+                params={"api_base_url": api_base_url.rstrip('/')},
             )
-        raise HTTPException(
-            status_code=400,
-            detail=f"无法从 API 获取模型列表 (HTTP {e.response.status_code})"
+        raise ApiError(
+            code="validation.model_list_http_error",
+            detail=f"无法从 API 获取模型列表 (HTTP {e.response.status_code})",
+            params={"status": e.response.status_code},
         )
     except httpx.RequestError as e:
         logger.error(f"请求模型列表失败: {str(e)}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"无法连接到 API: {str(e)}"
-        )
-    except HTTPException:
+        detail = f"无法连接到 API: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"获取模型列表时发生错误: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取模型列表失败: {str(e)}"
-        )
+        detail = f"获取模型列表失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 class ApiTestRequest(BaseModel):
@@ -1295,7 +1339,7 @@ async def update_preset(
     try:
         prefs = json.loads(settings.preferences or '{}')
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="配置数据格式错误")
+        raise ApiError(code="validation.config")
     
     api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
     presets = api_presets.get('presets', [])
@@ -1303,7 +1347,7 @@ async def update_preset(
     # 找到并更新预设
     target_preset = next((p for p in presets if p['id'] == preset_id), None)
     if not target_preset:
-        raise HTTPException(status_code=404, detail="预设不存在")
+        raise ApiError(code="not_found.preset")
     
     # 更新字段
     if data.name is not None:
@@ -1343,7 +1387,7 @@ async def delete_preset(
     try:
         prefs = json.loads(settings.preferences or '{}')
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="配置数据格式错误")
+        raise ApiError(code="validation.config")
     
     api_presets = _get_api_presets_payload(prefs)
     presets = api_presets.get('presets', [])
@@ -1351,11 +1395,11 @@ async def delete_preset(
     # 找到预设
     target_preset = next((p for p in presets if p['id'] == preset_id), None)
     if not target_preset:
-        raise HTTPException(status_code=404, detail="预设不存在")
+        raise ApiError(code="not_found.preset")
     
     # 检查是否是激活的预设
     if target_preset.get('is_active'):
-        raise HTTPException(status_code=400, detail="无法删除激活中的预设，请先激活其他预设")
+        raise ApiError(code="validation.preset_active_delete_blocked")
     
     # 删除预设
     presets = [p for p in presets if p['id'] != preset_id]
@@ -1390,7 +1434,7 @@ async def activate_preset(
     try:
         prefs = json.loads(settings.preferences or '{}')
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="配置数据格式错误")
+        raise ApiError(code="validation.config")
     
     api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
     presets = api_presets.get('presets', [])
@@ -1398,7 +1442,7 @@ async def activate_preset(
     # 找到目标预设
     target_preset = next((p for p in presets if p['id'] == preset_id), None)
     if not target_preset:
-        raise HTTPException(status_code=404, detail="预设不存在")
+        raise ApiError(code="not_found.preset")
     
     # 应用配置到Settings主字段
     config = target_preset['config']
@@ -1446,7 +1490,7 @@ async def set_chapter_analysis_preset_selection(
     if preset_id:
         target_preset = next((p for p in presets if p.get('id') == preset_id), None)
         if not target_preset:
-            raise HTTPException(status_code=404, detail="预设不存在")
+            raise ApiError(code="not_found.preset")
         prefs['chapter_analysis_preset_id'] = preset_id
         preset_name = target_preset.get('name')
     else:
@@ -1479,7 +1523,7 @@ async def test_preset(
     try:
         prefs = json.loads(settings.preferences or '{}')
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="配置数据格式错误")
+        raise ApiError(code="validation.config")
     
     api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
     presets = api_presets.get('presets', [])
@@ -1487,7 +1531,7 @@ async def test_preset(
     # 找到预设
     target_preset = next((p for p in presets if p['id'] == preset_id), None)
     if not target_preset:
-        raise HTTPException(status_code=404, detail="预设不存在")
+        raise ApiError(code="not_found.preset")
     
     # 使用现有的test_api_connection逻辑
     # 确保传递完整参数，与当前配置测试保持一致

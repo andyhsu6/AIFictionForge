@@ -11,6 +11,7 @@ from asyncio import Queue, Lock
 
 from app.database import get_db, get_engine
 from app.api.common import verify_project_access
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
     OneToOneContextBuilder,
@@ -57,6 +58,7 @@ from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
+from app.services.language_resolver import resolve_user_generation_language
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import SSEResponse, create_sse_response
@@ -271,7 +273,7 @@ async def get_chapter(
     chapter = result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -297,7 +299,7 @@ async def get_chapter_navigation(
     current_chapter = result.scalar_one_or_none()
     
     if not current_chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -356,7 +358,7 @@ async def update_chapter(
     chapter = result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -484,7 +486,7 @@ async def delete_chapter(
     chapter = result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -881,7 +883,7 @@ async def check_can_generate(
     )
     chapter = result.scalar_one_or_none()
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -1493,15 +1495,15 @@ async def generate_chapter_content_stream(
             )
             chapter = result.scalar_one_or_none()
             if not chapter:
-                raise HTTPException(status_code=404, detail="章节不存在")
+                raise ApiError(code="not_found.chapter")
             
             # 检查前置条件
             can_generate, error_msg, previous_chapters = await check_prerequisites(temp_db, chapter)
             if not can_generate:
-                raise HTTPException(status_code=400, detail=error_msg)
+                raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
             analysis_ready, analysis_msg = await check_previous_analysis_ready(temp_db, chapter)
             if not analysis_ready:
-                raise HTTPException(status_code=409, detail=analysis_msg)
+                raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=analysis_msg, status=409, raw=analysis_msg)
             
             # 保存前置章节数据供生成器使用
             previous_chapters_data = [
@@ -1542,7 +1544,7 @@ async def generate_chapter_content_stream(
                 )
                 current_chapter = chapter_result.scalar_one_or_none()
                 if not current_chapter:
-                    yield await tracker.error("章节不存在", 404)
+                    yield await tracker.error("章节不存在", 404, error_code="not_found.chapter")
                     return
             
                 yield await tracker.loading("加载项目信息...", 0.4)
@@ -1553,7 +1555,7 @@ async def generate_chapter_content_stream(
                 )
                 project = project_result.scalar_one_or_none()
                 if not project:
-                    yield await tracker.error("项目不存在", 404)
+                    yield await tracker.error("项目不存在", 404, error_code="not_found.project")
                     return
                 
                 # 获取项目的大纲模式
@@ -1667,7 +1669,12 @@ async def generate_chapter_content_stream(
                     '第三人称'
                 )
                 logger.info(f"📝 使用叙事人称: {chapter_perspective}")
-                
+
+                # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+                generation_language = await resolve_user_generation_language(
+                    db_session, current_user_id, generate_request.content_language
+                )
+
                 # 🚀 根据大纲模式选择提示词模板和参数
                 if outline_mode == 'one-to-one':
                     # 1-1模式
@@ -1689,7 +1696,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
@@ -1707,7 +1715,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 else:
@@ -1737,7 +1746,8 @@ async def generate_chapter_content_stream(
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             previous_chapter_summary=previous_summary,
                             recent_chapters_context=chapter_context.recent_chapters_context or '',
-                            relevant_memories=chapter_context.relevant_memories or ''
+                            relevant_memories=chapter_context.relevant_memories or '',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第{current_chapter.chapter_number}章提示词完成: prompt_length={len(base_prompt)}")
                     else:
@@ -1756,7 +1766,8 @@ async def generate_chapter_content_stream(
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
                             chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                            relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                            content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 
@@ -1943,7 +1954,7 @@ async def generate_chapter_content_stream(
                 yield await tracker.saving("章节保存完成", 0.8)
                 
                 # === 完成阶段 ===
-                yield await tracker.complete("创作完成！")
+                yield await tracker.complete("创作完成！", code="progress.done")
                 
                 # 发送结果数据
                 yield await tracker.result({
@@ -2021,7 +2032,7 @@ async def generate_chapter_content_background(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 验证章节存在
     result = await db.execute(
@@ -2029,7 +2040,7 @@ async def generate_chapter_content_background(
     )
     chapter = result.scalar_one_or_none()
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
 
     # 验证项目权限
     project = await verify_project_access(chapter.project_id, user_id, db)
@@ -2037,10 +2048,10 @@ async def generate_chapter_content_background(
     # 检查前置条件
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
     analysis_ready, analysis_msg = await check_previous_analysis_ready(db, chapter)
     if not analysis_ready:
-        raise HTTPException(status_code=409, detail=analysis_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=analysis_msg, status=409, raw=analysis_msg)
 
     # 创建后台任务
     from app.services.background_task_service import background_task_service, TaskProgressTracker
@@ -2056,6 +2067,7 @@ async def generate_chapter_content_background(
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
             "skill_key": generate_request.skill_key,
+            "content_language": generate_request.content_language,
         },
         db=db
     )
@@ -2086,6 +2098,7 @@ async def generate_chapter_content_background(
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
                         "skill_key": generate_request.skill_key,
+                        "content_language": generate_request.content_language,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2140,7 +2153,7 @@ async def _run_chapter_generation_bg(
     )
     current_chapter = chapter_result.scalar_one_or_none()
     if not current_chapter:
-        await tracker.error("章节不存在")
+        await tracker.error("章节不存在", error_code="not_found.chapter")
         return
 
     await tracker.loading("加载项目信息...", 0.4)
@@ -2150,7 +2163,7 @@ async def _run_chapter_generation_bg(
     )
     project = project_result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -2223,6 +2236,11 @@ async def _run_chapter_generation_bg(
         '第三人称'
     )
 
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id, task_input.get("content_language")
+    )
+
     # === 准备提示词 ===
     if outline_mode == 'one-to-one':
         if chapter_context.continuation_point:
@@ -2242,7 +2260,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
@@ -2258,7 +2277,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         if chapter_context.continuation_point:
@@ -2279,7 +2299,8 @@ async def _run_chapter_generation_bg(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
@@ -2295,7 +2316,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
 
     # 应用写作风格
@@ -2372,7 +2394,7 @@ async def _run_chapter_generation_bg(
         )
         current_chapter = chapter_result.scalar_one_or_none()
         if not current_chapter:
-            await tracker.error("保存时章节不存在")
+            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
             return
 
         old_word_count = current_chapter.word_count or 0
@@ -2450,7 +2472,10 @@ async def _run_chapter_generation_bg(
         raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
+    await tracker.complete(
+        f"创作和分析完成！共 {new_word_count} 字",
+        code="progress.creation_done_words", params={"word_count": new_word_count},
+    )
 
 
 def _build_analysis_task_status_payload(
@@ -2545,7 +2570,7 @@ async def generate_chapter_content_background_legacy(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 验证章节存在
     result = await db.execute(
@@ -2553,7 +2578,7 @@ async def generate_chapter_content_background_legacy(
     )
     chapter = result.scalar_one_or_none()
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
 
     # 验证项目权限
     project = await verify_project_access(chapter.project_id, user_id, db)
@@ -2561,7 +2586,7 @@ async def generate_chapter_content_background_legacy(
     # 检查前置条件
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=error_msg, status=400, raw=error_msg)
 
     # 创建后台任务
     from app.services.background_task_service import background_task_service, TaskProgressTracker
@@ -2576,6 +2601,7 @@ async def generate_chapter_content_background_legacy(
             "enable_mcp": generate_request.enable_mcp,
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
+            "content_language": generate_request.content_language,
         },
         db=db
     )
@@ -2605,6 +2631,7 @@ async def generate_chapter_content_background_legacy(
                         "enable_mcp": generate_request.enable_mcp,
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
+                        "content_language": generate_request.content_language,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2660,7 +2687,7 @@ async def _run_chapter_generation_bg(
     )
     current_chapter = chapter_result.scalar_one_or_none()
     if not current_chapter:
-        await tracker.error("章节不存在")
+        await tracker.error("章节不存在", error_code="not_found.chapter")
         return
 
     await tracker.loading("加载项目信息...", 0.4)
@@ -2670,7 +2697,7 @@ async def _run_chapter_generation_bg(
     )
     project = project_result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -2743,6 +2770,11 @@ async def _run_chapter_generation_bg(
         '第三人称'
     )
 
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id, task_input.get("content_language")
+    )
+
     # === 准备提示词 ===
     if outline_mode == 'one-to-one':
         if chapter_context.continuation_point:
@@ -2762,7 +2794,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
@@ -2778,7 +2811,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         if chapter_context.continuation_point:
@@ -2799,7 +2833,8 @@ async def _run_chapter_generation_bg(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
@@ -2815,7 +2850,8 @@ async def _run_chapter_generation_bg(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
 
     # 应用写作风格
@@ -2913,7 +2949,7 @@ async def _run_chapter_generation_bg(
         )
         current_chapter = chapter_result.scalar_one_or_none()
         if not current_chapter:
-            await tracker.error("保存时章节不存在")
+            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
             return
 
         old_word_count = current_chapter.word_count or 0
@@ -2992,7 +3028,10 @@ async def _run_chapter_generation_bg(
         raise RuntimeError("章节内容已生成，但章节分析失败")
 
     # === 完成 ===
-    await tracker.complete(f"创作和分析完成！共 {new_word_count} 字")
+    await tracker.complete(
+        f"创作和分析完成！共 {new_word_count} 字",
+        code="progress.creation_done_words", params={"word_count": new_word_count},
+    )
 
 
 def _build_analysis_task_status_payload(
@@ -3063,7 +3102,7 @@ async def get_analysis_task_status(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -3193,7 +3232,7 @@ async def batch_analyze_unanalyzed_chapters(
     """自动识别项目中未完成分析的章节，并按章节顺序逐个启动分析。"""
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     # 验证项目权限
     await verify_project_access(project_id, user_id, db)
@@ -3280,7 +3319,8 @@ async def batch_analyze_unanalyzed_chapters(
         except Exception as e:
             await db.rollback()
             logger.error(f"❌ 一键分析创建任务失败: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"一键分析创建任务失败: {str(e)}")
+            detail = f"一键分析创建任务失败: {str(e)}"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
         # 提交后立即按章节顺序调度后台分析（逐章执行）
         tasks_queue = [
@@ -3345,7 +3385,7 @@ async def get_chapter_analysis(
     analysis = analysis_result.scalar_one_or_none()
     
     if not analysis:
-        raise HTTPException(status_code=404, detail="该章节暂无分析结果")
+        raise ApiError(code="not_found.chapter_analysis")
     
     # 获取相关记忆
     memories_result = await db.execute(
@@ -3398,7 +3438,7 @@ async def get_chapter_annotations(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证项目访问权限
     await verify_project_access(chapter.project_id, user_id, db)
@@ -3535,7 +3575,7 @@ async def trigger_chapter_analysis(
     # 从请求中获取用户ID
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -3544,10 +3584,10 @@ async def trigger_chapter_analysis(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     if not chapter.content or chapter.content.strip() == "":
-        raise HTTPException(status_code=400, detail="章节内容为空，无法分析")
+        raise ApiError(code="validation.chapter_content_empty_for_analysis")
     
     # 获取项目信息
     project_result = await db.execute(
@@ -3556,7 +3596,7 @@ async def trigger_chapter_analysis(
     project = project_result.scalar_one_or_none()
     
     if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
+        raise ApiError(code="not_found.project")
 
     # 避免重复点击或状态轮询误判后创建并发分析任务。
     existing_task_result = await db.execute(
@@ -3652,7 +3692,7 @@ async def batch_generate_chapters_in_order(
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证项目存在和用户权限
     project = await verify_project_access(project_id, user_id, db)
@@ -3666,7 +3706,7 @@ async def batch_generate_chapters_in_order(
     all_chapters = result.scalars().all()
     
     if not all_chapters:
-        raise HTTPException(status_code=404, detail="项目没有章节")
+        raise ApiError(code="not_found.project_chapters", detail="项目没有章节")
     
     # 计算要生成的章节范围
     start_number = batch_request.start_chapter_number
@@ -3679,13 +3719,14 @@ async def batch_generate_chapters_in_order(
     ]
     
     if not chapters_to_generate:
-        raise HTTPException(status_code=404, detail="指定范围内没有章节")
+        raise ApiError(code="not_found.project_chapters", detail="指定范围内没有章节")
     
     # 验证起始章节的前置条件
     first_chapter = chapters_to_generate[0]
     can_generate, error_msg, _ = await check_prerequisites(db, first_chapter)
     if not can_generate:
-        raise HTTPException(status_code=400, detail=f"起始章节无法生成：{error_msg}")
+        detail = f"起始章节无法生成：{error_msg}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
 
     # 批量生成必须同步分析，否则下一章无法获得最新角色状态、记忆和伏笔上下文。
     enable_analysis = True
@@ -3731,7 +3772,8 @@ async def batch_generate_chapters_in_order(
         custom_model=batch_request.model,
         skill_key=batch_request.skill_key,
         enable_mcp=batch_request.enable_mcp,
-        narrative_perspective=batch_request.narrative_perspective
+        narrative_perspective=batch_request.narrative_perspective,
+        content_language=batch_request.content_language
     )
     
     return BatchGenerateResponse(
@@ -3758,7 +3800,7 @@ async def get_batch_generation_status(
     """查询批量生成任务的状态和进度"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     result = await db.execute(
         select(BatchGenerationTask).where(
@@ -3769,7 +3811,7 @@ async def get_batch_generation_status(
     task = result.scalar_one_or_none()
     
     if not task:
-        raise HTTPException(status_code=404, detail="批量生成任务不存在")
+        raise ApiError(code="not_found.batch_task")
     
     return BatchGenerateStatusResponse(
         batch_id=task.id,
@@ -3801,7 +3843,7 @@ async def get_active_batch_generation(
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     await verify_project_access(project_id, user_id, db)
     
     result = await db.execute(
@@ -3844,7 +3886,7 @@ async def cancel_batch_generation(
     """取消正在进行的批量生成任务"""
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
 
     result = await db.execute(
         select(BatchGenerationTask).where(
@@ -3855,10 +3897,14 @@ async def cancel_batch_generation(
     task = result.scalar_one_or_none()
     
     if not task:
-        raise HTTPException(status_code=404, detail="批量生成任务不存在")
+        raise ApiError(code="not_found.batch_task")
     
     if task.status in ['completed', 'failed', 'cancelled']:
-        raise HTTPException(status_code=400, detail=f"任务已处于 {task.status} 状态，无法取消")
+        raise ApiError(
+            code="task.cancel_invalid_status",
+            detail=f"任务已处于 {task.status} 状态，无法取消",
+            params={"status": task.status},
+        )
     
     task.status = 'cancelled'
     task.completed_at = datetime.now()
@@ -3881,7 +3927,8 @@ async def execute_batch_generation_in_order(
     custom_model: Optional[str] = None,
     skill_key: Optional[str] = None,
     enable_mcp: bool = True,
-    narrative_perspective: Optional[str] = None
+    narrative_perspective: Optional[str] = None,
+    content_language: Optional[str] = None
 ):
     """
     按顺序执行批量生成任务（后台任务）
@@ -4005,7 +4052,8 @@ async def execute_batch_generation_in_order(
                         skill_key=skill_key,
                         batch_id=batch_id,
                         enable_mcp=enable_mcp,
-                        temp_narrative_perspective=narrative_perspective
+                        temp_narrative_perspective=narrative_perspective,
+                        content_language=content_language
                     )
 
                     await db_session.refresh(task)
@@ -4179,7 +4227,8 @@ async def generate_single_chapter_for_batch(
     skill_key: Optional[str] = None,
     batch_id: Optional[str] = None,
     enable_mcp: bool = True,
-    temp_narrative_perspective: Optional[str] = None
+    temp_narrative_perspective: Optional[str] = None,
+    content_language: Optional[str] = None
 ) -> Optional[str]:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4274,6 +4323,10 @@ async def generate_single_chapter_for_batch(
     
     # 🚀 根据大纲模式选择提示词模板（批量生成）
     # 统一使用 context_builder 构建的 chapter_context 结果，与单章生成保持一致
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db_session, user_id, content_language
+    )
     if outline_mode == 'one-to-one':
         # 1-1模式
         if chapter_context.continuation_point:
@@ -4294,7 +4347,8 @@ async def generate_single_chapter_for_batch(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '',
-                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要'
+                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
+                content_language=generation_language
             )
         else:
             # 第一章
@@ -4311,7 +4365,8 @@ async def generate_single_chapter_for_batch(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     else:
         # 1-n模式：使用 context_builder 构建的结果，与单章生成保持一致
@@ -4341,7 +4396,8 @@ async def generate_single_chapter_for_batch(
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=final_prev_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or ''
+                relevant_memories=chapter_context.relevant_memories or '',
+                content_language=generation_language
             )
         else:
             # 第一章，使用无前置内容模板
@@ -4358,7 +4414,8 @@ async def generate_single_chapter_for_batch(
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
                 chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆'
+                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
+                content_language=generation_language
             )
     
     # 应用写作风格
@@ -4523,7 +4580,7 @@ async def regenerate_chapter_stream(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -4532,10 +4589,10 @@ async def regenerate_chapter_stream(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     if not chapter.content or chapter.content.strip() == "":
-        raise HTTPException(status_code=400, detail="章节内容为空，无法重新生成")
+        raise ApiError(code="validation.chapter_content_empty_for_regenerate")
     
     # 验证用户权限
     await verify_project_access(chapter.project_id, user_id, db)
@@ -4552,7 +4609,7 @@ async def regenerate_chapter_stream(
         analysis = analysis_result.scalar_one_or_none()
         
         if not analysis:
-            raise HTTPException(status_code=404, detail="该章节暂无分析结果")
+            raise ApiError(code="not_found.chapter_analysis")
     
     # 预先获取项目上下文数据和写作风格
     async for temp_db in get_db(request):
@@ -4802,7 +4859,7 @@ async def regenerate_chapter_stream(
                 yield await tracker.saving("保存完成", 0.9)
                 
                 # === 完成阶段 ===
-                yield await tracker.complete("重新生成完成！")
+                yield await tracker.complete("重新生成完成！", code="progress.done")
                 
                 # 发送结果数据
                 yield await tracker.result({
@@ -4869,7 +4926,7 @@ async def get_regeneration_tasks(
     )
     chapter = chapter_result.scalar_one_or_none()
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     await verify_project_access(chapter.project_id, user_id, db)
     
@@ -4925,7 +4982,7 @@ async def update_chapter_expansion_plan(
     chapter = result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -4994,7 +5051,7 @@ async def partial_regenerate_stream(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -5003,10 +5060,10 @@ async def partial_regenerate_stream(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     if not chapter.content or chapter.content.strip() == "":
-        raise HTTPException(status_code=400, detail="章节内容为空")
+        raise ApiError(code="validation.chapter_content_empty")
     
     # 验证用户权限
     await verify_project_access(chapter.project_id, user_id, db)
@@ -5014,11 +5071,19 @@ async def partial_regenerate_stream(
     # 验证位置参数
     content_length = len(chapter.content)
     if partial_request.start_position >= content_length:
-        raise HTTPException(status_code=400, detail="起始位置超出内容范围")
+        raise ApiError(
+            code="validation.polish_range_out_of_bounds",
+            detail="起始位置超出内容范围",
+            params={"bound": "start"},
+        )
     if partial_request.end_position > content_length:
-        raise HTTPException(status_code=400, detail="结束位置超出内容范围")
+        raise ApiError(
+            code="validation.polish_range_out_of_bounds",
+            detail="结束位置超出内容范围",
+            params={"bound": "end"},
+        )
     if partial_request.start_position >= partial_request.end_position:
-        raise HTTPException(status_code=400, detail="起始位置必须小于结束位置")
+        raise ApiError(code="validation.polish_start_before_end")
     
     # 验证选中的文本是否匹配
     actual_selected = chapter.content[partial_request.start_position:partial_request.end_position]
@@ -5035,9 +5100,8 @@ async def partial_regenerate_stream(
             partial_request.end_position = partial_request.start_position + len(partial_request.selected_text)
             logger.info(f"⚠️ 选中文本位置校正: {partial_request.start_position}-{partial_request.end_position}")
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="选中的文本与章节内容不匹配，请刷新页面后重试"
+            raise ApiError(
+                code="validation.polish_selection_mismatch",
             )
     
     # 预先获取项目信息和写作风格
@@ -5129,7 +5193,10 @@ async def partial_regenerate_stream(
             template = await PromptService.get_template("PARTIAL_REGENERATE", user_id, db)
             if not template:
                 template = PromptService.PARTIAL_REGENERATE
-            
+
+            # 解析最终生成语言：用户偏好 > UI 语言 > zh（局部重写无 per-gen 参数，todo 17）
+            generation_language = await resolve_user_generation_language(db, user_id)
+
             # 构建提示词
             prompt = PromptService.format_prompt(
                 template,
@@ -5139,7 +5206,8 @@ async def partial_regenerate_stream(
                 context_after=context_after if context_after else "（这是章节结尾）",
                 user_instructions=partial_request.user_instructions,
                 length_requirement=length_requirement,
-                style_content=style_content if style_content else "保持与原文一致的叙事风格"
+                style_content=style_content if style_content else "保持与原文一致的叙事风格",
+                content_language=generation_language
             )
             
             yield await tracker.preparing("开始生成...")
@@ -5210,7 +5278,7 @@ async def partial_regenerate_stream(
             logger.info(f"✅ 局部重写完成: 原文{original_word_count}字 -> 新文{new_word_count}字")
             
             # 完成
-            yield await tracker.complete("重写完成！")
+            yield await tracker.complete("重写完成！", code="progress.done")
             
             # 发送结果数据
             yield await tracker.result({
@@ -5247,7 +5315,7 @@ async def apply_partial_regenerate(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -5256,7 +5324,7 @@ async def apply_partial_regenerate(
     chapter = chapter_result.scalar_one_or_none()
     
     if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
+        raise ApiError(code="not_found.chapter")
     
     # 验证用户权限
     await verify_project_access(chapter.project_id, user_id, db)
@@ -5267,12 +5335,12 @@ async def apply_partial_regenerate(
     end_position = apply_request.get('end_position', 0)
     
     if not new_text:
-        raise HTTPException(status_code=400, detail="新内容不能为空")
+        raise ApiError(code="validation.polish_new_content_empty")
     
     # 验证位置有效性
     content_length = len(chapter.content)
     if start_position < 0 or end_position > content_length or start_position >= end_position:
-        raise HTTPException(status_code=400, detail="位置参数无效")
+        raise ApiError(code="validation.polish_position_invalid")
     
     # 构建新内容
     old_word_count = chapter.word_count or 0

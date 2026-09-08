@@ -8,12 +8,12 @@ import os
 import uuid
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from app.database import Base
+from app.core.errors import ApiError
 from app.models.career import Career, CharacterCareer
 from app.models.character import Character
 from app.models.project import Project
@@ -71,8 +71,11 @@ async def test_delete_career_blocks_on_existing_character(db_session):
     db_session.add_all([project, career, character, link])
     await db_session.commit()
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ApiError) as exc_info:
         await delete_career(career_id="career-1", request=make_request(user_id), db=db_session)
 
-    assert exc_info.value.status_code == 400
+    # i18n todo 12：错误码化后断言 code/params，detail 保持 byte-identity
+    assert exc_info.value.code == "conflict.career_in_use"
+    assert exc_info.value.status == 400
+    assert exc_info.value.params == {"usage_count": 1}
     assert "角色使用" in exc_info.value.detail

@@ -1,0 +1,68 @@
+{
+  "form": {
+    "backHome": "Back to Home",
+    "bookNamePlaceholder": "Enter your novel title",
+    "bookNameRequired": "Please enter the book title",
+    "characterCountPlaceholder": "Number of characters AI will generate",
+    "characterCountRequired": "Please enter the character count",
+    "characterCountUnit": "characters",
+    "descriptionPlaceholder": "Introduce your novel in a paragraph...",
+    "descriptionRequired": "Please enter the synopsis",
+    "genrePlaceholder": "Select or type genre tags (e.g. Xuanhuan, Urban, Xiuxian)",
+    "genreRequired": "Please select a genre",
+    "labelBookName": "Book Title",
+    "labelCharacterCount": "Character Count",
+    "labelDescription": "Synopsis",
+    "labelGenre": "Genre",
+    "labelOutlineMode": "Outline-Chapter Mode",
+    "labelPerspective": "Narrative Perspective",
+    "labelTargetWords": "Target Word Count",
+    "labelTheme": "Theme",
+    "outlineModeRequired": "Please select the outline-chapter mode",
+    "outlineModeTooltip": "Cannot be changed after creation; choose based on your writing habits",
+    "perspectivePlaceholder": "Select the novel's narrative perspective",
+    "perspectiveRequired": "Please select the narrative perspective",
+    "startCreate": "Start Creating",
+    "subtitle": "After filling in the basics, AI will auto-generate the worldbuilding, characters and outline nodes (outlines can be expanded into chapters manually within the project).",
+    "targetWordsPlaceholder": "Target word count for the whole novel",
+    "targetWordsRequired": "Please enter the target word count",
+    "targetWordsUnit": "words",
+    "themePlaceholder": "Describe your novel's theme...",
+    "themeRequired": "Please enter the theme",
+    "title": "Create New Project"
+  },
+  "genre": {
+    "fantasy": "Fantasy",
+    "historical": "Historical",
+    "mystery": "Mystery",
+    "romance": "Romance",
+    "scifi": "Sci-Fi",
+    "urban": "Urban",
+    "wuxia": "Wuxia",
+    "xianxia": "Xianxia",
+    "xiuxian": "Cultivation",
+    "xuanhuan": "Xuanhuan"
+  },
+  "header": {
+    "back": "Back",
+    "backHome": "Back to Home",
+    "title": "Project Creation Wizard"
+  },
+  "outlineMode": {
+    "detailed": "Detailed (1→N) Recommended",
+    "detailedDesc": "One outline can expand into multiple chapters, flexible control",
+    "detailedSuitable": "Ideal for: complex plots, long-form writing, fine-grained control",
+    "traditional": "Traditional (1→1)",
+    "traditionalDesc": "One outline maps to one chapter, simple and direct",
+    "traditionalSuitable": "Ideal for: simple plots, fast drafting, short stories"
+  },
+  "perspective": {
+    "firstPerson": "First Person",
+    "omniscient": "Omniscient",
+    "thirdPerson": "Third Person"
+  },
+  "resume": {
+    "fetchProjectFailed": "Failed to fetch project info",
+    "generateFailed": "Failed to resume generation, please try again"
+  }
+}

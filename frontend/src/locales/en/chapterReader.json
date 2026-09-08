@@ -1,0 +1,67 @@
+{
+  "actions": {
+    "analyze": "Analyze",
+    "back": "Back",
+    "close": "Close",
+    "showAnnotations": "Show Annotations"
+  },
+  "analyze": {
+    "analyzing": "Analyzing...",
+    "done": "Analysis complete!",
+    "failed": "Analysis failed: {{error}}",
+    "inProgress": "Analyzing chapter...",
+    "reanalyze": "Re-analyze",
+    "starting": "Starting chapter analysis...",
+    "timeout": "Analysis timed out, refresh later to see results",
+    "triggerFailed": "Failed to trigger analysis",
+    "unknownError": "Unknown error"
+  },
+  "drawer": {
+    "title": "Chapter Analysis"
+  },
+  "empty": {
+    "noAnalysisDesc": "This chapter has not been AI-analyzed yet, so memory annotations cannot be shown.",
+    "noAnalysisTitle": "No analysis data",
+    "noContent": "No content"
+  },
+  "error": {
+    "chapterNotFound": "Chapter not found",
+    "invalidChapterData": "Invalid chapter data: content missing",
+    "loadFailed": "Load failed",
+    "loadNavigationFailed": "Failed to load chapter navigation info"
+  },
+  "nav": {
+    "chapterLabel": "Chapter {{n}}: {{title}}",
+    "firstChapter": "This is the first chapter",
+    "lastChapter": "This is the last chapter",
+    "next": "Next",
+    "nextFull": "Next: Chapter {{n}} {{title}}",
+    "nextTitle": "Next: {{title}}",
+    "prevFull": "Previous: Chapter {{n}} {{title}}",
+    "previous": "Previous",
+    "prevTitle": "Previous: {{title}}",
+    "wordCount": "{{count}} words",
+    "wordCount_one": "nav.wordCount",
+    "wordCount_other": "nav.wordCount"
+  },
+  "settings": {
+    "fontSize": "Font size: {{size}}px",
+    "lineHeight": "Line height: {{value}}",
+    "theme": "Theme",
+    "themeDark": "Night",
+    "themeLight": "Day",
+    "themeSepia": "Eye-care",
+    "title": "Reading Settings"
+  },
+  "status": {
+    "loading": "Loading...",
+    "loadingChapter": "Loading chapter..."
+  },
+  "summary": {
+    "characterEvents": " 👤{{n}} character events",
+    "foreshadows": " 🌟{{n}} foreshadows",
+    "hooks": " 🎣{{n}} hooks",
+    "plotPoints": " 💎{{n}} plot points",
+    "total": "Total {{n}} annotations:"
+  }
+}

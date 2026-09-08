@@ -31,6 +31,7 @@ import {
   QuestionCircleOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { mcpPluginApi, settingsApi } from '../services/api';
 import type { MCPPlugin, MCPTool } from '../types';
 
@@ -38,6 +39,7 @@ const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
 
 export default function MCPPluginsPage() {
+  const { t } = useTranslation('mcpPlugins');
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [form] = Form.useForm();
   const { token } = theme.useToken();
@@ -121,7 +123,7 @@ export default function MCPPluginsPage() {
               const activePlugins = pluginsData.filter(p => p.enabled);
               if (activePlugins.length > 0) {
                 // 自动禁用所有插件
-                message.loading({ content: '检测到模型配置变更，正在为了安全自动禁用插件...', key: 'auto_disable' });
+                message.loading({ content: t('toast.autoDisableLoading'), key: 'auto_disable' });
                 
                 await Promise.all(activePlugins.map(p => mcpPluginApi.togglePlugin(p.id, false)));
                 
@@ -129,17 +131,17 @@ export default function MCPPluginsPage() {
                 const updatedPlugins = await mcpPluginApi.getPlugins();
                 setPlugins(updatedPlugins);
                 
-                message.success({ content: '已自动禁用所有插件，请重新检测模型能力', key: 'auto_disable' });
+                message.success({ content: t('toast.autoDisableSuccess'), key: 'auto_disable' });
                 
                 modal.warning({
-                  title: '配置变更提醒',
+                  title: t('configChange.title'),
                   centered: true,
-                  content: '检测到您更换了 AI 模型或接口地址。为了防止错误调用，系统已自动暂停所有 MCP 插件。请重新进行"模型能力检查"，确认新模型支持 Function Calling 后再启用插件。',
-                  okText: '知道了',
+                  content: t('configChange.content'),
+                  okText: t('configChange.ok'),
                 });
               } else {
                 // 没有运行中的插件，仅提示
-                message.info('检测到模型配置已变更，请重新检测模型能力');
+                message.info(t('toast.configChanged'));
               }
               
               // 清除旧的验证状态
@@ -156,7 +158,7 @@ export default function MCPPluginsPage() {
         }
       } catch (error) {
         console.error('Init page failed:', error);
-        message.error('页面初始化失败');
+        message.error(t('toast.initFailed'));
       } finally {
         setLoading(false);
       }
@@ -170,19 +172,19 @@ export default function MCPPluginsPage() {
       setPlugins(data);
     } catch (error) {
       console.error('Load plugins failed:', error);
-      message.error('加载插件列表失败');
+      message.error(t('toast.loadListFailed'));
     }
   };
 
   const handleCreate = () => {
     if (modelSupportStatus !== 'supported') {
       modal.confirm({
-        title: '模型能力检查',
+        title: t('modelCheckModal.title'),
         centered: true,
         icon: <WarningOutlined />,
-        content: '为了确保 MCP 插件正常工作，您当前使用的 AI 模型必须支持 Function Calling（工具调用）能力。请先进行模型支持检测。',
-        okText: '去检测',
-        cancelText: '取消',
+        content: t('modelCheckModal.content'),
+        okText: t('modelCheckModal.ok'),
+        cancelText: t('modelCheckModal.cancel'),
         onOk: handleCheckFunctionCalling,
       });
       return;
@@ -236,20 +238,20 @@ export default function MCPPluginsPage() {
 
   const handleDelete = (plugin: MCPPlugin) => {
     modal.confirm({
-      title: '删除插件',
-      content: `确定要删除插件 "${plugin.display_name || plugin.plugin_name}" 吗？`,
+      title: t('deleteModal.title'),
+      content: t('deleteModal.content', { name: plugin.display_name || plugin.plugin_name }),
       centered: true,
-      okText: '确定',
-      cancelText: '取消',
+      okText: t('deleteModal.ok'),
+      cancelText: t('deleteModal.cancel'),
       okType: 'danger',
       onOk: async () => {
         try {
           await mcpPluginApi.deletePlugin(plugin.id);
-          message.success('插件已删除');
+          message.success(t('toast.pluginDeleted'));
           loadPlugins();
         } catch (error) {
           console.error('Delete plugin failed:', error);
-          message.error('删除插件失败');
+          message.error(t('toast.deleteFailed'));
         }
       },
     });
@@ -258,11 +260,11 @@ export default function MCPPluginsPage() {
   const handleToggle = async (plugin: MCPPlugin, enabled: boolean) => {
     try {
       await mcpPluginApi.togglePlugin(plugin.id, enabled);
-      message.success(enabled ? '插件已启用' : '插件已禁用');
+      message.success(enabled ? t('toast.pluginEnabled') : t('toast.pluginDisabled'));
       loadPlugins();
     } catch (error) {
       console.error('Toggle plugin failed:', error);
-      message.error('切换插件状态失败');
+      message.error(t('toast.toggleFailed'));
     }
   };
 
@@ -282,7 +284,7 @@ export default function MCPPluginsPage() {
         const resultStr = suggestions.find((s: string) => s.startsWith('📊'))?.replace('📊 结果:\n', '') || '';
 
         modal.success({
-          title: '🎉 测试成功',
+          title: t('testSuccess.title'),
           centered: true,
           width: isMobile ? '95%' : 700,
           content: (
@@ -295,18 +297,18 @@ export default function MCPPluginsPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16 }}>
                 <div style={{ padding: 12, background: token.colorBgLayout, borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>可用工具数</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('testSuccess.availableTools')}</Text>
                   <div><Text strong style={{ fontSize: 20 }}>{result.tools_count || 0}</Text></div>
                 </div>
                 <div style={{ padding: 12, background: token.colorBgLayout, borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>总响应时间</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('testSuccess.totalResponseTime')}</Text>
                   <div><Text strong style={{ fontSize: 20 }}>{result.response_time_ms?.toFixed(0) || 0}ms</Text></div>
                 </div>
               </div>
 
               {aiChoice && (
                 <div style={{ marginBottom: 12, padding: 12, background: statusStyles.info.bg, borderRadius: 8, border: `1px solid ${statusStyles.info.border}` }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>🤖 AI选择的工具</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('testSuccess.aiSelectedTool')}</Text>
                   <Text code strong>{aiChoice}</Text>
                   {callTime && <Tag color="blue" style={{ marginLeft: 8 }}>{callTime}</Tag>}
                 </div>
@@ -314,7 +316,7 @@ export default function MCPPluginsPage() {
 
               {paramsStr && (
                 <div style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>📝 调用参数</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('testSuccess.callParams')}</Text>
                   <pre style={{ margin: 0, padding: 8, background: token.colorBgLayout, borderRadius: 4, fontSize: 12, overflow: 'auto', maxHeight: 100 }}>
                     {(() => { try { return JSON.stringify(JSON.parse(paramsStr), null, 2); } catch { return paramsStr; } })()}
                   </pre>
@@ -323,27 +325,27 @@ export default function MCPPluginsPage() {
 
               {resultStr && (
                 <div style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>📊 返回结果预览</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('testSuccess.resultPreview')}</Text>
                   <pre style={{ margin: 0, padding: 8, background: token.colorBgLayout, borderRadius: 4, fontSize: 11, overflow: 'auto', maxHeight: 150, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {resultStr}
                   </pre>
                 </div>
               )}
 
-              <Alert message='插件状态已自动更新为"运行中"' type="success" showIcon />
+              <Alert message={t('testSuccess.autoUpdatedActive')} type="success" showIcon />
             </div>
           ),
         });
       } else {
         modal.error({
-          title: '测试失败',
+          title: t('testFailed.title'),
           centered: true,
           width: isMobile ? '90%' : 600,
           content: (
             <div style={{ padding: '8px 0' }}>
               <div style={{ marginBottom: 16 }}>
                 <Alert
-                  message={result.message || 'MCP插件测试失败'}
+                  message={result.message || t('testFailed.message')}
                   type="error"
                   showIcon
                 />
@@ -357,7 +359,7 @@ export default function MCPPluginsPage() {
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>错误信息:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('testFailed.errorInfo')}</Text>
                   <Text style={{ fontSize: 13, color: statusStyles.error.text, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {result.error}
                   </Text>
@@ -372,7 +374,7 @@ export default function MCPPluginsPage() {
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>💡 建议:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('testFailed.suggestions')}</Text>
                   <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
                     {result.suggestions.map((s: string, i: number) => (
                       <li key={i} style={{ marginBottom: 4 }}>{s}</li>
@@ -382,7 +384,7 @@ export default function MCPPluginsPage() {
               )}
 
               <Alert
-                message="插件状态已更新，请检查配置后重试"
+                message={t('testFailed.updatedCheck')}
                 type="warning"
                 showIcon
               />
@@ -391,7 +393,7 @@ export default function MCPPluginsPage() {
         });
       }
     } catch {
-      message.error('测试插件失败');
+      message.error(t('toast.testFailed'));
     } finally {
       setTestingPluginId(null);
     }
@@ -403,7 +405,7 @@ export default function MCPPluginsPage() {
       setViewingTools({ pluginId, tools: result.tools });
     } catch (error) {
       console.error('Get tools failed:', error);
-      message.error('获取工具列表失败');
+      message.error(t('toast.getToolsFailed'));
     }
   };
 
@@ -414,7 +416,7 @@ export default function MCPPluginsPage() {
       const settings = await settingsApi.getSettings();
       
       if (!settings.llm_model) {
-        message.warning('请先在设置页面配置模型');
+        message.warning(t('toast.configureModelFirst'));
         return;
       }
 
@@ -439,7 +441,7 @@ export default function MCPPluginsPage() {
         setModelSupportStatus('supported');
 
         modal.success({
-          title: '✅ Function Calling 支持检测',
+          title: t('fcCheck.successTitle'),
           centered: true,
           width: isMobile ? '95%' : 700,
           content: (
@@ -452,17 +454,17 @@ export default function MCPPluginsPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16 }}>
                 <div style={{ padding: 12, background: token.colorBgLayout, borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>API 提供商</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('fcCheck.apiProvider')}</Text>
                   <div><Text strong style={{ fontSize: 16 }}>{result.provider}</Text></div>
                 </div>
                 <div style={{ padding: 12, background: token.colorBgLayout, borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>响应时间</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('fcCheck.responseTime')}</Text>
                   <div><Text strong style={{ fontSize: 16 }}>{result.response_time_ms?.toFixed(0) || 0}ms</Text></div>
                 </div>
               </div>
 
               <div style={{ marginBottom: 12, padding: 12, background: statusStyles.info.bg, borderRadius: 8, border: `1px solid ${statusStyles.info.border}` }}>
-                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>🔧 模型信息</Text>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('fcCheck.modelInfo')}</Text>
                 <Text code strong>{result.model}</Text>
                 {result.details?.finish_reason && (
                   <Tag color="green" style={{ marginLeft: 8 }}>finish_reason: {result.details.finish_reason}</Tag>
@@ -471,18 +473,18 @@ export default function MCPPluginsPage() {
 
               {result.details && (
                 <div style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>📊 检测详情</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('fcCheck.detailTitle')}</Text>
                   <div style={{ padding: 8, background: token.colorBgLayout, borderRadius: 4, fontSize: 12 }}>
-                    <div>✓ 工具调用数量: {result.details.tool_call_count || 0}</div>
-                    <div>✓ 测试工具: {result.details.test_tool || 'N/A'}</div>
-                    <div>✓ 响应类型: {result.details.response_type || 'N/A'}</div>
+                    <div>{t('fcCheck.toolCallCount', { count: result.details.tool_call_count || 0 })}</div>
+                    <div>{t('fcCheck.testTool', { tool: result.details.test_tool || 'N/A' })}</div>
+                    <div>{t('fcCheck.responseType', { type: result.details.response_type || 'N/A' })}</div>
                   </div>
                 </div>
               )}
 
               {result.tool_calls && result.tool_calls.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>🔨 工具调用示例</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('fcCheck.toolCallExample')}</Text>
                   <pre style={{ margin: 0, padding: 8, background: token.colorBgLayout, borderRadius: 4, fontSize: 11, overflow: 'auto', maxHeight: 150 }}>
                     {JSON.stringify(result.tool_calls[0], null, 2)}
                   </pre>
@@ -491,7 +493,7 @@ export default function MCPPluginsPage() {
 
               {result.suggestions && result.suggestions.length > 0 && (
                 <div style={{ padding: 12, background: statusStyles.success.bg, border: `1px solid ${statusStyles.success.border}`, borderRadius: 8 }}>
-                  <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>💡 建议</Text>
+                  <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>{t('fcCheck.suggestions')}</Text>
                   <ul style={{ margin: 0, paddingLeft: 20, fontSize: 12 }}>
                     {result.suggestions.map((s: string, i: number) => (
                       <li key={i} style={{ marginBottom: 4 }}>{s}</li>
@@ -505,14 +507,14 @@ export default function MCPPluginsPage() {
       } else {
         setModelSupportStatus('unsupported');
         modal.warning({
-          title: '❌ Function Calling 支持检测',
+          title: t('fcCheck.failTitle'),
           centered: true,
           width: isMobile ? '95%' : 700,
           content: (
             <div style={{ padding: '8px 0' }}>
               <div style={{ marginBottom: 16 }}>
                 <Alert
-                  message={result.message || '模型不支持 Function Calling'}
+                  message={result.message || t('fcCheck.unsupportedMessage')}
                   type="warning"
                   showIcon
                 />
@@ -526,7 +528,7 @@ export default function MCPPluginsPage() {
                   borderRadius: 8,
                   marginBottom: 16
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>错误信息:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('fcCheck.errorInfo')}</Text>
                   <Text style={{ fontSize: 13, fontFamily: 'monospace' }}>
                     {result.error}
                   </Text>
@@ -535,7 +537,7 @@ export default function MCPPluginsPage() {
 
               {result.response_preview && (
                 <div style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>📝 模型返回内容（前200字符）</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('fcCheck.responsePreview')}</Text>
                   <pre style={{ margin: 0, padding: 8, background: token.colorBgLayout, borderRadius: 4, fontSize: 11, overflow: 'auto', maxHeight: 100, whiteSpace: 'pre-wrap' }}>
                     {result.response_preview}
                   </pre>
@@ -549,7 +551,7 @@ export default function MCPPluginsPage() {
                   border: `1px solid ${statusStyles.info.border}`,
                   borderRadius: 8
                 }}>
-                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>💡 建议:</Text>
+                  <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>{t('fcCheck.suggestions')}</Text>
                   <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
                     {result.suggestions.map((s: string, i: number) => (
                       <li key={i} style={{ marginBottom: 4 }}>{s}</li>
@@ -563,7 +565,7 @@ export default function MCPPluginsPage() {
       }
     } catch (error) {
       console.error('Check function calling failed:', error);
-      message.error('检测失败，请稍后重试');
+      message.error(t('toast.checkFailed'));
       setModelSupportStatus('unsupported');
     } finally {
       setCheckingFunctionCalling(false);
@@ -577,7 +579,7 @@ export default function MCPPluginsPage() {
       try {
         JSON.parse(values.config_json);
       } catch {
-        message.error('配置JSON格式错误，请检查');
+        message.error(t('toast.jsonFormatError'));
         setLoading(false);
         return;
       }
@@ -590,14 +592,14 @@ export default function MCPPluginsPage() {
 
       // 统一使用简化API，后端会自动判断是创建还是更新
       await mcpPluginApi.createPluginSimple(data);
-      message.success(editingPlugin ? '插件已更新' : '插件已创建');
+      message.success(editingPlugin ? t('toast.pluginUpdated') : t('toast.pluginCreated'));
 
       setModalVisible(false);
       form.resetFields();
       loadPlugins();
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } };
-      const errorMsg = err?.response?.data?.detail || '操作失败';
+      const errorMsg = err?.response?.data?.detail || t('toast.operationFailed');
       message.error(errorMsg);
     } finally {
       setLoading(false);
@@ -606,17 +608,17 @@ export default function MCPPluginsPage() {
 
   const getStatusTag = (plugin: MCPPlugin) => {
     if (!plugin.enabled) {
-      return <Tag color="default">已禁用</Tag>;
+      return <Tag color="default">{t('status.disabled')}</Tag>;
     }
     switch (plugin.status) {
       case 'active':
-        return <Tag color="success" icon={<CheckCircleOutlined />}>运行中</Tag>;
+        return <Tag color="success" icon={<CheckCircleOutlined />}>{t('status.active')}</Tag>;
       case 'error':
         return (
-          <Tag color="error" icon={<CloseCircleOutlined />} title={plugin.last_error}>错误</Tag>
+          <Tag color="error" icon={<CloseCircleOutlined />} title={plugin.last_error}>{t('status.error')}</Tag>
         );
       default:
-        return <Tag color="default">未激活</Tag>;
+        return <Tag color="default">{t('status.inactive')}</Tag>;
     }
   };
 
@@ -662,11 +664,11 @@ export default function MCPPluginsPage() {
                   <Space align="center">
                     <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: token.colorWhite, textShadow: `0 2px 4px ${alphaColor(token.colorText, 0.2)}` }}>
                       <ToolOutlined style={{ color: alphaColor(token.colorWhite, 0.9), marginRight: 8 }} />
-                      MCP插件管理
+                      {t('title')}
                     </Title>
                   </Space>
                   <Text style={{ fontSize: isMobile ? 12 : 14, color: alphaColor(token.colorWhite, 0.85), marginLeft: isMobile ? 40 : 48 }}>
-                    扩展AI能力，连接外部工具与服务
+                    {t('subtitle')}
                   </Text>
                 </Space>
               </Col>
@@ -685,7 +687,7 @@ export default function MCPPluginsPage() {
                       fontWeight: 600
                     }}
                   >
-                    添加插件
+                    {t('addPlugin')}
                   </Button>
                 </Space>
               </Col>
@@ -730,13 +732,13 @@ export default function MCPPluginsPage() {
                       )}
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <Text strong style={{ fontSize: isMobile ? 14 : 16, display: 'block', color: token.colorText }}>模型能力检查</Text>
+                      <Text strong style={{ fontSize: isMobile ? 14 : 16, display: 'block', color: token.colorText }}>{t('modelCheck.title')}</Text>
                       <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13, display: 'block', lineHeight: 1.5 }}>
                         {modelSupportStatus === 'supported'
-                          ? '当前模型支持 Function Calling，可正常使用 MCP 插件'
+                          ? t('modelCheck.statusSupported')
                           : modelSupportStatus === 'unsupported'
-                            ? '当前模型不支持 Function Calling，无法使用 MCP 插件'
-                            : '请先检测模型是否支持 Function Calling 能力'}
+                            ? t('modelCheck.statusUnsupported')
+                            : t('modelCheck.statusUnknown')}
                       </Text>
                     </div>
                   </Space>
@@ -748,7 +750,7 @@ export default function MCPPluginsPage() {
                     style={{ borderRadius: 8, width: isMobile ? '100%' : 'auto' }}
                     size={isMobile ? 'middle' : 'middle'}
                   >
-                    {modelSupportStatus === 'unknown' ? '开始检测' : '重新检测'}
+                    {modelSupportStatus === 'unknown' ? t('modelCheck.startCheck') : t('modelCheck.reCheck')}
                   </Button>
                 </div>
               </Card>
@@ -768,9 +770,9 @@ export default function MCPPluginsPage() {
                 <Space align="start">
                   <InfoCircleOutlined style={{ fontSize: isMobile ? 18 : 20, color: token.colorPrimary, marginTop: 2, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <Text strong style={{ fontSize: isMobile ? 14 : 16, display: 'block', color: token.colorText, marginBottom: 4 }}>什么是 MCP 插件？</Text>
+                    <Text strong style={{ fontSize: isMobile ? 14 : 16, display: 'block', color: token.colorText, marginBottom: 4 }}>{t('whatIsMCP.title')}</Text>
                     <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block', color: token.colorTextSecondary, lineHeight: 1.6 }}>
-                      MCP (Model Context Protocol) 协议允许 AI 调用外部工具获取数据。通过添加插件，AI 可以访问搜索引擎、数据库、API 等服务，大幅增强创作能力。
+                      {t('whatIsMCP.content')}
                     </Text>
                   </div>
                 </Space>
@@ -785,8 +787,8 @@ export default function MCPPluginsPage() {
               <Alert
                 message={
                   modelSupportStatus === 'unsupported'
-                    ? '当前模型不支持 Function Calling，所有插件操作已禁用'
-                    : '请先完成模型能力检查，才能操作插件'
+                    ? t('warning.unsupported')
+                    : t('warning.checkRequired')
                 }
                 type={modelSupportStatus === 'unsupported' ? 'error' : 'warning'}
                 showIcon
@@ -794,7 +796,7 @@ export default function MCPPluginsPage() {
                 style={{ marginBottom: 16, borderRadius: 8 }}
                 action={
                   <Button size="small" type="primary" onClick={handleCheckFunctionCalling} loading={checkingFunctionCalling}>
-                    {modelSupportStatus === 'unknown' ? '开始检测' : '重新检测'}
+                    {modelSupportStatus === 'unknown' ? t('modelCheck.startCheck') : t('modelCheck.reCheck')}
                   </Button>
                 }
               />
@@ -804,12 +806,12 @@ export default function MCPPluginsPage() {
             <Spin spinning={loading}>
               {plugins.length === 0 ? (
                 <Empty
-                  description="还没有添加任何插件"
+                  description={t('empty.noPlugins')}
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   style={{ padding: isMobile ? '40px 0' : '60px 0' }}
                 >
                   <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-                    添加第一个插件
+                    {t('empty.addFirst')}
                   </Button>
                 </Empty>
               ) : (
@@ -851,13 +853,13 @@ export default function MCPPluginsPage() {
                               {/* 移动端：开关放在标题行右侧 */}
                               {isMobile && (
                                 <Switch
-                                  title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : (plugin.enabled ? '禁用插件' : '启用插件')}
+                                  title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : (plugin.enabled ? t('tooltip.disablePlugin') : t('tooltip.enablePlugin'))}
                                   checked={plugin.enabled}
                                   onChange={(checked) => handleToggle(plugin, checked)}
                                   disabled={modelSupportStatus !== 'supported'}
                                   size="small"
-                                  checkedChildren="开"
-                                  unCheckedChildren="关"
+                                  checkedChildren={t('switch.on')}
+                                  unCheckedChildren={t('switch.off')}
                                   style={{
                                     flexShrink: 0,
                                     height: 16,
@@ -945,7 +947,7 @@ export default function MCPPluginsPage() {
                             {/* 显示最后错误信息 */}
                             {plugin.last_error && (
                               <Text type="danger" style={{ fontSize: isMobile ? '11px' : '12px' }}>
-                                错误: {plugin.last_error}
+                                {t('pluginList.lastError', { error: plugin.last_error })}
                               </Text>
                             )}
                           </Space>
@@ -964,51 +966,51 @@ export default function MCPPluginsPage() {
                           {/* 桌面端显示开关 */}
                           {!isMobile && (
                             <Switch
-                              title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : (plugin.enabled ? '禁用插件' : '启用插件')}
+                              title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : (plugin.enabled ? t('tooltip.disablePlugin') : t('tooltip.enablePlugin'))}
                               checked={plugin.enabled}
                               onChange={(checked) => handleToggle(plugin, checked)}
                               disabled={modelSupportStatus !== 'supported'}
-                              checkedChildren="开"
-                              unCheckedChildren="关"
+                              checkedChildren={t('switch.on')}
+                              unCheckedChildren={t('switch.off')}
                             />
                           )}
                           <Button
-                            title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : '测试连接'}
+                            title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : t('tooltip.testConnect')}
                             icon={<ThunderboltOutlined />}
                             onClick={() => handleTest(plugin.id)}
                             loading={testingPluginId === plugin.id}
                             disabled={modelSupportStatus !== 'supported'}
                             size={isMobile ? 'small' : 'middle'}
                           >
-                            {!isMobile && '测试'}
+                            {!isMobile && t('button.test')}
                           </Button>
                           <Button
-                            title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : '查看工具'}
+                            title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : t('tooltip.viewTools')}
                             icon={<ToolOutlined />}
                             onClick={() => handleViewTools(plugin.id)}
                             disabled={modelSupportStatus !== 'supported' || !plugin.enabled || plugin.status !== 'active'}
                             size={isMobile ? 'small' : 'middle'}
                           >
-                            {!isMobile && '工具'}
+                            {!isMobile && t('button.tools')}
                           </Button>
                           <Button
-                            title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : '编辑'}
+                            title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : t('tooltip.edit')}
                             icon={<EditOutlined />}
                             onClick={() => handleEdit(plugin)}
                             disabled={modelSupportStatus !== 'supported'}
                             size={isMobile ? 'small' : 'middle'}
                           >
-                            {!isMobile && '编辑'}
+                            {!isMobile && t('button.edit')}
                           </Button>
                           <Button
-                            title={modelSupportStatus !== 'supported' ? '请先完成模型能力检查' : '删除'}
+                            title={modelSupportStatus !== 'supported' ? t('tooltip.checkFirst') : t('tooltip.delete')}
                             danger
                             icon={<DeleteOutlined />}
                             onClick={() => handleDelete(plugin)}
                             disabled={modelSupportStatus !== 'supported'}
                             size={isMobile ? 'small' : 'middle'}
                           >
-                            {!isMobile && '删除'}
+                            {!isMobile && t('button.delete')}
                           </Button>
                         </div>
                       </div>
@@ -1022,7 +1024,7 @@ export default function MCPPluginsPage() {
 
         {/* 创建/编辑插件模态框 */}
         <Modal
-          title={editingPlugin ? '编辑插件' : '添加插件'}
+          title={editingPlugin ? t('formModal.editTitle') : t('formModal.addTitle')}
           open={modalVisible}
           centered
           onCancel={() => {
@@ -1032,19 +1034,19 @@ export default function MCPPluginsPage() {
           onOk={() => form.submit()}
           width={isMobile ? '100%' : 600}
           confirmLoading={loading}
-          okText="保存"
-          cancelText="取消"
+          okText={t('button.save')}
+          cancelText={t('button.cancel')}
         >
           <Form form={form} layout="vertical" onFinish={handleSubmit}>
             <Form.Item
-              label="MCP配置JSON"
+              label={t('form.configJsonLabel')}
               name="config_json"
-              rules={[{ required: true, message: '请输入配置JSON' }]}
-              extra="粘贴标准MCP配置，系统自动提取插件名称。支持HTTP和Stdio类型"
+              rules={[{ required: true, message: t('form.configJsonRequired') }]}
+              extra={t('form.configJsonExtra')}
             >
               <TextArea
                 rows={isMobile ? 12 : 16}
-                placeholder={`示例：
+                placeholder={`${t('form.configJsonPlaceholder')}
 {
   "mcpServers": {
     "exa": {
@@ -1059,19 +1061,19 @@ export default function MCPPluginsPage() {
             </Form.Item>
 
             <Form.Item
-              label="插件分类"
+              label={t('form.categoryLabel')}
               name="category"
-              rules={[{ required: true, message: '请选择插件分类' }]}
-              extra="选择插件的功能类别，用于AI智能匹配使用场景"
+              rules={[{ required: true, message: t('form.categoryRequired') }]}
+              extra={t('form.categoryExtra')}
             >
-              <Select placeholder="请选择分类">
-                <Select.Option value="search">搜索类 (Search) - 网络搜索、信息查询</Select.Option>
-                <Select.Option value="analysis">分析类 (Analysis) - 数据分析、文本处理</Select.Option>
-                <Select.Option value="filesystem">文件系统 (FileSystem) - 文件读写操作</Select.Option>
-                <Select.Option value="database">数据库 (Database) - 数据库查询</Select.Option>
-                <Select.Option value="api">API调用 (API) - 第三方服务接口</Select.Option>
-                <Select.Option value="generation">生成类 (Generation) - 内容生成工具</Select.Option>
-                <Select.Option value="general">通用 (General) - 其他功能</Select.Option>
+              <Select placeholder={t('form.categoryPlaceholder')}>
+                <Select.Option value="search">{t('category.search')}</Select.Option>
+                <Select.Option value="analysis">{t('category.analysis')}</Select.Option>
+                <Select.Option value="filesystem">{t('category.filesystem')}</Select.Option>
+                <Select.Option value="database">{t('category.database')}</Select.Option>
+                <Select.Option value="api">{t('category.api')}</Select.Option>
+                <Select.Option value="generation">{t('category.generation')}</Select.Option>
+                <Select.Option value="general">{t('category.general')}</Select.Option>
               </Select>
             </Form.Item>
           </Form>
@@ -1082,9 +1084,9 @@ export default function MCPPluginsPage() {
           title={
             <Space>
               <ToolOutlined style={{ color: token.colorPrimary }} />
-              <span>可用工具列表</span>
+              <span>{t('toolsModal.title')}</span>
               {viewingTools && viewingTools.tools.length > 0 && (
-                <Tag color="blue">{viewingTools.tools.length} 个工具</Tag>
+                <Tag color="blue">{t('toolsModal.toolCount', { count: viewingTools.tools.length })}</Tag>
               )}
             </Space>
           }
@@ -1092,7 +1094,7 @@ export default function MCPPluginsPage() {
           onCancel={() => setViewingTools(null)}
           footer={[
             <Button key="close" type="primary" onClick={() => setViewingTools(null)}>
-              关闭
+              {t('toolsModal.close')}
             </Button>,
           ]}
           width={isMobile ? '95%' : 800}
@@ -1109,7 +1111,7 @@ export default function MCPPluginsPage() {
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               {viewingTools.tools.length === 0 ? (
                 <Empty
-                  description="该插件没有提供任何工具"
+                  description={t('empty.noTools')}
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   style={{ padding: '40px 0' }}
                 />
@@ -1138,7 +1140,7 @@ export default function MCPPluginsPage() {
                       {tool.description && (
                         <div>
                           <Text type="secondary" style={{ fontSize: isMobile ? '12px' : '13px', display: 'block', marginBottom: 4 }}>
-                            描述：
+                            {t('toolsModal.description')}
                           </Text>
                           <Paragraph
                             style={{
@@ -1157,7 +1159,7 @@ export default function MCPPluginsPage() {
                       {tool.inputSchema && (
                         <div>
                           <Text type="secondary" style={{ fontSize: isMobile ? '12px' : '13px', display: 'block', marginBottom: 4 }}>
-                            输入参数：
+                            {t('toolsModal.inputSchema')}
                           </Text>
                           <pre
                             style={{

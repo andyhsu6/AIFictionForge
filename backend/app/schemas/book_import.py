@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.settings import ContentLanguage
+
 
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 ImportMode = Literal["append", "overwrite"]
@@ -17,6 +19,11 @@ class BookImportWarning(BaseModel):
     code: str = Field(..., description="告警编码")
     message: str = Field(..., description="告警内容")
     level: WarningLevel = Field(default="warning", description="告警等级")
+    # i18n 双通道：结构化码参数（供前端按 code 模板化翻译）。缺省 None 时序列化为
+    # "params": null——响应模型未配置 response_model_exclude_none，该键为增量字段
+    # （旧客户端可容忍）。严格字节形状（缺省键不出现）的保证只适用于 SSE progress
+    # payload（SSEResponse.send_progress），不适用于本 schema。
+    params: Optional[dict] = Field(default=None, description="告警结构化参数（配合 code 供前端模板化翻译）")
 
 
 class ProjectSuggestion(BaseModel):
@@ -50,6 +57,7 @@ class BookImportTaskCreateRequest(BaseModel):
     """创建拆书任务请求"""
     extract_mode: BookImportExtractMode = Field(default="tail", description="提取范围：tail=截取末章，full=整本")
     tail_chapter_count: int = Field(default=10, ge=5, le=9999, description="当 extract_mode=tail 时，截取末尾章节数；需为5的倍数，超过50将按整本处理")
+    content_language: ContentLanguage
 
 
 class BookImportTaskCreateResponse(BaseModel):
@@ -65,6 +73,14 @@ class BookImportTaskStatusResponse(BaseModel):
     progress: int = Field(..., ge=0, le=100)
     message: Optional[str] = None
     error: Optional[str] = None
+    # i18n 双通道轮询出口：任务态最近一次结构化码/参数（_set_task_state 写入）。
+    # last-state 语义：任意不带 code 的 _set_task_state 调用会把两字段清空为
+    # None，此时前端按旧版逻辑原样展示 message。缺省 None 序列化为
+    # "status_code": null，为增量字段（旧客户端可容忍）。严格字节形状（缺省键
+    # 不出现）的保证只适用于 SSE progress payload（SSEResponse.send_progress），
+    # 不适用于本 schema。
+    status_code: Optional[str] = None
+    status_params: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 

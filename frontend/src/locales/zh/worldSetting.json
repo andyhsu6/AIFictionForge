@@ -1,0 +1,89 @@
+{
+  "basics": {
+    "notSet": "未设定",
+    "novelDesc": "小说简介",
+    "novelGenre": "小说类型",
+    "novelName": "小说名称",
+    "novelTheme": "小说主题",
+    "perspective": "叙事视角",
+    "targetWords": "目标字数",
+    "title": "基础信息",
+    "wordsValue": "{{n}} 字"
+  },
+  "buttons": {
+    "cancel": "取消",
+    "save": "保存"
+  },
+  "editBasics": {
+    "descMax": "简介不能超过1000字",
+    "descPlaceholder": "请输入小说简介（选填）",
+    "genreMax": "类型不能超过100字",
+    "genrePlaceholder": "请输入小说类型，如：玄幻、都市、科幻等（选填）",
+    "nameMax": "名称不能超过200字",
+    "namePlaceholder": "请输入小说名称",
+    "nameRequired": "请输入小说名称",
+    "perspectivePlaceholder": "请选择叙事视角（选填）",
+    "themeMax": "主题不能超过500字",
+    "themePlaceholder": "请输入小说主题（选填）",
+    "title": "编辑项目基础信息",
+    "updateFailed": "更新失败，请重试",
+    "updateSuccess": "项目基础信息更新成功",
+    "wordsNegative": "目标字数不能为负数",
+    "wordsOutOfRange": "目标字数超出范围",
+    "wordsPlaceholder": "请输入目标字数（选填，最大21亿字）",
+    "wordsUnit": "字"
+  },
+  "editWorld": {
+    "atmospherePlaceholder": "描述故事的整体氛围和基调...",
+    "atmosphereRequired": "请输入氛围设定",
+    "locationPlaceholder": "描述故事发生的地理位置和环境...",
+    "locationRequired": "请输入地点设定",
+    "rulesPlaceholder": "描述这个世界的特殊规则和设定...",
+    "rulesRequired": "请输入规则设定",
+    "timePlaceholder": "描述故事发生的时代背景...",
+    "timeRequired": "请输入时间设定",
+    "title": "编辑世界观",
+    "updateFailed": "更新失败，请重试",
+    "updateSuccess": "世界观更新成功"
+  },
+  "empty": {
+    "description": "暂无世界设定信息",
+    "hint": "世界设定信息在创建项目向导中生成，用于构建小说的世界观背景。"
+  },
+  "page": {
+    "aiRegenerate": "AI重新生成",
+    "editBasics": "编辑基础信息",
+    "editWorld": "编辑世界观",
+    "title": "世界设定"
+  },
+  "perspective": {
+    "firstPerson": "第一人称",
+    "omniscient": "全知视角",
+    "thirdPerson": "第三人称"
+  },
+  "preview": {
+    "cancel": "取消",
+    "okReplace": "确认替换",
+    "title": "预览重新生成的世界观",
+    "warning": "⚠️ 注意：点击\"确认替换\"将会用新内容替换当前的世界观设定"
+  },
+  "regenerate": {
+    "cancelled": "已取消，保持原有内容",
+    "confirmCancel": "取消",
+    "confirmContent": "确定要使用AI重新生成世界观设定吗？这将替换当前的世界观内容。",
+    "confirmOk": "确认重新生成",
+    "confirmTitle": "确认重新生成",
+    "error": "重新生成出错，请重试",
+    "failed": "重新生成失败，请重试",
+    "preparing": "准备重新生成世界观...",
+    "saveFailed": "保存失败，请重试",
+    "updated": "世界观已更新！"
+  },
+  "world": {
+    "atmosphere": "氛围设定",
+    "location": "地点设定",
+    "rules": "规则设定",
+    "timePeriod": "时间设定",
+    "title": "小说世界观"
+  }
+}

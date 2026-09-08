@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
 
+from app.core.errors import ApiError
 from app.models.project import Project
 from app.logger import get_logger
 
@@ -40,7 +41,7 @@ async def verify_project_access(
             - 404: 项目不存在或用户无权访问
     """
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
+        raise ApiError(code="auth.unauthorized")
     
     result = await db.execute(
         select(Project).where(
@@ -52,7 +53,7 @@ async def verify_project_access(
     
     if not project:
         logger.warning(f"项目访问被拒绝: project_id={project_id}, user_id={user_id}")
-        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+        raise ApiError(code="not_found.project_or_forbidden")
     
     return project
 

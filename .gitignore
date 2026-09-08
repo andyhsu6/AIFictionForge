@@ -126,11 +126,12 @@ backend/embedding/
 # 提示词工坊实例标识（每个部署实例必须唯一）
 backend/.instance_id
 test.json
-tests/
-# Local test suite (kept outside version control)
-backend/tests/
-**/test_*.py
-**/*_test.py
+# Backend test suite is curated & tracked in the public repo (refs #27);
+# only stray test scripts inside backend/app internals stay ignored.
+backend/app/**/test_*.py
+backend/app/**/*_test.py
 
-# AI-generated working docs (kept locally, not shipped)
-docs/
+# AI-generated working docs (kept locally, not shipped); the public i18n
+# contributor guide is the one tracked exception.
+docs/*
+!docs/i18n.md

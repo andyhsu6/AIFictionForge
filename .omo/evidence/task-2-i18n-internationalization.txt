@@ -1,0 +1,56 @@
+
+===================================================================
+QA REPORT - todo 2: dynamic antd/dayjs locale + static API migration
+===================================================================
+
+FILES CHANGED:
+  frontend/src/theme/ThemeProvider.tsx
+    - locale={zhCN} hardcoded -> ANTD_LOCALE_MAP[resolvedLanguage] (zh->zhCN, en->enUS, fallback zhCN)
+    - useTranslation() drives re-render on language switch
+    - dayjs.locale('zh-cn'|'en') effect keyed on resolvedLanguage (imports dayjs/locale/zh-cn + dayjs/locale/en)
+    - <App> wrapper inside ConfigProvider + AntdAppBridge injects useApp() into utils/antdApp singleton
+  frontend/src/utils/antdApp.ts (NEW)
+    - module-level singleton: setAntdApp(api) + proxy accessors antdMessage/antdNotification/antdModal/antdApp
+  frontend/src/services/api.ts - static message -> antdMessage singleton (non-component module)
+  frontend/src/store/hooks.ts - 4 hooks now use App.useApp() message
+  components migrated to App.useApp() (11 files, 80 call sites):
+    AIProjectGenerator.tsx (23, incl. Modal.confirm->modal.confirm hook API)
+    CharacterCareerCard.tsx (9), PartialRegenerateModal.tsx (7), ExpansionPlanEditor.tsx (6),
+    ChapterRegenerationModal.tsx (6), ChapterContentComparison.tsx (6), UserMenu.tsx (5),
+    FloatingTaskPanel.tsx (2), ProtectedRoute.tsx (1), ChapterReader.tsx (1),
+    project-agent/ProjectAgentPanel.tsx (7, local SSE 'message' var renamed via destructure shadow)
+
+STATIC API CALL-SITE INVENTORY (antd-static-api-calls.txt):
+  TOTAL: 401 call sites
+  In-scope migrated this task (services/store/components): 80
+  Out-of-scope (pages/*, deferred to later i18n todos): 321
+  Note: sseClient.ts/backgroundTaskService.ts 'message.error' hits were SSE-payload property
+  access (false positives), excluded. No notification.* static calls exist in the codebase.
+
+VERIFICATION OUTPUTS:
+  1. frontend npm run build: PASS (verified in isolated worktree /tmp/todo2-verify at HEAD
+     3375777 + this task's files ONLY, because the shared worktree carries a parallel
+     worker's uncommitted todo-3 WIP (errorMapper/sseClient/locales) that fails tsc on its own:
+     TS2304 mapErrorPayload, i18next t() typing). vite build output: 'built in 4.29s', exit 0.
+  2. ThemeProvider hardcoded locale: PASS - zhCN appears only as map value + fallback,
+     locale={antdLocale} is dynamic; no locale={zhCN} remains.
+  3. services/store static imports: PASS - 'import { message } from antd' gone from
+     services/api.ts and store/hooks.ts; components/* have zero antd-static message/Modal.confirm usage.
+     Remaining static imports exist only in pages/* (out of scope per task constraints).
+  4. git status: see commit below (parallel-worker files deliberately NOT staged/committed).
+
+MANUAL-QA SCENARIO NOTE (full browser QA deferred to F3; documented steps):
+  Dev-server smoke on http://localhost:5173:
+  a) localStorage.setItem('lng','en'); reload -> antd Pagination ('Item X of Y total' /
+     per-page text), Empty ('No data'), Modal OK/Cancel buttons, DatePicker etc. render in ENGLISH;
+     switching back to 'zh' restores Chinese. If en selected but antd internals still show
+     Chinese => REGRESSION (locale map or useTranslation wiring broken).
+  b) Trigger an error toast (e.g. wrong login password) -> message renders through <App> context
+     (themed via cssVar, no static-API console warning) => confirms singleton/useApp path.
+  c) Trigger AIProjectGenerator 'restart generation' -> confirm dialog appears with theme context.
+  d) dayjs: no visible locale-dependent UI yet; verify via console dayjs.locale() === 'en' after switching.
+
+DEVIATIONS:
+  - Committed api.ts as HEAD + 2-line singleton swap (HEAD 3375777 content) because a parallel
+    todo-3 worker's uncommitted WIP occupies that file; their i18n.t() changes remain unstaged.
+  - 321 pages/* call sites inventoried but NOT migrated (task scope forbids touching pages/).

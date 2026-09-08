@@ -7,6 +7,7 @@ import json
 from typing import AsyncGenerator
 
 from app.database import get_db
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE, exc_status, sse_code_for_exception
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.character import Character
 from app.models.project import Project
@@ -22,6 +23,7 @@ from app.schemas.character import (
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.services.import_export_service import ImportExportService
 from app.services.relationship_service import relationship_display_name
 from app.services.relationship_service import (
@@ -290,8 +292,8 @@ async def get_character(
     character = result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
@@ -359,8 +361,8 @@ async def update_character(
     character = result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
@@ -399,11 +401,15 @@ async def update_character(
             career = career_result.scalar_one_or_none()
             
             if not career:
-                raise HTTPException(status_code=400, detail="主职业不存在或类型错误")
-            
+                raise ApiError(code="validation.main_career_invalid")
+
             # 验证阶段有效性
             if main_career_stage and main_career_stage > career.max_stage:
-                raise HTTPException(status_code=400, detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}")
+                raise ApiError(
+                    code="validation.career_stage_out_of_range",
+                    detail=f"阶段超出范围，该职业最大阶段为{career.max_stage}",
+                    params={"max_stage": career.max_stage},
+                )
             
             # 更新或创建CharacterCareer关联
             char_career_result = await db.execute(
@@ -609,8 +615,8 @@ async def delete_character(
     character = result.scalar_one_or_none()
     
     if not character:
-        raise HTTPException(status_code=404, detail="角色不存在")
-    
+        raise ApiError(code="not_found.character")
+
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(character.project_id, user_id, db)
@@ -812,7 +818,8 @@ async def create_character(
         
     except Exception as e:
         logger.error(f"手动创建角色失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"创建角色失败: {str(e)}")
+        detail = f"创建角色失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/generate-stream", summary="AI生成角色（流式）")
@@ -934,13 +941,16 @@ async def generate_character_stream(
             
             # 获取自定义提示词模板
             template = await PromptService.get_template("SINGLE_CHARACTER_GENERATION", user_id, db)
+            # 解析最终生成语言：用户偏好 > UI 语言 > zh（单角色生成无 per-gen 参数，todo 17）
+            generation_language = await resolve_user_generation_language(db, user_id)
             # 格式化提示词
             prompt = PromptService.format_prompt(
                 template,
                 project_context=project_context,
-                user_input=user_input
+                user_input=user_input,
+                content_language=generation_language
             )
-            
+
             yield await tracker.generating(0, max(3000, len(prompt) * 8), "调用AI服务生成角色...")
             logger.info(f"🎯 开始为项目 {request.project_id} 生成角色（SSE流式）")
             
@@ -989,14 +999,14 @@ async def generate_character_stream(
                         
             except Exception as ai_error:
                 logger.error(f"❌ AI服务调用异常：{str(ai_error)}")
-                yield await tracker.error(f"AI服务调用失败：{str(ai_error)}")
+                yield await tracker.error(f"AI服务调用失败：{str(ai_error)}", error_code="internal.ai_service_failed", params={"error": str(ai_error)})
                 return
             
             if not ai_response or not ai_response.strip():
                 logger.error(
                     "❌ AI服务返回空响应：未收到正文。若使用推理模型，思考内容不会写入角色 JSON，请检查模型是否输出了最终 JSON。"
                 )
-                yield await tracker.error("AI服务返回空响应")
+                yield await tracker.error("AI服务返回空响应", error_code="internal.ai_empty_response")
                 return
             
             yield await tracker.parsing("解析AI响应...", 0.5)
@@ -1009,7 +1019,7 @@ async def generate_character_stream(
             except json.JSONDecodeError as e:
                 logger.error(f"❌ 角色JSON解析失败: {e}")
                 logger.debug(f"   原始响应预览: {safe_preview(ai_response, 200)}")
-                yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}")
+                yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}", error_code="internal.ai_json_unparsable", params={"error": str(e)})
                 return
             
             yield await tracker.saving("创建角色记录...", 0.3)
@@ -1350,7 +1360,7 @@ async def generate_character_stream(
             
             logger.info(f"🎉 成功生成角色: {character.name}")
             
-            yield await tracker.complete("角色生成完成！")
+            yield await tracker.complete("角色生成完成！", code="progress.done")
             
             # 发送结果数据
             yield await tracker.result({
@@ -1364,12 +1374,13 @@ async def generate_character_stream(
             
             yield await tracker.done()
             
-        except HTTPException as he:
+        except (HTTPException, ApiError) as he:
             logger.error(f"HTTP异常: {he.detail}")
-            yield await tracker.error(he.detail, he.status_code)
+            error_code, error_params = sse_code_for_exception(he)
+            yield await tracker.error(he.detail, exc_status(he), error_code=error_code, params=error_params or None)
         except Exception as e:
             logger.error(f"生成角色失败: {str(e)}")
-            yield await tracker.error(f"生成角色失败: {str(e)}")
+            yield await tracker.error(f"生成角色失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
     
     return create_sse_response(generate())
 
@@ -1389,10 +1400,10 @@ async def export_characters(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
-    
+        raise ApiError(code="auth.unauthorized")
+
     if not export_request.character_ids:
-        raise HTTPException(status_code=400, detail="请至少选择一个角色/组织")
+        raise ApiError(code="validation.characters_selected_min_one")
     
     try:
         # 验证所有角色的权限
@@ -1403,7 +1414,11 @@ async def export_characters(
             character = result.scalar_one_or_none()
             
             if not character:
-                raise HTTPException(status_code=404, detail=f"角色不存在: {char_id}")
+                raise ApiError(
+                    code="not_found.character",
+                    detail=f"角色不存在: {char_id}",
+                    params={"character_id": char_id},
+                )
             
             # 验证项目权限
             await verify_project_access(character.project_id, user_id, db)
@@ -1431,11 +1446,12 @@ async def export_characters(
             }
         )
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"导出角色/组织失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        detail = f"导出失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/import", response_model=CharactersImportResult, summary="导入角色/组织")
@@ -1455,15 +1471,15 @@ async def import_characters(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
-    
+        raise ApiError(code="auth.unauthorized")
+
     # 验证项目权限
     await verify_project_access(project_id, user_id, db)
-    
+
     # 验证文件类型
     if not file.filename.endswith('.json'):
-        raise HTTPException(status_code=400, detail="只支持JSON格式文件")
-    
+        raise ApiError(code="validation.json_only", detail="只支持JSON格式文件")
+
     try:
         # 读取文件内容
         content = await file.read()
@@ -1482,10 +1498,15 @@ async def import_characters(
         return result
         
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"JSON格式错误: {str(e)}")
+        raise ApiError(
+            code="validation.import_json_invalid",
+            detail=f"JSON格式错误: {str(e)}",
+            params={"error": str(e)},
+        )
     except Exception as e:
         logger.error(f"导入角色/组织失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+        detail = f"导入失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/validate-import", summary="验证导入文件")
@@ -1503,11 +1524,11 @@ async def validate_import(
     """
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
-        raise HTTPException(status_code=401, detail="未登录")
-    
+        raise ApiError(code="auth.unauthorized")
+
     # 验证文件类型
     if not file.filename.endswith('.json'):
-        raise HTTPException(status_code=400, detail="只支持JSON格式文件")
+        raise ApiError(code="validation.json_only", detail="只支持JSON格式文件")
     
     try:
         # 读取文件内容
@@ -1531,4 +1552,5 @@ async def validate_import(
         }
     except Exception as e:
         logger.error(f"验证导入文件失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"验证失败: {str(e)}")
+        detail = f"验证失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

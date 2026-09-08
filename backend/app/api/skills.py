@@ -8,10 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.user_manager import User
 from app.api.settings import require_login
-from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger, get_skill_detail, create_skill_files, update_skill_files, delete_skill_files, refresh_skills_cache, _get_skill_body
+from app.services.skill_loader import get_all_skills_cached, get_skill_by_trigger, get_skill_detail, create_skill_files, update_skill_files, delete_skill_files, refresh_skills_cache, _get_skill_body, build_skill_system_prompt
 from app.services.ai_service import AIService, create_user_ai_service
 from app.utils.sse_response import SSEResponse, create_sse_response, wrap_stream_with_heartbeat, HEARTBEAT
 from app.logger import get_logger
@@ -111,11 +112,17 @@ async def skill_chat(
 
     if not skill:
         async def error_gen():
-            yield await SSEResponse.send_error(f"未找到 Skill: {request.skill_key}")
+            yield await SSEResponse.send_error(
+                error=f"未找到 Skill: {request.skill_key}",
+                code="not_found.skill", params={"skill_key": request.skill_key},
+                raw=f"未找到 Skill: {request.skill_key}",
+            )
         return create_sse_response(error_gen())
 
-    # 获取系统提示词（Skill 内容）
-    system_prompt = skill["content"]
+    # 获取系统提示词（Skill 内容 + 用户解析语言指令，i18n todo 18 追加式注入：
+    # 只约束输出语言，SKILL.md 正文不翻译/不改写；Skill 聊天无 per-generation
+    # override，链为 用户 content_language > UI 语言 > zh）
+    system_prompt = await build_skill_system_prompt(skill, db=db, user_id=user.user_id)
 
     # 构建完整提示词（将历史消息拼接到提示词中）
     history_text = ""
@@ -137,13 +144,21 @@ async def skill_chat(
     except Exception as e:
         logger.error(f"创建 AI 服务失败: {e}")
         async def error_gen():
-            yield await SSEResponse.send_error(f"AI 服务配置错误: {str(e)}")
+            yield await SSEResponse.send_error(
+                error=f"AI 服务配置错误: {str(e)}",
+                code="internal.ai_service_failed", params={"error": str(e)},
+                raw=f"AI 服务配置错误: {str(e)}",
+            )
         return create_sse_response(error_gen())
 
     # 流式生成
     async def generate():
         try:
-            yield await SSEResponse.send_progress(f"正在使用 {skill['template_name']}...", 10)
+            yield await SSEResponse.send_progress(
+                f"正在使用 {skill['template_name']}...", 10,
+                code="progress.skill_in_use", params={"template_name": skill["template_name"]},
+                raw=f"正在使用 {skill['template_name']}...",
+            )
 
             stream = ai_service.generate_text_stream(
                 prompt=full_prompt,
@@ -157,12 +172,16 @@ async def skill_chat(
                     continue
                 yield await SSEResponse.send_chunk(item)
 
-            yield await SSEResponse.send_progress("回复完成", 100, "success")
+            yield await SSEResponse.send_progress("回复完成", 100, "success", code="progress.done", raw="回复完成")
             yield await SSEResponse.send_done()
 
         except Exception as e:
             logger.error(f"Skill 聊天生成失败: {e}")
-            yield await SSEResponse.send_error(f"生成失败: {str(e)}")
+            yield await SSEResponse.send_error(
+                error=f"生成失败: {str(e)}",
+                code="internal.generation_failed", params={"error": str(e)},
+                raw=f"生成失败: {str(e)}",
+            )
 
     return create_sse_response(generate())
 
@@ -174,8 +193,11 @@ async def get_skill_detail_api(skill_key: str, user: User = Depends(require_logi
     """获取 Skill 详细信息（包括原始内容和 references）"""
     detail = get_skill_detail(skill_key)
     if not detail:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=f"未找到 Skill: {skill_key}")
+        raise ApiError(
+            code="not_found.skill",
+            detail=f"未找到 Skill: {skill_key}",
+            params={"skill_key": skill_key},
+        )
     
     return {
         "template_key": detail["template_key"],
@@ -206,12 +228,11 @@ async def create_skill(request: SkillCreateRequest, user: User = Depends(require
         )
         return {"success": True, "skill": result}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=400, raw=str(e))
     except Exception as e:
         logger.error(f"创建 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
+        detail = f"创建失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.put("/update/{skill_key:path}")
@@ -229,12 +250,11 @@ async def update_skill(skill_key: str, request: SkillUpdateRequest, user: User =
         )
         return {"success": True, "skill": result}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=404, raw=str(e))
     except Exception as e:
         logger.error(f"更新 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+        detail = f"更新失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.delete("/delete/{skill_key:path}")
@@ -244,12 +264,11 @@ async def delete_skill(skill_key: str, user: User = Depends(require_login)):
         delete_skill_files(skill_key)
         return {"success": True, "message": f"已删除 Skill: {skill_key}"}
     except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=str(e))
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=str(e), status=404, raw=str(e))
     except Exception as e:
         logger.error(f"删除 Skill 失败: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+        detail = f"删除失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/refresh-cache")

@@ -1,0 +1,115 @@
+{
+  "date": {
+    "daysAgo": "{{days}}天前",
+    "today": "今天",
+    "yesterday": "昨天"
+  },
+  "export": {
+    "includeCareers": "职业系统",
+    "includeGenerationHistory": "生成历史",
+    "includeGenerationHistoryTip": "包含生成历史记录，文件可能较大",
+    "includeMemories": "故事记忆",
+    "includeMemoriesTip": "包含故事记忆数据，文件可能较大",
+    "includePlotAnalysis": "剧情分析",
+    "includePlotAnalysisTip": "包含AI剧情分析数据",
+    "includeWritingStyles": "写作风格",
+    "optionsTitle": "导出选项",
+    "selectAll": "全选",
+    "selectProjects": "选择项目 ({{count}})"
+  },
+  "import": {
+    "desc": "选择之前导出的 JSON 格式项目文件",
+    "projectName": "项目名称：",
+    "selectFileBtn": "选择文件",
+    "validating": "验证文件中...",
+    "validFail": "✗ 文件验证失败",
+    "validOk": "✓ 文件验证通过"
+  },
+  "modal": {
+    "cancel": "取消",
+    "deleteContent": "删除项目将同时删除所有相关数据，此操作不可恢复。确定要删除吗？",
+    "deleteTitle": "确认删除",
+    "exportOk": "导出",
+    "exportOkCount": "导出 ({{count}})",
+    "exportTitle": "导出项目",
+    "importOk": "导入",
+    "importTitle": "导入项目",
+    "ok": "确定"
+  },
+  "sidebar": {
+    "apiSettings": "API 设置",
+    "bookImport": "拆书导入",
+    "bookshelf": "我的书架",
+    "createTools": "创作工具",
+    "mcpPlugins": "MCP 插件",
+    "promptManage": "提示词管理",
+    "systemSettings": "系统设置"
+  },
+  "stat": {
+    "careers": "职业: {{n}}",
+    "chapters": "章节: {{n}}",
+    "characterCareers": "职业关联: {{n}}",
+    "characters": "角色: {{n}}",
+    "error": "错误：",
+    "generationHistory": "生成历史: {{n}}",
+    "hasDefaultStyle": "含默认风格",
+    "hint": "提示：",
+    "organizations": "组织: {{n}}",
+    "outlines": "大纲: {{n}}",
+    "plotAnalysis": "剧情分析: {{n}}",
+    "relationships": "关系: {{n}}",
+    "statLabel": "数据统计：",
+    "storyMemories": "故事记忆: {{n}}",
+    "writingStyles": "写作风格: {{n}}"
+  },
+  "stats": {
+    "completed": "已完结",
+    "creating": "创作中",
+    "totalWords": "总字数",
+    "unitBook": "本",
+    "unitWord": "字"
+  },
+  "status": {
+    "completed": "已完结",
+    "planning": "规划",
+    "revising": "修订",
+    "writing": "创作"
+  },
+  "theme": {
+    "dark": "深色",
+    "light": "浅色",
+    "modeTitle": "主题模式：{{mode}}（点击切换）",
+    "system": "跟随系统",
+    "title": "主题模式"
+  },
+  "toast": {
+    "coverDownloadFailed": "下载封面失败",
+    "coverDownloading": "《{{title}}》封面已开始下载",
+    "coverFailed": "《{{title}}》封面生成失败",
+    "coverGenerated": "《{{title}}》封面生成成功",
+    "coverGenerating": "正在为《{{title}}》生成封面...",
+    "deleteFailed": "删除项目失败",
+    "deleteSuccess": "项目删除成功",
+    "exportDoneResult": "导出完成：成功 {{success}} 个，失败 {{fail}} 个",
+    "exportFailedRetry": "导出失败，请重试",
+    "exportSuccess": "项目 \"{{title}}\" 导出成功",
+    "exportSuccessCount": "成功导出 {{count}} 个项目",
+    "importFailed": "导入失败",
+    "importFailedRetry": "导入失败，请重试",
+    "importSuccess": "项目导入成功！{{message}}",
+    "selectAtLeastOne": "请至少选择一个项目",
+    "selectValidFile": "请选择有效的导入文件",
+    "validateFailed": "文件验证失败"
+  },
+  "unit": {
+    "words": "字"
+  },
+  "viewTitle": {
+    "apiSettings": "API 设置",
+    "bookImport": "拆书导入",
+    "bookshelf": "我的书架",
+    "mcp": "MCP 插件",
+    "promptTemplates": "提示词模板",
+    "systemSettings": "系统设置"
+  }
+}

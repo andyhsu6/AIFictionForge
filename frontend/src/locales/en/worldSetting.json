@@ -1,0 +1,89 @@
+{
+  "basics": {
+    "notSet": "Not set",
+    "novelDesc": "Synopsis",
+    "novelGenre": "Genre",
+    "novelName": "Novel Name",
+    "novelTheme": "Theme",
+    "perspective": "Narrative Perspective",
+    "targetWords": "Target Word Count",
+    "title": "Basic Information",
+    "wordsValue": "{{n}} words"
+  },
+  "buttons": {
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "editBasics": {
+    "descMax": "Synopsis cannot exceed 1000 characters",
+    "descPlaceholder": "Enter the synopsis (optional)",
+    "genreMax": "Genre cannot exceed 100 characters",
+    "genrePlaceholder": "Enter genres, e.g. Xuanhuan, Urban, Sci-Fi (optional)",
+    "nameMax": "Name cannot exceed 200 characters",
+    "namePlaceholder": "Enter the novel name",
+    "nameRequired": "Please enter the novel name",
+    "perspectivePlaceholder": "Select the narrative perspective (optional)",
+    "themeMax": "Theme cannot exceed 500 characters",
+    "themePlaceholder": "Enter the theme (optional)",
+    "title": "Edit Project Basics",
+    "updateFailed": "Update failed, please try again",
+    "updateSuccess": "Project basics updated",
+    "wordsNegative": "Target word count cannot be negative",
+    "wordsOutOfRange": "Target word count out of range",
+    "wordsPlaceholder": "Enter target word count (optional, max 2.1B words)",
+    "wordsUnit": "words"
+  },
+  "editWorld": {
+    "atmospherePlaceholder": "Describe the overall mood and tone of the story...",
+    "atmosphereRequired": "Please enter the atmosphere setting",
+    "locationPlaceholder": "Describe the geographic location and environment of the story...",
+    "locationRequired": "Please enter the location setting",
+    "rulesPlaceholder": "Describe the special rules and settings of this world...",
+    "rulesRequired": "Please enter the rules setting",
+    "timePlaceholder": "Describe the historical era of the story...",
+    "timeRequired": "Please enter the time setting",
+    "title": "Edit Worldview",
+    "updateFailed": "Update failed, please try again",
+    "updateSuccess": "Worldview updated"
+  },
+  "empty": {
+    "description": "No world setting information yet",
+    "hint": "World setting info is generated in the project creation wizard, used to build the novel's worldview background."
+  },
+  "page": {
+    "aiRegenerate": "AI Regenerate",
+    "editBasics": "Edit Basics",
+    "editWorld": "Edit Worldview",
+    "title": "World Setting"
+  },
+  "perspective": {
+    "firstPerson": "First Person",
+    "omniscient": "Omniscient",
+    "thirdPerson": "Third Person"
+  },
+  "preview": {
+    "cancel": "Cancel",
+    "okReplace": "Confirm Replace",
+    "title": "Preview Regenerated Worldview",
+    "warning": "Note: clicking \"Confirm Replace\" will overwrite the current worldview with the new content"
+  },
+  "regenerate": {
+    "cancelled": "Cancelled, original content kept",
+    "confirmCancel": "Cancel",
+    "confirmContent": "Regenerate the worldview with AI? This will replace the current worldview content.",
+    "confirmOk": "Confirm Regeneration",
+    "confirmTitle": "Confirm Regeneration",
+    "error": "Regeneration error, please try again",
+    "failed": "Regeneration failed, please try again",
+    "preparing": "Preparing worldview regeneration...",
+    "saveFailed": "Save failed, please try again",
+    "updated": "Worldview updated!"
+  },
+  "world": {
+    "atmosphere": "Atmosphere Setting",
+    "location": "Location Setting",
+    "rules": "Rules Setting",
+    "timePeriod": "Time Setting",
+    "title": "Novel Worldview"
+  }
+}

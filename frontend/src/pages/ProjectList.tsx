@@ -20,6 +20,7 @@ import PromptTemplates from './PromptTemplates';
 import BookImport from './BookImport';
 import BookshelfPage from './BookshelfPage';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
+import { useTranslation } from 'react-i18next';
 
 const { Text } = Typography;
 
@@ -57,6 +58,7 @@ export default function ProjectList() {
   const navigate = useNavigate();
   const location = useLocation();
   const { projects, loading } = useStore();
+  const { t } = useTranslation('projectList');
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [modal, contextHolder] = Modal.useModal();
@@ -160,10 +162,10 @@ export default function ProjectList() {
   const handleDelete = (id: string) => {
     const isMobile = window.innerWidth <= 768;
     modal.confirm({
-      title: '确认删除',
-      content: '删除项目将同时删除所有相关数据，此操作不可恢复。确定要删除吗？',
-      okText: '确定',
-      cancelText: '取消',
+      title: t('modal.deleteTitle'),
+      content: t('modal.deleteContent'),
+      okText: t('modal.ok'),
+      cancelText: t('modal.cancel'),
       okType: 'danger',
       centered: true,
       ...(isMobile && {
@@ -172,9 +174,9 @@ export default function ProjectList() {
       onOk: async () => {
         try {
           await deleteProject(id);
-          message.success('项目删除成功');
+          message.success(t('toast.deleteSuccess'));
         } catch {
-          message.error('删除项目失败');
+          message.error(t('toast.deleteFailed'));
         }
       },
     });
@@ -190,32 +192,32 @@ export default function ProjectList() {
 
   const handleGenerateCover = async (project: Project, overwrite: boolean = true) => {
     try {
-      message.loading({ content: `正在为《${project.title}》生成封面...`, key: `cover-${project.id}` });
+      message.loading({ content: t('toast.coverGenerating', { title: project.title }), key: `cover-${project.id}` });
       await projectApi.generateCover(project.id, overwrite);
-      message.success({ content: `《${project.title}》封面生成成功`, key: `cover-${project.id}` });
+      message.success({ content: t('toast.coverGenerated', { title: project.title }), key: `cover-${project.id}` });
       await refreshProjects();
     } catch (error) {
       console.error('生成封面失败:', error);
-      message.error({ content: `《${project.title}》封面生成失败`, key: `cover-${project.id}` });
+      message.error({ content: t('toast.coverFailed', { title: project.title }), key: `cover-${project.id}` });
     }
   };
 
   const handleDownloadCover = async (project: Project) => {
     try {
       await projectApi.downloadCover(project.id, `${project.title}-cover.png`);
-      message.success(`《${project.title}》封面已开始下载`);
+      message.success(t('toast.coverDownloading', { title: project.title }));
     } catch (error) {
       console.error('下载封面失败:', error);
-      message.error('下载封面失败');
+      message.error(t('toast.coverDownloadFailed'));
     }
   };
 
   const getStatusTag = (status: string) => {
     const statusConfig: Record<string, { color: string; text: string; icon: ReactNode }> = {
-      planning: { color: 'blue', text: '规划', icon: <CalendarOutlined /> },
-      writing: { color: 'green', text: '创作', icon: <EditOutlined /> },
-      revising: { color: 'orange', text: '修订', icon: <FileTextOutlined /> },
-      completed: { color: 'purple', text: '已完结', icon: <TrophyOutlined /> },
+      planning: { color: 'blue', text: t('status.planning'), icon: <CalendarOutlined /> },
+      writing: { color: 'green', text: t('status.writing'), icon: <EditOutlined /> },
+      revising: { color: 'orange', text: t('status.revising'), icon: <FileTextOutlined /> },
+      completed: { color: 'purple', text: t('status.completed'), icon: <TrophyOutlined /> },
     };
     const config = statusConfig[status] || statusConfig.planning;
     return (
@@ -251,9 +253,9 @@ export default function ProjectList() {
     const diff = now.getTime() - date.getTime();
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
 
-    if (days === 0) return '今天';
-    if (days === 1) return '昨天';
-    if (days < 7) return `${days}天前`;
+    if (days === 0) return t('date.today');
+    if (days === 1) return t('date.yesterday');
+    if (days < 7) return t('date.daysAgo', { days });
     return date.toLocaleDateString('zh-CN');
   };
 
@@ -273,11 +275,11 @@ export default function ProjectList() {
       const result = await projectApi.validateImportFile(file);
       setValidationResult(result);
       if (!result.valid) {
-        message.error('文件验证失败');
+        message.error(t('toast.validateFailed'));
       }
     } catch (error) {
       console.error('验证失败:', error);
-      message.error('文件验证失败');
+      message.error(t('toast.validateFailed'));
     } finally {
       setValidating(false);
     }
@@ -286,14 +288,14 @@ export default function ProjectList() {
 
   const handleImport = async () => {
     if (!selectedFile || !validationResult?.valid) {
-      message.warning('请选择有效的导入文件');
+      message.warning(t('toast.selectValidFile'));
       return;
     }
     try {
       setImporting(true);
       const result = await projectApi.importProject(selectedFile);
       if (result.success) {
-        message.success(`项目导入成功！${result.message}`);
+        message.success(t('toast.importSuccess', { message: result.message }));
         setImportModalVisible(false);
         setSelectedFile(null);
         setValidationResult(null);
@@ -302,11 +304,11 @@ export default function ProjectList() {
           navigate(`/project/${result.project_id}`);
         }
       } else {
-        message.error(result.message || '导入失败');
+        message.error(result.message || t('toast.importFailed'));
       }
     } catch (error) {
       console.error('导入失败:', error);
-      message.error('导入失败，请重试');
+      message.error(t('toast.importFailedRetry'));
     } finally {
       setImporting(false);
     }
@@ -348,7 +350,7 @@ export default function ProjectList() {
 
   const handleExport = async () => {
     if (selectedProjectIds.length === 0) {
-      message.warning('请至少选择一个项目');
+      message.warning(t('toast.selectAtLeastOne'));
       return;
     }
     try {
@@ -363,7 +365,7 @@ export default function ProjectList() {
           include_memories: exportOptions.includeMemories,
           include_plot_analysis: exportOptions.includePlotAnalysis
         });
-        message.success(`项目 "${project?.title}" 导出成功`);
+        message.success(t('toast.exportSuccess', { title: project?.title ?? '' }));
       } else {
         let successCount = 0;
         let failCount = 0;
@@ -384,15 +386,15 @@ export default function ProjectList() {
           }
         }
         if (failCount === 0) {
-          message.success(`成功导出 ${successCount} 个项目`);
+          message.success(t('toast.exportSuccessCount', { count: successCount }));
         } else {
-          message.warning(`导出完成：成功 ${successCount} 个，失败 ${failCount} 个`);
+          message.warning(t('toast.exportDoneResult', { success: successCount, fail: failCount }));
         }
       }
       handleCloseExportModal();
     } catch (error) {
       console.error('导出失败:', error);
-      message.error('导出失败，请重试');
+      message.error(t('toast.exportFailedRetry'));
     } finally {
       setExporting(false);
     }
@@ -405,16 +407,16 @@ export default function ProjectList() {
   const desktopSiderWidth = collapsed ? collapsedSiderWidth : expandedSiderWidth;
 
   const currentViewTitle = activeView === 'projects'
-    ? '我的书架'
+    ? t('viewTitle.bookshelf')
     : activeView === 'prompts'
-      ? '提示词模板'
+      ? t('viewTitle.promptTemplates')
       : activeView === 'book-import'
-        ? '拆书导入'
+        ? t('viewTitle.bookImport')
         : activeView === 'mcp'
-          ? 'MCP 插件'
+          ? t('viewTitle.mcp')
           : activeView === 'system-settings'
-            ? '系统设置'
-            : 'API 设置';
+            ? t('viewTitle.systemSettings')
+            : t('viewTitle.apiSettings');
 
   const isAdmin = !!currentUser?.is_admin;
 
@@ -422,42 +424,42 @@ export default function ProjectList() {
     {
       key: 'projects',
       icon: <BookOutlined />,
-      label: '我的书架',
+      label: t('sidebar.bookshelf'),
     },
     {
       type: 'group' as const,
-      label: '创作工具',
+      label: t('sidebar.createTools'),
       children: [
         {
           key: 'book-import',
           icon: <UploadOutlined />,
-          label: '拆书导入',
+          label: t('sidebar.bookImport'),
         },
         {
           key: 'mcp',
           icon: <ApiOutlined />,
-          label: 'MCP 插件',
+          label: t('sidebar.mcpPlugins'),
         },
         {
           key: 'prompts',
           icon: <FileSearchOutlined />,
-          label: '提示词管理',
+          label: t('sidebar.promptManage'),
         },
       ],
     },
     {
       type: 'group' as const,
-      label: '系统设置',
+      label: t('sidebar.systemSettings'),
       children: [
         {
           key: 'settings',
           icon: <SettingOutlined />,
-          label: 'API 设置',
+          label: t('sidebar.apiSettings'),
         },
         ...(isAdmin ? [{
           key: 'system-settings',
           icon: <MailOutlined />,
-          label: '系统设置',
+          label: t('sidebar.systemSettings'),
         }] : []),
       ],
     },
@@ -467,32 +469,32 @@ export default function ProjectList() {
     {
       key: 'projects',
       icon: <BookOutlined />,
-      label: '我的书架',
+      label: t('sidebar.bookshelf'),
     },
     {
       key: 'book-import',
       icon: <UploadOutlined />,
-      label: '拆书导入',
+      label: t('sidebar.bookImport'),
     },
     {
       key: 'mcp',
       icon: <ApiOutlined />,
-      label: 'MCP 插件',
+      label: t('sidebar.mcpPlugins'),
     },
     {
       key: 'prompts',
       icon: <FileSearchOutlined />,
-      label: '提示词管理',
+      label: t('sidebar.promptManage'),
     },
     {
       key: 'settings',
       icon: <SettingOutlined />,
-      label: 'API 设置',
+      label: t('sidebar.apiSettings'),
     },
     ...(isAdmin ? [{
       key: 'system-settings',
       icon: <MailOutlined />,
-      label: '系统设置',
+      label: t('sidebar.systemSettings'),
     }] : []),
   ];
 
@@ -619,7 +621,7 @@ export default function ProjectList() {
                   type="text"
                   icon={collapsedThemeIcon}
                   onClick={cycleThemeMode}
-                  title={`主题模式：${mode === 'light' ? '浅色' : mode === 'dark' ? '深色' : '跟随系统'}（点击切换）`}
+                  title={t('theme.modeTitle', { mode: mode === 'light' ? t('theme.light') : mode === 'dark' ? t('theme.dark') : t('theme.system') })}
                   style={{
                     width: 40,
                     height: 40,
@@ -634,8 +636,8 @@ export default function ProjectList() {
             ) : (
               <Space direction="vertical" style={{ width: '100%' }} size={12}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary }}>
-                  <span>主题模式</span>
-                  <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+                  <span>{t('theme.title')}</span>
+                  <span>{resolvedMode === 'dark' ? t('theme.dark') : t('theme.light')}</span>
                 </div>
                 <ThemeSwitch block />
                 <UserMenu />
@@ -721,9 +723,9 @@ export default function ProjectList() {
                   {projects.length > 0 && (
                     <div style={{ display: 'flex', gap: '16px' }}>
                       {[
-                        { label: '创作中', value: activeProjects, unit: '本' },
-                        { label: '已完结', value: completedProjects, unit: '本' },
-                        { label: '总字数', value: totalWords, unit: '字' },
+                        { type: 'writing', label: t('stats.creating'), value: activeProjects, unit: t('stats.unitBook') },
+                        { type: 'completed', label: t('stats.completed'), value: completedProjects, unit: t('stats.unitBook') },
+                        { type: 'words', label: t('stats.totalWords'), value: totalWords, unit: t('stats.unitWord') },
                       ].map((item, index) => (
                         <div
                           key={index}
@@ -755,7 +757,7 @@ export default function ProjectList() {
                             {item.label}
                           </span>
                           <span style={{ fontSize: '15px', fontWeight: '600', color: token.colorWhite, lineHeight: 1, fontFamily: 'Monaco, monospace' }}>
-                            {item.label === '总字数' ? formatWordCount(item.value) : item.value}
+                            {item.type === 'words' ? formatWordCount(item.value) : item.value}
                             {item.unit && <span style={{ fontSize: '10px', marginLeft: '2px', opacity: 0.8 }}>{item.unit}</span>}
                           </span>
                         </div>
@@ -812,8 +814,8 @@ export default function ProjectList() {
           <div style={{ padding: 16, borderTop: `1px solid ${token.colorBorderSecondary}` }}>
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: token.colorTextTertiary }}>
-                <span>主题模式</span>
-                <span>{resolvedMode === 'dark' ? '深色' : '浅色'}</span>
+                <span>{t('theme.title')}</span>
+                <span>{resolvedMode === 'dark' ? t('theme.dark') : t('theme.light')}</span>
               </div>
               <ThemeSwitch block />
               <UserMenu showFullInfo />
@@ -889,13 +891,13 @@ export default function ProjectList() {
 
       {/* 导入项目对话框 */}
       <Modal
-        title="导入项目"
+        title={t('modal.importTitle')}
         open={importModalVisible}
         onOk={handleImport}
         onCancel={handleCloseImportModal}
         confirmLoading={importing}
-        okText="导入"
-        cancelText="取消"
+        okText={t('modal.importOk')}
+        cancelText={t('modal.cancel')}
         width={isMobile ? '90%' : 500}
         centered
         okButtonProps={{ disabled: !validationResult?.valid }}
@@ -903,7 +905,7 @@ export default function ProjectList() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <div>
             <p style={{ marginBottom: '12px', color: token.colorTextSecondary }}>
-              选择之前导出的 JSON 格式项目文件
+              {t('import.desc')}
             </p>
             <Upload
               accept=".json"
@@ -916,13 +918,13 @@ export default function ProjectList() {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               fileList={selectedFile ? [{ uid: '-1', name: selectedFile.name, status: 'done' }] as any : []}
             >
-              <Button icon={<UploadOutlined />} block>选择文件</Button>
+              <Button icon={<UploadOutlined />} block>{t('import.selectFileBtn')}</Button>
             </Upload>
           </div>
 
           {validating && (
             <div style={{ textAlign: 'center', padding: '20px' }}>
-              <Spin tip="验证文件中..." />
+              <Spin tip={t('import.validating')} />
             </div>
           )}
 
@@ -931,37 +933,37 @@ export default function ProjectList() {
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 <div>
                   <Text strong style={{ color: validationResult.valid ? token.colorSuccess : token.colorError }}>
-                    {validationResult.valid ? '✓ 文件验证通过' : '✗ 文件验证失败'}
+                    {validationResult.valid ? t('import.validOk') : t('import.validFail')}
                   </Text>
                 </div>
                 {validationResult.project_name && (
                   <div>
-                    <Text type="secondary">项目名称：</Text>
+                    <Text type="secondary">{t('import.projectName')}</Text>
                     <Text strong>{validationResult.project_name}</Text>
                   </div>
                 )}
                 {validationResult.statistics && (
                    <div style={{ marginTop: 8 }}>
-                      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>数据统计：</Text>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>{t('stat.statLabel')}</Text>
                       <Space size={[6, 6]} wrap>
-                        {validationResult.statistics.chapters > 0 && <Tag color="blue">章节: {validationResult.statistics.chapters}</Tag>}
-                        {validationResult.statistics.characters > 0 && <Tag color="green">角色: {validationResult.statistics.characters}</Tag>}
-                        {validationResult.statistics.outlines > 0 && <Tag color="cyan">大纲: {validationResult.statistics.outlines}</Tag>}
-                        {validationResult.statistics.relationships > 0 && <Tag color="purple">关系: {validationResult.statistics.relationships}</Tag>}
-                        {validationResult.statistics.organizations > 0 && <Tag color="orange">组织: {validationResult.statistics.organizations}</Tag>}
-                        {validationResult.statistics.careers > 0 && <Tag color="magenta">职业: {validationResult.statistics.careers}</Tag>}
-                        {validationResult.statistics.character_careers > 0 && <Tag color="geekblue">职业关联: {validationResult.statistics.character_careers}</Tag>}
-                        {validationResult.statistics.writing_styles > 0 && <Tag color="lime">写作风格: {validationResult.statistics.writing_styles}</Tag>}
-                        {validationResult.statistics.story_memories > 0 && <Tag color="gold">故事记忆: {validationResult.statistics.story_memories}</Tag>}
-                        {validationResult.statistics.plot_analysis > 0 && <Tag color="volcano">剧情分析: {validationResult.statistics.plot_analysis}</Tag>}
-                        {validationResult.statistics.generation_history > 0 && <Tag>生成历史: {validationResult.statistics.generation_history}</Tag>}
-                        {validationResult.statistics.has_default_style && <Tag color="success">含默认风格</Tag>}
+                        {validationResult.statistics.chapters > 0 && <Tag color="blue">{t('stat.chapters', { n: validationResult.statistics.chapters })}</Tag>}
+                        {validationResult.statistics.characters > 0 && <Tag color="green">{t('stat.characters', { n: validationResult.statistics.characters })}</Tag>}
+                        {validationResult.statistics.outlines > 0 && <Tag color="cyan">{t('stat.outlines', { n: validationResult.statistics.outlines })}</Tag>}
+                        {validationResult.statistics.relationships > 0 && <Tag color="purple">{t('stat.relationships', { n: validationResult.statistics.relationships })}</Tag>}
+                        {validationResult.statistics.organizations > 0 && <Tag color="orange">{t('stat.organizations', { n: validationResult.statistics.organizations })}</Tag>}
+                        {validationResult.statistics.careers > 0 && <Tag color="magenta">{t('stat.careers', { n: validationResult.statistics.careers })}</Tag>}
+                        {validationResult.statistics.character_careers > 0 && <Tag color="geekblue">{t('stat.characterCareers', { n: validationResult.statistics.character_careers })}</Tag>}
+                        {validationResult.statistics.writing_styles > 0 && <Tag color="lime">{t('stat.writingStyles', { n: validationResult.statistics.writing_styles })}</Tag>}
+                        {validationResult.statistics.story_memories > 0 && <Tag color="gold">{t('stat.storyMemories', { n: validationResult.statistics.story_memories })}</Tag>}
+                        {validationResult.statistics.plot_analysis > 0 && <Tag color="volcano">{t('stat.plotAnalysis', { n: validationResult.statistics.plot_analysis })}</Tag>}
+                        {validationResult.statistics.generation_history > 0 && <Tag>{t('stat.generationHistory', { n: validationResult.statistics.generation_history })}</Tag>}
+                        {validationResult.statistics.has_default_style && <Tag color="success">{t('stat.hasDefaultStyle')}</Tag>}
                       </Space>
                    </div>
                 )}
                 {validationResult.warnings?.length > 0 && (
                    <div style={{ marginTop: 8 }}>
-                     <Text type="warning" strong style={{ fontSize: 12 }}>提示：</Text>
+                     <Text type="warning" strong style={{ fontSize: 12 }}>{t('stat.hint')}</Text>
                      <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: token.colorWarning, fontSize: 12 }}>
                        {validationResult.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
                      </ul>
@@ -969,7 +971,7 @@ export default function ProjectList() {
                 )}
                 {validationResult.errors?.length > 0 && (
                    <div>
-                     <Text type="danger" strong>错误：</Text>
+                     <Text type="danger" strong>{t('stat.error')}</Text>
                      <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: token.colorError, fontSize: 13 }}>
                        {validationResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}
                      </ul>
@@ -983,13 +985,13 @@ export default function ProjectList() {
 
       {/* 导出项目对话框 */}
       <Modal
-        title="导出项目"
+        title={t('modal.exportTitle')}
         open={exportModalVisible}
         onOk={handleExport}
         onCancel={handleCloseExportModal}
         confirmLoading={exporting}
-        okText={selectedProjectIds.length > 0 ? `导出 (${selectedProjectIds.length})` : '导出'}
-        cancelText="取消"
+        okText={selectedProjectIds.length > 0 ? t('modal.exportOkCount', { count: selectedProjectIds.length }) : t('modal.exportOk')}
+        cancelText={t('modal.cancel')}
         width={isMobile ? '90%' : 700}
         centered
         okButtonProps={{ disabled: selectedProjectIds.length === 0 }}
@@ -997,18 +999,18 @@ export default function ProjectList() {
          <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Card size="small" style={{ background: token.colorFillTertiary }}>
               <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <Text strong>导出选项</Text>
+                <Text strong>{t('export.optionsTitle')}</Text>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
-                  <Checkbox checked={exportOptions.includeWritingStyles} onChange={e => setExportOptions(prev => ({...prev, includeWritingStyles: e.target.checked}))}>写作风格</Checkbox>
-                  <Checkbox checked={exportOptions.includeCareers} onChange={e => setExportOptions(prev => ({...prev, includeCareers: e.target.checked}))}>职业系统</Checkbox>
-                  <Tooltip title="包含生成历史记录，文件可能较大">
-                    <Checkbox checked={exportOptions.includeGenerationHistory} onChange={e => setExportOptions(prev => ({...prev, includeGenerationHistory: e.target.checked}))}>生成历史</Checkbox>
+                  <Checkbox checked={exportOptions.includeWritingStyles} onChange={e => setExportOptions(prev => ({...prev, includeWritingStyles: e.target.checked}))}>{t('export.includeWritingStyles')}</Checkbox>
+                  <Checkbox checked={exportOptions.includeCareers} onChange={e => setExportOptions(prev => ({...prev, includeCareers: e.target.checked}))}>{t('export.includeCareers')}</Checkbox>
+                  <Tooltip title={t('export.includeGenerationHistoryTip')}>
+                    <Checkbox checked={exportOptions.includeGenerationHistory} onChange={e => setExportOptions(prev => ({...prev, includeGenerationHistory: e.target.checked}))}>{t('export.includeGenerationHistory')}</Checkbox>
                   </Tooltip>
-                  <Tooltip title="包含故事记忆数据，文件可能较大">
-                    <Checkbox checked={exportOptions.includeMemories} onChange={e => setExportOptions(prev => ({...prev, includeMemories: e.target.checked}))}>故事记忆</Checkbox>
+                  <Tooltip title={t('export.includeMemoriesTip')}>
+                    <Checkbox checked={exportOptions.includeMemories} onChange={e => setExportOptions(prev => ({...prev, includeMemories: e.target.checked}))}>{t('export.includeMemories')}</Checkbox>
                   </Tooltip>
-                  <Tooltip title="包含AI剧情分析数据">
-                    <Checkbox checked={exportOptions.includePlotAnalysis} onChange={e => setExportOptions(prev => ({...prev, includePlotAnalysis: e.target.checked}))}>剧情分析</Checkbox>
+                  <Tooltip title={t('export.includePlotAnalysisTip')}>
+                    <Checkbox checked={exportOptions.includePlotAnalysis} onChange={e => setExportOptions(prev => ({...prev, includePlotAnalysis: e.target.checked}))}>{t('export.includePlotAnalysis')}</Checkbox>
                   </Tooltip>
                 </div>
               </Space>
@@ -1016,13 +1018,13 @@ export default function ProjectList() {
 
             <div>
                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <Text>选择项目 ({exportableProjects.length})</Text>
+                  <Text>{t('export.selectProjects', { count: exportableProjects.length })}</Text>
                   <Checkbox 
                     checked={selectedProjectIds.length === exportableProjects.length && exportableProjects.length > 0}
                     indeterminate={selectedProjectIds.length > 0 && selectedProjectIds.length < exportableProjects.length}
                     onChange={handleToggleAll}
                   >
-                    全选
+                    {t('export.selectAll')}
                   </Checkbox>
                </div>
                <div style={{ maxHeight: 300, overflowY: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: 8 }}>
@@ -1044,7 +1046,7 @@ export default function ProjectList() {
                         <Checkbox checked={selectedProjectIds.includes(p.id)} />
                         <div style={{ flex: 1 }}>
                            <div>{p.title}</div>
-                           <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{formatWordCount(p.current_words || 0)} 字 · {getStatusTag(getDisplayStatus(p.status, getProgress(p.current_words || 0, p.target_words || 0)))}</div>
+                           <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{formatWordCount(p.current_words || 0)} {t('unit.words')} · {getStatusTag(getDisplayStatus(p.status, getProgress(p.current_words || 0, p.target_words || 0)))}</div>
                         </div>
                       </div>
                     ))}

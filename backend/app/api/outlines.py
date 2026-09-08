@@ -6,6 +6,7 @@ from typing import List, AsyncGenerator, Dict, Any
 import json
 
 from app.database import get_db
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.api.common import verify_project_access
 from app.models.outline import Outline
 from app.models.project import Project
@@ -29,6 +30,7 @@ from app.schemas.outline import (
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.language_resolver import resolve_user_generation_language
 from app.services.memory_service import memory_service
 from app.services.plot_expansion_service import PlotExpansionService
 from app.services.foreshadow_service import foreshadow_service
@@ -163,7 +165,7 @@ async def get_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -186,7 +188,7 @@ async def update_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -274,7 +276,7 @@ async def delete_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -1062,7 +1064,7 @@ async def new_outline_generator(
         )
         project = result.scalar_one_or_none()
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在", 404, error_code="not_found.project")
             return
         
         yield await tracker.loading(f"准备生成{chapter_count}章大纲...", 0.6)
@@ -1082,6 +1084,10 @@ async def new_outline_generator(
         
         # 使用提示词模板
         yield await tracker.preparing("准备AI提示词...")
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id_for_mcp, data.get("content_language")
+        )
         template = await PromptService.get_template("OUTLINE_CREATE", user_id_for_mcp, db)
         prompt = PromptService.format_prompt(
             template,
@@ -1096,7 +1102,8 @@ async def new_outline_generator(
             rules=project.world_rules or "未设定",
             characters_info=characters_info or "暂无角色信息",
             requirements=data.get("requirements") or "",
-            mcp_references=""
+            mcp_references="",
+            content_language=generation_language
         )
         logger.debug(f"大纲生成提示词完成: prompt_length={len(prompt)}")
         # 添加调试日志
@@ -1163,7 +1170,7 @@ async def new_outline_generator(
                     raise e
                 
                 logger.warning(f"⚠️ JSON解析失败（第{retry_count}次），正在重试...")
-                yield await tracker.retry(retry_count, max_retries, "JSON解析失败")
+                yield await tracker.retry(retry_count, max_retries, "JSON解析失败", code="progress.retry_json_parse")
                 
                 # 重试时重置生成进度
                 tracker.reset_generating_progress()
@@ -1375,7 +1382,7 @@ async def new_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}")
+        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
 
 
 async def continue_outline_generator(
@@ -1404,7 +1411,7 @@ async def continue_outline_generator(
         )
         project = result.scalar_one_or_none()
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在", 404, error_code="not_found.project")
             return
         
         # 获取现有大纲
@@ -1417,7 +1424,7 @@ async def continue_outline_generator(
         existing_outlines = existing_result.scalars().all()
         
         if not existing_outlines:
-            yield await tracker.error("续写模式需要已有大纲，当前项目没有大纲", 400)
+            yield await tracker.error("续写模式需要已有大纲，当前项目没有大纲", 400, error_code="validation.outline_continue_requires_existing")
             return
         
         current_chapter_count = len(existing_outlines)
@@ -1532,6 +1539,10 @@ async def continue_outline_generator(
                 logger.warning(f"⚠️ 获取大纲续写伏笔提醒失败: {str(e)}")
 
             # 使用标准续写提示词模板（简化版）
+            # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+            generation_language = await resolve_user_generation_language(
+                db, user_id, data.get("content_language")
+            )
             template = await PromptService.get_template("OUTLINE_CONTINUE", user_id, db)
             prompt = PromptService.format_prompt(
                 template,
@@ -1557,7 +1568,8 @@ async def continue_outline_generator(
                 plot_stage_instruction=stage_instruction,
                 story_direction=data.get("story_direction", "自然延续"),
                 requirements=data.get("requirements", ""),
-                mcp_references=""
+                mcp_references="",
+                content_language=generation_language
             )
             logger.debug(f"续写提示词完成: batch={batch_num + 1}, prompt_length={len(prompt)}")
             # 调用AI生成当前批次
@@ -1623,7 +1635,10 @@ async def continue_outline_generator(
                         raise e
                     
                     logger.warning(f"⚠️ 第{batch_num + 1}批JSON解析失败（第{retry_count}次），正在重试...")
-                    yield await tracker.retry(retry_count, max_retries, f"第{str(batch_num + 1)}批解析失败")
+                    yield await tracker.retry(
+                        retry_count, max_retries, f"第{str(batch_num + 1)}批解析失败",
+                        code="progress.outline_batch_parse_failed", params={"batch_num": batch_num + 1},
+                    )
                     
                     # 重试时重置生成进度
                     tracker.reset_generating_progress()
@@ -1775,7 +1790,7 @@ async def continue_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲续写事务已回滚（异常）")
-        yield await tracker.error(f"续写失败: {str(e)}")
+        yield await tracker.error(f"续写失败: {str(e)}", error_code="internal.outline_continue_failed", params={"error": str(e)})
 
 
 @router.post("/generate", summary="AI生成/续写大纲(后台任务)")
@@ -1816,7 +1831,7 @@ async def generate_outline_task(
     data["mode"] = mode
 
     if mode == "continue" and not existing_outlines:
-        raise HTTPException(status_code=400, detail="续写模式需要已有大纲")
+        raise ApiError(code="validation.outline_continue_requires_existing")
 
     # 创建后台任务
     task_type = "outline_new" if mode == "new" else "outline_continue"
@@ -1881,7 +1896,7 @@ async def _run_new_outline_bg(
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     await tracker.loading(f"准备生成{chapter_count}章大纲...", 0.6)
@@ -1894,6 +1909,10 @@ async def _run_new_outline_bg(
         user_ai_service.db_session = db
 
     await tracker.preparing("准备AI提示词...")
+    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+    generation_language = await resolve_user_generation_language(
+        db, user_id_for_mcp, data.get("content_language")
+    )
     template = await PromptService.get_template("OUTLINE_CREATE", user_id_for_mcp, db)
     prompt = PromptService.format_prompt(
         template,
@@ -1908,7 +1927,8 @@ async def _run_new_outline_bg(
         rules=project.world_rules or "未设定",
         characters_info=characters_info or "暂无角色信息",
         requirements=data.get("requirements") or "",
-        mcp_references=""
+        mcp_references="",
+        content_language=generation_language
     )
 
     model_param = data.get("model")
@@ -1927,7 +1947,7 @@ async def _run_new_outline_bg(
         accumulated_text += chunk
         if chunk_count % 10 == 0:
             if await tracker.check_cancelled():
-                await tracker.error("任务已取消")
+                await tracker.error("任务已取消", error_code="task.cancelled")
                 return
             await tracker.generating(
                 current_chars=len(accumulated_text),
@@ -1954,7 +1974,7 @@ async def _run_new_outline_bg(
             retry_count += 1
             if retry_count > max_retries:
                 raise
-            await tracker.retry(retry_count, max_retries, "JSON解析失败")
+            await tracker.retry(retry_count, max_retries, "JSON解析失败", code="progress.retry_json_parse")
             tracker.reset_generating_progress()
             accumulated_text = ""
             retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
@@ -2034,7 +2054,10 @@ async def _run_new_outline_bg(
         bg_task.task_result = result_data
         await db.commit()
 
-    await tracker.complete(f"成功生成{len(outlines)}章大纲")
+    await tracker.complete(
+        f"成功生成{len(outlines)}章大纲",
+        code="progress.outline_done", params={"outline_count": len(outlines)},
+    )
     logger.info(f"✅ 后台大纲生成完成: {len(outlines)} 章")
 
 
@@ -2053,7 +2076,7 @@ async def _run_continue_outline_bg(
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
-        await tracker.error("项目不存在")
+        await tracker.error("项目不存在", error_code="not_found.project")
         return
 
     existing_result = await db.execute(
@@ -2061,7 +2084,7 @@ async def _run_continue_outline_bg(
     )
     existing_outlines = existing_result.scalars().all()
     if not existing_outlines:
-        await tracker.error("续写模式需要已有大纲")
+        await tracker.error("续写模式需要已有大纲", error_code="validation.outline_continue_requires_existing")
         return
 
     last_chapter_number = existing_outlines[-1].order_index
@@ -2083,7 +2106,7 @@ async def _run_continue_outline_bg(
 
     for batch_num in range(total_batches):
         if await tracker.check_cancelled():
-            await tracker.error("任务已取消")
+            await tracker.error("任务已取消", error_code="task.cancelled")
             return
 
         remaining = total_chapters - len(all_new_outlines)
@@ -2122,6 +2145,10 @@ async def _run_continue_outline_bg(
         except Exception:
             pass
 
+        # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
+        generation_language = await resolve_user_generation_language(
+            db, user_id, data.get("content_language")
+        )
         template = await PromptService.get_template("OUTLINE_CONTINUE", user_id, db)
         prompt = PromptService.format_prompt(
             template,
@@ -2142,7 +2169,8 @@ async def _run_continue_outline_bg(
             plot_stage_instruction=stage_instruction,
             story_direction=data.get("story_direction", "自然延续"),
             requirements=data.get("requirements", ""),
-            mcp_references=""
+            mcp_references="",
+            content_language=generation_language
         )
 
         accumulated_text = ""
@@ -2181,7 +2209,7 @@ async def _run_continue_outline_bg(
                 retry_count += 1
                 if retry_count > max_retries:
                     raise
-                await tracker.retry(retry_count, max_retries, "JSON解析失败")
+                await tracker.retry(retry_count, max_retries, "JSON解析失败", code="progress.retry_json_parse")
                 tracker.reset_generating_progress()
                 accumulated_text = ""
                 retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
@@ -2234,7 +2262,10 @@ async def _run_continue_outline_bg(
         bg_task.task_result = result_data
         await db.commit()
 
-    await tracker.complete(f"成功续写{len(all_new_outlines)}章大纲")
+    await tracker.complete(
+        f"成功续写{len(all_new_outlines)}章大纲",
+        code="progress.outline_continue_done", params={"outline_count": len(all_new_outlines)},
+    )
     logger.info(f"✅ 后台大纲续写完成: {len(all_new_outlines)} 章")
 
 
@@ -2295,15 +2326,16 @@ async def generate_outline_stream(
         return create_sse_response(new_outline_generator(data, db, user_ai_service))
     elif mode == "continue":
         if not existing_outlines:
-            raise HTTPException(
-                status_code=400,
-                detail="续写模式需要已有大纲，当前项目没有大纲"
+            raise ApiError(
+                code="validation.outline_continue_requires_existing",
+                detail="续写模式需要已有大纲，当前项目没有大纲",
             )
         return create_sse_response(continue_outline_generator(data, db, user_ai_service, user_id))
     else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的模式: {mode}"
+        raise ApiError(
+            code="validation.outline_mode_unsupported",
+            detail=f"不支持的模式: {mode}",
+            params={"mode": mode},
         )
 
 
@@ -2335,7 +2367,7 @@ async def expand_outline_generator(
         outline = result.scalar_one_or_none()
         
         if not outline:
-            yield await tracker.error("大纲不存在", 404)
+            yield await tracker.error("大纲不存在", 404, error_code="not_found.outline")
             return
         
         # 获取项目信息
@@ -2345,7 +2377,7 @@ async def expand_outline_generator(
         )
         project = project_result.scalar_one_or_none()
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在", 404, error_code="not_found.project")
             return
         
         yield await tracker.preparing(
@@ -2383,7 +2415,7 @@ async def expand_outline_generator(
         )
         
         if not chapter_plans:
-            yield await tracker.error("AI分析失败，未能生成章节规划", 500)
+            yield await tracker.error("AI分析失败，未能生成章节规划", 500, error_code="internal.ai_chapter_plan_failed")
             return
         
         yield await tracker.parsing(
@@ -2452,7 +2484,7 @@ async def expand_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲展开事务已回滚（异常）")
-        yield await tracker.error(f"展开失败: {str(e)}")
+        yield await tracker.error(f"展开失败: {str(e)}", error_code="internal.outline_expand_failed", params={"error": str(e)})
 
 
 async def _save_background_task_result(db: AsyncSession, task_id: str, result_data: Dict[str, Any]) -> None:
@@ -2571,7 +2603,14 @@ async def _run_outline_expansion_background(
                 ] if created_chapters else None
             }
             await _save_background_task_result(bg_db, task_id, result_data)
-            await tracker.complete(f"《{outline.title}》展开完成")
+            await tracker.complete(
+                f"《{outline.title}》展开完成",
+                code="progress.outline_expand_done",
+                params={
+                    "outline_title": outline.title,
+                    "chapter_count": len(created_chapters) if created_chapters else len(chapter_plans),
+                },
+            )
         except Exception as e:
             logger.error(f"后台大纲展开失败: {str(e)}", exc_info=True)
             try:
@@ -2660,7 +2699,10 @@ async def _run_batch_outline_expansion_background(
                         "outline_title": outline.title,
                         "reason": "已展开"
                     })
-                    await tracker.warning(f"《{outline.title}》已展开过，已跳过")
+                    await tracker.warning(
+                        f"《{outline.title}》已展开过，已跳过",
+                        code="progress.outline_expand_skipped", params={"outline_title": outline.title},
+                    )
                     continue
 
                 chapter_plans = await expansion_service.analyze_outline_for_chapters(
@@ -2709,7 +2751,9 @@ async def _run_batch_outline_expansion_background(
                 await tracker.generating(
                     current_chars=(idx + 1) * chapters_per_outline * 500,
                     estimated_total=total_outlines * chapters_per_outline * 500,
-                    message=f"《{outline.title}》展开完成 ({len(chapter_plans)} 章)"
+                    message=f"《{outline.title}》展开完成 ({len(chapter_plans)} 章)",
+                    code="progress.outline_expand_done",
+                    params={"outline_title": outline.title, "chapter_count": len(chapter_plans)},
                 )
 
             await tracker.parsing("整理批量展开结果...")
@@ -2764,16 +2808,17 @@ async def create_single_chapter_from_outline(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证项目权限并获取项目信息
     project = await verify_project_access(outline.project_id, user_id, db)
     
     # 验证项目模式
     if project.outline_mode != 'one-to-one':
-        raise HTTPException(
-            status_code=400,
-            detail=f"当前项目为{project.outline_mode}模式，不支持一对一创建。请使用展开功能。"
+        raise ApiError(
+            code="validation.outline_mode_single_create_blocked",
+            detail=f"当前项目为{project.outline_mode}模式，不支持一对一创建。请使用展开功能。",
+            params={"outline_mode": project.outline_mode},
         )
     
     # 检查该大纲对应的章节是否已存在
@@ -2787,9 +2832,10 @@ async def create_single_chapter_from_outline(
     existing_chapter = existing_chapter_result.scalar_one_or_none()
     
     if existing_chapter:
-        raise HTTPException(
-            status_code=400,
-            detail=f"第{outline.order_index}章已存在，不能重复创建"
+        raise ApiError(
+            code="conflict.chapter_order_exists",
+            detail=f"第{outline.order_index}章已存在，不能重复创建",
+            params={"order_index": outline.order_index},
         )
     
     try:
@@ -2828,7 +2874,8 @@ async def create_single_chapter_from_outline(
     except Exception as e:
         logger.error(f"一对一创建章节失败: {str(e)}", exc_info=True)
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"创建章节失败: {str(e)}")
+        detail = f"创建章节失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
 @router.post("/{outline_id}/expand-background", summary="后台展开单个大纲为多章")
@@ -2842,7 +2889,7 @@ async def expand_outline_to_chapters_background(
     result = await db.execute(select(Outline).where(Outline.id == outline_id))
     outline = result.scalar_one_or_none()
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
 
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(outline.project_id, user_id, db)
@@ -2913,7 +2960,7 @@ async def expand_outline_to_chapters_stream(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -2940,7 +2987,7 @@ async def get_outline_chapters(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -3026,7 +3073,7 @@ async def batch_expand_outlines_generator(
         )
         project = project_result.scalar_one_or_none()
         if not project:
-            yield await tracker.error("项目不存在", 404)
+            yield await tracker.error("项目不存在", 404, error_code="not_found.project")
             return
         
         # 获取要展开的大纲列表
@@ -3050,7 +3097,7 @@ async def batch_expand_outlines_generator(
         outlines = outlines_result.scalars().all()
         
         if not outlines:
-            yield await tracker.error("没有找到要展开的大纲", 404)
+            yield await tracker.error("没有找到要展开的大纲", 404, error_code="not_found.outline_to_expand")
             return
         
         total_outlines = len(outlines)
@@ -3167,7 +3214,9 @@ async def batch_expand_outlines_generator(
             except Exception as e:
                 logger.error(f"展开大纲 {outline.id} 失败: {str(e)}", exc_info=True)
                 yield await tracker.warning(
-                    f"❌ {outline.title} 展开失败: {str(e)}"
+                    f"❌ {outline.title} 展开失败: {str(e)}",
+                    code="progress.outline_expand_item_failed",
+                    params={"outline_title": outline.title, "error": str(e)},
                 )
                 expansion_results.append({
                     "outline_id": outline.id,
@@ -3327,7 +3376,7 @@ async def create_chapters_from_existing_plans(
     outline = result.scalar_one_or_none()
     
     if not outline:
-        raise HTTPException(status_code=404, detail="大纲不存在")
+        raise ApiError(code="not_found.outline")
     
     # 验证项目权限
     await verify_project_access(outline.project_id, user_id, db)
@@ -3335,7 +3384,7 @@ async def create_chapters_from_existing_plans(
     try:
         # 验证规划数据
         if not plans_request.chapter_plans:
-            raise HTTPException(status_code=400, detail="章节规划列表不能为空")
+            raise ApiError(code="validation.outline_plan_list_empty")
         
         logger.info(f"根据已有规划为大纲 {outline_id} 创建 {len(plans_request.chapter_plans)} 个章节")
         
@@ -3381,9 +3430,10 @@ async def create_chapters_from_existing_plans(
             ]
         )
         
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except Exception as e:
         logger.error(f"根据已有规划创建章节失败: {str(e)}", exc_info=True)
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"创建章节失败: {str(e)}")
+        detail = f"创建章节失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)

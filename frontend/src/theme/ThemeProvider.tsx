@@ -1,10 +1,42 @@
-import { ConfigProvider } from 'antd';
+import { App, ConfigProvider } from 'antd';
+import type { Locale } from 'antd/es/locale';
+import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
+import dayjs from 'dayjs';
+import 'dayjs/locale/zh-cn';
+import 'dayjs/locale/en';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PropsWithChildren } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getThemeConfig, type ResolvedThemeMode } from './themeConfig';
 import { ThemeModeContext } from './themeContext';
 import { getStoredThemeMode, setStoredThemeMode, type ThemeMode } from './themeStorage';
+import { setAntdApp } from '../utils/antdApp';
+
+// i18next resolvedLanguage ('zh' | 'en') -> antd locale pack
+const ANTD_LOCALE_MAP: Record<string, Locale> = {
+  zh: zhCN,
+  en: enUS,
+};
+
+// i18next resolvedLanguage -> dayjs locale name
+const DAYJS_LOCALE_MAP: Record<string, string> = {
+  zh: 'zh-cn',
+  en: 'en',
+};
+
+/**
+ * Mounts inside <App> and injects the context-aware modal/message/notification
+ * instances into the module-level singleton (utils/antdApp) so non-component
+ * modules (services/, store/) can use them without hooks.
+ */
+const AntdAppBridge = () => {
+  const app = App.useApp();
+  useEffect(() => {
+    setAntdApp(app);
+  }, [app]);
+  return null;
+};
 
 const getSystemResolvedMode = (): ResolvedThemeMode => {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
@@ -33,6 +65,7 @@ const hexToRgba = (hexColor: string, alpha: number): string => {
 };
 
 export const ThemeProvider = ({ children }: PropsWithChildren) => {
+  const { i18n } = useTranslation();
   const [mode, setModeState] = useState<ThemeMode>(() => getStoredThemeMode());
   const [systemMode, setSystemMode] = useState<ResolvedThemeMode>(() => getSystemResolvedMode());
   const transitionCleanupRef = useRef<number | null>(null);
@@ -60,6 +93,13 @@ export const ThemeProvider = ({ children }: PropsWithChildren) => {
 
   const resolvedMode: ResolvedThemeMode = getResolvedMode(mode, systemMode);
   const themeConfig = useMemo(() => getThemeConfig(resolvedMode), [resolvedMode]);
+
+  const resolvedLanguage = i18n.resolvedLanguage ?? i18n.language;
+  const antdLocale = ANTD_LOCALE_MAP[resolvedLanguage ?? ''] ?? zhCN;
+
+  useEffect(() => {
+    dayjs.locale(DAYJS_LOCALE_MAP[resolvedLanguage ?? ''] ?? 'zh-cn');
+  }, [resolvedLanguage]);
 
   const setMode = useCallback((nextMode: ThemeMode) => {
     if (nextMode === mode) {
@@ -142,13 +182,16 @@ export const ThemeProvider = ({ children }: PropsWithChildren) => {
   return (
     <ThemeModeContext.Provider value={contextValue}>
       <ConfigProvider
-        locale={zhCN}
+        locale={antdLocale}
         theme={{
           ...themeConfig,
           cssVar: true,
         }}
       >
-        {children}
+        <App>
+          <AntdAppBridge />
+          {children}
+        </App>
       </ConfigProvider>
     </ThemeModeContext.Provider>
   );

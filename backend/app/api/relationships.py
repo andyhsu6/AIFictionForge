@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
 from typing import List, Optional
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.models.relationship import (
     RelationshipType,
@@ -71,7 +72,7 @@ async def create_relationship_type(
     await verify_project_access(payload.project_id, user_id, db)
     name = normalize_relationship_type_name(payload.name)
     if not name:
-        raise HTTPException(status_code=422, detail="关系类型名称不能为空")
+        raise ApiError(code="validation.relationship_type_name_empty")
     ids = await resolve_relationship_type_ids(
         db,
         payload.project_id,
@@ -84,7 +85,7 @@ async def create_relationship_type(
         await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
     ).scalar_one_or_none()
     if not rt:
-        raise HTTPException(status_code=500, detail="关系类型创建失败")
+        raise ApiError(code="internal.relationship_type_create_failed")
     if payload.reverse_name is not None:
         rt.reverse_name = payload.reverse_name
     if payload.icon is not None:
@@ -107,16 +108,16 @@ async def update_relationship_type(
         await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
     ).scalar_one_or_none()
     if not rt:
-        raise HTTPException(status_code=404, detail="关系类型不存在")
+        raise ApiError(code="not_found.relationship_type")
     if rt.is_system:
-        raise HTTPException(status_code=403, detail="系统预置类型不可修改")
+        raise ApiError(code="forbidden.system_relationship_type_readonly")
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(rt.project_id, user_id, db)
     update_data = payload.model_dump(exclude_unset=True)
     if "name" in update_data:
         name = normalize_relationship_type_name(update_data["name"])
         if not name:
-            raise HTTPException(status_code=422, detail="关系类型名称不能为空")
+            raise ApiError(code="validation.relationship_type_name_empty")
         dup = (
             await db.execute(
                 select(RelationshipType).where(
@@ -127,7 +128,7 @@ async def update_relationship_type(
             )
         ).scalar_one_or_none()
         if dup:
-            raise HTTPException(status_code=409, detail="同项目已存在同名关系类型")
+            raise ApiError(code="conflict.relationship_type_duplicate")
         update_data["name"] = name
     for field, value in update_data.items():
         setattr(rt, field, value)
@@ -146,13 +147,13 @@ async def delete_relationship_type(
         await db.execute(select(RelationshipType).where(RelationshipType.id == type_id))
     ).scalar_one_or_none()
     if not rt:
-        raise HTTPException(status_code=404, detail="关系类型不存在")
+        raise ApiError(code="not_found.relationship_type")
     if rt.is_system:
-        raise HTTPException(status_code=403, detail="系统预置类型不可删除")
+        raise ApiError(code="forbidden.system_relationship_type_readonly", detail="系统预置类型不可删除")
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(rt.project_id, user_id, db)
     if await ensure_relationship_type_not_in_use(db, rt.project_id, rt.id):
-        raise HTTPException(status_code=409, detail="该类型仍被关系使用，无法删除")
+        raise ApiError(code="conflict.relationship_type_in_use")
     await db.delete(rt)
     await db.commit()
     return {"message": "关系类型删除成功", "id": type_id}
@@ -310,9 +311,17 @@ async def create_relationship(
     )
     
     if not char_from.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=f"角色A（ID: {relationship.character_from_id}）不存在")
+        raise ApiError(
+            code="not_found.relationship_character",
+            detail=f"角色A（ID: {relationship.character_from_id}）不存在",
+            params={"character_id": relationship.character_from_id},
+        )
     if not char_to.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=f"角色B（ID: {relationship.character_to_id}）不存在")
+        raise ApiError(
+            code="not_found.relationship_character",
+            detail=f"角色B（ID: {relationship.character_to_id}）不存在",
+            params={"character_id": relationship.character_to_id},
+        )
     
     # 创建关系
     create_data = relationship.model_dump(exclude={"relationship_type_ids", "relationship_type_names"})
@@ -356,7 +365,7 @@ async def update_relationship(
     db_rel = result.scalar_one_or_none()
     
     if not db_rel:
-        raise HTTPException(status_code=404, detail="关系不存在")
+        raise ApiError(code="not_found.relationship")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
@@ -416,7 +425,7 @@ async def delete_relationship(
     db_rel = result.scalar_one_or_none()
     
     if not db_rel:
-        raise HTTPException(status_code=404, detail="关系不存在")
+        raise ApiError(code="not_found.relationship")
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)

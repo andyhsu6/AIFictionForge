@@ -9,11 +9,13 @@ import {
 } from '@ant-design/icons';
 import { AIProjectGenerator, type GenerationConfig } from '../components/AIProjectGenerator';
 import type { WizardBasicInfo } from '../types';
+import { useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
 
 export default function ProjectWizardNew() {
+  const { t } = useTranslation('projectWizard');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [form] = Form.useForm();
@@ -63,7 +65,7 @@ export default function ProjectWizardNew() {
         signal,
       });
       if (!response.ok) {
-        throw new Error('获取项目信息失败');
+        throw new Error(t('resume.fetchProjectFailed'));
       }
       const project = await response.json();
 
@@ -91,7 +93,7 @@ export default function ProjectWizardNew() {
       }
 
       console.error('恢复生成失败:', error);
-      message.error('恢复生成失败,请重试');
+      message.error(t('resume.generateFailed'));
       navigate('/');
     }
   };
@@ -129,10 +131,10 @@ export default function ProjectWizardNew() {
   const renderForm = () => (
     <Card>
       <Title level={isMobile ? 4 : 3} style={{ marginBottom: 24 }}>
-        创建新项目
+        {t('form.title')}
       </Title>
       <Paragraph type="secondary" style={{ marginBottom: 32 }}>
-        填写基本信息后，AI将自动为您生成世界观、角色和大纲节点（大纲可在项目内手动展开为章节）
+        {t('form.subtitle')}
       </Paragraph>
 
       <Form
@@ -149,67 +151,67 @@ export default function ProjectWizardNew() {
         }}
       >
         <Form.Item
-          label="书名"
+          label={t('form.labelBookName')}
           name="title"
-          rules={[{ required: true, message: '请输入书名' }]}
+          rules={[{ required: true, message: t('form.bookNameRequired') }]}
         >
-          <Input placeholder="输入你的小说标题" size="large" />
+          <Input placeholder={t('form.bookNamePlaceholder')} size="large" />
         </Form.Item>
 
         <Form.Item
-          label="小说简介"
+          label={t('form.labelDescription')}
           name="description"
-          rules={[{ required: true, message: '请输入小说简介' }]}
+          rules={[{ required: true, message: t('form.descriptionRequired') }]}
         >
           <TextArea
             rows={3}
-            placeholder="用一段话介绍你的小说..."
+            placeholder={t('form.descriptionPlaceholder')}
             showCount
           />
         </Form.Item>
 
         <Form.Item
-          label="主题"
+          label={t('form.labelTheme')}
           name="theme"
-          rules={[{ required: true, message: '请输入主题' }]}
+          rules={[{ required: true, message: t('form.themeRequired') }]}
         >
           <TextArea
             rows={4}
-            placeholder="描述你的小说主题..."
+            placeholder={t('form.themePlaceholder')}
             showCount
           />
         </Form.Item>
 
         <Form.Item
-          label="类型"
+          label={t('form.labelGenre')}
           name="genre"
-          rules={[{ required: true, message: '请选择小说类型' }]}
+          rules={[{ required: true, message: t('form.genreRequired') }]}
         >
           <Select
             mode="tags"
-            placeholder="选择或输入类型标签（如：玄幻、都市、修仙）"
+            placeholder={t('form.genrePlaceholder')}
             size="large"
             tokenSeparators={[',']}
             maxTagCount={5}
           >
-            <Select.Option value="玄幻">玄幻</Select.Option>
-            <Select.Option value="都市">都市</Select.Option>
-            <Select.Option value="历史">历史</Select.Option>
-            <Select.Option value="科幻">科幻</Select.Option>
-            <Select.Option value="武侠">武侠</Select.Option>
-            <Select.Option value="仙侠">仙侠</Select.Option>
-            <Select.Option value="奇幻">奇幻</Select.Option>
-            <Select.Option value="悬疑">悬疑</Select.Option>
-            <Select.Option value="言情">言情</Select.Option>
-            <Select.Option value="修仙">修仙</Select.Option>
+            <Select.Option value="玄幻">{t('genre.xuanhuan')}</Select.Option>
+            <Select.Option value="都市">{t('genre.urban')}</Select.Option>
+            <Select.Option value="历史">{t('genre.historical')}</Select.Option>
+            <Select.Option value="科幻">{t('genre.scifi')}</Select.Option>
+            <Select.Option value="武侠">{t('genre.wuxia')}</Select.Option>
+            <Select.Option value="仙侠">{t('genre.xianxia')}</Select.Option>
+            <Select.Option value="奇幻">{t('genre.fantasy')}</Select.Option>
+            <Select.Option value="悬疑">{t('genre.mystery')}</Select.Option>
+            <Select.Option value="言情">{t('genre.romance')}</Select.Option>
+            <Select.Option value="修仙">{t('genre.xiuxian')}</Select.Option>
           </Select>
         </Form.Item>
 
         <Form.Item
-          label="大纲章节模式"
+          label={t('form.labelOutlineMode')}
           name="outline_mode"
-          rules={[{ required: true, message: '请选择大纲章节模式' }]}
-          tooltip="创建后不可更改，请根据创作习惯选择"
+          rules={[{ required: true, message: t('form.outlineModeRequired') }]}
+          tooltip={t('form.outlineModeTooltip')}
         >
           <Radio.Group size="large">
             <Row gutter={16}>
@@ -227,13 +229,13 @@ export default function ProjectWizardNew() {
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
                       <div style={{ fontSize: 16, fontWeight: 'bold' }}>
                         <CheckCircleOutlined style={{ marginRight: 8, color: token.colorSuccess }} />
-                        传统模式 (1→1)
+                        {t('outlineMode.traditional')}
                       </div>
                       <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
-                        一个大纲对应一个章节，简单直接
+                        {t('outlineMode.traditionalDesc')}
                       </div>
                       <div style={{ fontSize: 11, color: token.colorTextTertiary }}>
-                        💡 适合：简单剧情、快速创作、短篇小说
+                        {t('outlineMode.traditionalSuitable')}
                       </div>
                     </Space>
                   </Radio>
@@ -254,13 +256,13 @@ export default function ProjectWizardNew() {
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
                       <div style={{ fontSize: 16, fontWeight: 'bold' }}>
                         <CheckCircleOutlined style={{ marginRight: 8, color: token.colorSuccess }} />
-                        细化模式 (1→N) 推荐
+                        {t('outlineMode.detailed')}
                       </div>
                       <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
-                        一个大纲可展开为多个章节，灵活控制
+                        {t('outlineMode.detailedDesc')}
                       </div>
                       <div style={{ fontSize: 11, color: token.colorTextTertiary }}>
-                        💡 适合：复杂剧情、长篇创作、需要细化控制
+                        {t('outlineMode.detailedSuitable')}
                       </div>
                     </Space>
                   </Radio>
@@ -273,46 +275,46 @@ export default function ProjectWizardNew() {
         <Row gutter={16}>
           <Col xs={24} sm={12}>
             <Form.Item
-              label="叙事视角"
+              label={t('form.labelPerspective')}
               name="narrative_perspective"
-              rules={[{ required: true, message: '请选择叙事视角' }]}
+              rules={[{ required: true, message: t('form.perspectiveRequired') }]}
             >
-              <Select size="large" placeholder="选择小说的叙事视角">
-                <Select.Option value="第一人称">第一人称</Select.Option>
-                <Select.Option value="第三人称">第三人称</Select.Option>
-                <Select.Option value="全知视角">全知视角</Select.Option>
+              <Select size="large" placeholder={t('form.perspectivePlaceholder')}>
+                <Select.Option value="第一人称">{t('perspective.firstPerson')}</Select.Option>
+                <Select.Option value="第三人称">{t('perspective.thirdPerson')}</Select.Option>
+                <Select.Option value="全知视角">{t('perspective.omniscient')}</Select.Option>
               </Select>
             </Form.Item>
           </Col>
           <Col xs={24} sm={12}>
             <Form.Item
-              label="角色数量"
+              label={t('form.labelCharacterCount')}
               name="character_count"
-              rules={[{ required: true, message: '请输入角色数量' }]}
+              rules={[{ required: true, message: t('form.characterCountRequired') }]}
             >
               <InputNumber
                 min={3}
                 max={20}
                 style={{ width: '100%' }}
                 size="large"
-                addonAfter="个"
-                placeholder="AI生成的角色数量"
+                addonAfter={t('form.characterCountUnit')}
+                placeholder={t('form.characterCountPlaceholder')}
               />
             </Form.Item>
           </Col>
         </Row>
 
         <Form.Item
-          label="目标字数"
+          label={t('form.labelTargetWords')}
           name="target_words"
-          rules={[{ required: true, message: '请输入目标字数' }]}
+          rules={[{ required: true, message: t('form.targetWordsRequired') }]}
         >
           <InputNumber
             min={10000}
             style={{ width: '100%' }}
             size="large"
-            addonAfter="字"
-            placeholder="整部小说的目标字数"
+            addonAfter={t('form.targetWordsUnit')}
+            placeholder={t('form.targetWordsPlaceholder')}
           />
         </Form.Item>
 
@@ -325,14 +327,14 @@ export default function ProjectWizardNew() {
               block
               icon={<RocketOutlined />}
             >
-              开始创建项目
+              {t('form.startCreate')}
             </Button>
             <Button
               size="large"
               block
               onClick={() => navigate('/')}
             >
-              返回首页
+              {t('form.backHome')}
             </Button>
           </Space>
         </Form.Item>
@@ -372,7 +374,7 @@ export default function ProjectWizardNew() {
               color: token.colorWhite,
             }}
           >
-            {isMobile ? '返回' : '返回首页'}
+            {isMobile ? t('header.back') : t('header.backHome')}
           </Button>
 
           <Title level={isMobile ? 4 : 2} style={{
@@ -381,7 +383,7 @@ export default function ProjectWizardNew() {
             textShadow: '0 2px 4px color-mix(in srgb, var(--ant-color-black) 18%, transparent)',
           }}>
             <RocketOutlined style={{ marginRight: 8 }} />
-            项目创建向导
+            {t('header.title')}
           </Title>
 
           <div style={{ width: isMobile ? 60 : 120 }}></div>

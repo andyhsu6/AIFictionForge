@@ -1,0 +1,119 @@
+{
+  "actions": {
+    "delete": "删除",
+    "deleteUser": "删除用户",
+    "disable": "禁用",
+    "disableUser": "禁用用户",
+    "edit": "编辑",
+    "editUser": "编辑用户",
+    "enable": "启用",
+    "enableUser": "启用用户",
+    "resetPassword": "重置密码"
+  },
+  "confirm": {
+    "cancel": "取消",
+    "deleteUser": "确定删除该用户吗？此操作不可恢复！",
+    "disableUser": "确定禁用该用户吗？",
+    "enableUser": "确定启用该用户吗？",
+    "ok": "确定"
+  },
+  "createModal": {
+    "cancel": "取消",
+    "ok": "创建",
+    "title": "添加用户"
+  },
+  "createResult": {
+    "initialPassword": "初始密码：",
+    "title": "用户创建成功",
+    "username": "用户名：",
+    "warning": "⚠️ 请复制密码并告知用户，此密码仅显示一次！"
+  },
+  "editModal": {
+    "cancel": "取消",
+    "ok": "保存",
+    "title": "编辑用户"
+  },
+  "form": {
+    "avatarUrl": "头像URL",
+    "avatarUrlPlaceholder": "请输入头像URL（可选）",
+    "displayName": "显示名称",
+    "displayNameLength": "显示名称长度2-50位",
+    "displayNamePlaceholder": "请输入显示名称",
+    "displayNameRequired": "请输入显示名称",
+    "initialPassword": "初始密码",
+    "initialPasswordExtra": "留空则自动生成 username@666",
+    "initialPasswordPlaceholder": "留空则自动生成",
+    "passwordMin": "密码长度至少6位",
+    "setAdmin": "设为管理员",
+    "trustLevel": "信任等级",
+    "username": "用户名",
+    "usernameLength": "用户名长度3-20位",
+    "usernamePattern": "只能包含字母、数字和下划线",
+    "usernamePlaceholder": "请输入用户名",
+    "usernameRequired": "请输入用户名"
+  },
+  "neverLoggedIn": "从未登录",
+  "page": {
+    "addUser": "添加用户",
+    "backHome": "返回主页",
+    "subtitle": "管理系统用户和权限",
+    "title": "用户管理"
+  },
+  "pagination": {
+    "filtered": " (已过滤)",
+    "total": "共 {{n}} 个用户"
+  },
+  "resetModal": {
+    "cancel": "取消",
+    "extra": "留空则重置为默认密码 username@666",
+    "newPassword": "新密码",
+    "ok": "确认重置",
+    "placeholder": "留空则使用默认密码",
+    "title": "重置密码",
+    "user": "用户："
+  },
+  "resetResult": {
+    "newPassword": "新密码：",
+    "title": "密码重置成功",
+    "user": "用户：",
+    "warning": "⚠️ 请复制密码并告知用户！"
+  },
+  "role": {
+    "admin": "👑 管理员",
+    "user": "普通用户"
+  },
+  "search": {
+    "placeholder": "搜索用户名、显示名称或用户ID"
+  },
+  "status": {
+    "active": "正常",
+    "disabled": "已禁用"
+  },
+  "table": {
+    "actions": "操作",
+    "createdAt": "创建时间",
+    "displayName": "显示名称",
+    "lastLogin": "最后登录",
+    "role": "角色",
+    "status": "状态",
+    "trustLevel": "信任等级",
+    "username": "用户名"
+  },
+  "toast": {
+    "createFailed": "创建用户失败",
+    "createSuccess": "用户创建成功",
+    "deleteFailed": "删除用户失败",
+    "deleteSuccess": "用户已删除",
+    "disableFailed": "禁用用户失败",
+    "enableFailed": "启用用户失败",
+    "loadFailed": "加载用户列表失败",
+    "resetFailed": "重置密码失败",
+    "updateFailed": "更新用户失败",
+    "updateSuccess": "用户信息更新成功",
+    "userDisabled": "用户已禁用",
+    "userEnabled": "用户已启用"
+  },
+  "trust": {
+    "disabled": "已禁用"
+  }
+}

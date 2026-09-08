@@ -9,6 +9,7 @@
  * - 可通过右侧浮动按钮控制开关（支持拖动+自动贴边）
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import confetti from 'canvas-confetti';
 import './SpringFestival.css';
 
@@ -73,6 +74,7 @@ function loadBtnPosition(): BtnPosition {
 }
 
 export default function SpringFestival() {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(() => {
     const saved = localStorage.getItem('spring-festival-visible');
     if (saved !== null) return saved === 'true';
@@ -446,7 +448,7 @@ export default function SpringFestival() {
         onMouseDown={handleDragStart}
         onTouchStart={handleDragStart}
         onClick={handleBtnClick}
-        title={visible ? '关闭春节装饰' : '开启春节装饰'}
+        title={visible ? t('springFestival.toggleOff') : t('springFestival.toggleOn')}
       >
         {visible ? '🧨' : '🏮'}
       </button>

@@ -50,7 +50,20 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **后端启动**：必须从项目根目录以 `PYTHONPATH=backend` 启动（否则 pydantic 读不到根目录 `.env`）；venv 在 `backend/.venv`（Python 3.12）
 - **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008
 - **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
+- **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
+- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`）；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制；浏览器自动化用 playwright(-core) 以 `executablePath` 指向本机 Brave（headless 截图/验收均如此）
+
+## 视觉验证约定
+- **UI 改动/验收指引必须先做视觉渲染验证**（playwright-core + 本机 Brave headless 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
+- **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
+
+## 服务与测试身份约定（硬约束）
+- **宣称"可以测试"前必须先跑 `./aistoryforge.sh verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + /health 分支双核对）才允许开始测试/验收；verify 不通过禁止宣称就绪。
+- **服务脚本必须用绝对路径调用**（如 `/Users/andyhsu/codehouse/aff-i18n-internationalization/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
+- `start` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
+- **git 操作一律 `git -C <checkout绝对路径>`**：cwd 漂移会让相对路径的 add/commit 落到别的 checkout（本仓库挂多个 worktree）；提交后用 `git -C ... log --oneline -1` 复核落点。
+- **i18n 语言语义**：未登录启动顺序 = localStorage 手动选择 → navigator（浏览器语言，默认镜像操作系统语言，即"系统优先其次浏览器"的落地）；登录页切换器仅本地预览；**登录成功后服务器偏好覆盖本地**（无服务器值时才把本地选择种子化到服务器）；`syncLanguageWithServer()` 在跳转前必须 await（登录/回调所有路径），落地第一帧即服务器偏好语言。
 
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
@@ -63,3 +76,10 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **拆分方案优先保全信息**：拆分的目的是保留全部信息；截断/摘要意味着信息损失，属于最后手段。
 - **超大内容（书/长文档）**：按"模型窗口 + 内容总量"综合判断注入/处理策略（全量 → 尾部加权 → 拆分多次传输），单章过长同样适用拆分，不做单章硬截断。
 - 实现前先评估拆分的负面影响（轮次增加带来的成本/延迟/上下文一致性），评估结果记录在对应 issue。
+
+## i18n 约定
+- **新增 UI 文案必须进 locale 文件**：`frontend/src/locales/{zh,en}/<ns>.json`（zh 是源语言，en 必须同步；空值会挂在 CI parity 门）。
+- **后端用户可见文案用错误码**：`raise ApiError(code=...)`，注册表在 `backend/app/core/errors.py`；未知码前端回退本地化通用文案，原文只进调试通道（`raw`）。
+- **AI 生成语言**由 `content_language` 设置链控制：per-generation 覆盖 > 用户设置 > UI 语言 > zh（解析器 `backend/app/services/language_resolver.py`）。
+- **CI 门**：`.github/workflows/i18n-check.yml` 跑 extract / types / parity / `npm test` 四道检查，locale 与类型产物必须保持零 diff。
+- 贡献者指南见 `CONTRIBUTING.md`，i18n 架构详情见 `docs/i18n.md`。

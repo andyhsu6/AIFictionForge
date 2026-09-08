@@ -1,0 +1,4 @@
+# Blank issues are disabled so that reports come in through the structured
+# templates (bug_report.md / feature_request.md). No community contact links
+# yet (GitHub Discussions is not enabled on this repository).
+blank_issues_enabled: false

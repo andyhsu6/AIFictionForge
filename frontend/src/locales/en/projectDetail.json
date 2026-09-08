@@ -1,0 +1,42 @@
+{
+  "agent": {
+    "alt": "LingChuang Writing Assistant"
+  },
+  "header": {
+    "backHome": "Back to Home",
+    "home": "Home"
+  },
+  "menu": {
+    "careers": "Careers",
+    "chapterAnalysis": "Plot Analysis",
+    "chapters": "Chapters",
+    "characters": "Characters",
+    "foreshadows": "Foreshadows",
+    "groupCreation": "Creation Management",
+    "groupTools": "Creation Tools",
+    "organizations": "Organizations",
+    "outline": "Outline",
+    "relationships": "Relationships",
+    "skillChat": "Skill Toolbox",
+    "skillManage": "Skill Management",
+    "worldSetting": "World Setting",
+    "writingStyles": "Writing Styles"
+  },
+  "stats": {
+    "chapters": "Chapters",
+    "characters": "Cast",
+    "outline": "Outline",
+    "unitChapters": "chapters",
+    "unitCount": "characters",
+    "unitItems": "items",
+    "unitWords": "words",
+    "written": "Written"
+  },
+  "theme": {
+    "cycleTooltip": "Theme mode: {{mode}} (click to switch)",
+    "dark": "Dark",
+    "light": "Light",
+    "mode": "Theme Mode",
+    "system": "System"
+  }
+}

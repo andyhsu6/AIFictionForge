@@ -1,0 +1,80 @@
+{
+  "ai": {
+    "doneMessage": "AI career generation complete!",
+    "generateFailed": "Generation failed",
+    "mainCount": "New Main Careers This Run",
+    "modalDesc": "AI will analyze the current worldview and existing careers to intelligently generate complementary new careers.<br/>You can generate multiple times to gradually complete the career system without replacing existing careers.",
+    "modalTitle": "AI-Generate New Careers (Incremental)",
+    "progressTitle": "AI is generating new careers...",
+    "requestFailed": "Request failed: {{status}}",
+    "start": "Start Generating",
+    "startFailed": "Failed to start generation",
+    "startMessage": "Starting new career generation...",
+    "subCount": "New Sub Careers This Run",
+    "userRequirements": "Career Requirements",
+    "userRequirementsExtra": "Optional. Describe desired new career directions, ability focus, constraints, or career types to avoid; AI will combine the worldview and existing careers.",
+    "userRequirementsMax": "Extra requirements up to 500 characters",
+    "userRequirementsPlaceholder": "e.g. Add a main career focused on intelligence gathering and infiltration; sub careers leaning toward medicine, trade, or crafting; avoid another pure frontline combat career."
+  },
+  "buttons": {
+    "cancel": "Cancel",
+    "create": "Create",
+    "update": "Update"
+  },
+  "card": {
+    "moreStages": "...and {{n}} more stages",
+    "noDescription": "No description",
+    "specialAbilities": "Special Abilities:",
+    "stageSystem": "Stage System ({{n}} stages):"
+  },
+  "delete": {
+    "content": "Delete this career? Careers used by characters cannot be deleted.",
+    "title": "Confirm Deletion"
+  },
+  "empty": {
+    "main": "No main careers yet",
+    "sub": "No sub careers yet"
+  },
+  "form": {
+    "addTitle": "Add Career",
+    "category": "Category",
+    "categoryPlaceholder": "e.g. Combat, Production, Support",
+    "description": "Description",
+    "descriptionPlaceholder": "Describe this career...",
+    "editTitle": "Edit Career",
+    "name": "Career Name",
+    "namePlaceholder": "e.g. Sword Cultivator, Alchemist",
+    "requirements": "Requirements",
+    "requirementsPlaceholder": "What conditions are needed to practice...",
+    "specialAbilities": "Special Abilities",
+    "specialAbilitiesPlaceholder": "Special abilities of this career...",
+    "stages": "Career Stages",
+    "stagesPlaceholder": "Example:\n1. Qi Refining - First Glimpse\n2. Foundation Building - Solid Base\n3. Core Formation - Golden Core",
+    "stagesTooltip": "One stage per line, format: 1. Stage Name - Description",
+    "type": "Type",
+    "typeMain": "Main Career",
+    "typeSub": "Sub Career",
+    "worldviewRules": "Worldview Rules",
+    "worldviewRulesPlaceholder": "How it fits into the worldview..."
+  },
+  "page": {
+    "addCareer": "Add Career",
+    "aiGenerate": "AI-Generate New Careers",
+    "title": "Career Management"
+  },
+  "tabs": {
+    "main": "Main Careers ({{n}})",
+    "sub": "Sub Careers ({{n}})"
+  },
+  "tag": {
+    "aiGenerated": "AI Generated",
+    "manual": "Manually Created"
+  },
+  "toast": {
+    "actionFailed": "Operation failed",
+    "createSuccess": "Career created",
+    "deleteFailed": "Deletion failed",
+    "deleteSuccess": "Career deleted",
+    "updateSuccess": "Career updated"
+  }
+}

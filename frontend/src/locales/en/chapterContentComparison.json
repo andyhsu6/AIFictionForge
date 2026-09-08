@@ -1,0 +1,23 @@
+{
+  "analysisStarted": "Chapter analysis started, check the results later",
+  "analysisTriggerFailed": "Failed to trigger chapter analysis, you can trigger it manually",
+  "applyButton": "Apply New Content",
+  "applyError": "Apply failed",
+  "applyFailed": "Failed to apply new content",
+  "cancel": "Cancel",
+  "changePercent": "Change Percentage",
+  "contentApplied": "New content applied!",
+  "discardButton": "Discard New Content",
+  "discardConfirmContent": "Are you sure you want to discard the newly generated content? This cannot be undone.",
+  "discardConfirmOk": "Discard",
+  "discardConfirmTitle": "Confirm Discard",
+  "discarded": "New content discarded",
+  "newContent": "New Content",
+  "newWordCount": "New Content Word Count",
+  "originalContent": "Original Content",
+  "originalWordCount": "Original Word Count",
+  "title": "Content Comparison - {{title}}",
+  "toggleView": "Toggle View",
+  "wordCountChange": "Word Count Change",
+  "wordSuffix": "chars"
+}

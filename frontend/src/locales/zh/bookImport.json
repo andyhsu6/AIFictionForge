@@ -1,0 +1,127 @@
+{
+  "format": {
+    "alertMsg": "支持的拆书 TXT 格式要求",
+    "example": "第1章 初入江湖\n这里是第1章正文第一段。\n这里是第1章正文第二段。\n\n第2章 雨夜追踪\n这里是第2章正文内容。",
+    "exampleLabel": "示例：",
+    "line1": "1. 仅支持 <strong>.txt</strong> 文件，建议每章使用单独的章节标题行。",
+    "line2": "2. 推荐格式：<strong>第1章 标题</strong>，下一行开始写正文内容。",
+    "line3": "3. 正文建议按自然段换行，首行可缩进两个字符。",
+    "line4": "4. 章节之间保留空行即可，不要添加多余的分割线、全文完、导出时间等干扰内容。"
+  },
+  "header": {
+    "currentProgress": "当前进度：{{step}}",
+    "subtitle": "上传TXT并自动解析为章节、预览并导入项目",
+    "title": "拆书导入"
+  },
+  "modal": {
+    "cancel": "取消"
+  },
+  "msg": {
+    "importDone": "导入完成！",
+    "importFailedServer": "确认导入失败，无法连接到服务器",
+    "preparing": "准备导入...",
+    "restoreHint": "已恢复页面缓存，请重新点击“确认导入”继续。",
+    "retryDone": "重试完成",
+    "retrying": "正在重试失败的生成步骤..."
+  },
+  "parse": {
+    "cancel": "取消任务",
+    "cardTitle": "解析任务状态",
+    "empty": "尚未创建任务",
+    "refresh": "刷新状态",
+    "statusCancelled": "已取消",
+    "statusCompleted": "解析完成！正在生成预览...",
+    "statusFailed": "解析失败",
+    "statusPending": "等待调度...",
+    "statusRunning": "正在解析TXT文件..."
+  },
+  "preview": {
+    "addonTitle": "标题",
+    "cardTitle": "预览修正",
+    "chapterLabel": "第 {{number}} 章 · {{title}}",
+    "chaptersTitle": "章节（{{count}}）",
+    "confirmImport": "确认导入",
+    "empty": "解析完成后将显示预览数据",
+    "labelDescription": "简介",
+    "labelGenre": "类型",
+    "labelPerspective": "叙事角度",
+    "labelTargetWords": "目标字数",
+    "labelTheme": "主题",
+    "labelTitle": "标题",
+    "narrativeFirst": "第一人称",
+    "narrativeOmniscient": "全知视角",
+    "narrativeThird": "第三人称",
+    "phContent": "章节正文",
+    "phSummary": "章节摘要",
+    "projectInfo": "项目信息",
+    "warnings": "检测到告警"
+  },
+  "progress": {
+    "autoDone": "所有步骤已完成，即将自动跳转。",
+    "autoInfo": "导入过程中，AI会自动帮您补全：<br/>• 世界观设定（时间、地点、氛围、规则）<br/>• 职业体系（主职业与副职业）<br/>• 核心角色与相关组织",
+    "autoWait": "请耐心等待，完成后将自动跳转。",
+    "cardTitle": "生成导入进度",
+    "error": "导入出错",
+    "failedStepsCount": "{{count}} 个生成步骤失败",
+    "retriedCount": "已重试 {{count}} 次",
+    "retryAll": "智能重试全部失败步骤",
+    "retryDesc": "以下AI生成步骤未能完成，但基础数据（章节、大纲）已成功导入。您可以选择重试或跳过。",
+    "retrying": "正在重试...",
+    "skip": "跳过，直接进入项目",
+    "titleGenerating": "正在为您生成并导入项目内容",
+    "titlePartialRetry": "导入完成，部分步骤需要重试",
+    "titleRetrying": "正在重试失败的生成步骤"
+  },
+  "range": {
+    "hintAutoFull": "当前输入已超过 50 章，将自动按整本拆处理。",
+    "hintFull": "当前将基于整本内容进行反向生成，适合完整拆书但耗时可能更长。",
+    "hintTail": "当前将截取末 {{count}} 章进行反向生成；章节数必须为 5 的倍数，最多 50 章。"
+  },
+  "restart": {
+    "button": "重新开始",
+    "confirmDesc": "将清空当前拆书任务与缓存，并回到上传文件步骤。",
+    "confirmTitle": "确认重新开始？",
+    "ok": "重新开始"
+  },
+  "step": {
+    "generate": "生成导入",
+    "parsing": "解析中",
+    "preview": "预览修改",
+    "upload": "上传文件"
+  },
+  "toast": {
+    "cacheRestored": "已恢复拆书导入页面缓存",
+    "cancelTaskFailed": "取消任务失败",
+    "confirmImportFailed": "确认导入失败",
+    "createTaskFailed": "创建拆书任务失败",
+    "importError": "导入失败: {{error}}",
+    "importPartial": "导入完成，但有 {{count}} 个生成步骤失败，可点击重试",
+    "importSuccess": "导入成功：已生成职业{{careers}}个，角色/组织{{entities}}个",
+    "previewFailed": "获取预览失败",
+    "previewMissing": "拆书任务预览不存在（可能因服务重启），已清空缓存，请重新上传TXT",
+    "restarted": "已重新开始，请重新上传 TXT 并解析",
+    "retryAllSuccess": "所有步骤重试成功！",
+    "retryFailed": "重试失败: {{error}}",
+    "retryRequestFailed": "重试请求失败，无法连接到服务器",
+    "retryStillFailed": "重试完成，仍有 {{count}} 个步骤失败",
+    "selectFile": "请先选择 TXT 文件",
+    "skippedSteps": "已跳过失败步骤，正在跳转到项目...",
+    "taskCancelled": "任务已取消",
+    "taskCreated": "拆书任务已创建",
+    "taskInvalid": "拆书任务已失效（可能因服务重启），请重新上传TXT并开始解析",
+    "taskNotFound": "任务不存在，已清空本地缓存，请重新创建拆书任务"
+  },
+  "upload": {
+    "cardTitle": "上传 TXT 并开始解析",
+    "dragText": "点击或拖拽 TXT 文件到此区域",
+    "hint": "首版仅支持 .txt，建议不超过 50MB",
+    "modeFull": "整本反向生成",
+    "modeTail": "截取末 x 章反向生成",
+    "rangeLockedDesc": "拆书任务会按创建任务时的解析范围执行。若需修改范围，请点击上方“重新开始”后重新上传并解析。",
+    "rangeLockedMsg": "当前任务的解析范围已锁定",
+    "rangeTitle": "解析范围设置",
+    "startParse": "开始解析",
+    "tailCountLabel": "末尾章节数",
+    "taskIdLabel": "任务ID: {{id}}"
+  }
+}

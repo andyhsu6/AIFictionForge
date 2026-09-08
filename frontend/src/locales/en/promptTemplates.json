@@ -1,0 +1,95 @@
+{
+  "actions": {
+    "edit": "Edit",
+    "export": "Export Config",
+    "import": "Import Config",
+    "reset": "Reset"
+  },
+  "card": {
+    "templateKey": "Template key"
+  },
+  "categories": {
+    "autoCharacter": "Auto Character",
+    "autoOrganization": "Auto Organization",
+    "bookImport": "Book Import",
+    "chapterRewrite": "Chapter Rewrite",
+    "chapterWriting": "Chapter Writing",
+    "characterGeneration": "Character Generation",
+    "coverGeneration": "Cover Generation",
+    "inspiration": "Inspiration",
+    "mcpEnhance": "MCP Enhanced",
+    "mcpTest": "MCP Testing",
+    "outlineGeneration": "Outline Generation",
+    "plotAnalysis": "Plot Analysis",
+    "plotExpansion": "Plot Expansion",
+    "skillLong": "Skill · Long-form",
+    "skillPolish": "Skill · Polish",
+    "skillShort": "Skill · Short-form",
+    "worldBuilding": "World Building"
+  },
+  "editor": {
+    "cancel": "Cancel",
+    "contentLabel": "Template Content",
+    "contentPlaceholder": "Enter prompt template content...",
+    "descLabel": "Description",
+    "descPlaceholder": "Briefly describe the template's purpose",
+    "nameLabel": "Template Name",
+    "namePlaceholder": "Enter template name",
+    "save": "Save",
+    "title": "Edit Template: {{name}}",
+    "variableHint": "Tip: use {variable_name} format for variable placeholders"
+  },
+  "empty": {
+    "noTemplates": "No template data yet"
+  },
+  "import": {
+    "convertedListTitle": "The following templates differ from system defaults and were converted to custom:",
+    "convertedToCustom": "• Changes detected (converted to custom): {{n}}",
+    "createdOrUpdated": "• Created/updated custom: {{n}}",
+    "doneTitle": "Import Complete",
+    "keptSystemDefault": "• Kept as system default: {{n}}",
+    "ok": "Confirm",
+    "successPrefix": "Import successful!"
+  },
+  "page": {
+    "subtitle": "Account-isolated customization of AI generation prompts",
+    "title": "Prompt Template Management"
+  },
+  "resetConfirm": {
+    "cancel": "Cancel",
+    "content": "Delete the current account's custom copy and restore the system default? Other accounts are unaffected.",
+    "ok": "Confirm",
+    "title": "Confirm Reset"
+  },
+  "status": {
+    "alwaysEnabled": "Always Enabled",
+    "disabled": "Disabled",
+    "enabled": "Enabled"
+  },
+  "tabs": {
+    "all": "All ({{n}})"
+  },
+  "tag": {
+    "customized": "Customized",
+    "noDescription": "No description",
+    "systemDefault": "System Default"
+  },
+  "toast": {
+    "actionFailed": "Operation failed",
+    "exportFailed": "Export failed",
+    "exportStats": "Exported {{total}} prompt configs ({{customized}} custom, {{systemDefault}} system default)",
+    "exportSuccess": "Export successful",
+    "importFailed": "Import failed",
+    "loadFailed": "Load failed",
+    "resetFailed": "Reset failed",
+    "resetSuccess": "Reset to system default",
+    "savedAsCustomCopy": "Saved as a custom copy for this account",
+    "saveFailed": "Save failed",
+    "saveSuccess": "Saved successfully"
+  },
+  "usage": {
+    "item1": "• <strong>System default templates</strong> (gray header): always enabled, no manual toggle needed. Clicking \"Edit\" creates a custom copy effective only for the current account.",
+    "item2": "• <strong>Customized templates</strong> (purple header): effective only for the current account, enable/disable via the switch, use <code>{variable_name}</code> format for variable placeholders. Click \"Reset\" to restore the system default.",
+    "title": "Usage Notes"
+  }
+}

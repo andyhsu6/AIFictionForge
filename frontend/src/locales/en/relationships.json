@@ -1,0 +1,172 @@
+{
+  "actions": {
+    "add": "Add",
+    "addRelationship": "Add Relationship",
+    "delete": "Delete",
+    "edit": "Edit"
+  },
+  "buttons": {
+    "cancel": "Cancel",
+    "create": "Create",
+    "save": "Save",
+    "update": "Update"
+  },
+  "careerNode": {
+    "description": "Career nodes show main/sub career groups and their links to characters; no character detail card is displayed.",
+    "title": "Career Node"
+  },
+  "careers": {
+    "main": "Main Career",
+    "mainGroup": "Main Career Group",
+    "notSet": "Not set",
+    "stage": "Stage {{n}}",
+    "stageSuffix": "St. {{n}}",
+    "sub": "Sub Career",
+    "subGroup": "Sub Career Group",
+    "system": "Career System",
+    "unknownMain": "Unknown career",
+    "unknownSub": "Unknown sub career"
+  },
+  "category": {
+    "family": "Family",
+    "hostile": "Hostile",
+    "professional": "Professional",
+    "social": "Social"
+  },
+  "delete": {
+    "cancel": "Cancel",
+    "content": "Delete this relationship?",
+    "ok": "Delete",
+    "title": "Confirm Deletion",
+    "typeContent": "Delete the relationship type \"{{name}}\"?"
+  },
+  "detail": {
+    "ageSuffix": "Age {{age}}",
+    "appearance": "Appearance",
+    "background": "Background",
+    "characterTitle": "Character Details",
+    "location": "Location",
+    "motto": "Motto",
+    "organizationTitle": "Organization Details",
+    "orgMembers": "Members",
+    "orgPurpose": "Organization Purpose",
+    "orgType": "Organization Type",
+    "personality": "Personality",
+    "powerLevel": "Power Level",
+    "traits": "Trait Tags"
+  },
+  "edgeModal": {
+    "title": "Relationship Details"
+  },
+  "form": {
+    "characterA": "Character A",
+    "characterARequired": "Please select character A",
+    "characterB": "Character B",
+    "characterBRequired": "Please select character B",
+    "description": "Description",
+    "descriptionPlaceholder": "Describe the details of this relationship...",
+    "intimacy": "Intimacy",
+    "selectCharacter": "Select character",
+    "status": "Status",
+    "typeNames": "Relationship Types (multi-select)",
+    "typeNamesPlaceholder": "Pick existing types or enter new ones",
+    "typeNamesRequired": "Select at least one relationship type",
+    "typeProjectSuffix": " (Project)"
+  },
+  "graph": {
+    "back": "Back",
+    "categoryRelation": "{{category}} relation",
+    "edge": {
+      "careerGroup": "Career Class",
+      "careerMain": "Main Career",
+      "careerSub": "Sub Career",
+      "default": "Other",
+      "family": "Kinship",
+      "hostile": "Hostility",
+      "organization": "Org Members",
+      "professional": "Professional",
+      "social": "Social"
+    },
+    "edgeOptionLabel": "{{label}} ({{count}})",
+    "edgeOptionLabel_one": "graph.edgeOptionLabel",
+    "edgeOptionLabel_other": "graph.edgeOptionLabel",
+    "edgeVisibility": "Edge display:",
+    "legend": {
+      "character": "Character (circle)",
+      "organization": "Organization (square)"
+    },
+    "loadDetailFailed": "Failed to load details",
+    "loadFailed": "Failed to load relationship graph",
+    "organization": "Organization",
+    "stats": "{{nodes}} nodes / {{links}} relationships",
+    "title": "Relationship Graph"
+  },
+  "modal": {
+    "addTitle": "Add Relationship",
+    "editTitle": "Edit Relationship"
+  },
+  "page": {
+    "graph": "Relationship Graph",
+    "title": "Relationship Management"
+  },
+  "role": {
+    "antagonist": "Antagonist",
+    "protagonist": "Protagonist",
+    "supporting": "Supporting"
+  },
+  "source": {
+    "ai": "AI Generated",
+    "manual": "Manually Created"
+  },
+  "status": {
+    "active": "Active",
+    "broken": "Broken",
+    "complicated": "Complicated",
+    "past": "Past"
+  },
+  "table": {
+    "actions": "Actions",
+    "characterA": "Character A",
+    "characterB": "Character B",
+    "intimacy": "Intimacy",
+    "relationship": "Relationship",
+    "source": "Source",
+    "total": "{{n}} in total"
+  },
+  "tabs": {
+    "list": "Relationships ({{n}})",
+    "types": "Relationship Types ({{n}})"
+  },
+  "toast": {
+    "createFailed": "Failed to create relationship",
+    "createSuccess": "Relationship created",
+    "deleteFailed": "Deletion failed",
+    "deleteSuccess": "Relationship deleted",
+    "loadDataFailed": "Failed to load data",
+    "saveTypeFailed": "Failed to save relationship type",
+    "typeCreated": "Relationship type created",
+    "typeDeleteSuccess": "Relationship type deleted",
+    "typeUpdated": "Relationship type updated",
+    "updateFailed": "Failed to update relationship",
+    "updateSuccess": "Relationship updated"
+  },
+  "type": {
+    "project": "Project"
+  },
+  "typeModal": {
+    "addTitle": "Add Relationship Type",
+    "catCustom": "Custom",
+    "category": "Category",
+    "catFamily": "Family",
+    "catHostile": "Hostile",
+    "catProfessional": "Professional",
+    "catSocial": "Social",
+    "description": "Description",
+    "editTitle": "Edit Relationship Type",
+    "icon": "Icon",
+    "name": "Type Name",
+    "nameRequired": "Please enter the type name",
+    "reverseName": "Reverse Name"
+  },
+  "unknown": "Unknown"
+}

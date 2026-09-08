@@ -16,6 +16,10 @@ import re
 from typing import Any, List, Dict, Optional
 import yaml
 from app.logger import get_logger
+from app.services.language_resolver import (
+    append_language_instruction,
+    resolve_user_generation_language,
+)
 
 logger = get_logger(__name__)
 
@@ -296,6 +300,28 @@ def get_skill_by_trigger(user_input: str) -> Optional[Dict]:
                     return skill
     
     return None
+
+
+async def build_skill_system_prompt(
+    skill: Dict,
+    db: Optional[Any] = None,
+    user_id: Optional[str] = None,
+) -> str:
+    """把 Skill 内容组装为最终系统提示词（i18n plan todo 18）。
+
+    调用方：app/api/skills.py 的 /chat（Skill 聊天把 skill["content"] 作为
+    系统提示词发给模型）。这是"Skill 模板 → 最终系统提示词"的唯一收口点：
+    load_skills() 产出的是跨用户共享缓存（无用户上下文），不能在此注入。
+
+    - 语言解析链（Skill 聊天无 per-generation override）：
+      用户 preferences.content_language > UI 语言（preferences.language）> "zh"；
+    - 无 db / 无 user_id / 偏好读取失败时经 resolve_user_generation_language 安全回落 zh；
+    - 注入为追加式（append_language_instruction）：只约束输出语言，
+      SKILL.md 正文永不翻译/改写，缓存中的 skill["content"] 逐字节不变；
+      zh 同样追加（与 todo 17 各生成路径一致）。
+    """
+    language = await resolve_user_generation_language(db, user_id)
+    return append_language_instruction(str(skill.get("content") or ""), language)
 
 
 # 预加载缓存
