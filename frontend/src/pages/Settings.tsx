@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, Switch, theme } from 'antd';
-import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined } from '@ant-design/icons';
+import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined, GlobalOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
@@ -13,7 +13,16 @@ const { Option } = Select;
 const { useBreakpoint } = Grid;
 const { TextArea } = Input;
 
-export default function SettingsPage() {
+interface SettingsPageProps {
+  /**
+   * True when ProjectList renders the page inside the app shell, whose top bar
+   * already shows the same view title. Issue #37 retitled both to plain
+   * "Settings", so the page-private hero became a duplicate of the shell one.
+   */
+  embedded?: boolean;
+}
+
+export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   const { t } = useTranslation('settings');
   const { token } = theme.useToken();
   const screens = useBreakpoint();
@@ -84,8 +93,9 @@ export default function SettingsPage() {
     if (activeTab === 'presets') {
       loadPresets();
     } else if (activeTab === 'current') {
-      // 切换到当前配置Tab时，刷新设置以获取最新数据
-      loadSettings();
+      // 切换到当前配置Tab时，刷新设置以获取最新数据；但不重新套用账号语言偏好，
+      // 否则会覆盖掉本地刚做的选择（见 loadSettings 的 applyServerLanguage）
+      loadSettings(false);
       // 清除旧的测试结果，因为可能是其他配置的测试结果
       setTestResult(null);
       setShowTestResult(false);
@@ -93,21 +103,31 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  const loadSettings = async () => {
+  /**
+   * `applyServerLanguage` is true only for the mount load. A refresh the user
+   * triggers later (switching back to the API tab, activating a preset) must not
+   * re-apply the account preference: after a failed PUT that preference is stale,
+   * and silently switching the UI back contradicts `language.syncFailed`
+   * ("Saved locally, but syncing to server failed. It will apply on this browser
+   * only."). The API config itself still refreshes either way.
+   */
+  const loadSettings = async (applyServerLanguage = true) => {
     setInitialLoading(true);
     try {
       const settings = await settingsApi.getSettings();
 
-      const serverLang = parseServerLanguage(settings.preferences);
-      if (serverLang && normalizeLanguage(i18n.language) !== serverLang) {
-        await i18n.changeLanguage(serverLang);
-      }
-      if (serverLang) {
-        setUiLanguage(serverLang);
-      }
+      if (applyServerLanguage) {
+        const serverLang = parseServerLanguage(settings.preferences);
+        if (serverLang && normalizeLanguage(i18n.language) !== serverLang) {
+          await i18n.changeLanguage(serverLang);
+        }
+        if (serverLang) {
+          setUiLanguage(serverLang);
+        }
 
-      // AI 生成内容语言（无值/非法值时回退默认：跟随界面语言）
-      setContentLanguage(parseServerContentLanguage(settings.preferences) ?? 'auto');
+        // AI 生成内容语言（无值/非法值时回退默认：跟随界面语言）
+        setContentLanguage(parseServerContentLanguage(settings.preferences) ?? 'auto');
+      }
 
       form.setFieldsValue({
         ...defaultCoverSettings,
@@ -753,7 +773,9 @@ export default function SettingsPage() {
       setModelsFetched(false);
       
       loadPresets();
-      loadSettings(); // 重新加载当前配置
+      // 激活预设只改 API 配置，不改语言偏好；这里同样不能重新套用账号语言，
+      // 否则会把本地刚做好但没同步成功的选择改回去
+      loadSettings(false); // 重新加载当前配置
       
       // 检查是否与 MCP 缓存的配置不一致
       if (preset) {
@@ -1154,7 +1176,15 @@ export default function SettingsPage() {
           display: 'flex',
           flexDirection: 'column',
         }}>
-          {/* 顶部导航卡片 */}
+          {/* 顶部导航卡片：嵌入 shell 时标题由 shell 顶栏提供，这里只留一行说明 */}
+          {embedded ? (
+            <Text
+              type="secondary"
+              style={{ display: 'block', fontSize: isMobile ? 12 : 14, marginBottom: isMobile ? 16 : 20 }}
+            >
+              {t('subtitle')}
+            </Text>
+          ) : (
           <Card
             variant="borderless"
             style={{
@@ -1188,74 +1218,7 @@ export default function SettingsPage() {
               </Col>
             </Row>
           </Card>
-
-          <Card
-            variant="borderless"
-            style={{
-              background: token.colorBgContainer,
-              borderRadius: isMobile ? 12 : 16,
-              boxShadow: token.boxShadowSecondary,
-              marginBottom: isMobile ? 20 : 24,
-            }}
-          >
-            <Row align="middle" justify="space-between" gutter={[16, 12]}>
-              <Col xs={24} sm={12}>
-                <Space direction="vertical" size={2}>
-                  <Text strong>{t('language.label')}</Text>
-                  <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
-                    {t('language.description')}
-                  </Text>
-                </Space>
-              </Col>
-              <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
-                <Select
-                  value={uiLanguage}
-                  onChange={handleLanguageChange}
-                  loading={savingLanguage}
-                  style={{ minWidth: 160 }}
-                  options={[
-                    { value: 'zh', label: t('language.zhLabel') },
-                    { value: 'en', label: t('language.enLabel') },
-                  ]}
-                />
-              </Col>
-            </Row>
-          </Card>
-
-          {/* AI 生成内容语言（preferences.content_language，默认跟随界面语言） */}
-          <Card
-            variant="borderless"
-            style={{
-              background: token.colorBgContainer,
-              borderRadius: isMobile ? 12 : 16,
-              boxShadow: token.boxShadowSecondary,
-              marginBottom: isMobile ? 20 : 24,
-            }}
-          >
-            <Row align="middle" justify="space-between" gutter={[16, 12]}>
-              <Col xs={24} sm={12}>
-                <Space direction="vertical" size={2}>
-                  <Text strong>{t('contentLanguage.label')}</Text>
-                  <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
-                    {t('contentLanguage.description')}
-                  </Text>
-                </Space>
-              </Col>
-              <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
-                <Select
-                  value={contentLanguage}
-                  onChange={handleContentLanguageChange}
-                  loading={savingContentLanguage}
-                  style={{ minWidth: 160 }}
-                  options={[
-                    { value: 'auto', label: t('contentLanguage.auto') },
-                    { value: 'zh', label: t('contentLanguage.zh') },
-                    { value: 'en', label: t('contentLanguage.en') },
-                  ]}
-                />
-              </Col>
-            </Row>
-          </Card>
+          )}
 
           {/* 主内容卡片 */}
           <Card
@@ -1913,6 +1876,81 @@ export default function SettingsPage() {
                   key: 'presets',
                   label: <Space size={6}><CopyOutlined />{t('tabs.presets')}</Space>,
                   children: renderPresetsList(),
+                },
+                {
+                  key: 'language',
+                  label: <Space size={6}><GlobalOutlined />{t('tabs.language')}</Space>,
+                  children: (
+                    <>
+                      <Card
+                        variant="borderless"
+                        style={{
+                          background: token.colorBgContainer,
+                          borderRadius: isMobile ? 12 : 16,
+                          boxShadow: token.boxShadowSecondary,
+                          marginBottom: isMobile ? 20 : 24,
+                        }}
+                      >
+                        <Row align="middle" justify="space-between" gutter={[16, 12]}>
+                          <Col xs={24} sm={12}>
+                            <Space direction="vertical" size={2}>
+                              <Text strong>{t('language.label')}</Text>
+                              <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
+                                {t('language.description')}
+                              </Text>
+                            </Space>
+                          </Col>
+                          <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
+                            <Select
+                              value={uiLanguage}
+                              onChange={handleLanguageChange}
+                              loading={savingLanguage}
+                              style={{ minWidth: 160 }}
+                              options={[
+                                { value: 'zh', label: t('language.zhLabel') },
+                                { value: 'en', label: t('language.enLabel') },
+                              ]}
+                            />
+                          </Col>
+                        </Row>
+                      </Card>
+
+                      {/* AI 生成内容语言（preferences.content_language，默认跟随界面语言） */}
+                      <Card
+                        variant="borderless"
+                        style={{
+                          background: token.colorBgContainer,
+                          borderRadius: isMobile ? 12 : 16,
+                          boxShadow: token.boxShadowSecondary,
+                          marginBottom: isMobile ? 20 : 24,
+                        }}
+                      >
+                        <Row align="middle" justify="space-between" gutter={[16, 12]}>
+                          <Col xs={24} sm={12}>
+                            <Space direction="vertical" size={2}>
+                              <Text strong>{t('contentLanguage.label')}</Text>
+                              <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
+                                {t('contentLanguage.description')}
+                              </Text>
+                            </Space>
+                          </Col>
+                          <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
+                            <Select
+                              value={contentLanguage}
+                              onChange={handleContentLanguageChange}
+                              loading={savingContentLanguage}
+                              style={{ minWidth: 160 }}
+                              options={[
+                                { value: 'auto', label: t('contentLanguage.auto') },
+                                { value: 'zh', label: t('contentLanguage.zh') },
+                                { value: 'en', label: t('contentLanguage.en') },
+                              ]}
+                            />
+                          </Col>
+                        </Row>
+                      </Card>
+                    </>
+                  ),
                 },
               ]}
             />

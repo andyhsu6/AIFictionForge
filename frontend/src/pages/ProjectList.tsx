@@ -416,7 +416,7 @@ export default function ProjectList() {
           ? t('viewTitle.mcp')
           : activeView === 'system-settings'
             ? t('viewTitle.systemSettings')
-            : t('viewTitle.apiSettings');
+            : t('viewTitle.settings');
 
   const isAdmin = !!currentUser?.is_admin;
 
@@ -454,7 +454,7 @@ export default function ProjectList() {
         {
           key: 'settings',
           icon: <SettingOutlined />,
-          label: t('sidebar.apiSettings'),
+          label: t('sidebar.settings'),
         },
         ...(isAdmin ? [{
           key: 'system-settings',
@@ -489,7 +489,7 @@ export default function ProjectList() {
     {
       key: 'settings',
       icon: <SettingOutlined />,
-      label: t('sidebar.apiSettings'),
+      label: t('sidebar.settings'),
     },
     ...(isAdmin ? [{
       key: 'system-settings',
@@ -849,7 +849,7 @@ export default function ProjectList() {
               : token.colorBgLayout,
           }}
         >
-          {activeView === 'settings' && <SettingsPage />}
+          {activeView === 'settings' && <SettingsPage embedded />}
           {activeView === 'system-settings' && <SystemSettingsPage />}
           {activeView === 'mcp' && <MCPPluginsPage />}
           {activeView === 'prompts' && <PromptTemplates />}

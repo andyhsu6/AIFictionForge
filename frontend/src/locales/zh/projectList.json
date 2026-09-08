@@ -37,12 +37,12 @@
     "ok": "确定"
   },
   "sidebar": {
-    "apiSettings": "API 设置",
     "bookImport": "拆书导入",
     "bookshelf": "我的书架",
     "createTools": "创作工具",
     "mcpPlugins": "MCP 插件",
     "promptManage": "提示词管理",
+    "settings": "设置",
     "systemSettings": "系统设置"
   },
   "stat": {
@@ -105,11 +105,11 @@
     "words": "字"
   },
   "viewTitle": {
-    "apiSettings": "API 设置",
     "bookImport": "拆书导入",
     "bookshelf": "我的书架",
     "mcp": "MCP 插件",
     "promptTemplates": "提示词模板",
+    "settings": "设置",
     "systemSettings": "系统设置"
   }
 }

@@ -41,12 +41,12 @@
     "ok": "OK"
   },
   "sidebar": {
-    "apiSettings": "API Settings",
     "bookImport": "Import Book",
     "bookshelf": "My Bookshelf",
     "createTools": "Creation Tools",
     "mcpPlugins": "MCP Plugins",
     "promptManage": "Prompt Management",
+    "settings": "Settings",
     "systemSettings": "System Settings"
   },
   "stat": {
@@ -111,11 +111,11 @@
     "words": "words"
   },
   "viewTitle": {
-    "apiSettings": "API Settings",
     "bookImport": "Import Book",
     "bookshelf": "My Bookshelf",
     "mcp": "MCP Plugins",
     "promptTemplates": "Prompt Templates",
+    "settings": "Settings",
     "systemSettings": "System Settings"
   }
 }

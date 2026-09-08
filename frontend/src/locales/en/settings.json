@@ -70,7 +70,7 @@
   "language": {
     "description": "Takes effect immediately and is saved; after login, account preference wins",
     "enLabel": "English",
-    "label": "界面语言 / Interface language",
+    "label": "Interface language",
     "savePreferenceFailed": "save UI language preference failed:",
     "syncFailed": "Saved locally, but syncing to server failed. It will apply on this browser only.",
     "updated": "Interface language updated",
@@ -171,10 +171,11 @@
     "xiaomiMimoDefaultModelDesc": "Xiaomi MiMo official built-in recommended model",
     "xiaomiMimoPresetDesc": "Uses the backend built-in key and OpenAI-compatible base URL. The real key is not stored in the preset."
   },
-  "subtitle": "Configure AI provider parameters and manage multiple API config presets",
+  "subtitle": "Configure AI provider parameters, manage config presets and personal preferences",
   "tabs": {
     "cover": "Image Model Config",
     "current": "Text Model Config",
+    "language": "Language",
     "presets": "Config Presets"
   },
   "testResult": {
@@ -185,7 +186,7 @@
     "responseTime": "⚡ Response time:",
     "suggestionsLabel": "💡 Suggestions:"
   },
-  "title": "AI API Settings",
+  "title": "Settings",
   "toast": {
     "activateFailed": "Activation failed",
     "chapterAnalysisPresetFailed": "Failed to set chapter analysis API preset",

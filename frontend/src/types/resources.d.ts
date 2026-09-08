@@ -2754,12 +2754,12 @@ export default interface Resources {
       "ok": "确定"
     },
     "sidebar": {
-      "apiSettings": "API 设置",
       "bookImport": "拆书导入",
       "bookshelf": "我的书架",
       "createTools": "创作工具",
       "mcpPlugins": "MCP 插件",
       "promptManage": "提示词管理",
+      "settings": "设置",
       "systemSettings": "系统设置"
     },
     "stat": {
@@ -2822,11 +2822,11 @@ export default interface Resources {
       "words": "字"
     },
     "viewTitle": {
-      "apiSettings": "API 设置",
       "bookImport": "拆书导入",
       "bookshelf": "我的书架",
       "mcp": "MCP 插件",
       "promptTemplates": "提示词模板",
+      "settings": "设置",
       "systemSettings": "系统设置"
     }
   },
@@ -3188,7 +3188,7 @@ export default interface Resources {
       "auto": "跟随界面语言",
       "description": "AI 生成内容使用的语言；默认跟随界面语言，每次生成时也可单独选择",
       "en": "English",
-      "label": "生成内容语言 / Content language",
+      "label": "生成内容语言",
       "syncFailed": "已在本地生效，但同步到服务器失败，仅对本浏览器有效。",
       "updated": "生成内容语言已更新",
       "zh": "简体中文"
@@ -3235,7 +3235,7 @@ export default interface Resources {
     "language": {
       "description": "切换后立即生效并保存；登录后以账号偏好为准",
       "enLabel": "English",
-      "label": "界面语言 / Interface language",
+      "label": "界面语言",
       "savePreferenceFailed": "保存界面语言偏好失败:",
       "syncFailed": "已在本地生效，但同步到服务器失败，仅对本浏览器有效。",
       "updated": "界面语言已更新",
@@ -3336,10 +3336,11 @@ export default interface Resources {
       "xiaomiMimoDefaultModelDesc": "Xiaomi MiMo 官方内置推荐模型",
       "xiaomiMimoPresetDesc": "使用后端内置 Key 和 OpenAI 兼容接口地址，预设中不会保存真实 Key。"
     },
-    "subtitle": "配置AI接口参数，管理多个API配置预设",
+    "subtitle": "配置 AI 接口参数、管理配置预设与个人偏好",
     "tabs": {
       "cover": "图片模型配置",
       "current": "文本模型配置",
+      "language": "语言",
       "presets": "配置预设"
     },
     "testResult": {
@@ -3350,7 +3351,7 @@ export default interface Resources {
       "responseTime": "⚡ 响应时间:",
       "suggestionsLabel": "💡 解决建议:"
     },
-    "title": "AI API 设置",
+    "title": "设置",
     "toast": {
       "activateFailed": "激活失败",
       "chapterAnalysisPresetFailed": "设置章节内容分析API配置失败",
