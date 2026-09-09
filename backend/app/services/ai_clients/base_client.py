@@ -32,6 +32,12 @@ DEBUG_RESPONSE_HEADER_KEYS = (
 RAW_RESPONSE_LOG_CHUNK_CHARS = 1200
 RAW_RESPONSE_LOG_MAX_CHARS = 20000
 
+# 异常消息中上游响应体的分隔标记：降级判定等下游逻辑据此区分「原始异常文本」与「附加的上游 body」
+UPSTREAM_BODY_MARKER = "上游响应: "
+UPSTREAM_BODY_PREVIEW_CHARS = 200
+# 配合 TaskProgressTracker.error 前缀「失败: 」不超 status_message String(500)（models/background_task.py）
+UPSTREAM_ENRICHED_MAX_CHARS = 450
+
 
 def _debug_response_headers(response: httpx.Response) -> Dict[str, Optional[str]]:
     """提取排查上游响应问题所需的安全响应头。"""
@@ -92,6 +98,41 @@ def _log_raw_response_body(response: httpx.Response, reason: str) -> None:
             RAW_RESPONSE_LOG_MAX_CHARS,
             total_chars,
         )
+
+
+async def _enrich_http_status_error(e: httpx.HTTPStatusError) -> httpx.HTTPStatusError:
+    """把上游响应 body 附加进 HTTPStatusError 消息，保留 request/response。
+
+    流式响应体未读时 .text 抛 ResponseNotRead，先 aread()（幂等缓存）再取；
+    提取优先 JSON body 的 error.message / error 字段，否则原文预览 ≤200 字符；
+    整体消息截断 ≤450 字符以适配 background_tasks.status_message 列宽。
+    """
+    try:
+        text = e.response.text
+    except httpx.ResponseNotRead:
+        try:
+            await e.response.aread()
+            text = e.response.text
+        except Exception:
+            text = ""
+
+    extracted = ""
+    if text:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict) and error.get("message") is not None:
+                extracted = str(error["message"])
+            elif isinstance(error, str):
+                extracted = error
+        if not extracted:
+            extracted = text[:UPSTREAM_BODY_PREVIEW_CHARS]
+
+    message = f"{str(e)}\n{UPSTREAM_BODY_MARKER}{extracted}"[:UPSTREAM_ENRICHED_MAX_CHARS]
+    return httpx.HTTPStatusError(message=message, request=e.request, response=e.response)
 
 
 def _is_sse_response(response: httpx.Response) -> bool:
@@ -338,9 +379,9 @@ class BaseAIClient(ABC):
                     if e.response is not None:
                         _log_raw_response_body(e.response, "http_status_error")
                     if status_code in retry_cfg.non_retryable_status_codes:
-                        raise
+                        raise await _enrich_http_status_error(e) from e
                     if attempt == retry_cfg.max_retries - 1:
-                        raise
+                        raise await _enrich_http_status_error(e) from e
                 except (httpx.ConnectError, httpx.TimeoutException):
                     if attempt == retry_cfg.max_retries - 1:
                         raise

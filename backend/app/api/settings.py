@@ -4,12 +4,14 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 from pydantic import BaseModel
 from datetime import datetime
+import asyncio
 import httpx
 import json
+import re
 import time
 
 from app.database import get_db
@@ -22,8 +24,10 @@ from app.schemas.settings import (
     PresetUpdateRequest, PresetResponse, PresetListResponse,
     ChapterAnalysisPresetSelectionRequest,
     SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest,
-    PreferencesUpdate
+    PreferencesUpdate,
+    ModelsProbeRequest, ModelsProbeResponse,
 )
+from app.services.ai_clients.base_client import UPSTREAM_BODY_MARKER, _enrich_http_status_error
 from app.user_manager import User
 from app.logger import get_logger, safe_preview
 from app.config import settings as app_settings, PROJECT_ROOT
@@ -786,6 +790,127 @@ async def get_available_models(
         logger.error(f"获取模型列表时发生错误: {str(e)}")
         detail = f"获取模型列表失败: {str(e)}"
         raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
+
+
+# ========== 模型可用性探测（outline-model-400-fix todo 3）==========
+# key = (user_id, 归一化provider, 生效base_url, model, settings.updated_at)，绝不含 api_key
+_MODEL_PROBE_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_MODEL_PROBE_TTL_HTTP = 300.0
+_MODEL_PROBE_TTL_NETWORK = 60.0
+_MODEL_PROBE_DETAIL_MAX_CHARS = 300
+
+
+def _normalize_probe_detail(raw: str, max_chars: int = _MODEL_PROBE_DETAIL_MAX_CHARS) -> str:
+    """控制字符（含 CR/LF）替换为空格、连续空白折叠为单空格、截断 max_chars，保证 detail 单行。"""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", raw or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_chars]
+
+
+def _model_probe_cache_key(
+    user_id: str,
+    ai_service: AIService,
+    model: str,
+    settings_updated_at: str,
+) -> Tuple:
+    return (
+        user_id,
+        _normalize_raw_provider(getattr(ai_service, "api_provider", None)),
+        (getattr(ai_service, "base_url", None) or "").strip(),
+        model,
+        settings_updated_at,
+    )
+
+
+def _model_probe_payload(model: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "ok": entry["ok"],
+        "model": model,
+        "detail": entry.get("detail"),
+        "error_class": entry.get("error_class"),
+    }
+
+
+async def _execute_model_probe(ai_service: AIService, req: ModelsProbeRequest) -> Dict[str, Any]:
+    """执行一次最小非流式语义探测（ping），返回带 _ttl 的结果条目；永不抛异常。
+
+    _ttl=None 表示不缓存（other 类）。分类依据与生成链一致：
+    HTTPStatusError（含 todo 1 增强消息）→ http；连接/超时 → network；其余 → other。
+    """
+    base = {"state": "done", "ok": False, "error_class": None, "detail": None, "expires_at": 0.0}
+    try:
+        async for _ in ai_service.generate_text_stream(
+            prompt="ping",
+            model=req.model,
+            provider=req.provider,
+            max_tokens=1,
+            temperature=0,
+            auto_mcp=True if req.enable_mcp is None else req.enable_mcp,
+        ):
+            pass
+    except httpx.HTTPStatusError as e:
+        message = str(e)
+        if UPSTREAM_BODY_MARKER not in message:
+            try:
+                message = str(await _enrich_http_status_error(e))
+            except Exception:
+                pass
+        return {**base, "error_class": "http", "detail": _normalize_probe_detail(message), "_ttl": _MODEL_PROBE_TTL_HTTP}
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        return {**base, "error_class": "network", "detail": _normalize_probe_detail(str(e), 200), "_ttl": _MODEL_PROBE_TTL_NETWORK}
+    except Exception as e:
+        detail = str(e) or type(e).__name__
+        return {**base, "error_class": "other", "detail": _normalize_probe_detail(f"{type(e).__name__}: {detail}", 200), "_ttl": None}
+    return {**base, "ok": True, "_ttl": _MODEL_PROBE_TTL_HTTP}
+
+
+@router.post("/models/probe", response_model=ModelsProbeResponse)
+async def probe_model_availability(
+    req: ModelsProbeRequest,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db)
+):
+    """按用户生效 AI 配置（与生成同一路径 get_user_ai_service_from_db，含 provider/base_url 归一）探测模型可用性。
+
+    缓存：done 条目按类别 TTL（http/成功 300s、network 60s、other 不缓存）；
+    同 key 进行中并发共享同一 asyncio.Future，仅发起一次上游调用；
+    settings.updated_at 变更即 cache miss。单进程 uvicorn 语义。
+    """
+    settings_row = (await db.execute(
+        select(Settings).where(Settings.user_id == user.user_id)
+    )).scalar_one_or_none()
+    updated_token = settings_row.updated_at.isoformat() if settings_row and settings_row.updated_at else ""
+
+    ai_service = await get_user_ai_service_from_db(user.user_id, db)
+    key = _model_probe_cache_key(user.user_id, ai_service, req.model, updated_token)
+
+    entry = _MODEL_PROBE_CACHE.get(key)
+    if entry:
+        if entry["state"] == "done" and entry["expires_at"] > time.time():
+            return _model_probe_payload(req.model, entry)
+        if entry["state"] == "inflight":
+            done = await asyncio.shield(entry["future"])
+            return _model_probe_payload(req.model, done)
+
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _MODEL_PROBE_CACHE[key] = {"state": "inflight", "future": future}
+    try:
+        result = await _execute_model_probe(ai_service, req)
+    except BaseException as e:
+        _MODEL_PROBE_CACHE.pop(key, None)
+        if not future.done():
+            future.cancel()
+        raise e
+
+    ttl = result.pop("_ttl")
+    result["expires_at"] = time.time() + ttl if ttl is not None else 0.0
+    if ttl is not None:
+        _MODEL_PROBE_CACHE[key] = result
+    else:
+        _MODEL_PROBE_CACHE.pop(key, None)
+    if not future.done():
+        future.set_result(result)
+    return _model_probe_payload(req.model, result)
 
 
 class ApiTestRequest(BaseModel):

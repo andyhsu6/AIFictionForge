@@ -1,6 +1,6 @@
 """设置相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Annotated
+from typing import Optional, List, Annotated, Literal
 from datetime import datetime
 
 from app.schemas.common import ContentLanguageLiteral
@@ -176,3 +176,26 @@ class ChapterAnalysisPresetSelectionRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     preset_id: Optional[str] = Field(None, description="章节内容分析使用的预设ID；为空则使用默认API配置")
+
+
+# ========== 模型可用性探测（outline-model-400-fix todo 3）==========
+
+class ModelsProbeRequest(BaseModel):
+    """模型可用性探测请求：用当前用户生效的 AI 配置向真实上游发一次最小 chat 调用。"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    model: str = Field(..., min_length=1, max_length=200, description="待探测的模型名称")
+    provider: Optional[str] = Field(default=None, description="可选 provider 覆盖；缺省沿用用户生效配置")
+    enable_mcp: Optional[bool] = Field(default=True, description="是否与真实生成一致携带 MCP 工具（默认 True，对齐 outline 请求）")
+
+
+class ModelsProbeResponse(BaseModel):
+    """探测响应：error_class=http 供前端拦截门使用；network/other 仅提示（fail-open）。"""
+    model_config = ConfigDict(protected_namespaces=())
+
+    ok: bool = Field(..., description="上游是否接受该模型（200 即 true，含空正文）")
+    model: str = Field(..., description="回显请求模型名")
+    detail: Optional[str] = Field(default=None, description="单行归一化错误摘要（控制字符剥离、空白折叠、截断）")
+    error_class: Optional[Literal["http", "network", "other"]] = Field(
+        default=None, description="错误分类：http=上游状态码拒绝；network=连接/超时；other=其他异常；成功为 null"
+    )
