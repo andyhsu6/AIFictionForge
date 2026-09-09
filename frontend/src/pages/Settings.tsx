@@ -1220,14 +1220,13 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
           </Card>
           )}
 
-          {/* 主内容卡片 */}
+          {/* 主内容卡片：高度随内容走（#40），稀疏 tab 不再被 flex 拉出大片空白 */}
           <Card
             variant="borderless"
             style={{
               background: token.colorBgContainer,
               borderRadius: isMobile ? 12 : 16,
               boxShadow: token.boxShadowSecondary,
-              flex: 1,
             }}
             styles={{
               body: {
