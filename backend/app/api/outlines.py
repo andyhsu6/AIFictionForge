@@ -1793,6 +1793,16 @@ async def continue_outline_generator(
         yield await tracker.error(f"续写失败: {str(e)}", error_code="internal.outline_continue_failed", params={"error": str(e)})
 
 
+def _resolve_outline_generation_model(data: Dict[str, Any], ai_service: AIService) -> str:
+    """解析大纲生成模型：空/缺失的 model 归一化为该用户的默认模型。
+
+    ai_service.generate_text_stream 内部本有 `model or default_model` 兜底，
+    这里把归一化提前到任务层，保证 task_input 记录与实际执行模型一致。
+    """
+    raw = data.get("model") if hasattr(data, "get") else getattr(data, "model", None)
+    return (raw or "").strip() or (getattr(ai_service, "default_model", None) or "")
+
+
 @router.post("/generate", summary="AI生成/续写大纲(后台任务)")
 async def generate_outline_task(
     data: Dict[str, Any],
@@ -1832,6 +1842,9 @@ async def generate_outline_task(
 
     if mode == "continue" and not existing_outlines:
         raise ApiError(code="validation.outline_continue_requires_existing")
+
+    # 空模型归一化为默认模型，写回 data 使 task_input 记录生效模型（审计保真）
+    data["model"] = _resolve_outline_generation_model(data, user_ai_service)
 
     # 创建后台任务
     task_type = "outline_new" if mode == "new" else "outline_continue"
@@ -1931,7 +1944,7 @@ async def _run_new_outline_bg(
         content_language=generation_language
     )
 
-    model_param = data.get("model")
+    model_param = _resolve_outline_generation_model(data, user_ai_service)
     provider_param = data.get("provider")
 
     estimated_total = chapter_count * 1000
@@ -2071,6 +2084,7 @@ async def _run_continue_outline_bg(
     """后台执行大纲续写"""
     project_id = data.get("project_id")
     total_chapters = int(data.get("chapter_count", 5))
+    model_param = _resolve_outline_generation_model(data, user_ai_service)
 
     await tracker.loading("加载项目信息...", 0.2)
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -2180,7 +2194,7 @@ async def _run_continue_outline_bg(
         async for chunk in user_ai_service.generate_text_stream(
             prompt=prompt,
             provider=data.get("provider"),
-            model=data.get("model"),
+            model=model_param,
             auto_mcp=data.get("enable_mcp", True)
         ):
             chunk_count += 1
@@ -2216,7 +2230,7 @@ async def _run_continue_outline_bg(
                 async for chunk in user_ai_service.generate_text_stream(
                     prompt=retry_prompt,
                     provider=data.get("provider"),
-                    model=data.get("model"),
+                    model=model_param,
                     auto_mcp=data.get("enable_mcp", True)
                 ):
                     accumulated_text += chunk
