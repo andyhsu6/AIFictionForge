@@ -14,7 +14,7 @@ from app.services.ai_metrics import AICallMetrics, TokenUsage, ToolCallMetrics
 from app.services.ai_clients.openai_client import OpenAIClient
 from app.services.ai_clients.anthropic_client import AnthropicClient
 from app.services.ai_clients.gemini_client import GeminiClient
-from app.services.ai_clients.base_client import cleanup_all_clients
+from app.services.ai_clients.base_client import UPSTREAM_BODY_MARKER, cleanup_all_clients
 from app.services.ai_providers.openai_provider import OpenAIProvider
 from app.services.ai_providers.anthropic_provider import AnthropicProvider
 from app.services.ai_providers.gemini_provider import GeminiProvider
@@ -868,7 +868,10 @@ class AIService:
                                 accumulated.append(chunk)
                         break
                     except Exception as e:
-                        if response_format and "response_format" in str(e):
+                        # 只在「上游响应: 」标记之前匹配原始异常文本：上游 400 body 增强后
+                        # 恰含 response_format 字样时不得误判为本端注入的参数不被支持而降级
+                        head = str(e).split(UPSTREAM_BODY_MARKER, 1)[0]
+                        if response_format and "response_format" in head:
                             logger.warning("API 不支持 response_format，降级为文本模式: %s", str(e)[:200])
                             response_format = None
                             accumulated = []
