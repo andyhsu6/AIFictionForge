@@ -18,6 +18,8 @@ from app.services.ai_clients.base_client import (
     _enrich_http_status_error,
     _http_client_pool,
 )
+from app.services.ai_clients.gemini_client import GeminiClient
+from app.services.ai_clients.openai_client import OpenAIClient
 from app.services.ai_config import AIClientConfig, RateLimitConfig, RetryConfig
 from app.services.ai_service import AIService
 
@@ -271,3 +273,138 @@ async def test_genuine_response_format_error_still_degrades():
     assert len(provider.calls) == 2
     assert provider.calls[0]["response_format"] == {"type": "json_object"}
     assert provider.calls[1]["response_format"] is None
+
+
+# ── todo 2：流式站点应用增强（openai_client / gemini_client 的流式 raise_for_status）──
+# 契约：上游 400 在流式路径同样抛出 httpx.HTTPStatusError，消息含上游 error.message，
+# .response/.request 指向原始响应对象；2xx 流式的 chunk/usage/finish_reason 逐字节不变。
+
+_STREAM_SITES = ("openai", "gemini")
+
+
+def _attach_mock_transport(site, handler):
+    """把真实 provider 客户端的 HTTP client 换成 MockTransport（其余逻辑走生产代码）。"""
+    if site == "openai":
+        client = OpenAIClient(api_key=f"{site}-stream-key", base_url="https://u.test/v1", config=_fast_config())
+        pooled = client.http_client
+        client.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    else:
+        client = GeminiClient(api_key=f"{site}-stream-key", base_url="https://u.test/v1", config=_fast_config())
+        pooled = client.client
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return client, pooled
+
+
+async def _close_stream_clients(site, client, pooled):
+    active = client.http_client if site == "openai" else client.client
+    await active.aclose()
+    await pooled.aclose()
+    if site == "openai":
+        _http_client_pool.pop(client._get_client_key(), None)
+
+
+async def _drain(client):
+    chunks = []
+    async for chunk in client.chat_completion_stream(
+        [{"role": "user", "content": "hi"}], "test-model", 0.7, 100
+    ):
+        chunks.append(chunk)
+    return chunks
+
+
+def _sse(events):
+    return "".join(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n" for ev in events).encode()
+
+
+# 流式 400：两站点均抛出增强后的 HTTPStatusError（body 未读，走 aread 防护）
+@pytest.mark.parametrize("site", _STREAM_SITES)
+@pytest.mark.anyio
+async def test_stream_site_raises_enriched_upstream_error(site):
+    upstream_message = f"{site} gateway rejected the requested model"
+    captured = {}
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        body = json.dumps({"error": {"message": upstream_message}}).encode()
+        captured["response"] = httpx.Response(400, stream=_UnreadStream([body]))
+        return captured["response"]
+
+    client, pooled = _attach_mock_transport(site, handler)
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _drain(client)
+    finally:
+        await _close_stream_clients(site, client, pooled)
+
+    enriched = exc_info.value
+    msg = str(enriched)
+    assert isinstance(enriched, httpx.HTTPStatusError)
+    assert UPSTREAM_BODY_MARKER in msg
+    assert msg.split(UPSTREAM_BODY_MARKER, 1)[1] == upstream_message
+    assert enriched.response is captured["response"]
+    assert enriched.response.status_code == 400
+    assert enriched.request is calls[0]
+    assert enriched.__cause__ is not None
+    assert len(calls) == 1  # 流式错误不引入额外重试
+
+
+# 流式 200：成功路径产出的 chunk / usage / finish_reason 与增强前完全一致
+@pytest.mark.parametrize(
+    "site,events,expected",
+    [
+        (
+            "openai",
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+                {"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
+                {"choices": [{"index": 0, "delta": {"content": " world"}}]},
+                {
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+                },
+            ],
+            [
+                {"content": "Hello"},
+                {"content": " world"},
+                {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}},
+                {"done": True, "finish_reason": "stop"},
+            ],
+        ),
+        (
+            "gemini",
+            [
+                {"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]},
+                {
+                    "candidates": [{"content": {"parts": [{"text": " world"}]}, "finishReason": "STOP"}],
+                    "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 3, "totalTokenCount": 5},
+                },
+            ],
+            [
+                {"content": "Hello"},
+                {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}},
+                {"content": " world"},
+            ],
+        ),
+    ],
+)
+@pytest.mark.anyio
+async def test_stream_success_path_unchanged(site, events, expected):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            stream=_UnreadStream([_sse(events) + b"data: [DONE]\n\n"]),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client, pooled = _attach_mock_transport(site, handler)
+    try:
+        chunks = await _drain(client)
+    finally:
+        await _close_stream_clients(site, client, pooled)
+
+    assert chunks == expected
+    assert len(calls) == 1

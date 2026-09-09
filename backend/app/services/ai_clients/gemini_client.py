@@ -3,6 +3,9 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import httpx
 from app.services.ai_config import AIClientConfig, default_config
 from app.logger import get_logger
+# GeminiClient 为独立类（不继承 BaseAIClient），但复用同一增强助手；
+# base_client 不导入本模块，无循环导入风险。
+from .base_client import _enrich_http_status_error
 
 logger = get_logger(__name__)
 
@@ -171,7 +174,11 @@ class GeminiClient:
 
         try:
             async with self.client.stream("POST", url, json=payload) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    # 必须在流上下文内 await 读取 body，退出 async with 后将无法再读取
+                    raise await _enrich_http_status_error(e) from e
                 try:
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):

@@ -2,6 +2,8 @@
 import json
 from typing import Any, AsyncGenerator, Dict, Optional
 
+import httpx
+
 from app.logger import get_logger, summarize_log_value
 from app.services.ai_config import AIClientConfig
 from app.utils.reasoning_text import (
@@ -10,7 +12,7 @@ from app.utils.reasoning_text import (
     strip_think_tags,
     uses_minimax_api,
 )
-from .base_client import BaseAIClient
+from .base_client import BaseAIClient, _enrich_http_status_error
 
 logger = get_logger(__name__)
 
@@ -198,7 +200,11 @@ class OpenAIClient(BaseAIClient):
         
         try:
             async with await self._request_with_retry("POST", "/chat/completions", payload, stream=True) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    # 必须在流上下文内 await 读取 body，退出 async with 后将无法再读取
+                    raise await _enrich_http_status_error(e) from e
                 try:
                     async for line in response.aiter_lines():
                         data_str = sse_data_payload(line)
