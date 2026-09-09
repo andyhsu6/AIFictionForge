@@ -459,7 +459,7 @@ export default function ProjectList() {
         ...(isAdmin ? [{
           key: 'system-settings',
           icon: <MailOutlined />,
-          label: t('sidebar.systemSettings'),
+          label: t('sidebar.platformSettings'),
         }] : []),
       ],
     },
@@ -494,7 +494,7 @@ export default function ProjectList() {
     ...(isAdmin ? [{
       key: 'system-settings',
       icon: <MailOutlined />,
-      label: t('sidebar.systemSettings'),
+      label: t('sidebar.platformSettings'),
     }] : []),
   ];
 
@@ -850,7 +850,7 @@ export default function ProjectList() {
           }}
         >
           {activeView === 'settings' && <SettingsPage embedded />}
-          {activeView === 'system-settings' && <SystemSettingsPage />}
+          {activeView === 'system-settings' && <SystemSettingsPage embedded />}
           {activeView === 'mcp' && <MCPPluginsPage />}
           {activeView === 'prompts' && <PromptTemplates />}
           

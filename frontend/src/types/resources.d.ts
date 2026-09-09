@@ -1502,7 +1502,7 @@ export default interface Resources {
     },
     "unknown": "未知错误",
     "validation": {
-      "ai_config_missing": "请先配置AI设置",
+      "ai_config_missing": "请先在「设置 → 文本模型配置」中配置模型",
       "book_import_extract_mode": "extract_mode 仅支持 tail 或 full",
       "book_import_mode": "import_mode 仅支持 append 或 overwrite",
       "book_import_new_project": "当前仅支持新建项目导入，不支持指定 project_id",
@@ -2758,6 +2758,7 @@ export default interface Resources {
       "bookshelf": "我的书架",
       "createTools": "创作工具",
       "mcpPlugins": "MCP 插件",
+      "platformSettings": "平台设置",
       "promptManage": "提示词管理",
       "settings": "设置",
       "systemSettings": "系统设置"

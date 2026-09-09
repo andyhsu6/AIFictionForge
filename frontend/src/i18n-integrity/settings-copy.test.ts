@@ -48,3 +48,24 @@ describe('settings page copy is not API-only (issue #37)', () => {
     expect(CJK.test(load('en', 'settings').contentLanguage.label)).toBe(false);
   });
 });
+
+describe('settings naming coherence (issue #39)', () => {
+  it('gives the admin sidebar item its own platformSettings key', () => {
+    expect(load('zh', 'projectList').sidebar.platformSettings).toBe('平台设置');
+    expect(load('en', 'projectList').sidebar.platformSettings).toBe('Platform Settings');
+    // the group heading keeps the generic name; the admin item under it no
+    // longer reuses the same key, so an admin no longer reads
+    // System Settings -> Settings / System Settings
+    expect(load('zh', 'projectList').sidebar.systemSettings).toBe('系统设置');
+    expect(load('en', 'projectList').sidebar.systemSettings).toBe('System Settings');
+  });
+
+  it('points validation.ai_config_missing at the current settings surface', () => {
+    for (const loc of ['zh', 'en']) {
+      const msg = load(loc, 'errors').validation.ai_config_missing as string;
+      expect(msg).not.toMatch(/AI设置|AI settings/i);
+    }
+    expect(load('zh', 'errors').validation.ai_config_missing).toContain('文本模型配置');
+    expect(load('en', 'errors').validation.ai_config_missing).toMatch(/Text Model Config/);
+  });
+});

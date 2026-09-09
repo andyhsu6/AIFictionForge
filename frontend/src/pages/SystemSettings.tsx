@@ -16,7 +16,7 @@ const qqDefaults: Pick<SystemSMTPSettings, 'smtp_provider' | 'smtp_host' | 'smtp
   smtp_use_tls: false,
 };
 
-export default function SystemSettingsPage() {
+export default function SystemSettingsPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation('systemSettings');
   const { token } = theme.useToken();
   const [form] = Form.useForm<SystemSMTPSettingsUpdate>();
@@ -136,6 +136,12 @@ export default function SystemSettingsPage() {
       }}
     >
       <div style={{ maxWidth: 1400, margin: '0 auto', width: '100%' }}>
+      {/* 嵌入 shell 时标题由 shell 顶栏提供，这里只留一行说明 */}
+      {embedded ? (
+        <Text type="secondary" style={{ display: 'block', marginBottom: 20 }}>
+          {t('page.subtitle')}
+        </Text>
+      ) : (
       <Card
         bordered={false}
         style={{
@@ -158,6 +164,7 @@ export default function SystemSettingsPage() {
           </Space>
         </div>
       </Card>
+      )}
 
       <Form form={form} layout="vertical" onFinish={handleSave}>
         <Row gutter={24}>

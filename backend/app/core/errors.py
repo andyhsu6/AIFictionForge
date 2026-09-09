@@ -265,7 +265,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "task.failed": ("任务失败", 500),
     "task.not_completed": ("任务尚未完成，无法获取预览", 400),
     "task.running_mutation_blocked": ("无法删除进行中的任务，请先取消", 400),
-    "validation.ai_config_missing": ("请先配置AI设置", 400),
+    "validation.ai_config_missing": ("请先在「设置 → 文本模型配置」中配置模型", 400),
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),
     "validation.book_import_new_project": ("当前仅支持新建项目导入，不支持指定 project_id", 400),
