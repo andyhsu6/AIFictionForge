@@ -11,6 +11,12 @@ import i18n from '../i18n';
 import enSettings from '../locales/en/settings.json';
 import zhSettings from '../locales/zh/settings.json';
 
+// Every test here chains waitFor rounds over antd mount + dropdown motion on
+// real timers; locally they finish in 1-3s but CI contention twice pushed
+// different tests past the default 5s budget. One file-level budget instead of
+// whack-a-mole per-test bumps.
+vi.setConfig({ testTimeout: 20_000 });
+
 /**
  * Zero-network policy, same seam as full-route.test.tsx. Mounting Settings fires
  * a real GET /settings; when that jsdom XHR rejects after the environment is
@@ -257,8 +263,5 @@ describe('a failed preference write survives the tab-switch refresh (issue #37 f
     // The promise the toast made: the local choice still stands.
     expect(i18n.language).toBe('en');
     expect(screen.getByText(enSettings.language.label)).toBeTruthy();
-    // 20s: the interaction chains several waitFor rounds over antd mount +
-    // dropdown motion on real timers; under CI contention the default 5s
-    // budget timed out even though the behavior was correct.
-  }, 20000);
+  });
 });
