@@ -148,6 +148,20 @@ export interface PresetListResponse {
   chapter_analysis_preset_id?: string;
 }
 
+// 模型可用性探测（POST /settings/models/probe）
+export interface ModelsProbeRequest {
+  model: string;
+  provider?: string;
+  enable_mcp?: boolean;
+}
+
+export interface ModelsProbeResponse {
+  ok: boolean;
+  model: string;
+  detail?: string | null;
+  error_class?: 'http' | 'network' | 'other' | null;
+}
+
 // LinuxDO 授权 URL 响应
 export interface AuthUrlResponse {
   auth_url: string;

@@ -50,6 +50,8 @@ import type {
   PresetCreateRequest,
   PresetUpdateRequest,
   PresetListResponse,
+  ModelsProbeRequest,
+  ModelsProbeResponse,
   ChapterPlanItem,
   BookImportTask,
   BookImportPreview,
@@ -220,6 +222,11 @@ export const settingsApi = {
 
   getAvailableModels: (params: { api_key?: string; api_base_url?: string; provider: string }) =>
     api.get<unknown, { provider: string; models: Array<{ value: string; label: string; description: string }>; count?: number }>('/settings/models', { params }),
+
+  probeModel: (model: string, provider?: string) => {
+    const payload: ModelsProbeRequest = { model, ...(provider ? { provider } : {}) };
+    return api.post<unknown, ModelsProbeResponse>('/settings/models/probe', payload);
+  },
 
   testApiConnection: (params: { api_key?: string; api_base_url?: string; provider: string; llm_model: string; temperature?: number; max_tokens?: number }) =>
     api.post<unknown, {
