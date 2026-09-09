@@ -255,5 +255,8 @@ describe('a failed preference write survives the tab-switch refresh (issue #37 f
     // The promise the toast made: the local choice still stands.
     expect(i18n.language).toBe('en');
     expect(screen.getByText(enSettings.language.label)).toBeTruthy();
-  });
+    // 20s: the interaction chains several waitFor rounds over antd mount +
+    // dropdown motion on real timers; under CI contention the default 5s
+    // budget timed out even though the behavior was correct.
+  }, 20000);
 });
