@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from 'react';
+﻿import { useState, useEffect, useMemo, useRef } from 'react';
 import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme, Upload, Alert, Divider } from 'antd';
 import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
@@ -6,8 +6,8 @@ import { eventBus, EventNames } from '../store/eventBus';
 import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
 import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
-import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
-import type { ApiError, Character, OutlineImportMode, OutlineImportPreview } from '../types';
+import { outlineApi, chapterApi, projectApi, characterApi, settingsApi } from '../services/api';
+import type { ApiError, Character, ModelsProbeResponse, OutlineImportMode, OutlineImportPreview } from '../types';
 import { Trans, useTranslation } from 'react-i18next';
 
 // 大纲生成请求数据类型
@@ -115,6 +115,10 @@ export default function Outline() {
   const [generateForm] = Form.useForm();
   const [expansionForm] = Form.useForm();
   const [modalApi, contextHolder] = Modal.useModal();
+  // 提交防重入（同步 ref：双击不会触发两次探测/两次后台任务）
+  const submittingRef = useRef(false);
+  // 生成弹窗实例（探测期间用于 update okText 文案）
+  const generateModalRef = useRef<ReturnType<typeof modalApi.confirm> | null>(null);
   const [batchExpansionForm] = Form.useForm();
   const [manualCreateForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
@@ -524,7 +528,9 @@ export default function Outline() {
     content_language?: 'auto' | 'zh' | 'en';
   }
 
-  const handleGenerate = async (values: GenerateFormValues) => {
+  const handleGenerate = async (values: GenerateFormValues): Promise<boolean | undefined> => {
+    if (submittingRef.current) return undefined;
+    submittingRef.current = true;
     try {
       setIsGenerating(true);
 
@@ -533,6 +539,26 @@ export default function Outline() {
       console.log('1. form values:', values);
       console.log('2. values.model:', values.model);
       console.log('3. values.provider:', values.provider);
+
+      // 提交前模型可用性探测门：仅 error_class=http 拦截（弹窗保留改选），
+      // network/other/探测自身异常一律 fail-open 放行；await-mode 拒绝信号见 showGenerateModal onOk
+      if (values.model) {
+        const originalOkText = outlines.length > 0 ? t('generate.okContinue') : t('generate.okGenerate');
+        generateModalRef.current?.update({ okText: t('generate.probingModel') });
+        let probe: ModelsProbeResponse | null = null;
+        try {
+          probe = await settingsApi.probeModel(values.model, values.provider);
+        } catch (err) {
+          console.warn('model probe failed, proceeding', err);
+        }
+        generateModalRef.current?.update({ okText: originalOkText });
+        if (probe && probe.ok === false && probe.error_class === 'http') {
+          const reason = (probe.detail || '').replace(/\s+/g, ' ').trim();
+          message.error(t('generate.modelUnavailable', { model: values.model, reason }));
+          setIsGenerating(false);
+          return true;
+        }
+      }
 
       // 关闭生成表单Modal
       Modal.destroyAll();
@@ -596,6 +622,8 @@ export default function Outline() {
       console.error('AI generation failed:', error);
       message.error(t('generate.aiFailed'));
       setIsGenerating(false);
+    } finally {
+      submittingRef.current = false;
     }
   };
 
@@ -628,7 +656,7 @@ export default function Outline() {
       }
     }
 
-    modalApi.confirm({
+    const generateModal = modalApi.confirm({
       title: hasOutlines ? (
         <Space>
           <span>{t('generate.titleContinue')}</span>
@@ -810,9 +838,17 @@ export default function Outline() {
       cancelText: t('generate.cancel'),
       onOk: async () => {
         const values = await generateForm.validateFields();
-        await handleGenerate(values);
+        const probeBlocked = await handleGenerate(values);
+        if (probeBlocked) {
+          // antd 在 onOk resolve 时会自动关闭 confirm 弹窗；探测门拦截时需保持弹窗打开
+          // 供用户改选模型，因此走 reject 路径（await mode 下该拒绝被静默处理）
+          throw new Error('outline-generation-probe-blocked');
+        }
       },
     });
+    // await mode：使 ActionButton 静默吞掉上一次的 gate reject，避免 unhandled rejection
+    generateModal.then(() => {}, () => {});
+    generateModalRef.current = generateModal;
   };
 
   // 手动创建大纲
