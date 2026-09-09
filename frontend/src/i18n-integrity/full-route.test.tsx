@@ -15,12 +15,13 @@
  *     `i18next::translator: missingKey` warning (a key missing in BOTH locales,
  *     i.e. no zh fallback either) is collected and must stay empty.
  *
- * Network policy: zero network. All HTTP is intercepted at the axios adapter
- * seam (services/api creates its instance from the mocked 'axios' module), and
- * global fetch (backgroundTaskService polling) is stubbed. No real timers are
- * used beyond short waitFor timeouts.
+ * Network policy: zero network. All axios HTTP is intercepted at the axios
+ * global-defaults adapter seam (see the vi.mock factory below for why the
+ * seam must be `axios.defaults.adapter`, not a replaced module export), and
+ * global fetch (backgroundTaskService polling, fetch-based pages) is stubbed.
+ * No real timers are used beyond short waitFor timeouts.
  */
-import { beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import App from '../App';
 import { ThemeProvider } from '../theme/ThemeProvider';
@@ -74,31 +75,50 @@ const PROJECT = {
   world_building: { world_name: 'Testland', world_description: 'A test world' },
 };
 
-/** Canned adapter responses keyed by URL prefix (first match wins). */
+/**
+ * Canned adapter responses keyed by URL prefix (first match wins). Shapes must
+ * mirror what each page's consumer actually destructures — a wrong shape (e.g.
+ * `{plugins: []}` where the page maps a bare array) crashes the render tree,
+ * and a crashed tree makes the CJK/missing-key scans vacuous for that route.
+ * Envelope notes per entry: `{total, items}` for project-scoped lists
+ * (api.ts unwraps `.items`), bare arrays for raw-axios consumers
+ * (Relationships/Organizations map `res.data` directly).
+ */
 const CANNED: Array<[RegExp, unknown]> = [
-  [/^\/auth\/me$/, { id: 1, username: 'tester', display_name: 'Tester', email: null }],
+  [/^\/auth\/user$/, { id: 1, username: 'tester', display_name: 'Tester', email: null, is_admin: true }],
   [/^\/auth\/config$/, { local_auth_enabled: true, linuxdo_enabled: false, email_auth_enabled: false, email_register_enabled: false }],
   [/^\/projects\/project-1$/, PROJECT],
-  [/^\/projects\/project-1\/outlines/, []],
-  [/^\/projects\/project-1\/characters/, []],
-  [/^\/projects\/project-1\/organizations/, []],
-  [/^\/projects\/project-1\/careers/, []],
-  [/^\/projects\/project-1\/chapters/, []],
-  [/^\/projects\/project-1\/foreshadows/, []],
-  [/^\/projects\/project-1\/batch/, []],
+  [/^\/projects\/project-1\/agent\/conversations$/, []],
   [/^\/projects$/, []],
+  // {total, items} list envelopes (api.ts unwraps `.items`)
+  [/^\/outlines\/project\/project-1$/, { total: 0, items: [] }],
+  [/^\/characters\/project\/project-1$/, { total: 0, items: [] }],
+  [/^\/chapters\/project\/project-1$/, { total: 0, items: [] }],
+  [/^\/foreshadows\/projects\/project-1$/, { total: 0, items: [] }],
+  // bare-array / raw consumers (Relationships & Organizations map res.data directly)
+  [/^\/relationships\/project\/project-1$/, []],
+  [/^\/relationships\/types/, []],
+  [/^\/organizations\/project\/project-1$/, []],
+  [/^\/organizations\/[^/]+\/members$/, []],
+  [/^\/characters$/, { items: [] }],
+  [/^\/careers/, { main_careers: [], sub_careers: [] }],
+  [/^\/writing-styles/, { styles: [], total: 0 }],
+  // Chapter reader (ChapterReader.tsx validates content on mount)
+  [/^\/chapters\/chapter-1$/, { id: 'chapter-1', chapter_number: 1, title: 'Chapter One', content: 'A test chapter body.', word_count: 22 }],
+  [/^\/chapters\/chapter-1\/annotations$/, { chapter_id: 'chapter-1', chapter_number: 1, title: 'Chapter One', word_count: 22, annotations: [], has_analysis: false, summary: { total_annotations: 0, hooks: 0, foreshadows: 0, plot_points: 0, character_events: 0 } }],
+  [/^\/chapters\/chapter-1\/navigation$/, { current: { id: 'chapter-1', chapter_number: 1, title: 'Chapter One' }, previous: null, next: null }],
   // {entries: []} keeps the auto-open changelog modal closed on / and /projects.
   // (Its zh markdown body is exercised + allowlisted in the CJK scan docs.)
   [/^\/changelog$/, { entries: [] }],
   [/^\/settings$/, { preferences: null }],
-  [/^\/writing-styles/, []],
   [/^\/presets/, []],
-  [/^\/mcp/, { plugins: [] }],
+  [/^\/mcp/, []],
+  [/^\/admin\/users/, { total: 0, users: [] }],
   [/^\/users/, []],
   [/^\/skills/, []],
   [/^\/tasks/, { items: [], has_active_task: false, task: null }],
   [/^\/prompt-templates/, []],
-  [/^\/agent/, { conversations: [], messages: [], tool_calls: [] }],
+  [/^\/agent/, []],
   [/^\/inspiration/, {}],
   [/^\/book-import/, { items: [], tasks: [] }],
   [/^\/system/, {}],
@@ -106,9 +126,10 @@ const CANNED: Array<[RegExp, unknown]> = [
 
 vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>();
-  const instance = actual.default.create();
-  instance.defaults.adapter = async (config) => {
-    const url = (config.url ?? '').replace(/^\/api/, '');
+  const adapter = async (config) => {
+    // Query strings are stripped: raw-axios consumers embed params in the URL
+    // (`/characters?project_id=...`), and fixtures key on path only.
+    const url = (config.url ?? '').replace(/^\/api/, '').split('?')[0];
     const hit = CANNED.find(([re]) => re.test(url));
     return {
       data: hit ? structuredClone(hit[1]) : {},
@@ -118,6 +139,15 @@ vi.mock('axios', async (importOriginal) => {
       config,
     };
   };
+  // services/api builds its instance via axios.create() at module load, and
+  // mergeConfig snapshots `defaults.adapter` at create time. Mutating the real
+  // global defaults HERE (before any instance exists) is the only seam that
+  // reaches it; replacing the module's default export with a pre-built
+  // instance is not — its `create` is the real one, so services/api still got
+  // a live XHR adapter and every protected route silently rendered /login.
+  actual.default.defaults.adapter = adapter;
+  const instance = actual.default.create();
+  instance.defaults.adapter = adapter;
   return {
     ...actual,
     default: Object.assign(instance, { create: actual.default.create, isAxiosError: actual.default.isAxiosError, AxiosError: actual.default.AxiosError, AxiosHeaders: actual.default.AxiosHeaders, CanceledError: actual.default.CanceledError, all: actual.default.all, spread: actual.default.spread }),
@@ -125,7 +155,21 @@ vi.mock('axios', async (importOriginal) => {
 });
 
 // No real network via fetch either (backgroundTaskService / SSE fallbacks).
-vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ items: [], has_active_task: false, task: null }), { status: 200 })));
+// URL-aware so fetch-based pages (e.g. SkillManage's /skills/list) get a shape
+// their consumer can map; everything else gets the task-polling envelope.
+vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  const raw = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
+  const url = raw.replace(/^https?:\/\/[^/]+/, '').replace(/^\/api/, '');
+  const payload = /^\/skills\/list/.test(url) ? [] : { items: [], has_active_task: false, task: null };
+  return new Response(JSON.stringify(payload), { status: 200 });
+}));
+
+// jsdom implements neither element scroll API; pages call both in mount
+// effects (Inspiration.tsx scrollTo, ProjectAgentPanel/SkillChat
+// scrollIntoView). An uncaught effect error unmounts the whole tree and
+// turns every later scan on that route vacuous.
+Element.prototype.scrollIntoView = vi.fn();
+Element.prototype.scrollTo = vi.fn();
 
 // ---------------------------------------------------------------------------
 // (c) missing-key capture: spy on the app i18n instance's logger.
@@ -192,6 +236,42 @@ function scanCjk(route: string) {
 
 const rendered = new Set<string>();
 
+/**
+ * Regression guard for the axios adapter seam (#38). ProtectedRoute decides
+ * auth purely by whether `authApi.getCurrentUser()` resolves, so when the
+ * canned adapter does not reach services/api's instance every protected route
+ * silently degrades to <Navigate to="/login"> — the suite stays green while
+ * scanning login pages instead of the pages it claims to cover. Recording the
+ * landed URL per route makes that failure loud.
+ */
+const landedPaths = new Map<string, string>();
+const PROTECTED_ROUTES = ROUTES.filter((r) => r !== '/login' && r !== '/auth/callback');
+
+/** /project/:projectId legitimately lands on its world-setting child (App.tsx index redirect). */
+const EXPECTED_LANDING: Record<string, string> = {
+  '/project/project-1': '/project/project-1/world-setting',
+};
+const landingFor = (route: string) => EXPECTED_LANDING[route] ?? route;
+
+/**
+ * React logs "The above error occurred in ..." via console.error when a
+ * component crash unmounts the tree — including crashes inside async
+ * continuations that render() itself cannot observe. Together with the
+ * per-route non-empty-DOM check below, this closes the last vacuous path:
+ * a crashed tree would otherwise pass the redirect guard (it never reaches
+ * /login) while scanning nothing.
+ */
+const crashFindings: string[] = [];
+const emptyRenderFindings: string[] = [];
+const currentRoute = { value: '' };
+const originalConsoleError = console.error.bind(console);
+afterAll(() => {
+  console.error = originalConsoleError;
+});
+
+/** True when canned PROJECT data actually reaches the DOM through services/api. */
+const sawCannedProjectTitle = { value: false };
+
 beforeAll(async () => {
   // Deterministic en locale for every route render.
   window.localStorage.setItem('lng', 'en');
@@ -206,7 +286,18 @@ beforeAll(async () => {
     originalWarn(...args);
   };
 
+  // Capture React tree-unmount crash reports ("The above error occurred in...")
+  // that render() cannot surface synchronously.
+  console.error = (...args: unknown[]) => {
+    const line = args.map(String).join(' ');
+    if (line.includes('The above error occurred in')) {
+      crashFindings.push(`${currentRoute.value}: ${line.slice(0, 200)}`);
+    }
+    originalConsoleError(...args);
+  };
+
   const mount = async (route: string) => {
+    currentRoute.value = route;
     window.history.pushState({}, '', route);
     const { unmount } = render(
       <ThemeProvider>
@@ -219,6 +310,14 @@ beforeAll(async () => {
     });
     await new Promise((r) => setTimeout(r, 30));
     rendered.add(route);
+    landedPaths.set(route, window.location.pathname);
+    const bodyText = (document.body.textContent ?? '').trim();
+    if (bodyText.length < 20) {
+      emptyRenderFindings.push(`${route} (${bodyText.length} chars: "${bodyText.slice(0, 60)}")`);
+    }
+    if (route === '/project/project-1' && bodyText.includes(PROJECT.title)) {
+      sawCannedProjectTitle.value = true;
+    }
     scanCjk(route);
     unmount();
   };
@@ -240,6 +339,20 @@ describe('full-route render smoke (todo 26a)', () => {
 
   it('no raw CJK characters leak into the en DOM outside the allowlist', () => {
     expect(cjkFindings).toEqual([]);
+  });
+
+  it('protected routes render their own page, never a redirect (#38)', () => {
+    const redirected = PROTECTED_ROUTES.filter((r) => landedPaths.get(r) !== landingFor(r));
+    expect(redirected).toEqual([]);
+  });
+
+  it('canned project data reaches the DOM through the real api instance (#38)', () => {
+    expect(sawCannedProjectTitle.value).toBe(true);
+  });
+
+  it('every route renders a non-crashed, non-empty tree (#38)', () => {
+    expect(crashFindings).toEqual([]);
+    expect(emptyRenderFindings).toEqual([]);
   });
 });
 
