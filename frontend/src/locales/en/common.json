@@ -53,10 +53,6 @@
   "preparing": "Preparing to generate...",
   "refresh": "Refresh",
   "saving": "Saving...",
-  "springFestival": {
-    "toggleOff": "Disable Spring Festival decoration",
-    "toggleOn": "Enable Spring Festival decoration"
-  },
   "stream": {
     "readFailed": "Unable to read the assistant response stream"
   },

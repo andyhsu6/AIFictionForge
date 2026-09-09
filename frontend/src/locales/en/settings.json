@@ -71,7 +71,6 @@
     "description": "Takes effect immediately and is saved; after login, account preference wins",
     "enLabel": "English",
     "label": "Interface language",
-    "savePreferenceFailed": "save UI language preference failed:",
     "syncFailed": "Saved locally, but syncing to server failed. It will apply on this browser only.",
     "updated": "Interface language updated",
     "zhLabel": "简体中文"

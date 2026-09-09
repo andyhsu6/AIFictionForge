@@ -470,7 +470,7 @@ export default function SkillManage() {
           </Space>
         }
         styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={editForm} layout="vertical">
           <Form.Item label={t('form.internalName')} name="name" tooltip={t('form.internalNameTooltip')}>
@@ -523,7 +523,7 @@ export default function SkillManage() {
           </Space>
         }
         styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={createForm} layout="vertical">
           <Form.Item label={t('form.skillName')} name="name" rules={[{ required: true, message: t('form.skillNameRequired') }]}

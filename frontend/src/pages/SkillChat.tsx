@@ -257,7 +257,7 @@ const SkillChat: React.FC = () => {
           <Card
             hoverable
             onClick={() => handleSkillSelect(skill)}
-            bodyStyle={{ height: '100%', padding: 16 }}
+            styles={{ body: { height: '100%', padding: 16 } }}
             style={{
               cursor: 'pointer',
               height: '100%',

@@ -126,7 +126,7 @@ const MemorySidebar: React.FC<MemorySidebarProps> = ({
             cursor: 'pointer',
             transition: 'all 0.2s',
           }}
-          bodyStyle={{ padding: 12 }}
+          styles={{ body: { padding: 12 } }}
         >
         <div style={{ marginBottom: 8 }}>
           <Badge

@@ -143,14 +143,14 @@ export default function SystemSettingsPage({ embedded = false }: { embedded?: bo
         </Text>
       ) : (
       <Card
-        bordered={false}
+        variant="borderless"
         style={{
           marginBottom: 24,
           borderRadius: 20,
           overflow: 'hidden',
           boxShadow: `0 12px 32px ${token.colorFillSecondary}`,
         }}
-        bodyStyle={{ padding: 0 }}
+        styles={{ body: { padding: 0 } }}
       >
         <div style={{ background: headerBackground, padding: '28px 32px', color: '#fff' }}>
           <Space direction="vertical" size={6}>
@@ -169,7 +169,7 @@ export default function SystemSettingsPage({ embedded = false }: { embedded?: bo
       <Form form={form} layout="vertical" onFinish={handleSave}>
         <Row gutter={24}>
           <Col xs={24} xl={16}>
-            <Card title={t('mail.cardTitle')} bordered={false} style={{ borderRadius: 16 }}>
+            <Card title={t('mail.cardTitle')} variant="borderless" style={{ borderRadius: 16 }}>
               <Alert
                 type="info"
                 showIcon
@@ -235,7 +235,7 @@ export default function SystemSettingsPage({ embedded = false }: { embedded?: bo
           </Col>
 
           <Col xs={24} xl={8}>
-            <Card title={t('register.cardTitle')} bordered={false} style={{ borderRadius: 16, marginBottom: 24 }}>
+            <Card title={t('register.cardTitle')} variant="borderless" style={{ borderRadius: 16, marginBottom: 24 }}>
               <Form.Item name="email_auth_enabled" label={t('register.emailAuth')} valuePropName="checked">
                 <Switch />
               </Form.Item>
@@ -250,7 +250,7 @@ export default function SystemSettingsPage({ embedded = false }: { embedded?: bo
               </Form.Item>
             </Card>
 
-            <Card title={t('actions.cardTitle')} bordered={false} style={{ borderRadius: 16 }}>
+            <Card title={t('actions.cardTitle')} variant="borderless" style={{ borderRadius: 16 }}>
               <Space direction="vertical" style={{ width: '100%' }} size={12}>
                 <Input
                   value={testTargetEmail}

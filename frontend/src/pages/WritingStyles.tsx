@@ -237,11 +237,13 @@ export default function WritingStyles() {
                     borderRadius: 12,
                     border: style.is_default ? `2px solid ${token.colorPrimary}` : `1px solid ${token.colorBorderSecondary}`,
                   }}
-                  bodyStyle={{
-                    flex: 1,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    padding: '16px',
+                  styles={{
+                    body: {
+                      flex: 1,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '16px',
+                    },
                   }}
                   actions={[
                     <span

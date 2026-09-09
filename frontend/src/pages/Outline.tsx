@@ -1802,8 +1802,8 @@ export default function Outline() {
                           boxShadow: `0 1px 2px ${alphaColor(token.colorTextBase, 0.08)}`,
                           transition: 'all 0.3s ease'
                         }}
-                        bodyStyle={{
-                          padding: isMobile ? '10px 12px' : 16
+                        styles={{
+                          body: { padding: isMobile ? '10px 12px' : 16 },
                         }}
                         onMouseEnter={(e) => {
                           if (!isMobile) {

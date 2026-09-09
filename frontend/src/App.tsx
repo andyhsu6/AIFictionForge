@@ -26,14 +26,11 @@ import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 import ProtectedRoute from './components/ProtectedRoute';
 import AppFooter from './components/AppFooter';
-import SpringFestival from './components/SpringFestival';
 import './App.css';
 
 function App() {
   return (
     <>
-      {/* 🧧 春节喜庆装饰 */}
-      <SpringFestival />
       <BrowserRouter
         future={{
           v7_startTransition: true,

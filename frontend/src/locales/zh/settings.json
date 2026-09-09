@@ -71,7 +71,6 @@
     "description": "切换后立即生效并保存；登录后以账号偏好为准",
     "enLabel": "English",
     "label": "界面语言",
-    "savePreferenceFailed": "保存界面语言偏好失败:",
     "syncFailed": "已在本地生效，但同步到服务器失败，仅对本浏览器有效。",
     "updated": "界面语言已更新",
     "zhLabel": "简体中文"

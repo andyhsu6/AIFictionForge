@@ -410,7 +410,7 @@ export default function Login() {
               </Button>
             </Space>
 
-            <Card size="small" bordered={false} style={{ borderRadius: 12, background: token.colorFillAlter }}>
+            <Card size="small" variant="borderless" style={{ borderRadius: 12, background: token.colorFillAlter }}>
               <Form
                 form={resetPasswordForm}
                 layout="vertical"
@@ -925,14 +925,14 @@ export default function Login() {
                       <Col span={12} key={item.title}>
                         <Card
                           size="small"
-                          bordered={false}
+                          variant="borderless"
                           style={{
                             height: '100%',
                             minHeight: 120,
                             borderRadius: 16,
                             background: alphaColor(token.colorBgContainer, 0.9),
                           }}
-                          bodyStyle={{ padding: 16 }}
+                          styles={{ body: { padding: 16 } }}
                         >
                           <Space direction="vertical" size={8}>
                             <Space size={10} style={{ color: token.colorPrimary, fontWeight: 700, fontSize: 15 }}>

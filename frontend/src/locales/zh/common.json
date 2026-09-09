@@ -49,10 +49,6 @@
   "preparing": "准备生成...",
   "refresh": "刷新",
   "saving": "保存中...",
-  "springFestival": {
-    "toggleOff": "关闭春节装饰",
-    "toggleOn": "开启春节装饰"
-  },
   "stream": {
     "readFailed": "无法读取灵创创作助手响应流"
   },

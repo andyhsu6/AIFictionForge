@@ -619,12 +619,14 @@ export default function UserManagement() {
             flexDirection: 'column',
             overflow: 'hidden',
           }}
-          bodyStyle={{
-            padding: 0,
-            height: '100%',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
+          styles={{
+            body: {
+              padding: 0,
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            },
           }}
         >
           {/* 搜索栏 */}

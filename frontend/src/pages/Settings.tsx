@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, Switch, theme } from 'antd';
 import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined, GlobalOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
@@ -20,6 +20,65 @@ interface SettingsPageProps {
    * "Settings", so the page-private hero became a duplicate of the shell one.
    */
   embedded?: boolean;
+}
+
+/**
+ * One row per language setting: label + description left, select right. The two
+ * language cards were copy-paste twins, and their selects had no accessible
+ * name because the visible label is plain text, not a form label (#41).
+ */
+function LanguageSelectCard({
+  label,
+  description,
+  selectLabel,
+  value,
+  onChange,
+  loading,
+  isMobile,
+  options,
+}: {
+  label: string;
+  description: string;
+  selectLabel: string;
+  value: string;
+  loading: boolean;
+  isMobile: boolean;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const { token } = theme.useToken();
+  return (
+    <Card
+      variant="borderless"
+      style={{
+        background: token.colorBgContainer,
+        borderRadius: isMobile ? 12 : 16,
+        boxShadow: token.boxShadowSecondary,
+        marginBottom: isMobile ? 20 : 24,
+      }}
+    >
+      <Row align="middle" justify="space-between" gutter={[16, 12]}>
+        <Col xs={24} sm={12}>
+          <Space direction="vertical" size={2}>
+            <Text strong>{label}</Text>
+            <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
+              {description}
+            </Text>
+          </Space>
+        </Col>
+        <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
+          <Select
+            aria-label={selectLabel}
+            value={value}
+            onChange={onChange}
+            loading={loading}
+            style={{ minWidth: 160 }}
+            options={options}
+          />
+        </Col>
+      </Row>
+    </Card>
+  );
 }
 
 export default function SettingsPage({ embedded = false }: SettingsPageProps) {
@@ -80,6 +139,10 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
 
   const pageBackground = `linear-gradient(180deg, ${token.colorBgLayout} 0%, ${token.colorFillSecondary} 100%)`;
   const headerBackground = `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`;
+
+  // 375px 下四个「图标+文字」标签放不进一屏（#41）：手机端只留文字、收紧间距，
+  // 桌面端维持原样。
+  const tabLabel = (icon: ReactNode, text: string) => (isMobile ? text : <Space size={6}>{icon}{text}</Space>);
 
   useEffect(() => {
     loadSettings();
@@ -176,10 +239,12 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
     try {
       await i18n.changeLanguage(lang);
       await settingsApi.updatePreferences({ language: lang });
-      message.success(t('language.updated'));
+      // `t` here is the pre-switch closure: resolve the copy at call time so the
+      // toast speaks the language the UI just switched to (#41).
+      message.success(i18n.t('language.updated', { ns: 'settings' }));
     } catch (error) {
       console.error('save ui language preference failed:', error);
-      message.warning(t('language.syncFailed'));
+      message.warning(i18n.t('language.syncFailed', { ns: 'settings' }));
     } finally {
       setSavingLanguage(false);
     }
@@ -1237,10 +1302,11 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
             <Tabs
               activeKey={activeTab}
               onChange={setActiveTab}
+              tabBarGutter={isMobile ? 8 : undefined}
               items={[
                 {
                   key: 'current',
-                  label: <Space size={6}><ThunderboltOutlined />{t('tabs.current')}</Space>,
+                  label: tabLabel(<ThunderboltOutlined />, t('tabs.current')),
                   children: (
                     <Space direction="vertical" size={isMobile ? 'middle' : 'large'} style={{ width: '100%' }}>
 
@@ -1386,7 +1452,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                                 return (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
                                   (option?.description ?? '').toLowerCase().includes(input.toLowerCase());
                               }}
-                              dropdownRender={(menu) => (
+                              popupRender={(menu) => (
                                 <>
                                   {menu}
                                   {fetchingModels && (
@@ -1800,7 +1866,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                 },
                 {
                   key: 'cover',
-                  label: <Space size={6}><PictureOutlined />{t('tabs.cover')}</Space>,
+                  label: tabLabel(<PictureOutlined />, t('tabs.cover')),
                   children: (
                     <Spin spinning={initialLoading}>
                       <Form form={form} layout="vertical" onFinish={handleSave} autoComplete="off">
@@ -1873,81 +1939,42 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                 },
                 {
                   key: 'presets',
-                  label: <Space size={6}><CopyOutlined />{t('tabs.presets')}</Space>,
+                  label: tabLabel(<CopyOutlined />, t('tabs.presets')),
                   children: renderPresetsList(),
                 },
                 {
                   key: 'language',
-                  label: <Space size={6}><GlobalOutlined />{t('tabs.language')}</Space>,
+                  label: tabLabel(<GlobalOutlined />, t('tabs.language')),
                   children: (
                     <>
-                      <Card
-                        variant="borderless"
-                        style={{
-                          background: token.colorBgContainer,
-                          borderRadius: isMobile ? 12 : 16,
-                          boxShadow: token.boxShadowSecondary,
-                          marginBottom: isMobile ? 20 : 24,
-                        }}
-                      >
-                        <Row align="middle" justify="space-between" gutter={[16, 12]}>
-                          <Col xs={24} sm={12}>
-                            <Space direction="vertical" size={2}>
-                              <Text strong>{t('language.label')}</Text>
-                              <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
-                                {t('language.description')}
-                              </Text>
-                            </Space>
-                          </Col>
-                          <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
-                            <Select
-                              value={uiLanguage}
-                              onChange={handleLanguageChange}
-                              loading={savingLanguage}
-                              style={{ minWidth: 160 }}
-                              options={[
-                                { value: 'zh', label: t('language.zhLabel') },
-                                { value: 'en', label: t('language.enLabel') },
-                              ]}
-                            />
-                          </Col>
-                        </Row>
-                      </Card>
+                      <LanguageSelectCard
+                        label={t('language.label')}
+                        description={t('language.description')}
+                        selectLabel={t('language.label')}
+                        value={uiLanguage}
+                        onChange={(value) => handleLanguageChange(value as 'zh' | 'en')}
+                        loading={savingLanguage}
+                        isMobile={isMobile}
+                        options={[
+                          { value: 'zh', label: t('language.zhLabel') },
+                          { value: 'en', label: t('language.enLabel') },
+                        ]}
+                      />
 
-                      {/* AI 生成内容语言（preferences.content_language，默认跟随界面语言） */}
-                      <Card
-                        variant="borderless"
-                        style={{
-                          background: token.colorBgContainer,
-                          borderRadius: isMobile ? 12 : 16,
-                          boxShadow: token.boxShadowSecondary,
-                          marginBottom: isMobile ? 20 : 24,
-                        }}
-                      >
-                        <Row align="middle" justify="space-between" gutter={[16, 12]}>
-                          <Col xs={24} sm={12}>
-                            <Space direction="vertical" size={2}>
-                              <Text strong>{t('contentLanguage.label')}</Text>
-                              <Text type="secondary" style={{ fontSize: isMobile ? 12 : 13 }}>
-                                {t('contentLanguage.description')}
-                              </Text>
-                            </Space>
-                          </Col>
-                          <Col xs={24} sm={12} style={{ textAlign: isMobile ? 'left' : 'right' }}>
-                            <Select
-                              value={contentLanguage}
-                              onChange={handleContentLanguageChange}
-                              loading={savingContentLanguage}
-                              style={{ minWidth: 160 }}
-                              options={[
-                                { value: 'auto', label: t('contentLanguage.auto') },
-                                { value: 'zh', label: t('contentLanguage.zh') },
-                                { value: 'en', label: t('contentLanguage.en') },
-                              ]}
-                            />
-                          </Col>
-                        </Row>
-                      </Card>
+                      <LanguageSelectCard
+                        label={t('contentLanguage.label')}
+                        description={t('contentLanguage.description')}
+                        selectLabel={t('contentLanguage.label')}
+                        value={contentLanguage}
+                        onChange={(value) => handleContentLanguageChange(value as 'auto' | 'zh' | 'en')}
+                        loading={savingContentLanguage}
+                        isMobile={isMobile}
+                        options={[
+                          { value: 'auto', label: t('contentLanguage.auto') },
+                          { value: 'zh', label: t('contentLanguage.zh') },
+                          { value: 'en', label: t('contentLanguage.en') },
+                        ]}
+                      />
                     </>
                   ),
                 },
@@ -2085,7 +2112,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                       return (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
                         (option?.description ?? '').toLowerCase().includes(input.toLowerCase());
                     }}
-                    dropdownRender={(menu) => (
+                    popupRender={(menu) => (
                       <>
                         {menu}
                         {fetchingPresetModels && (

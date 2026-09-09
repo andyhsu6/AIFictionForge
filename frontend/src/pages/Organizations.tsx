@@ -349,7 +349,7 @@ export default function Organizations() {
         <Card
           title={t('orgList.titleWithCount', { n: organizations.length })}
           style={{ width: 300, height: '100%', overflow: 'hidden' }}
-          bodyStyle={{ padding: 0, height: 'calc(100% - 57px)', overflow: 'auto' }}
+          styles={{ body: { padding: 0, height: 'calc(100% - 57px)', overflow: 'auto' } }}
           loading={loading}
         >
           {organizations.length === 0 ? (
@@ -480,7 +480,7 @@ export default function Organizations() {
             }}>
               <Card
                 style={{ flex: 1, overflow: 'auto' }}
-                bodyStyle={{ padding: isMobile ? '12px' : '24px' }}
+                styles={{ body: { padding: isMobile ? '12px' : '24px' } }}
               >
                 <Space direction="vertical" style={{ width: '100%' }} size={isMobile ? 'middle' : 'large'}>
                 <Card

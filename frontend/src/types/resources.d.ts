@@ -1203,10 +1203,6 @@ export default interface Resources {
     "preparing": "准备生成...",
     "refresh": "刷新",
     "saving": "保存中...",
-    "springFestival": {
-      "toggleOff": "关闭春节装饰",
-      "toggleOn": "开启春节装饰"
-    },
     "stream": {
       "readFailed": "无法读取灵创创作助手响应流"
     },
@@ -3237,7 +3233,6 @@ export default interface Resources {
       "description": "切换后立即生效并保存；登录后以账号偏好为准",
       "enLabel": "English",
       "label": "界面语言",
-      "savePreferenceFailed": "保存界面语言偏好失败:",
       "syncFailed": "已在本地生效，但同步到服务器失败，仅对本浏览器有效。",
       "updated": "界面语言已更新",
       "zhLabel": "简体中文"

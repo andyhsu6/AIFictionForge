@@ -192,14 +192,6 @@ interface CjkAllowEntry {
 
 const CJK_ALLOWLIST: CjkAllowEntry[] = [
   {
-    selector: '.sf-banner, .sf-toggle-btn, .sf-lantern, [class*="sf-"]',
-    routes: ['*'],
-    reason:
-      'SpringFestival is a deliberate zh-only decorative component (spring couplets like 新春快乐, lantern labels). ' +
-      'It renders only during the Lunar New Year season (Jan 15 - Mar 5), so CI runs outside that window never see it; ' +
-      'the allowance keeps the scan green when it does render.',
-  },
-  {
     selector: '.ant-modal-content',
     routes: ['/', '/projects'],
     reason:

@@ -316,11 +316,13 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
             />
           </Space>
         }
-        bodyStyle={{
-          padding: collapsed ? 0 : 12,
-          maxHeight: collapsed ? 0 : 400,
-          overflowY: 'auto',
-          transition: 'all 0.3s ease',
+        styles={{
+          body: {
+            padding: collapsed ? 0 : 12,
+            maxHeight: collapsed ? 0 : 400,
+            overflowY: 'auto',
+            transition: 'all 0.3s ease',
+          },
         }}
       >
         {!collapsed && (

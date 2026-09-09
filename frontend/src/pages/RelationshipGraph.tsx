@@ -1166,13 +1166,15 @@ export default function RelationshipGraph() {
           display: 'flex',
           flexDirection: 'column',
         }}
-        bodyStyle={{
-          flex: 1,
-          minHeight: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          padding: 12,
+        styles={{
+          body: {
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            padding: 12,
+          },
         }}
         title={
           <Space>
@@ -1363,12 +1365,14 @@ export default function RelationshipGraph() {
       display: 'flex',
       flexDirection: 'column',
     }}
-    bodyStyle={{
-      flex: 1,
-      overflow: 'hidden',
-      padding: '12px 16px',
-      display: 'flex',
-      flexDirection: 'column',
+    styles={{
+      body: {
+        flex: 1,
+        overflow: 'hidden',
+        padding: '12px 16px',
+        display: 'flex',
+        flexDirection: 'column',
+      },
     }}
             title={
               <Space>

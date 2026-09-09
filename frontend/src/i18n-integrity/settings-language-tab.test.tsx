@@ -116,6 +116,13 @@ describe('language settings live in their own tab (issue #37)', () => {
     const pane = screen.getByText('Interface language').closest('.ant-tabs-tabpane-active');
     expect(pane).not.toBeNull();
     expect(pane!.querySelectorAll('.ant-select').length).toBe(2);
+    // a11y (issue #41): the visible card label is a Typography.Text, not a form
+    // label, so the only accessible name a screen reader gets is the one we put
+    // on the select itself. Assert the combobox role + name, i.e. exactly what
+    // assistive tech exposes (antd mirrors the label onto the root div too,
+    // which is why getByLabelText would find two elements).
+    expect(screen.getByRole('combobox', { name: 'Interface language' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Content language' })).toBeTruthy();
   });
 
   it('keeps four tabs with the API tab still the default view', () => {
@@ -225,15 +232,10 @@ describe('a failed preference write survives the tab-switch refresh (issue #37 f
     // The local switch itself lands.
     await waitFor(() => expect(i18n.language).toBe('en'));
     // The premise: the write failed and the app told the user the choice applies
-    // on this browser only. The warning is rendered with the `t` captured by the
-    // pre-switch render, so its copy is one commit behind -- accept either locale.
-    await waitFor(() =>
-      expect(
-        [enSettings.language.syncFailed, zhSettings.language.syncFailed].some(
-          (copy) => screen.queryByText(copy) !== null,
-        ),
-      ).toBe(true),
-    );
+    // on this browser only. The toast must speak the language the UI has just
+    // switched to (issue #41) -- the `t` captured by the pre-switch render is
+    // one commit behind, so the copy has to be resolved at call time.
+    await waitFor(() => expect(screen.queryByText(enSettings.language.syncFailed)).not.toBeNull());
     expect(REQUESTS).toContain('put /settings/preferences');
 
     // The refresh must still refresh the API config, so the canned answer now
