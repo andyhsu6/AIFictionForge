@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     app_name: str = "AIFictionForge"
     app_version: str = "1.5.4"
     app_host: str = "0.0.0.0"
-    app_port: int = 8000
+    app_port: int = 8008
     debug: bool = False
     
     # 日志配置
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     log_message_max_chars: int = 2000  # 单条日志消息最大字符数
     
     # CORS配置
-    cors_origins: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
+    cors_origins: list[str] = ["http://localhost:8008", "http://127.0.0.1:8008", "http://localhost:5173", "http://127.0.0.1:5173"]
     
     # 数据库配置 - PostgreSQL
     database_url: str = DATABASE_URL
@@ -94,17 +94,17 @@ class Settings(BaseSettings):
     LINUXDO_CLIENT_ID: Optional[str] = None
     LINUXDO_CLIENT_SECRET: Optional[str] = None
     # 回调地址：Docker部署时必须使用实际域名或服务器IP，不能使用localhost
-    # 本地开发: http://localhost:8000/api/auth/callback
-    # 生产环境: https://your-domain.com/api/auth/callback 或 http://your-ip:8000/api/auth/callback
+    # 本地开发: http://localhost:8008/api/auth/callback
+    # 生产环境: https://your-domain.com/api/auth/callback 或 http://your-ip:8008/api/auth/callback
     LINUXDO_REDIRECT_URI: Optional[str] = None
     # LinuxDO 专用代理配置（仅用于 OAuth token 与用户信息请求，不影响 AI/SMTP/其他请求）
     # 示例: http://127.0.0.1:7890
     LINUXDO_PROXY_URL: Optional[str] = None
     
     # 前端URL配置（用于OAuth回调后重定向）
-    # 本地开发: http://localhost:8000
-    # 生产环境: https://your-domain.com 或 http://your-ip:8000
-    FRONTEND_URL: str = "http://localhost:8000"
+    # 本地开发: http://localhost:8008
+    # 生产环境: https://your-domain.com 或 http://your-ip:8008
+    FRONTEND_URL: str = "http://localhost:8008"
     
     # 初始管理员配置（LinuxDO user_id）
     INITIAL_ADMIN_LINUXDO_ID: Optional[str] = None

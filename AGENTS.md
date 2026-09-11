@@ -50,7 +50,9 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - 后端健康检查：`curl http://localhost:8008/health` 应返回 `{"status":"ok"}`
 
 ## 环境约定
-- **端口**：后端 8008（`.env` 的 `APP_PORT`；8000 被本机 SillyTavern 占用）、前端 5173（Vite dev，代理指向 8008）
+- **端口**：后端 8008（`.env` 的 `APP_PORT`；8000 为历史遗留默认值且被本机无关服务占用，**禁止使用**）、前端 dev 5173（Vite，代理指向 8008）；单端口构建入口 = 8008（`npm run build` 产物输出到 `backend/static/`，由后端直接伺服）
+- **前端改动工作流（硬约束）**：开发/验收期间用 5173 实时预览（HMR）；确认改动无误后，在创建/更新 PR、更新 issue 或合并前，必须 `cd frontend && npm run build` 构建到 `backend/static/`，让 8008 单端口入口同步反映改动。
+- **禁止新增 8000 端口引用（硬约束）**：不得再添加任何指向端口 8000 的默认值/回退/文档引用；所有新端口默认值一律为 8008（含前端 API base URL 回退）。
 - **数据库**：SQLite `backend/data/mumuai_novel.db`（本地开发不用 PostgreSQL）
 - **后端启动**：必须从项目根目录以 `PYTHONPATH=backend` 启动（否则 pydantic 读不到根目录 `.env`）；venv 在 `backend/.venv`（Python 3.12）
 - **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008

@@ -147,7 +147,7 @@ cp backend/.env.example .env
 docker-compose up -d
 
 # 5. 访问应用
-# 打开浏览器访问 http://localhost:8000
+# 打开浏览器访问 http://localhost:8008
 ```
 
 > **📌 注意事项**
@@ -189,7 +189,7 @@ docker run -d --name postgres \
   postgres:18-alpine
 
 # 启动后端
-python -m uvicorn app.main:app --host localhost --port 8000 --reload
+python -m uvicorn app.main:app --host localhost --port 8008 --reload
 ```
 
 #### 前端
@@ -200,6 +200,8 @@ npm install
 npm run dev  # 开发模式
 npm run build  # 生产构建
 ```
+
+> **📌 端口说明**：前端开发服务器运行在 **5173**（Vite，代理 `/api` -> `http://localhost:8008`）；后端监听 **8008**。执行 `npm run build` 后，构建产物由后端以单端口 **8008** 入口直接提供访问。
 
 ## ⚙️ 配置说明
 
@@ -233,7 +235,7 @@ LOCAL_AUTH_PASSWORD=your_password
 # LinuxDO OAuth
 LINUXDO_CLIENT_ID=your_client_id
 LINUXDO_CLIENT_SECRET=your_client_secret
-LINUXDO_REDIRECT_URI=http://localhost:8000/api/auth/callback
+LINUXDO_REDIRECT_URI=http://localhost:8008/api/auth/callback
 # LinuxDO 登录专用代理（可选，仅影响 OAuth token 与用户信息请求）
 LINUXDO_PROXY_URL=http://127.0.0.1:7890
 
@@ -293,7 +295,7 @@ OPENAI_BASE_URL=https://your-proxy-service.com/v1
   - 优化配置: 支持 80-150 并发用户
 
 - **aistoryforge**: 主应用服务
-  - 端口: 8000
+  - 端口: 8008
   - 日志目录: `./logs`
   - 配置挂载: `.env` 文件
   - 自动等待数据库就绪
@@ -342,7 +344,7 @@ docker stats
 
 ```yaml
 ports:
-  - "8800:8000"  # 宿主机:容器
+  - "8800:8008"  # 宿主机:容器
 ```
 
 ## 📁 项目结构
@@ -386,8 +388,8 @@ AIFictionForge/
 
 ### API 文档
 
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- Swagger UI: `http://localhost:8008/docs`
+- ReDoc: `http://localhost:8008/redoc`
 
 ## 📝 许可证
 

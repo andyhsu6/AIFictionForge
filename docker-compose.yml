@@ -59,7 +59,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT:-8008}:8008"
     volumes:
       - ./logs:/app/logs
       - ./storage/generated_covers:/app/storage/generated_covers
@@ -72,7 +72,7 @@ services:
       - APP_NAME=${APP_NAME:-AIFictionForge}
       - APP_VERSION=${APP_VERSION:-1.5.4}
       - APP_HOST=${APP_HOST:-0.0.0.0}
-      - APP_PORT=8000
+      - APP_PORT=8008
       - DEBUG=${DEBUG:-false}
       
       # 数据库配置
@@ -113,9 +113,9 @@ services:
       # LinuxDO OAuth 配置
       - LINUXDO_CLIENT_ID=${LINUXDO_CLIENT_ID:-11111}
       - LINUXDO_CLIENT_SECRET=${LINUXDO_CLIENT_SECRET:-11111}
-      - LINUXDO_REDIRECT_URI=${LINUXDO_REDIRECT_URI:-http://localhost:8000/api/auth/linuxdo/callback}
+      - LINUXDO_REDIRECT_URI=${LINUXDO_REDIRECT_URI:-http://localhost:8008/api/auth/linuxdo/callback}
       - LINUXDO_PROXY_URL=${LINUXDO_PROXY_URL:-}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8008}
       
       # 本地账户登录配置
       - LOCAL_AUTH_ENABLED=${LOCAL_AUTH_ENABLED:-true}
@@ -129,7 +129,7 @@ services:
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
