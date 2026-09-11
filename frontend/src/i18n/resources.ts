@@ -34,7 +34,6 @@ import zhAiProjectGenerator from '../locales/zh/aiProjectGenerator.json';
 import zhChapterContentComparison from '../locales/zh/chapterContentComparison.json';
 import zhChapterRegenerationModal from '../locales/zh/chapterRegenerationModal.json';
 import zhCharacterCard from '../locales/zh/characterCard.json';
-import zhCharacterCareerCard from '../locales/zh/characterCareerCard.json';
 import zhExpansionPlanEditor from '../locales/zh/expansionPlanEditor.json';
 import zhFloatingTaskPanel from '../locales/zh/floatingTaskPanel.json';
 import zhPartialRegenerateModal from '../locales/zh/partialRegenerateModal.json';
@@ -71,7 +70,6 @@ import enAiProjectGenerator from '../locales/en/aiProjectGenerator.json';
 import enChapterContentComparison from '../locales/en/chapterContentComparison.json';
 import enChapterRegenerationModal from '../locales/en/chapterRegenerationModal.json';
 import enCharacterCard from '../locales/en/characterCard.json';
-import enCharacterCareerCard from '../locales/en/characterCareerCard.json';
 import enExpansionPlanEditor from '../locales/en/expansionPlanEditor.json';
 import enFloatingTaskPanel from '../locales/en/floatingTaskPanel.json';
 import enPartialRegenerateModal from '../locales/en/partialRegenerateModal.json';
@@ -111,7 +109,6 @@ export const resources = {
     chapterContentComparison: zhChapterContentComparison,
     chapterRegenerationModal: zhChapterRegenerationModal,
     characterCard: zhCharacterCard,
-    characterCareerCard: zhCharacterCareerCard,
     expansionPlanEditor: zhExpansionPlanEditor,
     floatingTaskPanel: zhFloatingTaskPanel,
     partialRegenerateModal: zhPartialRegenerateModal,
@@ -150,7 +147,6 @@ export const resources = {
     chapterContentComparison: enChapterContentComparison,
     chapterRegenerationModal: enChapterRegenerationModal,
     characterCard: enCharacterCard,
-    characterCareerCard: enCharacterCareerCard,
     expansionPlanEditor: enExpansionPlanEditor,
     floatingTaskPanel: enFloatingTaskPanel,
     partialRegenerateModal: enPartialRegenerateModal,
