@@ -135,3 +135,10 @@ backend/app/**/*_test.py
 # contributor guide is the one tracked exception.
 docs/*
 !docs/i18n.md
+
+# CodeGraph local index (regenerated via `codegraph init`)
+.codegraph/
+
+# Qoder editor local state
+.qoder/
+
