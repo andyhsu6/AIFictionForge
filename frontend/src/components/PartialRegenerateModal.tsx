@@ -47,6 +47,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   const [progressMessage, setProgressMessage] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const generatedTextRef = useRef<HTMLDivElement>(null);
+  const errorNotifiedRef = useRef(false);
 
   // 重置状态
   useEffect(() => {
@@ -79,6 +80,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
     setGeneratedText('');
     setProgress(0);
     setProgressMessage(t('preparing'));
+    errorNotifiedRef.current = false;
 
     // 创建 AbortController 用于取消请求
     abortControllerRef.current = new AbortController();
@@ -111,7 +113,9 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
           },
           onError: (error) => {
             console.error('SSE错误:', error);
+            errorNotifiedRef.current = true;
             message.error(error || t('generateError'));
+            setIsGenerating(false);
           },
           onComplete: () => {
             setIsGenerating(false);
@@ -121,7 +125,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       );
     } catch (error) {
       console.error('生成失败:', error);
-      if ((error as Error).name !== 'AbortError') {
+      if (!errorNotifiedRef.current && (error as Error).name !== 'AbortError') {
         message.error(t('generateFailed'));
       }
       setIsGenerating(false);

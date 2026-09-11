@@ -86,6 +86,27 @@ def resolve_effective_max_tokens(
     return default
 
 
+def ensure_thinking_model_min_tokens(
+    max_tokens: int,
+    model: Optional[str],
+    base_url: Optional[str] = None,
+    floor: int = THINKING_MODEL_DEFAULT_MAX_TOKENS,
+) -> int:
+    """为思考型模型显式传入的 max_tokens 兜底抬升到下限（修复 #45）。
+
+    与 resolve_effective_max_tokens 不同：后者对显式传入的 requested 原样返回
+    （该契约被 test_ai_token_budget.py 钉死，不能改）。部分调用点会显式传入一个
+    很小的预算（例如局部重写按选区字数算出的下限 500），思考型模型的推理过程会
+    把预算耗尽，导致正文为空、finish_reason=length。本函数只用于这类调用点，
+    在不改变全局契约的前提下把预算抬到安全下限。
+
+    max_tokens 是上限而非目标，模型遇到 EOS 会自然停止，抬高下限不会强制变长。
+    """
+    if is_thinking_model(model, base_url):
+        return max(max_tokens, floor)
+    return max_tokens
+
+
 # 已知模型上下文窗口（D4 模型能力分级；未列出的按保守值处理）
 _KNOWN_CONTEXT_WINDOWS = {
     "deepseek-v4": 1000000,
