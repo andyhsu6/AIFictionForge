@@ -13,6 +13,11 @@
 ## Issues 同步规范（全流程自动同步）
 - **需求（feature）**：需求明确后在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；计划确定后把计划要点同步到 issue 评论区；实施中每个 commit 引用 issue 编号（如 `fix: ... closes #21` 或 `feat(...): ... refs #21`）；验收确认后更新 issue 状态（验收结果/PR 链接）并关闭。
 - **Bug**：发现 bug 时先创建 issue（`[Bug]` 前缀，label `bug`）记录复现步骤、预期/实际行为与环境；修复提交时在 commit message 中引用 issue 编号（如 `fix: ... closes #9`），完成后关闭 issue。
+- **PR 必须关联 issue（硬约束，随合并自动关闭）**：
+  - PR **正文**必须包含 GitHub 关闭关键词并指向对应 issue：`closes #N`、`fixes #N` 或 `resolves #N`。关键词写在 PR 正文（而非仅 commit message），这样 issue 才会出现在 PR 的 Linked issues / 时间线，并在**合并时自动关闭**。
+  - 能由 PR 合并自动关闭的 issue，**禁止手动提前关闭**；只有确实无对应 PR（如纯文档/运维）时才手动关闭。
+  - 建 PR 后必须核对关联生效：`gh pr view <N> --repo andyhsu6/AIFictionForge --json closingIssuesReferences` 输出应包含目标 issue，且 issue 时间线出现 `cross-referenced`。
+  - 合并后必须核对 issue 已自动关闭：`gh issue view <N> --repo andyhsu6/AIFictionForge --json state,stateReason` 应为 `CLOSED` / `COMPLETED`；若未关闭，立即补关联并关闭，并在 issue 评论中留下 PR 链接与验收结果。
 - 批量/历史同步：按功能主题合并建 issue，颗粒度到功能模块而非单个提交。
 - 使用仓库内的中文模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
 
