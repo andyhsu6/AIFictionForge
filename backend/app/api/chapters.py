@@ -52,7 +52,11 @@ from app.schemas.regeneration import (
     RegenerationTaskResponse,
     RegenerationTaskStatus
 )
-from app.services.ai_service import AIService, resolve_context_budget_chars
+from app.services.ai_service import (
+    AIService,
+    ensure_thinking_model_min_tokens,
+    resolve_context_budget_chars,
+)
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
@@ -5221,6 +5225,11 @@ async def partial_regenerate_stream(
                 target_words = int(original_word_count * 1.5)
             
             calculated_max_tokens = max(500, min(int(target_words * 3), 8000))
+            calculated_max_tokens = ensure_thinking_model_min_tokens(
+                calculated_max_tokens,
+                getattr(user_ai_service, "default_model", None),
+                getattr(user_ai_service, "base_url", None),
+            )
             
             # 流式生成
             full_content = ""
@@ -5274,6 +5283,17 @@ async def partial_regenerate_stream(
                 full_content = full_content[1:-1]
             
             new_word_count = len(full_content)
+            
+            if new_word_count == 0:
+                logger.warning(
+                    f"⚠️ 局部重写返回空正文: 原文{original_word_count}字, "
+                    f"model={getattr(user_ai_service, 'default_model', None)}"
+                )
+                yield await tracker.error(
+                    "AI服务返回空响应",
+                    error_code="internal.ai_empty_response",
+                )
+                return
             
             logger.info(f"✅ 局部重写完成: 原文{original_word_count}字 -> 新文{new_word_count}字")
             

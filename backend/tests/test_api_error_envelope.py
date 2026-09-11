@@ -379,6 +379,25 @@ async def test_tracker_error_dual_shape_legacy_plus_structured():
 
 
 @pytest.mark.anyio
+async def test_tracker_error_empty_ai_response_code():
+    """局部重写空正文（#45）复用已注册的 internal.ai_empty_response 结构化码。"""
+    from app.utils.sse_response import WizardProgressTracker
+    from app.core.errors import ERROR_REGISTRY
+
+    assert "internal.ai_empty_response" in ERROR_REGISTRY
+
+    tracker = WizardProgressTracker("局部重写")
+    structured = json.loads(
+        (
+            await tracker.error("AI服务返回空响应", error_code="internal.ai_empty_response")
+        ).split("data: ", 1)[1].strip()
+    )
+    assert structured["type"] == "error"
+    assert structured["error_code"] == "internal.ai_empty_response"
+    assert structured["code"] == 200
+
+
+@pytest.mark.anyio
 async def test_tracker_warning_retry_structured_additive():
     """tracker.warning/retry 扩展签名：旧 message 文本字节不变，追加 message_code/message_params/message_raw。"""
     from app.utils.sse_response import WizardProgressTracker
