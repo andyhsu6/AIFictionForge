@@ -44,7 +44,6 @@ i18n
       'chapterContentComparison',
       'chapterRegenerationModal',
       'characterCard',
-      'characterCareerCard',
       'expansionPlanEditor',
       'floatingTaskPanel',
       'partialRegenerateModal',
