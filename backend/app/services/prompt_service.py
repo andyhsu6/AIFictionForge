@@ -2505,6 +2505,75 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 偏离用户的修改要求
 </constraints>"""
 
+    # 章节内续写提示词（RTCO框架）：输出为插入锚点之后的续写片段
+    # content_language 与 PARTIAL_REGENERATE 相同，由 format_prompt 追加式注入，非模板占位符
+    PARTIAL_CONTINUE = """<system>
+你是一位专业的小说续写助手，擅长从指定锚点文本之后自然续写，同时确保与前文无缝衔接、与后文平滑兼容。
+</system>
+
+<task>
+【续写任务】
+下面"锚点文本"的结束处是续写起点。请从锚点文本之后继续写作，你的输出将被直接插入到锚点文本之后。
+
+【重要要求】
+1. 只输出续写内容本身，不要包含任何解释、前缀或后缀
+2. 严禁重复或转述锚点文本及其前文内容——它们是衔接参考，不是输出的一部分
+3. 续写必须与前文保持叙事视角、人称、时态与角色状态的连贯一致
+4. 字数目标仅为近似值，情节应自然收束，不要为凑字数而注水，也不要在意犹未尽时戛然而止
+</task>
+
+<context priority="P0">
+【前文参考】（用于衔接，勿重复）
+{context_before}
+
+【锚点文本】（续写起点；输出紧接此段之后，勿重复此段内容）
+{anchor_text}
+
+【后文参考】（如已有后文，续写应向其平滑过渡；勿重复）
+{context_after}
+</context>
+
+<user_requirements priority="P0">
+【用户续写要求】
+{user_instructions}
+
+【字数要求】
+目标约{target_chars}字（近似值，允许自然浮动，以叙事完整自然为准）
+</user_requirements>
+
+<style priority="P1">
+【写作风格】
+{style_content}
+</style>
+
+<output>
+【输出规范】
+直接输出续写内容，从锚点文本结束处的下一个字开始写。
+- 不要输出任何解释或说明文字
+- 不要输出"续写："等前缀
+- 不要输出引号包裹内容
+- 不要复述或引用锚点文本
+- 确保输出内容可以直接拼接在锚点文本之后
+
+请直接输出续写内容：
+</output>
+
+<constraints>
+【必须遵守】
+✅ 续写定位：输出是紧接锚点之后插入的续写片段，只写接下来发生的内容
+✅ 衔接连贯：与前文保持同一叙事视角、人称和时态，角色言行符合已有设定与当前状态
+✅ 长度近似：约{target_chars}字仅为参考目标，叙事自然收束即可，不要在字数处硬性终止
+✅ 风格一致：严格遵循上述写作风格要求
+✅ 语言一致：使用提示末尾指定的目标语言写作
+
+【禁止事项】
+❌ 重复或转述锚点文本与前文内容
+❌ 输出任何元信息、解释或前后缀
+❌ 改变叙事视角、人称或时态
+❌ 偏离用户的续写要求
+❌ 为凑足字数注水，或为了接近目标字数而生硬截断
+</constraints>"""
+
     # 拆书导入-反向项目提炼提示词
     BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION = """<system>
 你是资深网文策划编辑，擅长从小说正文中反向提炼项目立项信息。
@@ -3087,6 +3156,14 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
                 "description": "根据用户修改要求重写选中的段落内容",
                 "parameters": ["context_before", "original_word_count", "selected_text", "context_after",
                              "user_instructions", "length_requirement", "style_content"]
+            },
+            "PARTIAL_CONTINUE": {
+                "name": "局部续写",
+                "category": "章节续写",
+                "description": "从选中锚点文本之后续写新内容，输出直接插入锚点之后；"
+                               "content_language 由 format_prompt 追加式注入（非模板内占位符）",
+                "parameters": ["context_before", "anchor_text", "context_after", "target_chars",
+                             "user_instructions", "style_content", "content_language"]
             },
             "PLOT_ANALYSIS": {
                 "name": "情节分析",

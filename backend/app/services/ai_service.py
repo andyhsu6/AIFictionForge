@@ -143,6 +143,49 @@ def detect_context_window(model: Optional[str]) -> int:
     return 32768
 
 
+# 保守默认输出上限（章内续写 B0：未登记模型按此值推导输出预算）
+_DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+# 已知模型最大输出 token（模型输出能力注册表；未列出的按保守值处理。
+# 思考/推理模型条目不得低于 THINKING_MODEL_DEFAULT_MAX_TOKENS：推理与正文
+# 共享输出预算，登记过低会让续写段正文为空，与修复 #13 的语义一致）
+_KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
+    "deepseek-v4": 64000,
+    "deepseek-v3": 64000,
+    "deepseek-r1": 64000,
+    "gpt-5": 128000,
+    "gpt-4o": 16384,
+    "gpt-4.1": 32768,
+    "gpt-4-turbo": 16384,
+    "gpt-4": 8192,
+    "gpt-3.5": 4096,
+    "claude-3": 8192,
+    "claude-2": 4096,
+    "gemini-1.5": 8192,
+    "gemini-2": 65536,
+    "qwen": 8192,
+    "glm": 8192,
+    "minimax": 16384,
+}
+
+
+def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = None) -> int:
+    """检测模型最大输出 token 数（输出能力注册表，镜像 detect_context_window）。
+
+    按键长度降序匹配已知表（更具体的键优先，如 gpt-4.1 先于 gpt-4），
+    未命中或登记值非正数时返回保守值 _DEFAULT_MAX_OUTPUT_TOKENS，
+    保证返回值恒 > 0。base_url 与 is_thinking_model 保持同签名形态，
+    预留给后续按网关覆盖，当前解析仅依据模型名；对 None/空 model 健壮。
+    """
+    name = (model or "").lower()
+    for key, limit in sorted(
+        _KNOWN_OUTPUT_LIMITS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
+        if key in name and limit > 0:
+            return limit
+    return _DEFAULT_MAX_OUTPUT_TOKENS
+
+
 # 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
 # 全书注入保留 40% 余量给输出/系统提示词/思考模型推理（0.6 为保守值：
 # 800K 字符 prompt 的 prefill TTFB 未实测，且 1M 窗口需容纳基础上下文栈

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { App, Modal, Input, Button, Space, Radio, InputNumber, Card, Alert, Spin, Typography, Divider, theme } from 'antd';
-import { ThunderboltOutlined, CheckOutlined, ReloadOutlined, EditOutlined, LoadingOutlined } from '@ant-design/icons';
+import { App, Modal, Input, Button, Space, Radio, Segmented, InputNumber, Card, Alert, Spin, Typography, Divider, theme } from 'antd';
+import { ThunderboltOutlined, CheckOutlined, ReloadOutlined, EditOutlined, LoadingOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { chapterApi } from '../services/api';
 
 const { TextArea } = Input;
@@ -14,15 +14,40 @@ interface PartialRegenerateModalProps {
   startPosition: number;
   endPosition: number;
   styleId?: number;
+  mode?: RegenerateMode;
   onClose: () => void;
-  onApply: (newText: string, startPosition: number, endPosition: number) => void;
+  onApply: (newText: string, startPosition: number, endPosition: number, mode: RegenerateMode) => void;
 }
 
 type LengthMode = 'similar' | 'expand' | 'condense' | 'custom';
+export type RegenerateMode = 'rewrite' | 'continue';
+
+// 续写为客户端分段循环（后端是无状态单段原语）：
+// 目标字数超过软阈值时先确认；每段约按此字数估算段数。
+const SOFT_TARGET_THRESHOLD = 50000;
+const ESTIMATED_SEGMENT_CHARS = 8000;
+// 滚动上下文只回传末尾若干字符，控制请求体大小
+const ROLLING_CONTEXT_CHARS = 4000;
+
+/** 单段 SSE result 事件里续写相关的返回字段 */
+interface ContinueSegmentResult {
+  new_text?: string;
+  mode?: RegenerateMode;
+  content_hash?: string;
+  segment_index?: number;
+  segment_count?: number;
+  requested_chars?: number;
+  generated_chars?: number;
+  complete?: boolean;
+}
+
+/** 取字符串末尾 n 个字符（不足 n 时原样返回） */
+const tail = (s: string, n: number): string => (s.length > n ? s.slice(s.length - n) : s);
 
 /**
- * 局部重写弹窗组件
- * 用于配置和执行选中文本的AI重写
+ * 局部重写/续写弹窗组件
+ * rewrite：配置并执行选中文本的AI重写（单次请求、替换原文）
+ * continue：以选中文本为锚点，客户端分段循环生成续写并一次性插入（不替换后续文本）
  */
 export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   visible,
@@ -31,37 +56,62 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   startPosition,
   endPosition,
   styleId,
+  mode: initialMode = 'rewrite',
   onClose,
   onApply,
 }) => {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { t } = useTranslation('partialRegenerateModal');
   const { token } = theme.useToken();
+  const [mode, setMode] = useState<RegenerateMode>(initialMode);
   const [userInstructions, setUserInstructions] = useState('');
   const [lengthMode, setLengthMode] = useState<LengthMode>('similar');
   const [customWordCount, setCustomWordCount] = useState<number>(selectedText.length);
+  const [continueTarget, setContinueTarget] = useState<number>(1000);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedText, setGeneratedText] = useState('');
   const [hasGenerated, setHasGenerated] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
+  // 续写分段状态
+  const [segments, setSegments] = useState<string[]>([]);
+  const [currentSegment, setCurrentSegment] = useState(0);
+  const [totalSegments, setTotalSegments] = useState<number | null>(null);
+  const [contentHash, setContentHash] = useState<string | null>(null);
+  const [resumePending, setResumePending] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const generatedTextRef = useRef<HTMLDivElement>(null);
   const errorNotifiedRef = useRef(false);
+  const segmentsRef = useRef<string[]>([]);
+  const contentHashRef = useRef<string | null>(null);
+  const totalSegmentsRef = useRef<number | null>(null);
+  const stopRequestedRef = useRef(false);
+
 
   // 重置状态
   useEffect(() => {
     if (visible) {
+      setMode(initialMode);
       setUserInstructions('');
       setLengthMode('similar');
       setCustomWordCount(selectedText.length);
+      setContinueTarget(1000);
       setIsGenerating(false);
       setGeneratedText('');
       setHasGenerated(false);
       setProgress(0);
       setProgressMessage('');
+      setSegments([]);
+      segmentsRef.current = [];
+      setCurrentSegment(0);
+      setTotalSegments(null);
+      totalSegmentsRef.current = null;
+      setContentHash(null);
+      contentHashRef.current = null;
+      setResumePending(false);
+      stopRequestedRef.current = false;
     }
-  }, [visible, selectedText.length]);
+  }, [visible, initialMode, selectedText.length]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -69,6 +119,25 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       generatedTextRef.current.scrollTop = generatedTextRef.current.scrollHeight;
     }
   }, [generatedText, isGenerating]);
+
+  const handleModeChange = (next: RegenerateMode) => {
+    if (isGenerating || next === mode) {
+      return;
+    }
+    setMode(next);
+    setGeneratedText('');
+    setHasGenerated(false);
+    setProgress(0);
+    setProgressMessage('');
+    setSegments([]);
+    segmentsRef.current = [];
+    setCurrentSegment(0);
+    setTotalSegments(null);
+    totalSegmentsRef.current = null;
+    setContentHash(null);
+    contentHashRef.current = null;
+    setResumePending(false);
+  };
 
   const handleGenerate = async () => {
     if (!userInstructions.trim()) {
@@ -132,6 +201,172 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
     }
   };
 
+  /** 清空续写草稿（分段数组/哈希/段数），重新开始循环前调用 */
+  const resetContinueDraft = () => {
+    setSegments([]);
+    segmentsRef.current = [];
+    setCurrentSegment(0);
+    setTotalSegments(null);
+    totalSegmentsRef.current = null;
+    setContentHash(null);
+    contentHashRef.current = null;
+    setGeneratedText('');
+    setResumePending(false);
+    setHasGenerated(false);
+  };
+
+  /**
+   * 客户端分段循环（D9 fork B）：后端为无状态单段原语，循环由本组件编排。
+   * startIndex 支持断点续跑（= 已完成段数）。
+   */
+  const runContinueLoop = async (startIndex: number) => {
+    setIsGenerating(true);
+    setHasGenerated(false);
+    setResumePending(false);
+    stopRequestedRef.current = false;
+    let k = startIndex;
+
+    try {
+      while (true) {
+        const baseText = segmentsRef.current.join('');
+        errorNotifiedRef.current = false;
+        setCurrentSegment(k);
+        setProgress(0);
+        setProgressMessage(t('preparing'));
+
+        abortControllerRef.current = new AbortController();
+        let buffer = '';
+        const captured: { result: ContinueSegmentResult | null } = { result: null };
+
+        try {
+          await chapterApi.partialRegenerateStream(
+            chapterId,
+            {
+              selected_text: selectedText,
+              start_position: startPosition,
+              end_position: endPosition,
+              user_instructions: userInstructions,
+              context_chars: 500,
+              style_id: styleId,
+              mode: 'continue',
+              target_word_count: continueTarget,
+              segment_index: k,
+              already_generated_chars: baseText.length,
+              rolling_context: tail(baseText, ROLLING_CONTEXT_CHARS),
+              content_hash: contentHashRef.current ?? undefined,
+            },
+            {
+              signal: abortControllerRef.current.signal,
+              onProgress: (msg) => {
+                setProgressMessage(msg || t('generating'));
+              },
+              onChunk: (content) => {
+                buffer += content;
+                setGeneratedText(baseText + buffer);
+                setProgress(Math.min(99, Math.round(((baseText.length + buffer.length) / Math.max(continueTarget, 1)) * 100)));
+              },
+              onResult: (data) => {
+                captured.result = data as ContinueSegmentResult;
+              },
+              onError: (error) => {
+                console.error('SSE错误:', error);
+                errorNotifiedRef.current = true;
+                message.error(error || t('generateError'));
+              },
+            }
+          );
+        } catch (error) {
+          // AbortController 只中断当前段：草稿保留，进入断点续写界面
+          if (stopRequestedRef.current || (error as Error)?.name === 'AbortError') {
+            break;
+          }
+          throw error;
+        }
+
+        // 段完成：以 result 事件的 new_text 固化分段（缺 result 时回退到流式缓冲）
+        const newText = captured.result?.new_text ?? buffer;
+        if (captured.result?.content_hash && !contentHashRef.current) {
+          contentHashRef.current = captured.result.content_hash;
+          setContentHash(captured.result.content_hash);
+        }
+        if (typeof captured.result?.segment_count === 'number' && captured.result.segment_count > 0) {
+          totalSegmentsRef.current = captured.result.segment_count;
+          setTotalSegments(captured.result.segment_count);
+        }
+        segmentsRef.current = [...segmentsRef.current, newText];
+        setSegments(segmentsRef.current);
+        setGeneratedText(segmentsRef.current.join(''));
+
+        const n = totalSegmentsRef.current;
+        const finished =
+          captured.result?.complete === true ||
+          (n !== null && segmentsRef.current.length >= n) ||
+          // 无分段元数据时按单段完成处理，避免死循环
+          (n === null && captured.result?.complete !== false);
+        if (finished) {
+          setProgress(100);
+          setProgressMessage(t('generated'));
+          setHasGenerated(true);
+          setIsGenerating(false);
+          return;
+        }
+        if (stopRequestedRef.current) {
+          break;
+        }
+        k += 1;
+      }
+      // 用户中止当前段：保留草稿（丢弃未完成段的流式缓冲），展示续跑/接受部分结果入口
+      setIsGenerating(false);
+      setGeneratedText(segmentsRef.current.join(''));
+      setResumePending(true);
+    } catch (error) {
+      console.error('续写生成失败:', error);
+      if (!errorNotifiedRef.current && (error as Error).name !== 'AbortError') {
+        message.error(t('generateFailed'));
+      }
+      setIsGenerating(false);
+      if (segmentsRef.current.length > 0) {
+        // 已有草稿：可从中断处继续或接受已完成部分
+        setGeneratedText(segmentsRef.current.join(''));
+        setResumePending(true);
+      } else {
+        setGeneratedText('');
+      }
+    }
+  };
+
+  /** 发起续写：软阈值以上先确认段数估算 */
+  const handleStartContinue = () => {
+    if (!userInstructions.trim()) {
+      message.warning(t('instructionsRequired'));
+      return;
+    }
+    if (continueTarget > SOFT_TARGET_THRESHOLD) {
+      modal.confirm({
+        title: t('largeTargetTitle'),
+        content: t('largeTargetConfirm', {
+          target: continueTarget,
+          count: Math.ceil(continueTarget / ESTIMATED_SEGMENT_CHARS),
+        }),
+        okText: t('largeTargetOk'),
+        cancelText: t('cancel'),
+        onOk: () => {
+          resetContinueDraft();
+          void runContinueLoop(0);
+        },
+      });
+      return;
+    }
+    resetContinueDraft();
+    void runContinueLoop(0);
+  };
+
+  /** 停止当前段生成（草稿保留，出现续跑入口） */
+  const handleStopSegment = () => {
+    stopRequestedRef.current = true;
+    abortControllerRef.current?.abort();
+  };
+
   const handleCancel = () => {
     if (isGenerating && abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -142,6 +377,31 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   };
 
   const handleAccept = async () => {
+    if (mode === 'continue') {
+      const text = segmentsRef.current.join('');
+      if (!text.trim()) {
+        message.warning(t('noContent'));
+        return;
+      }
+      try {
+        // 续写为插入式应用：锚点选区仅定位，start == end，不替换后续文本；整篇只应用一次
+        await chapterApi.applyPartialRegenerate(chapterId, {
+          new_text: text,
+          start_position: endPosition,
+          end_position: endPosition,
+          mode: 'continue',
+          content_hash: contentHash ?? undefined,
+        });
+        message.success(t('continueApplied'));
+        onApply(text, endPosition, endPosition, 'continue');
+        onClose();
+      } catch (error) {
+        console.error('应用失败:', error);
+        message.error(t('applyFailed'));
+      }
+      return;
+    }
+
     if (!generatedText.trim()) {
       message.warning(t('noContent'));
       return;
@@ -156,7 +416,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       });
 
       message.success(t('applied'));
-      onApply(generatedText, startPosition, endPosition);
+      onApply(generatedText, startPosition, endPosition, 'rewrite');
       onClose();
     } catch (error) {
       console.error('应用失败:', error);
@@ -165,6 +425,10 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   };
 
   const handleRegenerate = () => {
+    if (mode === 'continue') {
+      void handleStartContinue();
+      return;
+    }
     setGeneratedText('');
     setHasGenerated(false);
     setProgress(0);
@@ -172,22 +436,24 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
     handleGenerate();
   };
 
-  const getLengthModeDescription = (mode: LengthMode): string => {
+  const getLengthModeDescription = (m: LengthMode): string => {
     const descriptions: Record<LengthMode, string> = {
       similar: t('lengthSimilar'),
       expand: t('lengthExpand'),
       condense: t('lengthCondense'),
       custom: t('lengthCustom'),
     };
-    return descriptions[mode];
+    return descriptions[m];
   };
+
+  const isContinue = mode === 'continue';
 
   return (
     <Modal
       title={
         <Space>
           <EditOutlined style={{ color: token.colorPrimary }} />
-          <span>{t('title')}</span>
+          <span>{t(isContinue ? 'titleContinue' : 'title')}</span>
         </Space>
       }
       open={visible}
@@ -202,36 +468,74 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
           <Button onClick={handleCancel} disabled={isGenerating}>
             {t('cancel')}
           </Button>
-          {!hasGenerated ? (
+          {isGenerating && isContinue && (
+            <Button icon={<PauseCircleOutlined />} onClick={handleStopSegment}>
+              {t('stopGenerate')}
+            </Button>
+          )}
+          {isGenerating && !isContinue && (
             <Button
               type="primary"
-              icon={isGenerating ? <LoadingOutlined /> : <ThunderboltOutlined />}
-              onClick={handleGenerate}
-              loading={isGenerating}
+              icon={<LoadingOutlined />}
+              loading
               disabled={!userInstructions.trim()}
-              style={{
-                background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
-                border: 'none',
-                boxShadow: token.boxShadowSecondary,
-              }}
             >
-              {isGenerating ? t('generating') : t('startRewrite')}
+              {t('generating')}
             </Button>
-          ) : (
-            <>
+          )}
+          {!isGenerating && !hasGenerated && (!resumePending || segments.length === 0) && (
+            isContinue ? (
               <Button
-                icon={<ReloadOutlined />}
-                onClick={handleRegenerate}
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={handleStartContinue}
+                disabled={!userInstructions.trim()}
+                style={{
+                  background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
+                  border: 'none',
+                  boxShadow: token.boxShadowSecondary,
+                }}
               >
-                {t('regenerate')}
+                {t('startContinue')}
               </Button>
+            ) : (
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={handleGenerate}
+                disabled={!userInstructions.trim()}
+                style={{
+                  background: `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`,
+                  border: 'none',
+                  boxShadow: token.boxShadowSecondary,
+                }}
+              >
+                {t('startRewrite')}
+              </Button>
+            )
+          )}
+          {(hasGenerated || (resumePending && !isGenerating && segments.length > 0)) && (
+            <>
+              {hasGenerated && (
+                <Button icon={<ReloadOutlined />} onClick={handleRegenerate}>
+                  {t('regenerate')}
+                </Button>
+              )}
+              {resumePending && !isGenerating && (
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={() => void runContinueLoop(segmentsRef.current.length)}
+                >
+                  {t('resumeFromSegment', { segment: segments.length + 1 })}
+                </Button>
+              )}
               <Button
                 type="primary"
                 icon={<CheckOutlined />}
                 onClick={handleAccept}
                 style={{ background: token.colorSuccess, borderColor: token.colorSuccess }}
               >
-                {t('apply')}
+                {isContinue ? t(resumePending ? 'acceptPartial' : 'applyContinue') : t('apply')}
               </Button>
             </>
           )}
@@ -244,6 +548,19 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
         },
       }}
     >
+      {/* 模式切换：改写 / 续写 */}
+      <div style={{ marginBottom: 16 }}>
+        <Segmented
+          value={mode}
+          onChange={(value) => handleModeChange(value as RegenerateMode)}
+          disabled={isGenerating}
+          options={[
+            { label: t('modeRewrite'), value: 'rewrite' },
+            { label: t('modeContinue'), value: 'continue' },
+          ]}
+        />
+      </div>
+
       {/* 原文展示 */}
       <Card
         size="small"
@@ -274,65 +591,107 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
         </Paragraph>
       </Card>
 
-      {/* 重写要求输入 */}
+      {/* 改写/续写要求输入 */}
       <div style={{ marginBottom: 16 }}>
         <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          {t('rewriteRequirementsLabel')} <Text type="danger">*</Text>
+          {t(isContinue ? 'continueRequirementsLabel' : 'rewriteRequirementsLabel')} <Text type="danger">*</Text>
         </Text>
         <TextArea
           value={userInstructions}
           onChange={(e) => setUserInstructions(e.target.value)}
-          placeholder={t('placeholder')}
+          placeholder={t(isContinue ? 'continuePlaceholder' : 'placeholder')}
           rows={4}
           disabled={isGenerating}
           style={{ resize: 'none' }}
         />
       </div>
 
-      {/* 长度模式选择 */}
-      <div style={{ marginBottom: 16 }}>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          {t('lengthControlLabel')}
-        </Text>
-        <Radio.Group
-          value={lengthMode}
-          onChange={(e) => setLengthMode(e.target.value)}
-          disabled={isGenerating}
-          buttonStyle="solid"
-        >
-          <Radio.Button value="similar">{t('lengthKeepLabel')}</Radio.Button>
-          <Radio.Button value="expand">{t('lengthExpandLabel')}</Radio.Button>
-          <Radio.Button value="condense">{t('lengthCondenseLabel')}</Radio.Button>
-          <Radio.Button value="custom">{t('lengthCustomLabel')}</Radio.Button>
-        </Radio.Group>
-        <div style={{ marginTop: 8 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {getLengthModeDescription(lengthMode)}
+      {isContinue ? (
+        /* 续写长度控制：绝对目标字数（无硬上限） */
+        <div style={{ marginBottom: 16 }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            {t('continueLengthLabel')}
           </Text>
+          <Space>
+            <InputNumber
+              value={continueTarget}
+              onChange={(value) => setContinueTarget(typeof value === 'number' && value > 0 ? value : 1000)}
+              min={1}
+              step={500}
+              disabled={isGenerating}
+              addonAfter={t('wordUnit')}
+              style={{ width: 180 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {t('continueLengthHint')}
+            </Text>
+          </Space>
+          {continueTarget > SOFT_TARGET_THRESHOLD && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="warning" style={{ fontSize: 12 }}>
+                {t('largeTargetHint', { count: Math.ceil(continueTarget / ESTIMATED_SEGMENT_CHARS) })}
+              </Text>
+            </div>
+          )}
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 12 }}
+            message={t('continueAnchorTitle')}
+            description={
+              <div>
+                <div style={{ whiteSpace: 'pre-line' }}>{t('continueExplain')}</div>
+                <Text type="warning" style={{ fontSize: 12 }}>{t('continueForkNote')}</Text>
+              </div>
+            }
+          />
         </div>
-        {lengthMode === 'custom' && (
-          <div style={{ marginTop: 12 }}>
-            <Space>
-              <Text>{t('targetWordCountLabel')}</Text>
-              <InputNumber
-                value={customWordCount}
-                onChange={(value) => setCustomWordCount(value || selectedText.length)}
-                min={10}
-                max={10000}
-                step={50}
-                disabled={isGenerating}
-                addonAfter={t('wordUnit')}
-                style={{ width: 150 }}
-              />
-            </Space>
+      ) : (
+        /* 长度模式选择（改写） */
+        <div style={{ marginBottom: 16 }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            {t('lengthControlLabel')}
+          </Text>
+          <Radio.Group
+            value={lengthMode}
+            onChange={(e) => setLengthMode(e.target.value)}
+            disabled={isGenerating}
+            buttonStyle="solid"
+          >
+            <Radio.Button value="similar">{t('lengthKeepLabel')}</Radio.Button>
+            <Radio.Button value="expand">{t('lengthExpandLabel')}</Radio.Button>
+            <Radio.Button value="condense">{t('lengthCondenseLabel')}</Radio.Button>
+            <Radio.Button value="custom">{t('lengthCustomLabel')}</Radio.Button>
+          </Radio.Group>
+          <div style={{ marginTop: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {getLengthModeDescription(lengthMode)}
+            </Text>
           </div>
-        )}
-      </div>
+          {lengthMode === 'custom' && (
+            <div style={{ marginTop: 12 }}>
+              <Space>
+                <Text>{t('targetWordCountLabel')}</Text>
+                <InputNumber
+                  value={customWordCount}
+                  onChange={(value) => setCustomWordCount(value || selectedText.length)}
+                  min={10}
+                  max={10000}
+                  step={50}
+                  disabled={isGenerating}
+                  addonAfter={t('wordUnit')}
+                  style={{ width: 150 }}
+                />
+              </Space>
+            </div>
+          )}
+        </div>
+      )}
 
       <Divider style={{ margin: '16px 0' }} />
 
       {/* 生成结果展示 */}
-      {(isGenerating || hasGenerated) && (
+      {(isGenerating || hasGenerated || (resumePending && segments.length > 0)) && (
         <div>
           <div style={{ 
             display: 'flex', 
@@ -341,9 +700,16 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
             marginBottom: 8 
           }}>
             <Space>
-              <Text strong>{t('resultLabel')}</Text>
+              <Text strong>{t(isContinue ? 'continueResultLabel' : 'resultLabel')}</Text>
               {generatedText && (
                 <Text type="secondary">({t('charCount', { count: generatedText.length })})</Text>
+              )}
+              {isContinue && isGenerating && (
+                <Text type="secondary">
+                  {totalSegments !== null
+                    ? t('segmentProgress', { current: currentSegment + 1, total: totalSegments })
+                    : t('segmentProgressUnknown', { current: currentSegment + 1 })}
+                </Text>
               )}
             </Space>
             {isGenerating && (
@@ -422,19 +788,33 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
             )}
           </Card>
 
+          {isContinue && resumePending && !isGenerating && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginTop: 12 }}
+              message={t('resumeTitle')}
+              description={t('resumeDesc', { count: segments.length })}
+            />
+          )}
+
           {hasGenerated && generatedText && (
             <Alert
               message={t('generated')}
               description={
-                <span>
-                  {t('resultSummary', { original: selectedText.length, generated: generatedText.length })}
-                  {generatedText.length > selectedText.length && (
-                    <Text type="success">{t('diffPositive', { delta: generatedText.length - selectedText.length })}</Text>
-                  )}
-                  {generatedText.length < selectedText.length && (
-                    <Text type="warning">{t('diffNegative', { delta: generatedText.length - selectedText.length })}</Text>
-                  )}
-                </span>
+                isContinue ? (
+                  <span>{t('continueSummary', { count: generatedText.length })}</span>
+                ) : (
+                  <span>
+                    {t('resultSummary', { original: selectedText.length, generated: generatedText.length })}
+                    {generatedText.length > selectedText.length && (
+                      <Text type="success">{t('diffPositive', { delta: generatedText.length - selectedText.length })}</Text>
+                    )}
+                    {generatedText.length < selectedText.length && (
+                      <Text type="warning">{t('diffNegative', { delta: generatedText.length - selectedText.length })}</Text>
+                    )}
+                  </span>
+                )
               }
               type="success"
               showIcon

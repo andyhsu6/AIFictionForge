@@ -5,9 +5,11 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 import json
 import asyncio
+import hashlib
 from typing import Awaitable, Callable, Optional
 from datetime import datetime, timedelta
 from asyncio import Queue, Lock
+from math import ceil
 
 from app.database import get_db, get_engine
 from app.api.common import verify_project_access
@@ -54,6 +56,7 @@ from app.schemas.regeneration import (
 )
 from app.services.ai_service import (
     AIService,
+    detect_max_output_tokens,
     ensure_thinking_model_min_tokens,
     resolve_context_budget_chars,
 )
@@ -65,7 +68,7 @@ from app.services.chapter_regenerator import ChapterRegenerator
 from app.services.language_resolver import resolve_user_generation_language
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
-from app.utils.sse_response import SSEResponse, create_sse_response
+from app.utils.sse_response import HEARTBEAT, SSEResponse, create_sse_response, wrap_stream_with_heartbeat
 
 router = APIRouter(prefix="/chapters", tags=["章节管理"])
 logger = get_logger(__name__)
@@ -76,6 +79,13 @@ analysis_background_tasks: set[asyncio.Task] = set()
 
 ANALYSIS_TASK_TIMEOUT_SECONDS = 600
 ANALYSIS_TASK_STALE_SECONDS = 720
+
+# 章内 AI 续写（continue 模式）分段/能力参数（W5 冻结契约；字数即 len(str)）
+SINGLE_REQUEST_MAX_CHARS = 12000
+SEGMENT_TARGET_CHARS = 8000
+MAX_CONTINUE_SEGMENTS = 24
+CONTINUE_MAX_TARGET_CHARS = 200000
+CONTINUE_MIN_SEGMENT_CHARS = 1000
 
 
 def _resolve_full_book_budget(model_name: Optional[str]) -> int:
@@ -5035,6 +5045,63 @@ async def update_chapter_expansion_plan(
 
 # ==================== 局部重写相关API ====================
 
+CONTINUE_PREFIXES_TO_REMOVE = [
+    "重写后：", "重写后:", "改写后：", "改写后:",
+    "以下是重写后的内容：", "以下是重写后的内容:",
+    "重写内容：", "重写内容:"
+]
+
+
+def _clean_partial_generated_text(text: str) -> str:
+    """清理生成输出：strip → 常见AI前缀 → 首尾引号（rewrite/continue 共用）。"""
+    text = text.strip()
+    for prefix in CONTINUE_PREFIXES_TO_REMOVE:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    if (text.startswith('"') and text.endswith('"')) or \
+       (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1]
+    if (text.startswith('「') and text.endswith('」')) or \
+       (text.startswith('『') and text.endswith('』')):
+        text = text[1:-1]
+    return text
+
+
+def _strip_anchor_echo(text: str, anchor_text: str) -> str:
+    """D7 回声守卫：输出以锚点尾部（探针=锚点后≤40字，须≥8字）开头时剥除该重复前缀。"""
+    probe = anchor_text[-40:]
+    if len(probe) >= 8 and text.startswith(probe):
+        return text[len(probe):].strip()
+    return text
+
+
+async def _stream_partial_generate(
+    tracker,
+    ai_stream,
+    *,
+    estimated_total: int,
+    progress_message: Callable[[int], str],
+):
+    """单次流式生成 pass：包心跳（HEARTBEAT→tracker.heartbeat()）；yield (SSE事件, 累计文本)。"""
+    full_content = ""
+    chunk_count = 0
+    async for item in wrap_stream_with_heartbeat(ai_stream, heartbeat_interval=15.0):
+        if item is HEARTBEAT:
+            yield await tracker.heartbeat(), full_content
+            continue
+        full_content += item
+        chunk_count += 1
+        yield await tracker.generating_chunk(item), full_content
+        if chunk_count % 5 == 0:
+            yield await tracker.generating(
+                current_chars=len(full_content),
+                estimated_total=estimated_total,
+                message=progress_message(len(full_content)),
+            ), full_content
+        await asyncio.sleep(0)
+
+
 @router.post("/{chapter_id}/partial-regenerate-stream", summary="流式局部重写选中内容")
 async def partial_regenerate_stream(
     chapter_id: str,
@@ -5072,26 +5139,75 @@ async def partial_regenerate_stream(
     # 验证用户权限
     await verify_project_access(chapter.project_id, user_id, db)
     
-    # 验证位置参数
+    mode = partial_request.mode
     content_length = len(chapter.content)
-    if partial_request.start_position >= content_length:
-        raise ApiError(
-            code="validation.polish_range_out_of_bounds",
-            detail="起始位置超出内容范围",
-            params={"bound": "start"},
-        )
-    if partial_request.end_position > content_length:
-        raise ApiError(
-            code="validation.polish_range_out_of_bounds",
-            detail="结束位置超出内容范围",
-            params={"bound": "end"},
-        )
-    if partial_request.start_position >= partial_request.end_position:
-        raise ApiError(code="validation.polish_start_before_end")
+
+    if mode == "continue":
+        # ---- 章内 AI 续写：位置与锚点校验（精确匹配，无 ±50 模糊校正；start==end 允许=追加）----
+        if partial_request.start_position > content_length:
+            raise ApiError(
+                code="validation.polish_range_out_of_bounds",
+                detail="起始位置超出内容范围",
+                params={"bound": "start"},
+            )
+        if partial_request.end_position > content_length:
+            raise ApiError(
+                code="validation.polish_range_out_of_bounds",
+                detail="结束位置超出内容范围",
+                params={"bound": "end"},
+            )
+        if partial_request.start_position > partial_request.end_position:
+            raise ApiError(code="validation.polish_start_before_end")
+
+        actual_selected = chapter.content[partial_request.start_position:partial_request.end_position]
+        if partial_request.selected_text and actual_selected != partial_request.selected_text:
+            raise ApiError(code="validation.polish_selection_mismatch")
+
+        target_chars = partial_request.target_word_count or 1000
+        if target_chars > CONTINUE_MAX_TARGET_CHARS:
+            raise ApiError(code="validation.continue_target_too_large")
+
+        # ---- 能力推导与服务端分段（无服务端循环：单请求单段，客户端驱动 0..N-1）----
+        continue_model = getattr(user_ai_service, "default_model", None)
+        continue_base_url = getattr(user_ai_service, "base_url", None)
+        output_limit = detect_max_output_tokens(continue_model, continue_base_url)
+        safety_factor = 2.0
+        effective_segment_chars = min(SEGMENT_TARGET_CHARS, output_limit // 2)
+        if effective_segment_chars < CONTINUE_MIN_SEGMENT_CHARS:
+            raise ApiError(code="internal.continue_capability_insufficient")
+        # N 按 FULL target_chars 推导（跨段稳定），不按剩余量
+        segment_count = max(1, ceil(target_chars / effective_segment_chars))
+        if segment_count > MAX_CONTINUE_SEGMENTS:
+            raise ApiError(code="validation.continue_segment_limit_exceeded")
+        if partial_request.segment_index >= segment_count:
+            raise ApiError(code="validation.continue_segment_index_invalid")
+
+        remaining = max(0, target_chars - partial_request.already_generated_chars)
+        seg_chars = max(1, min(effective_segment_chars, remaining))
+        budget = min(ceil(seg_chars * safety_factor), output_limit)
+        budget = ensure_thinking_model_min_tokens(budget, continue_model, continue_base_url)
+        # 思考模型抬底永远不得穿透 provider 输出上限
+        budget = min(budget, output_limit)
+    else:
+        # ---- 局部重写：既有位置校验（行为保持）----
+        if partial_request.start_position >= content_length:
+            raise ApiError(
+                code="validation.polish_range_out_of_bounds",
+                detail="起始位置超出内容范围",
+                params={"bound": "start"},
+            )
+        if partial_request.end_position > content_length:
+            raise ApiError(
+                code="validation.polish_range_out_of_bounds",
+                detail="结束位置超出内容范围",
+                params={"bound": "end"},
+            )
+        if partial_request.start_position >= partial_request.end_position:
+            raise ApiError(code="validation.polish_start_before_end")
     
     # 验证选中的文本是否匹配
     actual_selected = chapter.content[partial_request.start_position:partial_request.end_position]
-    if actual_selected != partial_request.selected_text:
+    if mode != "continue" and actual_selected != partial_request.selected_text:
         # 位置可能有偏差，尝试在附近查找
         search_start = max(0, partial_request.start_position - 50)
         search_end = min(content_length, partial_request.end_position + 50)
@@ -5144,6 +5260,121 @@ async def partial_regenerate_stream(
             else:
                 logger.warning(f"⚠️ 风格 {style_id} 不属于当前用户，跳过")
     
+    async def continue_event_generator():
+        """续写流式事件生成器：单请求单段（客户端驱动 0..N-1，无服务端循环）"""
+        from app.utils.sse_response import WizardProgressTracker
+        tracker = WizardProgressTracker("AI续写")
+        seg_index = partial_request.segment_index
+
+        try:
+            yield await tracker.start()
+            yield await tracker.loading("准备续写上下文...", 0.3)
+
+            pre_window, post_window = 3000, 1200
+            rolling = (partial_request.rolling_context or "").strip()
+            if seg_index > 0 and rolling:
+                context_before = rolling
+                anchor_text = rolling
+                context_after = "（续写中，暂无后文）"
+            else:
+                start_pos = partial_request.start_position
+                end_pos = partial_request.end_position
+                context_before = chapter.content[max(0, start_pos - pre_window):start_pos] or "（这是章节开头）"
+                anchor_text = partial_request.selected_text or "（续写起点）"
+                context_after = chapter.content[end_pos:min(content_length, end_pos + post_window)] or "（这是章节结尾）"
+
+            logger.info(f"🤖 AI续写 第{seg_index + 1}/{segment_count}段: 锚点{len(anchor_text)}字, "
+                        f"前文{len(context_before)}字, 后文{len(context_after)}字, 本段预算{seg_chars}字")
+
+            yield await tracker.loading("构建提示词...", 0.5)
+
+            template = await PromptService.get_template("PARTIAL_CONTINUE", user_id, db)
+            if not template:
+                template = PromptService.PARTIAL_CONTINUE
+
+            generation_language = await resolve_user_generation_language(db, user_id)
+
+            prompt = PromptService.format_prompt(
+                template,
+                context_before=context_before,
+                anchor_text=anchor_text,
+                context_after=context_after,
+                target_chars=seg_chars,
+                user_instructions=partial_request.user_instructions,
+                style_content=style_content or "保持与原文一致的叙事风格",
+                content_language=generation_language,
+            )
+
+            yield await tracker.preparing("开始生成...")
+
+            def progress_message(chars: int) -> str:
+                return f"正在续写中... 第{seg_index + 1}/{segment_count}段, 已生成 {chars} 字"
+
+            yield await tracker.generating(
+                current_chars=0,
+                estimated_total=seg_chars,
+                message=f"AI续写 第{seg_index + 1}/{segment_count}段...",
+            )
+
+            full_content = ""
+            async for ev, full_content in _stream_partial_generate(
+                tracker,
+                user_ai_service.generate_text_stream(prompt=prompt, max_tokens=budget),
+                estimated_total=seg_chars,
+                progress_message=progress_message,
+            ):
+                yield ev
+
+            full_content = _strip_anchor_echo(_clean_partial_generated_text(full_content), anchor_text)
+
+            if len(full_content) < max(50, seg_chars * 0.1):
+                full_content = ""
+                async for ev, full_content in _stream_partial_generate(
+                    tracker,
+                    user_ai_service.generate_text_stream(prompt=prompt, max_tokens=budget),
+                    estimated_total=seg_chars,
+                    progress_message=progress_message,
+                ):
+                    yield ev
+                full_content = _strip_anchor_echo(_clean_partial_generated_text(full_content), anchor_text)
+
+            if len(full_content) == 0:
+                logger.warning(f"⚠️ AI续写返回空正文: 本段目标{seg_chars}字, model={continue_model}")
+                yield await tracker.error(
+                    "AI服务返回空响应",
+                    error_code="internal.ai_empty_response",
+                )
+                return
+
+            content_hash = hashlib.sha256(chapter.content.encode("utf-8")).hexdigest()
+            logger.info(f"✅ AI续写完成: 第{seg_index + 1}/{segment_count}段生成{len(full_content)}字")
+
+            yield await tracker.complete("续写完成！", code="progress.done")
+
+            yield await tracker.result({
+                'new_text': full_content,
+                'word_count': len(full_content),
+                'original_word_count': len(anchor_text),
+                'start_position': partial_request.end_position,
+                'end_position': partial_request.end_position,
+                'mode': 'continue',
+                'content_hash': content_hash,
+                'segment_index': seg_index,
+                'segment_count': segment_count,
+                'requested_chars': seg_chars,
+                'generated_chars': len(full_content),
+                'complete': seg_index + 1 >= segment_count,
+            })
+
+            yield await tracker.done()
+
+        except Exception as e:
+            logger.error(f"❌ AI续写失败: {str(e)}", exc_info=True)
+            yield await tracker.error(str(e))
+
+    if mode == "continue":
+        return create_sse_response(continue_event_generator())
+
     async def event_generator():
         """流式生成事件生成器"""
         from app.utils.sse_response import WizardProgressTracker
@@ -5233,54 +5464,25 @@ async def partial_regenerate_stream(
             
             # 流式生成
             full_content = ""
-            chunk_count = 0
             
             yield await tracker.generating(
                 current_chars=0,
                 estimated_total=target_words
             )
             
-            async for chunk in user_ai_service.generate_text_stream(
-                prompt=prompt,
-                max_tokens=calculated_max_tokens
+            async for ev, full_content in _stream_partial_generate(
+                tracker,
+                user_ai_service.generate_text_stream(
+                    prompt=prompt,
+                    max_tokens=calculated_max_tokens
+                ),
+                estimated_total=target_words,
+                progress_message=lambda chars: f'正在重写中... 已生成 {chars} 字',
             ):
-                full_content += chunk
-                chunk_count += 1
-                
-                # 发送内容块
-                yield await tracker.generating_chunk(chunk)
-                
-                # 每5个chunk发送一次进度更新
-                if chunk_count % 5 == 0:
-                    yield await tracker.generating(
-                        current_chars=len(full_content),
-                        estimated_total=target_words,
-                        message=f'正在重写中... 已生成 {len(full_content)} 字'
-                    )
-                
-                await asyncio.sleep(0)
+                yield ev
             
             # 清理输出（移除可能的前后缀）
-            full_content = full_content.strip()
-            
-            # 移除常见的AI输出前缀
-            prefixes_to_remove = [
-                "重写后：", "重写后:", "改写后：", "改写后:",
-                "以下是重写后的内容：", "以下是重写后的内容:",
-                "重写内容：", "重写内容:"
-            ]
-            for prefix in prefixes_to_remove:
-                if full_content.startswith(prefix):
-                    full_content = full_content[len(prefix):].strip()
-                    break
-            
-            # 移除首尾可能的引号
-            if (full_content.startswith('"') and full_content.endswith('"')) or \
-               (full_content.startswith("'") and full_content.endswith("'")):
-                full_content = full_content[1:-1]
-            if (full_content.startswith('「') and full_content.endswith('」')) or \
-               (full_content.startswith('『') and full_content.endswith('』')):
-                full_content = full_content[1:-1]
+            full_content = _clean_partial_generated_text(full_content)
             
             new_word_count = len(full_content)
             
@@ -5296,17 +5498,21 @@ async def partial_regenerate_stream(
                 return
             
             logger.info(f"✅ 局部重写完成: 原文{original_word_count}字 -> 新文{new_word_count}字")
-            
+
+            content_hash = hashlib.sha256(chapter.content.encode("utf-8")).hexdigest()
+
             # 完成
             yield await tracker.complete("重写完成！", code="progress.done")
-            
+
             # 发送结果数据
             yield await tracker.result({
                 'new_text': full_content,
                 'word_count': new_word_count,
                 'original_word_count': original_word_count,
                 'start_position': partial_request.start_position,
-                'end_position': partial_request.end_position
+                'end_position': partial_request.end_position,
+                'mode': 'rewrite',
+                'content_hash': content_hash,
             })
             
             yield await tracker.done()
@@ -5353,13 +5559,23 @@ async def apply_partial_regenerate(
     new_text = apply_request.get('new_text', '')
     start_position = apply_request.get('start_position', 0)
     end_position = apply_request.get('end_position', 0)
+    mode = apply_request.get('mode', 'rewrite')
+    content_hash = apply_request.get('content_hash')
     
     if not new_text:
         raise ApiError(code="validation.polish_new_content_empty")
     
-    # 验证位置有效性
+    # D6 乐观锁：客户端带 content_hash 时比对当前章节正文，不一致则拒绝写入（旧客户端不带则跳过）
+    if content_hash is not None:
+        actual_hash = hashlib.sha256(chapter.content.encode("utf-8")).hexdigest()
+        if actual_hash != content_hash:
+            logger.warning(f"⚠️ content_hash 不匹配，拒绝应用: 章节{chapter_id}（内容已被其他路径修改）")
+            raise ApiError(code="validation.content_hash_mismatch")
+    
+    # 验证位置有效性（续写插入允许 start==end；重写保持严格小于）
     content_length = len(chapter.content)
-    if start_position < 0 or end_position > content_length or start_position >= end_position:
+    bad_order = start_position > end_position if mode == "continue" else start_position >= end_position
+    if start_position < 0 or end_position > content_length or bad_order:
         raise ApiError(code="validation.polish_position_invalid")
     
     # 构建新内容
@@ -5382,12 +5598,13 @@ async def apply_partial_regenerate(
     await db.commit()
     await db.refresh(chapter)
     
-    logger.info(f"✅ 局部重写已应用: 章节{chapter_id}, {old_word_count}字 -> {new_word_count}字")
+    action_label = "AI续写" if mode == "continue" else "局部重写"
+    logger.info(f"✅ {action_label}已应用: 章节{chapter_id}, {old_word_count}字 -> {new_word_count}字")
     
     return {
         "success": True,
         "chapter_id": chapter_id,
         "word_count": new_word_count,
         "old_word_count": old_word_count,
-        "message": "局部重写已应用"
+        "message": f"{action_label}已应用"
     }

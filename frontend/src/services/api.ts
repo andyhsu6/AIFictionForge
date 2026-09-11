@@ -802,6 +802,11 @@ export const chapterApi = {
       style_id?: number;
       length_mode?: 'similar' | 'expand' | 'condense' | 'custom';
       target_word_count?: number;
+      mode?: 'rewrite' | 'continue';
+      segment_index?: number;
+      already_generated_chars?: number;
+      rolling_context?: string;
+      content_hash?: string;
     },
     options?: SSEClientOptions
   ) => ssePost<{
@@ -810,6 +815,13 @@ export const chapterApi = {
     original_word_count: number;
     start_position: number;
     end_position: number;
+    mode?: 'rewrite' | 'continue';
+    content_hash?: string;
+    segment_index?: number;
+    segment_count?: number;
+    requested_chars?: number;
+    generated_chars?: number;
+    complete?: boolean;
   }>(
     `/api/chapters/${chapterId}/partial-regenerate-stream`,
     data,
@@ -820,6 +832,8 @@ export const chapterApi = {
     new_text: string;
     start_position: number;
     end_position: number;
+    mode?: 'rewrite' | 'continue';
+    content_hash?: string;
   }) =>
     api.post<unknown, {
       success: boolean;

@@ -41,7 +41,9 @@
     }
   },
   "partialToolbar": {
+    "aiContinue": "AI续写",
     "aiRewrite": "AI重写",
+    "continueTooltip": "从选中内容之后续写（不替换后文）",
     "rewriteTooltip": "AI重写选中内容: \"{{text}}\"",
     "selectedChars": "已选 {{count}} 字"
   },

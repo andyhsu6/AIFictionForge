@@ -1,6 +1,6 @@
 """章节相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 
 from app.schemas.settings import ContentLanguage
@@ -238,9 +238,14 @@ class PartialRegenerateRequest(BaseModel):
     target_word_count: Optional[int] = Field(
         None,
         description="指定目标字数（仅当length_mode为custom时有效）",
-        ge=10,
-        le=5000
+        ge=10
     )
+    # 续写（continue）可选参数：mode=rewrite 时以下字段均不生效，保持旧调用方兼容
+    mode: Literal["rewrite", "continue"] = Field("rewrite", description="模式：rewrite(局部重写)/continue(向下续写)")
+    segment_index: int = Field(0, description="续写分段序号（从0开始）", ge=0)
+    already_generated_chars: int = Field(0, description="本次续写已生成字符数", ge=0)
+    rolling_context: Optional[str] = Field(None, description="滚动上下文（已生成内容的尾部摘要）")
+    content_hash: Optional[str] = Field(None, description="续写锚点内容的哈希校验值")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -249,7 +254,8 @@ class PartialRegenerateRequest(BaseModel):
             "end_position": 1260,
             "user_instructions": "增加更细腻的打斗描写，加入主角的心理活动",
             "context_chars": 500,
-            "length_mode": "expand"
+            "length_mode": "expand",
+            "mode": "rewrite"
         }
     })
 
@@ -261,3 +267,11 @@ class PartialRegenerateResponse(BaseModel):
     word_count: int = Field(..., description="新内容字数")
     original_word_count: int = Field(..., description="原文字数")
     message: str = Field("重写成功", description="响应消息")
+    # 续写（continue）模式附加字段，rewrite 模式下保持默认值
+    mode: str = Field("rewrite", description="模式：rewrite/continue")
+    content_hash: Optional[str] = Field(None, description="续写锚点内容的哈希校验值")
+    segment_index: int = Field(0, description="续写分段序号（从0开始）")
+    segment_count: int = Field(1, description="续写分段总数")
+    requested_chars: Optional[int] = Field(None, description="本段请求生成字符数")
+    generated_chars: Optional[int] = Field(None, description="本段实际生成字符数")
+    complete: bool = Field(True, description="续写是否已全部完成")
