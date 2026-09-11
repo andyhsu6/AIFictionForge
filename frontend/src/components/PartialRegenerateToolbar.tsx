@@ -1,12 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Tooltip, theme } from 'antd';
-import { EditOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 
 interface PartialRegenerateToolbarProps {
   visible: boolean;
   position: { top: number; left: number };
   onRegenerate: () => void;
+  onContinue?: () => void;
   selectedText: string;
 }
 
@@ -18,6 +19,7 @@ export const PartialRegenerateToolbar: React.FC<PartialRegenerateToolbarProps> =
   visible,
   position,
   onRegenerate,
+  onContinue,
   selectedText
 }) => {
   const { token } = theme.useToken();
@@ -73,6 +75,30 @@ export const PartialRegenerateToolbar: React.FC<PartialRegenerateToolbarProps> =
           {t('partialToolbar.aiRewrite')}
         </Button>
       </Tooltip>
+      {onContinue && (
+        <Tooltip
+          title={t('partialToolbar.continueTooltip')}
+          placement="top"
+        >
+          <Button
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onContinue();
+            }}
+            style={{
+              // 与重写按钮同一主题 token 体系，保证明暗主题下对比度
+              color: token.colorPrimary,
+              borderColor: token.colorPrimary,
+              fontWeight: 500,
+            }}
+          >
+            {t('partialToolbar.aiContinue')}
+          </Button>
+        </Tooltip>
+      )}
       <span style={{ 
         fontSize: 12, 
         color: token.colorTextTertiary,

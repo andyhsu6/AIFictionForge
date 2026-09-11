@@ -499,17 +499,37 @@ async def wrap_stream_with_heartbeat(
                 yield await tracker.heartbeat()
                 continue
             # chunk 是原始AI数据
+
+    注意：心跳超时不会取消底层迭代器。旧实现用 asyncio.wait_for(ait.__anext__())
+    在超时时 cancel 挂起的 __anext__，会终结底层 async generator 并丢失后续
+    数据/异常；现改为持久 task + asyncio.wait 轮询，超时仅发心跳、继续等待。
     """
     ait = async_gen.__aiter__()
-    while True:
-        try:
-            item = await asyncio.wait_for(ait.__anext__(), timeout=heartbeat_interval)
+    pending: Optional[asyncio.Task] = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(ait.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=heartbeat_interval)
+            if not done:
+                # 等待超时，产生心跳哨兵；底层 __anext__ task 继续挂起等待
+                yield HEARTBEAT
+                continue
+            try:
+                item = await pending
+            except StopAsyncIteration:
+                pending = None
+                return
+            pending = None
             yield item
-        except asyncio.TimeoutError:
-            # 等待超时，产生心跳哨兵
-            yield HEARTBEAT
-        except StopAsyncIteration:
-            return
+    finally:
+        # 消费者提前退出（GeneratorExit/取消）时清理挂起的 __anext__ task，避免泄漏
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
 
 
 def create_sse_response(generator: AsyncGenerator[str, None]) -> StreamingResponse:

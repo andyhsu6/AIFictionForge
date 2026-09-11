@@ -107,6 +107,7 @@ export default function Chapters() {
   const [selectionStartPosition, setSelectionStartPosition] = useState(0);
   const [selectionEndPosition, setSelectionEndPosition] = useState(0);
   const [partialRegenerateModalVisible, setPartialRegenerateModalVisible] = useState(false);
+  const [partialRegenerateMode, setPartialRegenerateMode] = useState<'rewrite' | 'continue'>('rewrite');
 
   // 单章节生成进度状态
   const [singleChapterProgress, setSingleChapterProgress] = useState(0);
@@ -1982,18 +1983,25 @@ export default function Chapters() {
     }
   };
 
-  // 打开局部重写弹窗
-  const handleOpenPartialRegenerate = () => {
+  // 打开局部重写/续写弹窗
+  const handleOpenPartialRegenerate = (mode: 'rewrite' | 'continue' = 'rewrite') => {
+    setPartialRegenerateMode(mode);
     setPartialRegenerateToolbarVisible(false);
     setPartialRegenerateModalVisible(true);
   };
 
-  // 应用局部重写结果
-  const handleApplyPartialRegenerate = (newText: string, startPos: number, endPos: number) => {
+  // 应用局部重写/续写结果
+  const handleApplyPartialRegenerate = (
+    newText: string,
+    startPos: number,
+    endPos: number,
+    mode: 'rewrite' | 'continue' = 'rewrite'
+  ) => {
     // 获取当前内容
     const currentContent = editorForm.getFieldValue('content') || '';
-    
-    // 替换选中部分
+
+    // rewrite: 替换选中部分; continue: start == end, 等价于在光标处插入, 后文不受影响
+    void mode;
     const newContent = currentContent.substring(0, startPos) + newText + currentContent.substring(endPos);
     
     // 更新表单
@@ -2819,7 +2827,8 @@ export default function Chapters() {
               visible={partialRegenerateToolbarVisible && !isGenerating}
               position={partialRegenerateToolbarPosition}
               selectedText={selectedTextForRegenerate}
-              onRegenerate={handleOpenPartialRegenerate}
+              onRegenerate={() => handleOpenPartialRegenerate('rewrite')}
+              onContinue={() => handleOpenPartialRegenerate('continue')}
             />
           </div>
 
@@ -3184,6 +3193,7 @@ export default function Chapters() {
           startPosition={selectionStartPosition}
           endPosition={selectionEndPosition}
           styleId={selectedStyleId}
+          mode={partialRegenerateMode}
           onClose={() => setPartialRegenerateModalVisible(false)}
           onApply={handleApplyPartialRegenerate}
         />

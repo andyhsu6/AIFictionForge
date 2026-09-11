@@ -43,7 +43,9 @@
     }
   },
   "partialToolbar": {
+    "aiContinue": "Continue",
     "aiRewrite": "AI Rewrite",
+    "continueTooltip": "Continue the story after the selected text (does not replace following text)",
     "rewriteTooltip": "AI rewrite selected content: \"{{text}}\"",
     "selectedChars": "{{count}} chars selected",
     "selectedChars_one": "{{count}} char selected",

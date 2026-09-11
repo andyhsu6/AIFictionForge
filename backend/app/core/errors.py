@@ -179,6 +179,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     # 共享码：仅剩 wizard_stream.py 一处使用，其余已拆分（todo15）
     "internal.career_retry_exhausted": ("职业体系生成失败（AI多次返回为空）", 200),
     "internal.career_save_exhausted": ("职业体系保存失败（已达最大重试次数）", 200),
+    "internal.continue_capability_insufficient": ("当前模型输出上限过低，无法支持续写", 200),
     "internal.generation_failed": ("生成失败: {{error}}", 200),
     "internal.import_preview_missing": ("预览数据不存在", 500),
     "internal.outline_continue_failed": ("续写失败: {{error}}", 200),
@@ -280,6 +281,10 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.character_in_organization": ("该角色已在组织中", 400),
     "validation.characters_selected_min_one": ("请至少选择一个角色/组织", 400),
     "validation.config": ("配置数据格式错误", 500),
+    "validation.content_hash_mismatch": ("章节内容已变化，请重新生成后再应用", 409),
+    "validation.continue_segment_index_invalid": ("续写分段序号超出范围", 400),
+    "validation.continue_segment_limit_exceeded": ("续写分段数超出上限，请降低目标字数", 400),
+    "validation.continue_target_too_large": ("续写目标字数超出上限", 400),
     "validation.cover_config_incomplete": ("封面图片配置不完整，请填写 provider、api_key 和 model", 400),
     "validation.cover_provider_unsupported": ("当前版本仅支持 Gemini 或 Grok", 400),
     "validation.email_format": ("请输入有效的邮箱地址", 400),
