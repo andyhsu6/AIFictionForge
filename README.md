@@ -147,7 +147,7 @@ cp backend/.env.example .env
 docker-compose up -d
 
 # 5. Access the app
-# Open your browser and visit http://localhost:8000
+# Open your browser and visit http://localhost:8008
 ```
 
 > **📌 Notes**
@@ -190,7 +190,7 @@ docker run -d --name postgres \
   postgres:18-alpine
 
 # Start the backend
-python -m uvicorn app.main:app --host localhost --port 8000 --reload
+python -m uvicorn app.main:app --host localhost --port 8008 --reload
 ```
 
 #### Frontend
@@ -201,6 +201,8 @@ npm install
 npm run dev  # development mode
 npm run build  # production build
 ```
+
+> **📌 Port notes**: the frontend dev server runs on **5173** (Vite, proxies `/api` -> `http://localhost:8008`); the backend listens on **8008**. After `npm run build`, the built frontend is served by the backend as a single-port entry on **8008**.
 
 ## ⚙️ Configuration
 
@@ -236,7 +238,7 @@ LOCAL_AUTH_PASSWORD=your_password
 # LinuxDO OAuth
 LINUXDO_CLIENT_ID=your_client_id
 LINUXDO_CLIENT_SECRET=your_client_secret
-LINUXDO_REDIRECT_URI=http://localhost:8000/api/auth/callback
+LINUXDO_REDIRECT_URI=http://localhost:8008/api/auth/callback
 # LinuxDO login-specific proxy (optional, only affects OAuth token and user info requests)
 LINUXDO_PROXY_URL=http://127.0.0.1:7890
 
@@ -297,7 +299,7 @@ OPENAI_BASE_URL=https://your-proxy-service.com/v1
   - Tuned for 80-150 concurrent users
 
 - **aistoryforge**: main application service
-  - Port: 8000
+  - Port: 8008
   - Log directory: `./logs`
   - Config mount: `.env` file
   - Automatically waits for the database to be ready
@@ -346,7 +348,7 @@ Change the port mapping in `docker-compose.yml`:
 
 ```yaml
 ports:
-  - "8800:8000"  # host:container
+  - "8800:8008"  # host:container
 ```
 
 ## 📁 Project Structure
@@ -390,8 +392,8 @@ AIFictionForge/
 
 ### API Documentation
 
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- Swagger UI: `http://localhost:8008/docs`
+- ReDoc: `http://localhost:8008/redoc`
 
 ## 📝 License
 

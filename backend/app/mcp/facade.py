@@ -10,7 +10,7 @@
     await mcp_client.register(MCPPluginConfig(
         user_id="user123",
         plugin_name="exa-search",
-        url="http://localhost:8000/mcp"
+        url="http://localhost:8008/mcp"
     ))
     
     # 获取工具列表

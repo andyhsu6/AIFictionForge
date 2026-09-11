@@ -97,16 +97,16 @@ RUN chmod +x /app/entrypoint.sh
 RUN mkdir -p /app/data /app/logs
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 8008
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
 ENV APP_HOST=0.0.0.0
-ENV APP_PORT=8000
+ENV APP_PORT=8008
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')" || exit 1
 
 # 使用 entrypoint 脚本启动（自动执行迁移）
 ENTRYPOINT ["/app/entrypoint.sh"]

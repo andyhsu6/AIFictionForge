@@ -409,8 +409,8 @@ async def main():
         print("🎉 PostgreSQL设置完成!\n")
         print("下一步:")
         print("1. 启动应用: python -m app.main")
-        print("2. 访问: http://localhost:8000")
-        print("3. 查看API文档: http://localhost:8000/docs")
+        print("2. 访问: http://localhost:8008")
+        print("3. 查看API文档: http://localhost:8008/docs")
     else:
         print("❌ 设置过程中出现错误，请检查日志")
         print("\n故障排查:")

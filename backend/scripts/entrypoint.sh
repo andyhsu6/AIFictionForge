@@ -91,7 +91,7 @@ echo "================================================"
 cd /app
 exec uvicorn app.main:app \
     --host "${APP_HOST:-0.0.0.0}" \
-    --port "${APP_PORT:-8000}" \
+    --port "${APP_PORT:-8008}" \
     --log-level info \
     --access-log \
     --use-colors
