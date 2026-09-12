@@ -143,11 +143,18 @@ async def skill_chat(
         ai_service.default_system_prompt = system_prompt
     except Exception as e:
         logger.error(f"创建 AI 服务失败: {e}")
+        # 与下面 `generate()` 同一条规矩（#55 步骤 3b / 评审第 3 项）：泛型收尾不得
+        # 写死码。建服务这条路上任何带注册码的 ApiError 都得原样送出去，否则用户
+        # 只看到一句通用失败、拿不到通往设置页的码。归不了类才退回本站点通用码。
+        code, params = sse_code_for_exception(e)
+        raw = f"AI 服务配置错误: {str(e)}"
+
         async def error_gen():
             yield await SSEResponse.send_error(
-                error=f"AI 服务配置错误: {str(e)}",
-                code="internal.ai_service_failed", params={"error": str(e)},
-                raw=f"AI 服务配置错误: {str(e)}",
+                error=raw,
+                code=code or "internal.ai_service_failed",
+                params=params or {"error": str(e)},
+                raw=raw,
             )
         return create_sse_response(error_gen())
 

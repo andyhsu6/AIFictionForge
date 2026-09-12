@@ -41,6 +41,7 @@ from app.services.model_capability_probe import (
     TRIGGER_MANUAL,
     TRIGGER_SAVE,
     VERDICT_QUALIFIED,
+    adopted_window_tokens,
     describe_cached_gate_state,
     ensure_model_allowed,
     probe_model_context_window,
@@ -1395,16 +1396,15 @@ async def check_context_window_support(
             "tiers_run": list(outcome.tiers_run),
             "needle_tier_wired": False,
             "blind_spot": _CONTEXT_WINDOW_BLIND_SPOT,
-            # 三段数：探测到的 / 用户填写的 / 系统要求（采用的预算下限）
+            # 三段数：探测到的 / 用户填写的 / **实际会被采纳**的预算。
+            # 第三个数只由 `adopted_window_tokens` 算这一处：它必须逐条对齐
+            # `ensure_model_allowed`，否则表单会显示一个「保存将采用」的预算而那笔保存
+            # 根本会被拒（评审第 5 项：客户端不得自己复述一遍采纳规则）。
             "window_display": {
                 "probed_context_window_tokens": outcome.context_window_tokens,
                 "declared_context_window_tokens": declared,
                 "minimum_required_context_window_tokens": MIN_CONTEXT_WINDOW_TOKENS,
-                "adopted_context_window_tokens": (
-                    outcome.context_window_tokens
-                    if supported
-                    else (declared if isinstance(declared, int) and declared >= MIN_CONTEXT_WINDOW_TOKENS else None)
-                ),
+                "adopted_context_window_tokens": adopted_window_tokens(outcome, declared),
             },
         },
         "suggestions": (

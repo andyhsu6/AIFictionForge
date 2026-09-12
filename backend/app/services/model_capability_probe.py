@@ -119,10 +119,60 @@ class ProbeOutcome:
     # 本次实际跑过哪几档（诊断/表单展示用；不落进缓存）
     tiers_run: Tuple[str, ...] = ()
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # 「最近一次尝试复测」的时间，仅在尝试被判不出、因而没能更新结论时写入。
+    # 它只服务复测节流（`is_due_for_daily_recheck`），**不是**结论的一部分：
+    # `checked_at` 永远是这条结论实测/声明的时刻。
+    attempted_at: Optional[str] = None
 
     @property
     def is_qualified(self) -> bool:
         return self.verdict == VERDICT_QUALIFIED
+
+
+# ========== 结论强度序（#59：非测量抹不掉持久状态） ==========
+#
+# 缓存结论是**持久状态**，而一次探测的失败不是新证据。把两者混为一谈的后果在真机
+# 浏览器验收里被抓到过：设置页加载那一枪静默探测打到不可达的网关，后端照实回
+# HTTP 200 + `inconclusive`，`write_verdict` 把它落了库，于是「实测 128,000」这条
+# 唯一能解释「为什么 AI 被拒」的证据被一次「没测出来」抹掉——一个真实测量过的 128K
+# 用户被永久降级成「你去声明一个窗口」，而显式声明正是实测 `<1M` 本该挡住的出口。
+#
+# 强度只有三档，判据是「这条结论凭什么成立」，与它是 qualified 还是 unqualified 无关：
+#
+# | 强度 | 结论                           | 凭的是什么           |
+# |------|--------------------------------|----------------------|
+# | 3    | source=probe 且 verdict 有判据 | 网关自己给出的证据   |
+# | 2    | source=user_declared           | 用户的断言，无判据   |
+# | 1    | verdict=inconclusive           | **什么都没测到**     |
+#
+# 写入规则：`强度(新) >= 强度(旧)` 才允许覆盖，同强度＝新的赢。展开即：
+# - 实测覆盖实测 ✅ 日常复测就是它。实测之间**刻意不分强弱**：网关侧把窗口升到
+#   >=1M 必须能被重新接纳，降配也必须能被重新拒绝，两条都靠「新的实测赢」。
+#   强度序因此不会把任何人永久锁死。
+# - 实测覆盖声明 ✅ 声明只是探测判不出时的出口，真测出来就轮不到它说话。
+# - 声明覆盖判不出 ✅ 出口本来就是为这一态准备的。
+# - 判不出覆盖判不出 ✅ 结论不变，只刷「今天试过」那一笔，复测因此保持日频。
+# - 判不出覆盖实测/声明 ❌ 本节的由来。
+# - 声明覆盖实测 ❌ 「声明不是勾选放行通道」（计划 §2 表第 2 行）。
+EVIDENCE_NON_MEASUREMENT = 1
+EVIDENCE_ASSERTED = 2
+EVIDENCE_MEASURED = 3
+
+
+def evidence_strength(outcome: ProbeOutcome) -> int:
+    """这条结论值多少证据。`0` 留给「缓存里根本没有结论」，不是本函数的返回值。"""
+    # 先判 inconclusive：一条自相矛盾的缓存（声明 + 判不出）也必须按最弱算，
+    # 「没测出来」永远不该成为抹掉别人的理由。
+    if outcome.verdict == VERDICT_INCONCLUSIVE:
+        return EVIDENCE_NON_MEASUREMENT
+    if outcome.source == SOURCE_USER_DECLARED:
+        return EVIDENCE_ASSERTED
+    return EVIDENCE_MEASURED
+
+
+def verdict_may_overwrite(existing: ProbeOutcome, incoming: ProbeOutcome) -> bool:
+    """`incoming` 是否有权替换已缓存的 `existing`（同强度＝新的赢）。"""
+    return evidence_strength(incoming) >= evidence_strength(existing)
 
 
 # ========== 探测专用客户端 ==========
@@ -521,7 +571,7 @@ def _load_blob(raw: Optional[str]) -> Dict[str, Any]:
 
 
 def _outcome_to_dict(outcome: ProbeOutcome) -> Dict[str, Any]:
-    return {
+    data: Dict[str, Any] = {
         "result": outcome.verdict,
         "source": outcome.source,
         "context_window_tokens": outcome.context_window_tokens,
@@ -529,6 +579,10 @@ def _outcome_to_dict(outcome: ProbeOutcome) -> Dict[str, Any]:
         "detail": outcome.detail,
         "checked_at": outcome.checked_at,
     }
+    # 只在真的有「今天试过」这一笔时才落键：结论本体的缓存形状保持不变
+    if outcome.attempted_at:
+        data["last_attempt_at"] = outcome.attempted_at
+    return data
 
 
 def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
@@ -538,6 +592,7 @@ def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
     if verdict not in (VERDICT_QUALIFIED, VERDICT_UNQUALIFIED, VERDICT_INCONCLUSIVE):
         return None
     tokens = entry.get("context_window_tokens")
+    attempted_at = entry.get("last_attempt_at")
     return ProbeOutcome(
         verdict=verdict,
         context_window_tokens=int(tokens) if isinstance(tokens, int) and tokens > 0 else None,
@@ -545,6 +600,7 @@ def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
         tier=entry.get("tier"),
         detail=entry.get("detail"),
         checked_at=str(entry.get("checked_at") or ""),
+        attempted_at=attempted_at if isinstance(attempted_at, str) and attempted_at else None,
     )
 
 
@@ -558,12 +614,29 @@ def _parsed_checked_at(value: str) -> Optional[datetime]:
     return parsed
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def is_due_for_daily_recheck(outcome: ProbeOutcome) -> bool:
-    """结论是否已过「本自然日」（日频复测的计数口径：按自然日，不按 24h 滑动）。"""
-    parsed = _parsed_checked_at(outcome.checked_at)
-    if parsed is None:
+    """结论是否已过「本自然日」（日频复测的计数口径：按自然日，不按 24h 滑动）。
+
+    计时基准取「定论时间」与「最近一次尝试复测时间」里**较新**的那个。一次判不出的
+    尝试没有更新结论（#59 的强度守卫不许它更新），但它必须算作「今天试过」——否则
+    被抹掉的那次复测会在**每次派发**重排一遍，而 ② 档带着 `max_tokens=1M`，
+    对着一个可达却判不出的网关反复重探是真金白银的计费。
+    """
+    stamps = [
+        parsed
+        for parsed in (
+            _parsed_checked_at(outcome.checked_at),
+            _parsed_checked_at(outcome.attempted_at or ""),
+        )
+        if parsed is not None
+    ]
+    if not stamps:
         return True
-    return parsed.astimezone(timezone.utc).date() < datetime.now(timezone.utc).date()
+    return max(stamps).astimezone(timezone.utc).date() < datetime.now(timezone.utc).date()
 
 
 async def read_verdict(
@@ -608,6 +681,10 @@ async def write_verdict(
     preferences 是整读整写的 JSON 字符串，探测写入与用户保存设置会互相抹键，
     所以必须走 `db_write_lock`（#56 的前置修复）。探测**绝不**在既有临界区内被调用；
     这里仍给取锁加超时兜底，万一将来有人误挂，代价是跳过缓存而不是死锁。
+
+    **弱证据不许抹掉强证据**（#59，判据见 `verdict_may_overwrite`）：网关不可达时
+    探测回的 `inconclusive` 是一次「没测出来」，不是新证据，它绝不能把已缓存的
+    实测/声明结论改成未知。返回值 `False` 表示本次没有更新结论。
     """
     key = triple_key(provider, base_url, model)
     lock = await get_db_write_lock(user_id)
@@ -619,8 +696,11 @@ async def write_verdict(
             user_id,
             key,
         )
-        # 结论本身有效，只是没能落库：写进 memo，避免误接线时每次派发都再等 5 秒
-        _memo_put(user_id, key, outcome)
+        # 结论本身有效，只是没能落库：写进 memo，避免误接线时每次派发都再等 5 秒。
+        # 判不出的一枪**不**进 memo：库里还留着实测结论时，用一条更弱的结论污染本进程
+        # 的判定（最长 30 秒），与下面的强度守卫自相矛盾。
+        if evidence_strength(outcome) > EVIDENCE_NON_MEASUREMENT:
+            _memo_put(user_id, key, outcome)
         return False
 
     try:
@@ -641,24 +721,31 @@ async def write_verdict(
             entries = {}
 
         existing = _dict_to_outcome(entries.get(key))
-        # 双向守卫「声明不是勾选放行通道」：
-        # - inconclusive 不得抹掉用户显式声明（探测判不出 ≠ 用户没声明）
-        # - 反之，有判据的探测结论（qualified/unqualified）也不得被声明覆盖掉——
-        #   只有探测判不出时声明才有效（策略在 ensure_model_allowed，这里兜底）
-        if existing is not None:
-            if existing.source == SOURCE_USER_DECLARED and outcome.verdict == VERDICT_INCONCLUSIVE:
-                return False
-            if (
-                outcome.source == SOURCE_USER_DECLARED
-                and existing.source == SOURCE_PROBE
-                and existing.verdict != VERDICT_INCONCLUSIVE
-            ):
-                logger.info(
-                    "忽略对 %s 的窗口声明：已有带判据的探测结论 %s（声明仅适用于探测判不出的模型）",
-                    key,
-                    existing.verdict,
-                )
-                return False
+        if existing is not None and not verdict_may_overwrite(existing, outcome):
+            # 「声明不得抹掉带判据的实测」也走这一条：强度 2 < 3（计划 §2 表第 2 行）。
+            logger.info(
+                "缓存结论拒被弱证据覆盖: user=%s key=%s 已缓存=%s/%s(强度 %s)，拒收=%s/%s(强度 %s)",
+                user_id,
+                key,
+                existing.verdict,
+                existing.source,
+                evidence_strength(existing),
+                outcome.verdict,
+                outcome.source,
+                evidence_strength(outcome),
+            )
+            if evidence_strength(outcome) == EVIDENCE_NON_MEASUREMENT:
+                # 结论本体一个字不改，只在旁边记一笔「今天试过、没试出来」：
+                # 它是复测节流的依据（`is_due_for_daily_recheck`），不是结论。
+                stamped = replace(existing, attempted_at=outcome.checked_at or _utc_now_iso())
+                entries[key] = _outcome_to_dict(stamped)
+                blob[PREFERENCES_KEY] = entries
+                row.preferences = json.dumps(blob, ensure_ascii=False)
+                await db.commit()
+                _memo_put(user_id, key, stamped)
+            else:
+                _memo_put(user_id, key, existing)
+            return False
 
         entries[key] = _outcome_to_dict(outcome)
         blob[PREFERENCES_KEY] = entries
@@ -716,6 +803,39 @@ def gate_state_payload(model: str, outcome: ProbeOutcome) -> Dict[str, Any]:
         "checked_at": outcome.checked_at,
         "due_for_recheck": is_due_for_daily_recheck(outcome),
     }
+
+
+def adopted_window_tokens(
+    outcome: ProbeOutcome,
+    declared_tokens: Optional[int] = None,
+) -> Optional[int]:
+    """本次配置**实际会被采纳**的上下文窗口预算；`None` = 保存会被拒，没有预算。
+
+    这个数只能有一个权威出处。表单原来自己复述了一遍 `ensure_model_allowed` 的分支，
+    于是「第三个数」成了一份抄件：后端哪天改成按窗口留安全边际、或改了采纳口径，
+    屏幕上的预算就会和真正进 prompt 预算换算的那个值**静默漂移**——而这正是本分支
+    要根除的失效形态。所以后端把它算成一处、随 `window_display` 一起发出去
+    （评审第 5 项）。
+
+    分支必须与 `ensure_model_allowed` 逐条对齐：
+
+    - `qualified` ⇒ 采纳这条结论自己的 `context_window_tokens`（① 档＝网关报的窗口，
+      ② 档＝被接受的探测刻度，`user_declared`＝用户声明值）。
+    - `inconclusive` ⇒ 只有声明 `>= MIN_CONTEXT_WINDOW_TOKENS` 才采纳声明值。
+    - `unqualified` ⇒ **什么都不采纳**。实测低于下限的模型，声明再大也进不了采纳分支
+      （`ensure_model_allowed` 只在 ①② 判不出时才看 `declared_tokens`），
+      所以这里绝不能回声明值——回了就是在给一个必被拒的保存报一个预算。
+
+    `None` 的显示口径由前端负责：渲染成破折号，**绝不渲染成 0**（本仓库 `0` 已有
+    「禁用全书注入」的真实语义，见 `get_effective_context_window` 的失败契约）。
+    """
+    if outcome.verdict == VERDICT_QUALIFIED:
+        return outcome.context_window_tokens
+    if outcome.verdict == VERDICT_INCONCLUSIVE:
+        if isinstance(declared_tokens, int) and not isinstance(declared_tokens, bool):
+            if declared_tokens >= MIN_CONTEXT_WINDOW_TOKENS:
+                return declared_tokens
+    return None
 
 
 def _below_minimum_error(model: str, outcome: ProbeOutcome) -> ApiError:

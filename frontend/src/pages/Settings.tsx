@@ -10,9 +10,11 @@ import { Trans, useTranslation } from 'react-i18next';
 import {
   deriveGateNumbers,
   formatWindowTokens,
+  gateEvidenceAfterProbe,
   gateRejectionFromCachedState,
+  NO_GATE_EVIDENCE,
   type ContextWindowProbe,
-  type GateRejection,
+  type GateEvidence,
   type GateStatus,
 } from '../utils/contextWindowGate';
 import { isModelGateError } from '../services/errorMapper';
@@ -227,18 +229,34 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       // 三段数必须在打开设置页时就是活的（探测只测不拦）。未配置模型时不发这一枪：
       // 后端已不代猜，没有模型可测，硬发只会在屏幕上砸一个错误码。
       if (((settings.llm_model as string) || '').trim()) {
-        // 存量用户收口（#55 步骤 5）：先把**已缓存**的结论摆上屏幕，再打探测那一枪。
-        // 顺序不能反：硬拦发生在保存时，所以配着 128K 模型的存量用户从来没被拦过；
-        // 他的首个 AI 请求被拒后顺着引导回到这一页，若网关此刻不可达，探测只能回
-        // 「未检测」，屏幕上就只剩下「AI 坏了」这一条线索。缓存结论是后端确实知道的
-        // 事实（128,000 < 下限），当场就该显示。探测成功后 `handleCheckContextWindow`
-        // 会清掉这份预置、改用刚测到的数（更新的证据优先）。
-        setGateRejection(gateRejectionFromCachedState(cachedGate));
-        void handleCheckContextWindow({ silent: true });
+        // 存量用户收口（#55 步骤 5）：已缓存的结论**当场就是屏幕上的内容**。
+        // 硬拦发生在保存时，所以配着 128K 模型的存量用户从来没被拦过；他的首个 AI
+        // 请求被拒后顺着引导回到这一页，若网关此刻不可达，探测只能回「判不出」，
+        // 屏幕上就只剩下「AI 坏了」这一条线索。缓存结论是后端确实知道的事实
+        // （128,000 < 下限），当场就该显示。
+        // #59：这一枪若恰好判不出（网关不可达时后端照实回 200 + inconclusive），
+        // 预置**必须留着**——「没测出来」不是新证据，把它摆上屏幕就等于把实测过
+        // 的小模型用户降级成「你去声明一个窗口」。只有真测出结果的探测才替换它。
+        const cachedConclusion = gateRejectionFromCachedState(cachedGate);
+        setGateEvidence({
+          evidence: cachedConclusion,
+          model: cachedConclusion ? String(cachedGate?.model || settings.llm_model || '') : '',
+        });
+        // **页面渲染绝不发探测**（#59 第 2 项，`d38ca31` 在 `describe_cached_gate_state`
+        // 上方就把这条写成原则，`e4d3f6c` 的挂载探测违反它）。一打开设置页就打用户网关
+        // = 每次开设置一次对外请求 + ② 档 `max_tokens=1M` 的潜在计费，而渲染本身
+        // 不需要任何新证据：缓存结论就是后端的事实。复测属于派发路径
+        // （`ensure_model_allowed` 的 fire-and-forget）与显式的「重新检测」按钮，两者都不在这里。
+        //
+        // 唯一的例外是**首次配置**：后端对这个三元组还没有任何结论
+        // （`context_window_gate` 为 null），表单会一片空白只剩「未检测」，
+        // 用户不知道要干什么。这一次探测是配置流程的一部分，不是渲染的副作用；
+        // 结论一旦落库，之后的渲染都不该再打网关。
+        if (!cachedConclusion) void handleCheckContextWindow({ silent: true });
       } else {
         setWindowProbe(null);
         setProbedModel('');
-        setGateRejection(null);
+        setGateEvidence(NO_GATE_EVIDENCE);
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
@@ -331,7 +349,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       setShowTestResult(false);
       // 门禁被拒的面板同理：保存成功说明这一轮的三段数已经成立，
       // 继续留着红色「保存会被拒绝」会让用户以为改动没生效。
-      setGateRejection(null);
+      setGateEvidence(NO_GATE_EVIDENCE);
       
       // 手动保存配置后，同步刷新预设激活状态。
       // 后端会在配置与激活预设不一致时自动取消激活，这里统一拉取最新状态，
@@ -441,7 +459,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
         });
         setWindowProbe(null);
         setProbedModel('');
-        setGateRejection(null);
+        setGateEvidence(NO_GATE_EVIDENCE);
         message.info(t('toast.resetDone'));
       },
     });
@@ -508,13 +526,18 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   // 把「为什么保存被拒」摆在同一屏，而不是只丢一个错误码。
   const [windowProbe, setWindowProbe] = useState<ContextWindowProbe | null>(null);
   const [probingWindow, setProbingWindow] = useState(false);
-  const [gateRejection, setGateRejection] = useState<GateRejection | null>(null);
+  // 「已握有的证据」载体：可能来自 `GET /settings` 的缓存结论，也可能来自一次被拒的
+  // 保存。它只描述**它被测量时的那台模型**，所以证据与模型名必须原子地一起存：换了
+  // 模型还继续摆着上一台的数字，等于凭空造一条没测过的结论。存一起而不是两个 state，
+  // 是因为探测回调要拿「本次探的是哪台」去判断能否替换，读另一个 state 会拿到
+  // 渲染前的旧值。
+  const [gateEvidence, setGateEvidence] = useState<GateEvidence>(NO_GATE_EVIDENCE);
   const watchedLlmModel = Form.useWatch('llm_model', form);
   const watchedDeclaredWindow = Form.useWatch('context_window_tokens', form);
 
   const gate = useMemo(
-    () => deriveGateNumbers(windowProbe, watchedDeclaredWindow ?? null, gateRejection),
-    [windowProbe, watchedDeclaredWindow, gateRejection],
+    () => deriveGateNumbers(windowProbe, watchedDeclaredWindow ?? null, gateEvidence.evidence),
+    [windowProbe, watchedDeclaredWindow, gateEvidence],
   );
 
   // `deriveGateNumbers` 看不到模型字段，给不出「没有模型」这一态。而自步骤 2 起
@@ -530,15 +553,20 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
     const body = error?.response?.data;
     if (!isModelGateError(body?.code)) return false;
     const params = (body?.params || {}) as Record<string, unknown>;
-    setGateRejection({
-      verdict: typeof params.verdict === 'string' ? params.verdict : null,
-      min_window: typeof params.min_window === 'number' ? params.min_window : null,
-      measured_context_window_tokens:
-        typeof params.measured_context_window_tokens === 'number' ? params.measured_context_window_tokens : null,
-      declared_context_window_tokens:
-        typeof params.declared_context_window_tokens === 'number' ? params.declared_context_window_tokens : null,
-      requires_explicit_declaration:
-        typeof params.requires_explicit_declaration === 'boolean' ? params.requires_explicit_declaration : null,
+    setGateEvidence({
+      evidence: {
+        verdict: typeof params.verdict === 'string' ? params.verdict : null,
+        min_window: typeof params.min_window === 'number' ? params.min_window : null,
+        measured_context_window_tokens:
+          typeof params.measured_context_window_tokens === 'number' ? params.measured_context_window_tokens : null,
+        declared_context_window_tokens:
+          typeof params.declared_context_window_tokens === 'number' ? params.declared_context_window_tokens : null,
+        requires_explicit_declaration:
+          typeof params.requires_explicit_declaration === 'boolean' ? params.requires_explicit_declaration : null,
+      },
+      model: typeof params.model === 'string'
+        ? params.model
+        : ((form.getFieldValue('llm_model') as string) || ''),
     });
     return true;
   };
@@ -549,7 +577,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
     if (!modelName) {
       // 后端已不再替用户猜模型：没有模型就没有可探测的对象，表单自己说明这点
       setWindowProbe(null);
-      setGateRejection(null);
+      setGateEvidence(NO_GATE_EVIDENCE);
       if (!options?.silent) message.warning(t('gate.needModel'));
       return;
     }
@@ -566,7 +594,11 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       });
       setWindowProbe(result);
       setProbedModel(modelName);
-      setGateRejection(null);
+      // #59：这一枪**判不出**（网关不可达时后端照实回 200 + inconclusive）不是新证据，
+      // 不许把已握有的结论从屏幕上抹掉——抹掉后表单只剩「你去声明一个窗口」，而那正是
+      // 实测 `<1M` 本该挡住的出口。只有测出了什么的探测才替换它。判定口径与
+      // `deriveGateNumbers` 同一条强度序（`gateEvidenceAfterProbe`）。
+      setGateEvidence((prev) => gateEvidenceAfterProbe(prev, result, modelName));
       if (!options?.silent) {
         if (result.supported) message.success(t('gate.probeQualified'));
         else message.error(t('gate.probeUnqualified'));
@@ -584,9 +616,11 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   };
 
   // 换了模型，上一轮探测结论就不再描述这次要保存的模型：标记待复测，避免用户拿着
-  // 旧结论去保存然后吃一次拒绝。
+  // 旧结论去保存然后吃一次拒绝。缓存/被拒那侧同理——数字只对测量它的那台模型成立。
   const [probedModel, setProbedModel] = useState('');
-  const staleProbe = !!windowProbe && probedModel !== ((watchedLlmModel as string) || '');
+  const currentModelField = (watchedLlmModel as string) || '';
+  const staleProbe = !!windowProbe && probedModel !== currentModelField;
+  const staleEvidence = !!gateEvidence.evidence && gateEvidence.model !== currentModelField;
 
   const handleProviderChange = (value: string) => {
     const provider = apiProviders.find(p => p.value === value);
@@ -1767,7 +1801,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                               }
                             />
 
-                            {staleProbe && (
+                            {(staleProbe || staleEvidence) && (
                               <Text type="warning" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
                                 {t('gate.stale')}
                               </Text>

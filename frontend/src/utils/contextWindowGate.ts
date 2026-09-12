@@ -88,10 +88,77 @@ const VERDICT_BY_STATUS: Record<GateVerdict, GateStatus | null> = {
   unknown: null,
 };
 
+/**
+ * How much a conclusion is worth, mirroring `evidence_strength` in
+ * `backend/app/services/model_capability_probe.py` (issue #59). The form must not be
+ * weaker than the server: a probe that could not decide is a **non-measurement**, so it
+ * may never replace evidence the server already holds.
+ *
+ * `qualified` and `unqualified` deliberately share the top rank. Two measurements of the
+ * same triple settle it by freshness (that is what the daily recheck is for), so a
+ * gateway that really raised its window still gets re-admitted and one that shrank it
+ * gets re-rejected.
+ */
+export const VERDICT_STRENGTH: Record<GateVerdict, number> = {
+  unknown: 0,
+  inconclusive: 1,
+  qualified: 2,
+  unqualified: 2,
+};
+
 function asVerdict(value: string | null | undefined): GateVerdict {
   return value === 'qualified' || value === 'unqualified' || value === 'inconclusive'
     ? value
     : 'unknown';
+}
+
+/** The verdict a live probe result states. A probe that says nothing decidable is a non-measurement. */
+function probeVerdictOf(probe: ContextWindowProbe): GateVerdict {
+  const verdict = probe.supported ? 'qualified' : asVerdict(probe.details?.verdict);
+  // `supported: false` without a verdict string still means "not qualified"; treat it as
+  // undecidable, which is the state that demands an explicit declaration.
+  return verdict === 'unknown' ? 'inconclusive' : verdict;
+}
+
+/** The verdict carried evidence states (a cached conclusion or a rejected save). */
+function carriedVerdictOf(rejection: GateRejection): GateVerdict {
+  const verdict = asVerdict(rejection.verdict);
+  if (verdict !== 'unknown') return verdict;
+  return rejection.requires_explicit_declaration === false ? 'unqualified' : 'inconclusive';
+}
+
+/**
+ * A conclusion the form holds, plus the model it was measured for.
+ *
+ * The pairing is not decoration: evidence only describes the triple it came from, and a
+ * probe callback needs both halves at once to decide whether it may replace them.
+ */
+export interface GateEvidence {
+  evidence: GateRejection | null;
+  model: string;
+}
+
+export const NO_GATE_EVIDENCE: GateEvidence = { evidence: null, model: '' };
+
+/**
+ * State transition for "a probe answer came back for `probedModel`": keep or drop the
+ * conclusion the form holds. Same ordering as `deriveGateNumbers`, phrased as a question
+ * the page can ask atomically (issue #59).
+ *
+ * Dropping is not only about strength — evidence for another model must go too, or the
+ * form would keep displaying a number that was never measured for what is in the field.
+ */
+export function gateEvidenceAfterProbe(
+  carried: GateEvidence,
+  probe: ContextWindowProbe | null,
+  probedModel: string,
+): GateEvidence {
+  if (!carried.evidence) return carried;
+  if (carried.model !== probedModel) return NO_GATE_EVIDENCE;
+  if (!probe) return carried;
+  return VERDICT_STRENGTH[probeVerdictOf(probe)] >= VERDICT_STRENGTH[carriedVerdictOf(carried.evidence)]
+    ? NO_GATE_EVIDENCE
+    : carried;
 }
 
 function asNumber(value: unknown): number | null {
@@ -101,14 +168,34 @@ function asNumber(value: unknown): number | null {
 /**
  * Derive the three numbers plus the status the form renders.
  *
- * Precedence: a live probe wins; a rejection envelope fills in what the probe has
- * not measured yet (a user may hit 保存 before ever pressing 重新检测). `declared`
- * always comes from the form field, so the second number tracks typing live.
+ * Precedence follows the backend's evidence ordering (issue #59), not the order the
+ * responses happened to arrive in: a live probe wins **only when it is at least as
+ * strong as what we already hold**. A probe that could not decide is a non-measurement
+ * (the gateway was unreachable, the answer was a 401, ...), so it must leave a cached
+ * 「measured 128,000 / below the minimum」 on screen instead of blanking it to
+ * 「— / declare a window」 — that demand is precisely the exit a measured sub-1M
+ * verdict exists to close. Equal strength means the fresher one wins, which is what the
+ * daily recheck is for. `declared` always comes from the form field, so the second
+ * number tracks typing live.
  *
- * `adopted` reproduces the backend rule, not a UI opinion: a measured <1M model is
- * rejected even when the user declares 1M+ (`ensure_model_allowed` only consults the
- * declaration after tiers ①② came back inconclusive) — that is why there is no
- * "acknowledge and continue" checkbox to add here either.
+ * `adopted` is **the server's number**, read from `window_display.adopted_context_window_tokens`
+ * (issue #59 review item 5). It used to be re-derived here, which made the third number
+ * a copy of `ensure_model_allowed`'s branching: any change to what the backend actually
+ * budgets (a safety margin off the measured window, a different adoption rule) would
+ * have left the form stating a budget that never reaches the prompt compiler. Two
+ * conditions keep that authority honest, because a probe answers for one specific
+ * conclusion and one specific declaration:
+ *   - the displayed verdict must be the one this probe produced. A cached conclusion that
+ *     outranks an undecidable probe keeps its own numbers; inheriting the probe's budget
+ *     would put a number next to a 「below the minimum」 rejection again.
+ *   - the live form field must still hold the declaration the probe was sent. If the user
+ *     has typed a different one since, that snapshot describes a save that is no longer
+ *     on screen, so only this branch falls back to the documented local rule.
+ *
+ * The rule itself stays spelled out as the fallback, and it is the backend's rule, not a
+ * UI opinion: a measured <1M model is rejected even when the user declares 1M+
+ * (`ensure_model_allowed` only consults the declaration after tiers ①② came back
+ * inconclusive) — that is why there is no "acknowledge and continue" checkbox here either.
  */
 export function deriveGateNumbers(
   probe: ContextWindowProbe | null,
@@ -132,33 +219,42 @@ export function deriveGateNumbers(
     ?? asNumber(display?.declared_context_window_tokens)
     ?? asNumber(rejection?.declared_context_window_tokens);
 
+  const probeVerdict = probe ? probeVerdictOf(probe) : null;
+  const carriedVerdict = rejection ? carriedVerdictOf(rejection) : null;
+
   let verdict: GateVerdict;
-  if (probe) {
-    verdict = probe.supported ? 'qualified' : asVerdict(probe.details?.verdict);
-    // `supported: false` without a verdict string still means "not qualified";
-    // treat the unknown case as undecidable, which demands a declaration.
-    if (verdict === 'unknown') verdict = 'inconclusive';
-  } else if (rejection) {
-    verdict = asVerdict(rejection.verdict);
-    if (verdict === 'unknown') {
-      verdict = rejection.requires_explicit_declaration === false ? 'unqualified' : 'inconclusive';
-    }
+  let verdictFromProbe: boolean;
+  if (probeVerdict !== null && carriedVerdict !== null) {
+    verdictFromProbe = VERDICT_STRENGTH[probeVerdict] >= VERDICT_STRENGTH[carriedVerdict];
+    verdict = verdictFromProbe ? probeVerdict : carriedVerdict;
   } else {
-    verdict = 'unknown';
+    verdict = probeVerdict ?? carriedVerdict ?? 'unknown';
+    verdictFromProbe = probeVerdict !== null;
   }
 
   const qualified = VERDICT_BY_STATUS[verdict] === 'qualified';
-  // 第三个数必须是「保存真的会被采纳」的那个值。实测低于下限时后端直接拒保存，
-  // 声明再大也不会进采纳分支（`ensure_model_allowed` 只在 ①② 判不出时才看声明），
-  // 所以这里必须回 null：否则表单会在门禁拒绝的同时显示一个 1,000,000 的预算，
-  // 等于告诉用户「会用这个窗口」——正是本需求要根除的静默失败形态。
-  const adopted = qualified
+  // 第三个数：服务器说出来的那个（见函数注释）。`in` 而不是 `??`，因为
+  // 「服务器回答『什么都不采纳』」本身就是一条信息，和本地算出来的 null 不同源。
+  const serverAnswered = !!display && 'adopted_context_window_tokens' in display;
+  const declarationUnchanged =
+    (effectiveDeclared ?? null) === (asNumber(display?.declared_context_window_tokens) ?? null);
+  const useServerAdopted = serverAnswered && verdictFromProbe && declarationUnchanged;
+
+  // 本地回退分支复刻后端规则：实测低于下限时后端直接拒保存，声明再大也进不了采纳分支
+  // （`ensure_model_allowed` 只在 ①② 判不出时才看声明），所以这里必须回 null：
+  // 否则表单会在门禁拒绝的同时显示一个 1,000,000 的预算，等于告诉用户「会用这个窗口」
+  // ——正是本需求要根除的静默失败形态。
+  const locallyAdopted = qualified
     ? (probed ?? effectiveDeclared ?? minimum)
     : (verdict === 'inconclusive'
         && effectiveDeclared !== null
         && effectiveDeclared >= minimum
         ? effectiveDeclared
         : null);
+
+  const adopted = useServerAdopted
+    ? asNumber(display?.adopted_context_window_tokens)
+    : locallyAdopted;
 
   let status: GateStatus;
   if (verdict === 'qualified' && adopted !== null) {
@@ -214,21 +310,28 @@ export interface CachedGateState {
  * Why this exists: the hard gate fires when a config is *saved*, so a user who was
  * already sitting on a 128K model was never stopped. The dispatch gate does refuse
  * their first AI request, and the sticky guidance links here — but if their gateway
- * happens to be unreachable, the live probe on this page can only say "unprobed",
- * and the one thing they need to see ("your model measures 128,000, pick another")
- * is invisible even though the server already knows it.
+ * happens to be unreachable, the live probe on this page can only say "could not
+ * decide", and the one thing they need to see ("your model measures 128,000, pick
+ * another") is invisible even though the server already knows it.
  *
- * `null` means "render nothing extra", and that covers two different inputs on
- * purpose: no cached verdict at all (a page render must never reject anybody — the
- * synchronous probe of tiers ①② belongs to the request path) and a qualified verdict
- * (nothing to warn about).
+ * It carries **any** conclusion the server holds, `qualified` included. That is new
+ * since #59: the backend stopped letting an unreachable probe erase a durable verdict,
+ * so filtering the qualified case out would put the form out of step with the server —
+ * the user would be told to "declare a context window at or above the minimum" for a
+ * model the save gate is about to accept, with a budget on screen that is not the one
+ * actually adopted. Same silent lie, opposite direction.
+ *
+ * `null` therefore means exactly one thing: this triple was never concluded (a page
+ * render must never reject anybody — the synchronous probe of tiers ①② belongs to the
+ * request path). The state name it feeds is `gateRejection` for historical reasons only;
+ * it is an evidence carrier, not only a rejection.
  */
 export function gateRejectionFromCachedState(
   state: CachedGateState | null | undefined,
 ): GateRejection | null {
-  if (!state || state.verdict === 'qualified') return null;
+  if (!state || typeof state.verdict !== 'string' || !state.verdict) return null;
   return {
-    verdict: typeof state.verdict === 'string' ? state.verdict : null,
+    verdict: state.verdict,
     min_window: asNumber(state.min_window),
     measured_context_window_tokens: asNumber(state.measured_context_window_tokens),
     // A cached verdict never carries a declaration: the declaration is what the user

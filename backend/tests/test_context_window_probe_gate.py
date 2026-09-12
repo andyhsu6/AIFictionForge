@@ -859,6 +859,79 @@ async def test_check_context_window_endpoint_shape_and_three_numbers(env, gatewa
 
 
 @pytest.mark.anyio
+async def test_check_context_window_adopted_number_follows_the_gate_not_the_declaration(env, gateway):
+    """第三个数必须等于门禁真正会采纳的那笔预算（评审第 5 项：客户端不再自己算）。
+
+    旧写法是 `supported ? measured : (declared if declared >= MIN else None)`——它在
+    「实测 128K + 声明 2M」上回 2,000,000，而 `ensure_model_allowed` 对实测不合格的模型
+    **根本不看声明**、直接拒保存。端点于是替一笔必被拒的保存报了个预算，
+    表单显示「会用 2M」而系统什么都不采纳：正是本分支要根除的静默失败形态。
+    """
+    user_id = "u-check-adopted"
+    await seed_settings(env.session_factory, user_id, llm_model=SMALL_MODEL)
+
+    async def display_for(*, metadata_body, bound_status, bound_body, declared):
+        gateway.metadata_status = 200 if metadata_body is not None else 404
+        gateway.metadata_body = metadata_body
+        gateway.bound_status = bound_status
+        gateway.bound_body = bound_body
+        async with env.client() as client:
+            resp = await client.post(
+                "/settings/check-context-window",
+                json={
+                    "provider": "openai", "api_key": API_KEY, "api_base_url": GATEWAY,
+                    "llm_model": SMALL_MODEL, "context_window_tokens": declared,
+                },
+                headers={"x-test-user": user_id},
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()["details"]
+        # 键必须恒在：前端要能区分「服务器说了没有预算」与「服务器根本没回答」
+        assert "adopted_context_window_tokens" in body["window_display"]
+        return body["verdict"], body["window_display"]
+
+    probe_module.memo_clear()
+
+    # 1) 实测合格 ⇒ 采纳实测值
+    verdict, shown = await display_for(
+        metadata_body={"id": SMALL_MODEL, "context_length": 2_000_000},
+        bound_status=400, bound_body=_BOUND_REJECTION_BODY, declared=None,
+    )
+    assert verdict == VERDICT_QUALIFIED
+    assert shown["adopted_context_window_tokens"] == 2_000_000
+
+    # 2) 实测不合格 + 声明 2M ⇒ **不采纳任何预算**（声明不是勾选放行通道）
+    probe_module.memo_clear()
+    verdict, shown = await display_for(
+        metadata_body={"id": SMALL_MODEL, "context_length": 128_000},
+        bound_status=400, bound_body=_BOUND_REJECTION_BODY, declared=2_000_000,
+    )
+    assert verdict == VERDICT_UNQUALIFIED
+    assert shown["declared_context_window_tokens"] == 2_000_000
+    assert shown["adopted_context_window_tokens"] is None, (
+        "实测低于下限时替必拒的保存报了个预算：表单会显示一个永远不会用的数"
+    )
+
+    # 3) 判不出 + 声明达到下限 ⇒ 采纳声明（这正是声明该生效的那一态）
+    probe_module.memo_clear()
+    verdict, shown = await display_for(
+        metadata_body=None, bound_status=401,
+        bound_body=b'{"error":{"message":"invalid api key"}}', declared=2_000_000,
+    )
+    assert verdict == VERDICT_INCONCLUSIVE
+    assert shown["adopted_context_window_tokens"] == 2_000_000
+
+    # 4) 判不出 + 声明低于下限 ⇒ 什么都不采纳
+    probe_module.memo_clear()
+    verdict, shown = await display_for(
+        metadata_body=None, bound_status=401,
+        bound_body=b'{"error":{"message":"invalid api key"}}', declared=900_000,
+    )
+    assert verdict == VERDICT_INCONCLUSIVE
+    assert shown["adopted_context_window_tokens"] is None
+
+
+@pytest.mark.anyio
 async def test_check_context_window_endpoint_caches_verdict(env, gateway):
     """手动「重新检测」把结论落进 preferences：三元组 + result + source + checked_at。"""
     user_id = "u-check-cache"

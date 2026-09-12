@@ -10,7 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
+from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE, sse_code_for_exception
 from app.database import get_db
 from app.api.common import verify_project_access
 from app.api.settings import get_user_ai_service
@@ -280,10 +280,18 @@ async def chat_stream(
             yield await SSEResponse.send_done()
         except Exception as exc:
             await service.finalize_interrupted_turn(str(exc), cancelled=False)
+            # 泛型收尾不得吞掉实发模型守卫的码（评审第 2 项）：`generate_text_stream` 是
+            # 异步生成器，守卫在首次 `__anext__` 才抛，正好落进本 `except Exception`。
+            # 写死 internal.agent_execution_failed 会让不合格模型的用户只看到一句通用失败、
+            # 拿不到通往设置页的码——创作助手是核心 AI 功能，这条路径不能例外。
+            # ApiError 自带码时沿用它，只有真正无法归类的异常才退回本站点通用码。
+            code, params = sse_code_for_exception(exc)
+            raw = f"灵创创作助手执行失败：{exc}"
             yield await SSEResponse.send_error(
-                error=f"灵创创作助手执行失败：{exc}",
-                code="internal.agent_execution_failed", params={"error": str(exc)},
-                raw=f"灵创创作助手执行失败：{exc}",
+                error=raw,
+                code=code or "internal.agent_execution_failed",
+                params=params or {"error": str(exc)},
+                raw=raw,
             )
             yield await SSEResponse.send_done()
 

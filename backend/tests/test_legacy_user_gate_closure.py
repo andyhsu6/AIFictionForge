@@ -15,6 +15,10 @@
 4. **「拒绝 + 弹出同一表单」的可寻址性**：设置页读取（`GET /settings`）必须把
    **已缓存**的结论以门禁表单能直接渲染的形态交出去，且**读取路径零探测**——
    页面渲染不是 AI 功能，§3 的同步补测只适用于真要跑 AI 功能那条路。
+5. **缓存结论是持久状态，一次「没测出来」抹不掉它**（issue #59）：网关不可达时
+   探测回 `inconclusive` 是**非测量**，不是新证据。它既不能把实测 `<1M` 降级成
+   「去声明一个窗口」——那正好是实测结论本该挡住的出口——也不能把实测 `>=1M`
+   或用户声明抹成未知。强度序见 `evidence_strength` / `verdict_may_overwrite`。
 
 测试值一律中性占位（big-model / gw.test / "chapter one body text"），不含任何
 导入原文、角色人名或书名（AGENTS.md 原文数据脱敏硬约束）。
@@ -45,16 +49,21 @@ from app.services.model_capability_probe import (
     PREFERENCES_KEY,
     ProbeOutcome,
     SOURCE_PROBE,
+    SOURCE_USER_DECLARED,
+    VERDICT_INCONCLUSIVE,
     VERDICT_QUALIFIED,
     VERDICT_UNQUALIFIED,
+    evidence_strength,
     is_due_for_daily_recheck,
     pending_recheck_tasks,
     triple_key,
+    verdict_may_overwrite,
 )
 
 BELOW_MINIMUM = "validation.ai_model_below_minimum"
 QUALIFIED_MODEL = "big-model"
 SMALL_MODEL = "gpt-4o-mini"          # 真实 128K 级模型（登记表内 128000）
+UNKNOWN_MODEL = "mystery-model"      # 未登记，只能靠用户显式声明
 GATEWAY = "https://gw.test/v1"
 API_KEY = "sk-stub-not-a-real-key"
 NEUTRAL_PROMPT = "chapter one body text"
@@ -78,17 +87,24 @@ def _days_ago_iso(days: int) -> str:
 
 
 class _Gateway:
-    """① 档 `GET /models/<id>` 老实报窗口的假网关；记录每一次出网请求。"""
+    """① 档 `GET /models/<id>` 老实报窗口的假网关；记录每一次出网请求。
+
+    `unreachable = True` 时**抛连接错误**，与真实场景「网关进程已被杀掉」同形态：
+    探测层把任何传输异常判成 `inconclusive`，HTTP 端点仍回 200。
+    """
 
     def __init__(self, window_tokens=METADATA_WINDOW):
         self.calls = []
         self.window_tokens = window_tokens
+        self.unreachable = False
 
     @property
     def total_calls(self):
         return len(self.calls)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if self.unreachable:
+            raise httpx.ConnectError("connection refused", request=request)
         self.calls.append({"path": request.url.path, "method": request.method, "body": request.content})
 
         if request.url.path.startswith("/v1/models/"):
@@ -439,3 +455,316 @@ async def test_settings_read_gate_state_shares_the_dispatch_paths_triple_key(env
     assert gate["verdict"] == VERDICT_QUALIFIED, "派发写入的结论设置页读不到 ⇒ 三元组口径漂移"
     assert gate["measured_context_window_tokens"] == METADATA_WINDOW
     assert gateway.total_calls == 1, "读取路径只读缓存，不该再探一次"
+
+
+# ========== 5. 结论强度序：非测量抹不掉持久状态（issue #59） ==========
+#
+# 真机浏览器验收抓到的回归：设置页加载时那一枪静默探测打到不可达的网关，
+# 后端**照实回 200 + inconclusive**（不是抛异常），而 `write_verdict` 把它落了库，
+# 于是「实测 128,000」这条唯一能解释「为什么 AI 被拒」的证据被一次「没测出来」抹掉，
+# 界面上一个真实测量过的 128K 用户被永久降级成「你去声明一个窗口」——
+# 而显式声明恰恰是实测 `<1M` 本该挡住的出口。
+# 这里刻意走 `POST /settings/check-context-window` 全路径：jsdom 那侧的旧用例把
+# 不可达 mock 成了传输层抛异常，正好绕开了后端真正的状态丢失形态。
+
+
+def _verdict_blob(entry_key, entry, **extra):
+    """把一条结论按缓存真实形状包成 preferences blob。"""
+    return {PREFERENCES_KEY: {entry_key: entry}, **extra}
+
+
+async def run_silent_page_probe(env, client_user_id):
+    """复刻页面加载那一枪：真发 HTTP，返回响应 JSON。"""
+    async with env.client() as client:
+        return await client.post(
+            "/settings/check-context-window",
+            headers={"x-test-user": client_user_id},
+            json={
+                "provider": "openai",
+                "api_key": API_KEY,
+                "api_base_url": GATEWAY,
+                "llm_model": SMALL_MODEL,
+            },
+        )
+
+
+@pytest.mark.anyio
+async def test_unreachable_page_probe_does_not_erase_a_measured_below_minimum_verdict(
+    env, gateway
+):
+    """核心回归：网关不可达 ⇒ 已缓存的「实测 128K」必须原样留在库里。"""
+    user_id = "u-state-loss-primary"
+    key = triple_key("openai", GATEWAY, SMALL_MODEL)
+    seeded = small_verdicts()
+    original = dict(seeded[PREFERENCES_KEY][key])
+    await seed_settings(env.session_factory, user_id, preferences=seeded)
+    probe_module.memo_clear()
+
+    gateway.unreachable = True
+    resp = await run_silent_page_probe(env, user_id)
+    assert resp.status_code == 200, resp.text
+    # 前提自证：这一枪确实「判不出」，而且不是靠抛异常表达的（HTTP 200 形态）
+    body = resp.json()
+    assert body["success"] is True
+    assert body["details"]["verdict"] == VERDICT_INCONCLUSIVE
+    assert gateway.total_calls == 0, "不可达即一次请求都没成行，缓存基线只能来自数据库"
+
+    probe_module.memo_clear()
+    stored = (await read_blob(env.session_factory, user_id))[PREFERENCES_KEY][key]
+    assert stored["result"] == VERDICT_UNQUALIFIED, "非测量抹掉了实测结论：持久状态丢失"
+    assert stored["context_window_tokens"] == original["context_window_tokens"]
+    assert stored["source"] == SOURCE_PROBE
+    assert stored["checked_at"] == original["checked_at"], "结论的测量时间被改写"
+
+    # 拒绝形态仍是「实测低于下限」，而不是「请去声明一个窗口」
+    async with env.client() as client:
+        gate = (
+            await client.get("/settings", headers={"x-test-user": user_id})
+        ).json()["context_window_gate"]
+    assert gate["verdict"] == VERDICT_UNQUALIFIED
+    assert gate["measured_context_window_tokens"] == SMALL_WINDOW
+    assert gate["requires_explicit_declaration"] is False, "被实测挡住的出口又开了"
+
+
+@pytest.mark.anyio
+async def test_save_gate_after_an_unreachable_probe_still_refuses_with_measured_evidence(
+    env, gateway
+):
+    """同一状态丢失误动的下游后果：保存必须回「实测不足」，不是「要求显式声明」。"""
+    user_id = "u-state-loss-save-path"
+    await seed_settings(env.session_factory, user_id, preferences=small_verdicts())
+    probe_module.memo_clear()
+
+    gateway.unreachable = True
+    page_probe = await run_silent_page_probe(env, user_id)
+    assert page_probe.json()["details"]["verdict"] == VERDICT_INCONCLUSIVE
+
+    async with env.client() as client:
+        resp = await client.post(
+            "/settings",
+            headers={"x-test-user": user_id},
+            json={
+                "api_provider": "openai",
+                "api_key": API_KEY,
+                "api_base_url": GATEWAY,
+                "llm_model": SMALL_MODEL,
+                "context_window_tokens": 2_000_000,
+            },
+        )
+
+    assert resp.status_code == 400, resp.text
+    params = resp.json()["params"]
+    assert resp.json()["code"] == BELOW_MINIMUM
+    assert params["verdict"] == VERDICT_UNQUALIFIED
+    assert params["measured_context_window_tokens"] == SMALL_WINDOW
+    assert params["requires_explicit_declaration"] is False, "声明通道对实测小模型重新打开"
+    assert gateway.total_calls == 0, "已有当场结论时拒绝必须确定，不取决于网关此刻可达与否"
+
+
+@pytest.mark.anyio
+async def test_refused_recheck_still_throttles_to_one_attempt_per_day(
+    db_factory, gateway, monkeypatch
+):
+    """被拒的弱证据仍要留下「今天试过」这一笔，否则过期结论会在**每次派发**重探一遍。
+
+    抹掉证据是 bug，每次都去重探同样不可接受：② 档带着 `max_tokens=1M`，
+    对着一个「可达但探测判不出」的反复重探是真金白银。
+    """
+    user_id = "u-state-loss-throttle"
+    stale_checked_at = _days_ago_iso(3)
+    key = triple_key("openai", GATEWAY, SMALL_MODEL)
+    await seed_settings(
+        db_factory, user_id,
+        preferences=small_verdicts(checked_at=stale_checked_at),
+    )
+
+    opened = []
+
+    async def fake_session(user):
+        session = db_factory()
+        opened.append(session)
+        return session
+
+    async def dispatch():
+        """一次派发：当场按缓存拒绝，返回本次排上的后台复测。"""
+        probe_module.memo_clear()
+        queued_before = set(pending_recheck_tasks())
+        async with db_factory() as session:
+            svc, _ = _service(user_id, session)
+            with pytest.raises(ApiError) as exc_info:
+                await svc.generate_text(prompt=NEUTRAL_PROMPT)
+        return exc_info.value, set(pending_recheck_tasks()) - queued_before
+
+    monkeypatch.setattr(probe_module, "_open_user_session", fake_session)
+    gateway.unreachable = True
+
+    error, queued = await dispatch()
+    assert error.params["verdict"] == VERDICT_UNQUALIFIED
+    assert queued, "过期结论第一次派发就该排队复测"
+    await asyncio.gather(*queued)
+
+    stored = (await read_blob(db_factory, user_id))[PREFERENCES_KEY][key]
+    assert stored["result"] == VERDICT_UNQUALIFIED, "节流的补写顺手抹掉了实测结论"
+    assert stored["context_window_tokens"] == SMALL_WINDOW
+    assert stored["checked_at"] == stale_checked_at, "复测没测出来却改写了测量时间"
+    assert stored.get("last_attempt_at"), "一次判不出的复测必须留下尝试痕迹（节流依据）"
+    attempt_at = stored["last_attempt_at"]
+
+    # 今天已经试过 ⇒ 第二次派发不再排队复测（断言发生在 gather 之前，否则恒真）
+    _, queued_again = await dispatch()
+    assert not queued_again, "判不出的复测没有节流 ⇒ 每次派发都重探一遍网关"
+    assert (
+        await read_blob(db_factory, user_id)
+    )[PREFERENCES_KEY][key]["last_attempt_at"] == attempt_at, "未被复测却刷新了尝试时间"
+
+    await asyncio.gather(*pending_recheck_tasks())
+    for session in opened:
+        await session.close()
+
+
+@pytest.mark.anyio
+async def test_fresh_measured_verdict_replaces_an_older_measured_one(db_factory, gateway, monkeypatch):
+    """实测覆盖实测（同强度，新的赢）：网关侧真把窗口升到 >=1M 必须被重新接纳。
+
+    这条是「强度序不会把用户永久锁死」的反向验收——否则「网关升配」永远翻不了身。
+    """
+    user_id = "u-state-loss-upgrade"
+    await seed_settings(
+        db_factory, user_id,
+        preferences=small_verdicts(checked_at=_days_ago_iso(2)),
+    )
+
+    opened = []
+
+    async def fake_session(user):
+        session = db_factory()
+        opened.append(session)
+        return session
+
+    monkeypatch.setattr(probe_module, "_open_user_session", fake_session)
+    gateway.window_tokens = METADATA_WINDOW  # 网关真的升配了
+
+    probe_module.memo_clear()
+    async with db_factory() as session:
+        svc, _ = _service(user_id, session)
+        with pytest.raises(ApiError):
+            await svc.generate_text(prompt=NEUTRAL_PROMPT)
+        queued = set(pending_recheck_tasks())
+        assert queued, "过期结论要排队后台复测"
+        await asyncio.gather(*queued)
+
+    probe_module.memo_clear()
+    async with db_factory() as session:
+        svc, provider = _service(user_id, session)
+        result = await svc.generate_text(prompt=NEUTRAL_PROMPT)
+    assert result["content"] == "generated stub text", "升配后的模型没能被重新接纳"
+    assert provider.calls, "实测覆盖实测才是日常复测的正常形态"
+
+    stored = (await read_blob(db_factory, user_id))[PREFERENCES_KEY][
+        triple_key("openai", GATEWAY, SMALL_MODEL)]
+    assert stored["result"] == VERDICT_QUALIFIED
+    assert stored["context_window_tokens"] == METADATA_WINDOW
+
+    for session in opened:
+        await session.close()
+
+
+@pytest.mark.anyio
+async def test_first_ever_inconclusive_probe_is_recorded_and_later_probe_can_replace_it(
+    env, gateway
+):
+    """从未定论 + 网关不可达 ⇒ 这次判不出**必须**落库（否则每次派发都同步重探），
+    且它绝不能把用户永久钉在未知上：网关恢复后复测可覆盖它。"""
+    user_id = "u-state-loss-cold-start"
+    key = triple_key("openai", GATEWAY, SMALL_MODEL)
+    await seed_settings(env.session_factory, user_id, preferences={})
+    probe_module.memo_clear()
+
+    gateway.unreachable = True
+    resp = await run_silent_page_probe(env, user_id)
+    assert resp.json()["details"]["verdict"] == VERDICT_INCONCLUSIVE
+    stored = (await read_blob(env.session_factory, user_id))[PREFERENCES_KEY][key]
+    assert stored["result"] == VERDICT_INCONCLUSIVE, "首次判不出没落库 ⇒ 每次派发都同步重探"
+
+    gateway.unreachable = False
+    gateway.window_tokens = SMALL_WINDOW  # 网关恢复后如实报告 128K ⇒ 这次是实测
+    resp2 = await run_silent_page_probe(env, user_id)
+    assert resp2.json()["details"]["verdict"] == VERDICT_UNQUALIFIED, "弱证据落库后强证据进不来"
+    stored = (await read_blob(env.session_factory, user_id))[PREFERENCES_KEY][key]
+    assert stored["result"] == VERDICT_UNQUALIFIED
+    assert stored["context_window_tokens"] == SMALL_WINDOW
+
+
+@pytest.mark.anyio
+async def test_unreachable_recheck_does_not_erase_an_explicit_declaration(
+    db_factory, gateway, monkeypatch
+):
+    """用户显式声明的结论同样是持久状态：一次判不出的复测不能把它抹回未知。"""
+    user_id = "u-state-loss-declared"
+    key = triple_key("openai", GATEWAY, UNKNOWN_MODEL)
+    await seed_settings(
+        db_factory,
+        user_id,
+        llm_model=UNKNOWN_MODEL,
+        preferences=_verdict_blob(key, {
+            "result": VERDICT_QUALIFIED,
+            "source": SOURCE_USER_DECLARED,
+            "context_window_tokens": METADATA_WINDOW,
+            "tier": None,
+            "detail": f"user declared {METADATA_WINDOW} tokens",
+            "checked_at": _days_ago_iso(4),
+        }, theme_seed=7),
+    )
+
+    opened = []
+
+    async def fake_session(user):
+        session = db_factory()
+        opened.append(session)
+        return session
+
+    monkeypatch.setattr(probe_module, "_open_user_session", fake_session)
+    gateway.unreachable = True
+
+    probe_module.memo_clear()
+    async with db_factory() as session:
+        svc, provider = _service(user_id, session, default_model=UNKNOWN_MODEL)
+        result = await svc.generate_text(prompt=NEUTRAL_PROMPT)
+    assert result["content"] == "generated stub text", "声明被抹掉后，正常派发吃到了非确定性失败"
+    assert provider.calls
+    await asyncio.gather(*set(pending_recheck_tasks()))
+
+    blob = await read_blob(db_factory, user_id)
+    assert blob["theme_seed"] == 7, "拒绝弱证据时的补写抹掉了无关偏好键"
+    stored = blob[PREFERENCES_KEY][key]
+    assert stored["source"] == SOURCE_USER_DECLARED
+    assert stored["result"] == VERDICT_QUALIFIED
+
+    for session in opened:
+        await session.close()
+
+
+def test_evidence_strength_orders_non_measurement_below_declaration_below_measurement():
+    """强度序本身要可寻址：非测量 < 声明 < 实测，实测之间只看新旧。"""
+    measured_small = ProbeOutcome(verdict=VERDICT_UNQUALIFIED, context_window_tokens=SMALL_WINDOW)
+    measured_big = ProbeOutcome(verdict=VERDICT_QUALIFIED, context_window_tokens=METADATA_WINDOW)
+    declared = ProbeOutcome(
+        verdict=VERDICT_QUALIFIED,
+        context_window_tokens=METADATA_WINDOW,
+        source=SOURCE_USER_DECLARED,
+    )
+    cannot_decide = ProbeOutcome(verdict=VERDICT_INCONCLUSIVE)
+
+    assert evidence_strength(cannot_decide) < evidence_strength(declared)
+    assert evidence_strength(declared) < evidence_strength(measured_small)
+    # 「升配要被重新接纳 / 降配要被重新拒绝」都依赖实测之间不分强弱
+    assert evidence_strength(measured_small) == evidence_strength(measured_big)
+
+    # 同强度即「新的赢」：这条就是日常复测
+    assert verdict_may_overwrite(measured_big, measured_small)
+    assert verdict_may_overwrite(measured_small, measured_big)
+    assert verdict_may_overwrite(declared, measured_small)
+    assert not verdict_may_overwrite(measured_small, declared)
+    for stronger in (measured_small, measured_big, declared):
+        assert not verdict_may_overwrite(stronger, cannot_decide)
+        assert verdict_may_overwrite(cannot_decide, stronger)

@@ -7,7 +7,8 @@
 2. **破坏性公告必须在 README 顶部**：出现在特性章节**之前**，且带版本号说明。
 3. **两个盲区必须写出来**：③ needle 档未接线（静默截断型网关可通过 ①②）、
    日频复测之间换模型会按旧结论放行。少写一条就是过度承诺 ⇒ 红。
-4. **不写具体推荐模型名**：文档里不得出现兜底示例模型名或「推荐某某模型」条目。
+4. **不写具体推荐模型名**：文档里不得出现兜底示例模型名或「推荐某某模型」条目，
+   设置页「模型名称」等字段的提示文案（`form.*Tooltip`）同样不得点名具体模型。
 5. **`DEFAULT_MODEL` 不再被读取**：`docker-compose.yml` / `.env.example` / README
    都不得再出现**未注释的** `DEFAULT_MODEL=` 赋值（那是宣传一个静默失效的开关），
    且必须写明它已废弃。
@@ -36,6 +37,13 @@ RECOMMENDED_MODEL_NAMES = (
     "gpt-4o-mini",
     "DeepSeek V4",
     "Gemini 2.0 Pro",
+)
+
+# 步骤 3 之后**保证被拒**的模型名。文档口径（0a63df7）是不推荐具体模型名，
+# 而这两台曾经写在设置页「模型名称」字段的提示里——写在活字段上等于给用户预填一个必拒值。
+GUARANTEED_REJECTED_MODEL_NAMES = (
+    "gpt-4",
+    "gpt-3.5-turbo",
 )
 
 
@@ -107,6 +115,36 @@ def test_readmes_do_not_recommend_specific_models():
     for name, text in (("README.md", README_EN), ("README.zh-CN.md", README_ZH)):
         for model in RECOMMENDED_MODEL_NAMES:
             assert model not in text, f"{name} 仍在推荐具体模型名 {model!r}"
+
+
+def _settings_form_tooltips() -> dict:
+    """两份 settings 命名空间里 `form.*Tooltip` 的文案：`文件名 -> {键: 文案}`。
+
+    口径同 README：不推荐具体模型名。这里是**活字段**上的提示，写错比文档更贵——
+    评审第 4 项抓到的正是「`llm_model` 字段推荐两台保证被拒的模型」。
+    """
+    import json
+
+    found = {}
+    for locale in ("zh", "en"):
+        path = ("frontend", "src", "locales", locale, "settings.json")
+        payload = json.loads(_read(*path))
+        form = payload.get("form", {})
+        found["/".join(path)] = {
+            key: value for key, value in form.items() if key.endswith("Tooltip")
+        }
+    return found
+
+
+def test_settings_form_copy_does_not_recommend_specific_models():
+    banned = RECOMMENDED_MODEL_NAMES + GUARANTEED_REJECTED_MODEL_NAMES
+    tooltips = _settings_form_tooltips()
+    assert len(tooltips) == 2, "两份 settings 文案都必须可寻址"
+    for name, values in tooltips.items():
+        assert "llmModelTooltip" in values, f"{name} 的「模型名称」字段提示消失了"
+        for key, text in values.items():
+            for model in banned:
+                assert model not in text, f"{name} 的 form.{key} 仍在推荐具体模型名 {model!r}"
 
 
 def test_default_model_env_var_is_no_longer_advertised_as_a_setting():

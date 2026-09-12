@@ -59,7 +59,7 @@
     "disableThinking": "关闭模型思考",
     "disableThinkingTooltip": "适用于思考型模型：开启后模型跳过思考阶段直接输出正文，可显著减少等待时间与token消耗；对不支持此选项的服务无影响",
     "llmModel": "模型名称",
-    "llmModelTooltip": "AI模型的名称，如 gpt-4, gpt-3.5-turbo",
+    "llmModelTooltip": "你要使用的模型名称。保存时系统会实测该模型的上下文窗口，达不到要求的模型不受支持；具体下限见下方「上下文窗口门禁」，此处不推荐特定模型名",
     "maxTokens": "最大 Token 数",
     "maxTokensTooltip": "单次请求的最大token数量",
     "systemPrompt": "系统提示词",

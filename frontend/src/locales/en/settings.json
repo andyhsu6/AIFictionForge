@@ -59,7 +59,7 @@
     "disableThinking": "Disable Model Thinking",
     "disableThinkingTooltip": "For reasoning models: when enabled, the model skips the thinking phase and outputs directly, greatly reducing wait time and token usage; no effect on services that do not support this option",
     "llmModel": "Model Name",
-    "llmModelTooltip": "AI model name, e.g. gpt-4, gpt-3.5-turbo",
+    "llmModelTooltip": "The name of the model you want to use. On save the app measures its context window, and models that do not meet the requirement are not supported; see the context window gate below for the current floor. No specific model name is recommended here.",
     "maxTokens": "Max Tokens",
     "maxTokensTooltip": "Maximum token count per request",
     "systemPrompt": "System Prompt",
