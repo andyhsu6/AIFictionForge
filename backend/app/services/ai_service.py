@@ -8,6 +8,7 @@
 from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable
 
 from app.config import settings as app_settings
+from app.core.errors import ApiError
 from app.logger import get_logger
 from app.services.ai_config import AIClientConfig, default_config
 from app.services.ai_metrics import AICallMetrics, TokenUsage, ToolCallMetrics
@@ -264,7 +265,10 @@ class AIService:
     ):
         self.raw_api_provider = (api_provider or app_settings.default_ai_provider or "openai").lower().strip()
         self.api_provider = normalize_provider(self.raw_api_provider)
-        self.default_model = default_model or app_settings.default_model
+        # 需求 #55 步骤 2：这里只装**用户自己配置的**默认模型。
+        # 系统不再回填默认模型常量替用户猜一个；未配置即为 None，
+        # 由 _require_model() 在使用点抛 validation.ai_model_not_configured。
+        self.default_model: Optional[str] = (default_model or "").strip() or None
         self.default_temperature = default_temperature or app_settings.default_temperature
         self.default_max_tokens = default_max_tokens or app_settings.default_max_tokens
         self.base_url = api_base_url or app_settings.openai_base_url
@@ -355,6 +359,18 @@ class AIService:
         if p == "gemini" and self._gemini_provider:
             return self._gemini_provider
         raise ValueError(f"Provider {p} 未初始化")
+
+    def _require_model(self, model: Optional[str] = None) -> str:
+        """解析本次请求的实发模型：显式传入优先，否则用**用户配置的**默认模型。
+
+        两者都为空时抛 `validation.ai_model_not_configured`——系统绝不替用户猜一个
+        模型（需求 #55 步骤 2），也绝不允许 None/空串穿透到 provider 变成
+        400/422 或 provider 端随机报错。所有 provider 调用点都必须经此取模型。
+        """
+        resolved = (model or self.default_model or "").strip()
+        if not resolved:
+            raise ApiError(code="validation.ai_model_not_configured")
+        return resolved
 
     def _build_call_metrics(
         self,
@@ -529,11 +545,11 @@ class AIService:
                 prov = self._get_provider(kwargs.get("provider"))
                 next_response = await prov.generate(
                     prompt=prompt,
-                    model=kwargs.get("model") or self.default_model,
+                    model=self._require_model(kwargs.get("model")),
                     temperature=kwargs.get("temperature") or self.default_temperature,
                     max_tokens=resolve_effective_max_tokens(
                         kwargs.get("max_tokens"), self.default_max_tokens,
-                        kwargs.get("model") or self.default_model, self.base_url,
+                        self._require_model(kwargs.get("model")), self.base_url,
                     ),
                     system_prompt=kwargs.get("system_prompt") or self.default_system_prompt,
                     tools=None if tool_choice == "none" else self._cached_tools,
@@ -603,6 +619,8 @@ class AIService:
         Returns:
             包含生成内容的字典
         """
+        # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
+        model = self._require_model(model)
         # 使用全局配置的MCP轮数（如果未指定）
         if mcp_max_rounds is None:
             mcp_max_rounds = app_settings.mcp_max_rounds
@@ -625,10 +643,10 @@ class AIService:
             prov = self._get_provider(provider)
             response = await prov.generate(
                 prompt=prompt,
-                model=model or self.default_model,
+                model=model,
                 temperature=temperature or self.default_temperature,
                 max_tokens=resolve_effective_max_tokens(
-                    max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+                    max_tokens, self.default_max_tokens, model, self.base_url
                 ),
                 system_prompt=system_prompt or self.default_system_prompt,
                 tools=tools,
@@ -701,6 +719,8 @@ class AIService:
             生成的文本块
         """
         logger.debug(f"🔧 generate_text_stream: auto_mcp={auto_mcp}, tool_choice={tool_choice}")
+        # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
+        model = self._require_model(model)
         
         tools_to_use = None
         
@@ -737,10 +757,10 @@ class AIService:
             logger.debug(f"🔧 开始流式生成，provider={provider or self.api_provider}, tools_count={len(tools_to_use) if tools_to_use else 0}")
             async for chunk in prov.generate_stream(
                 prompt=prompt,
-                model=model or self.default_model,
+                model=model,
                 temperature=temperature or self.default_temperature,
                 max_tokens=resolve_effective_max_tokens(
-                    max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+                    max_tokens, self.default_max_tokens, model, self.base_url
                 ),
                 system_prompt=system_prompt or self.default_system_prompt,
                 tools=tools_to_use,
@@ -796,6 +816,8 @@ class AIService:
         finish_reason、usage 字段。
         """
         tools_to_use = None
+        # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
+        model = self._require_model(model)
         if auto_mcp:
             tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
 
@@ -805,10 +827,10 @@ class AIService:
         finish_reason = "stop"
         async for chunk in prov.generate_stream(
             prompt=prompt,
-            model=model or self.default_model,
+            model=model,
             temperature=temperature or self.default_temperature,
             max_tokens=resolve_effective_max_tokens(
-                max_tokens, self.default_max_tokens, model or self.default_model, self.base_url
+                max_tokens, self.default_max_tokens, model, self.base_url
             ),
             system_prompt=system_prompt or self.default_system_prompt,
             tools=tools_to_use,
@@ -874,6 +896,8 @@ class AIService:
         Returns:
             解析后的JSON数据
         """
+        # 未配置模型即明确报错：重试循环一次都不启动，也不发请求（需求 #55 步骤 2）
+        model = self._require_model(model)
         last_response = ""
         aggregate_usage = TokenUsage()
         metrics = self._build_call_metrics(
@@ -1030,12 +1054,16 @@ def create_user_ai_service(
     api_provider: str,
     api_key: str,
     api_base_url: str,
-    model_name: str,
+    model_name: Optional[str],
     temperature: float,
     max_tokens: int,
     system_prompt: Optional[str] = None,
 ) -> AIService:
-    """创建用户 AI 服务（不带MCP支持）"""
+    """创建用户 AI 服务（不带MCP支持）
+
+    model_name 为**用户配置的**默认模型；None/空表示未配置，调用 AI 时会抛
+    validation.ai_model_not_configured（需求 #55 步骤 2）。
+    """
     return AIService(
         api_provider=api_provider,
         api_key=api_key,
@@ -1051,7 +1079,7 @@ def create_user_ai_service_with_mcp(
     api_provider: str,
     api_key: str,
     api_base_url: str,
-    model_name: str,
+    model_name: Optional[str],
     temperature: float,
     max_tokens: int,
     user_id: str,

@@ -14,7 +14,10 @@ class Settings(Base):
     api_provider = Column(String(50), default="openai", comment="API提供商")
     api_key = Column(String(500), comment="API密钥")
     api_base_url = Column(String(500), comment="自定义API地址")
-    llm_model = Column(String(100), default="gpt-4", comment="模型名称")
+    # 需求 #55 步骤 2：无列默认值。列默认会在 INSERT 时把「未填/置空」静默变成
+    # 一个系统猜的模型（SQLAlchemy 对 unset 与 None 都套用 Python 侧 default），
+    # 等于绕过 validation.ai_model_not_configured。未配置就是 NULL/空串。
+    llm_model = Column(String(100), comment="模型名称")
     temperature = Column(Float, default=0.7, comment="温度参数")
     max_tokens = Column(Integer, default=2000, comment="最大token数")
     system_prompt = Column(Text, comment="系统级别提示词，每次AI调用都会使用")

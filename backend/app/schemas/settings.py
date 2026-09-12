@@ -25,7 +25,9 @@ class SettingsBase(BaseModel):
     api_provider: Optional[str] = Field(default="openai", description="API提供商")
     api_key: Optional[str] = Field(default=None, description="API密钥")
     api_base_url: Optional[str] = Field(default=None, description="自定义API地址")
-    llm_model: Optional[str] = Field(default="gpt-4", description="模型名称")
+    # 需求 #55 步骤 2：不给默认模型。schema 默认值等于替用户猜一个模型；
+    # 未配置保持 None，AI 调用会报 validation.ai_model_not_configured。
+    llm_model: Optional[str] = Field(default=None, description="模型名称")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="温度参数")
     max_tokens: Optional[int] = Field(default=2000, ge=1, description="最大token数")
     system_prompt: Optional[str] = Field(default=None, description="系统级别提示词，每次AI调用都会使用")

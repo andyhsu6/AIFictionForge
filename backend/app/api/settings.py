@@ -56,7 +56,11 @@ def read_env_defaults() -> Dict[str, Any]:
         "api_provider": default_provider,
         "api_key": "" if default_provider == "xiaomi_mimo" else provider_defaults["api_key"],
         "api_base_url": provider_defaults["api_base_url"],
-        "llm_model": app_settings.default_model,
+        # 需求 #55 步骤 2：不再用系统默认模型常量替用户猜模型。
+        # 留空 = 用户未配置；AI 调用会明确报 validation.ai_model_not_configured。
+        # 若省略该键，Settings.llm_model 的列默认值同样会重新填入猜测值，
+        # 所以这里显式写空串。
+        "llm_model": "",
         "temperature": app_settings.default_temperature,
         "max_tokens": app_settings.default_max_tokens,
     }
@@ -178,7 +182,9 @@ def _build_ai_service_from_config(
         api_provider=resolved_config["api_provider"],
         api_key=resolved_config["api_key"],
         api_base_url=resolved_config["api_base_url"],
-        model_name=config.get('llm_model') or app_settings.default_model,
+        # 需求 #55 步骤 2：这里只透传用户配置的模型；未配置时由 AIService
+        # 在使用点抛 validation.ai_model_not_configured，系统不代猜。
+        model_name=config.get('llm_model'),
         temperature=config.get('temperature') if config.get('temperature') is not None else app_settings.default_temperature,
         max_tokens=config.get('max_tokens') if config.get('max_tokens') is not None else app_settings.default_max_tokens,
         user_id=user_id,

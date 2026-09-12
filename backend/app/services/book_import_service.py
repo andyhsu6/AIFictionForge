@@ -2166,7 +2166,8 @@ class BookImportService:
                 api_provider=default_provider,
                 api_key=default_key,
                 api_base_url=default_base_url,
-                llm_model=app_settings.default_model,
+                # 需求 #55 步骤 2：不替用户填默认模型；未填即 NULL，
+                # AI 调用会报 validation.ai_model_not_configured。
                 temperature=app_settings.default_temperature,
                 max_tokens=app_settings.default_max_tokens,
             )

@@ -267,6 +267,12 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "task.not_completed": ("任务尚未完成，无法获取预览", 400),
     "task.running_mutation_blocked": ("无法删除进行中的任务，请先取消", 400),
     "validation.ai_config_missing": ("请先在「设置 → 文本模型配置」中配置模型", 400),
+    # ---- 需求 #55：≥1M 上下文模型硬前提（步骤 2 注册；below_minimum 的实发门禁在步骤 3）----
+    # ai_model_not_configured：用户未配置任何模型时明确报错，系统不得代猜一个。
+    # ai_model_below_minimum：实发模型上下文窗口不足下限（参数化码，raise 时须显式
+    # 传原文案 detail 以保证旧客户端 byte-identity）。
+    "validation.ai_model_below_minimum": ("模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型", 400),
+    "validation.ai_model_not_configured": ("尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称", 400),
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),
     "validation.book_import_new_project": ("当前仅支持新建项目导入，不支持指定 project_id", 400),
