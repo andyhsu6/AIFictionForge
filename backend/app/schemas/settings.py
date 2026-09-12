@@ -42,12 +42,25 @@ class SettingsBase(BaseModel):
 
 class SettingsCreate(SettingsBase):
     """创建设置请求模型"""
-    pass
+
+    # 需求 #55 步骤 3：探测不出/未登记模型时的**显式窗口声明**（tokens）。
+    # 只有 >= MIN_CONTEXT_WINDOW_TOKENS 才允许保存；实测 <1M 的模型即使声明也不放行。
+    # 非数据库列：该值只落进 preferences 的结论缓存（source=user_declared）。
+    # 刻意不加 pydantic ge 约束——太小要走 validation.ai_model_below_minimum 错误码，
+    # 而不是 422 的 pydantic 文案（后端用户可见文案只能用错误码）。
+    context_window_tokens: Optional[int] = Field(
+        default=None,
+        description="显式声明的上下文窗口 token 数（探测判不出时的保存出口）",
+    )
 
 
 class SettingsUpdate(SettingsBase):
     """更新设置请求模型"""
-    pass
+
+    context_window_tokens: Optional[int] = Field(
+        default=None,
+        description="显式声明的上下文窗口 token 数（探测判不出时的保存出口）",
+    )
 
 
 class SettingsResponse(SettingsBase):

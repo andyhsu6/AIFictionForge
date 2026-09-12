@@ -186,7 +186,11 @@ class MCPTestService:
                 api_base_url=user_settings.api_base_url,
                 model_name=user_settings.llm_model,
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                # 需求 #55 步骤 3：绑定用户与会话，否则这条路径拿不到上下文窗口结论，
+                # 等于绕开 >=1M 硬拦门禁
+                user_id=user.user_id,
+                db_session=db_session,
             )
             
             # 使用统一门面转换为OpenAI Function Calling格式

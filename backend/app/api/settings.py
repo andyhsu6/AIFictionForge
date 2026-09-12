@@ -32,7 +32,19 @@ from app.services.ai_clients.base_client import UPSTREAM_BODY_MARKER, _enrich_ht
 from app.user_manager import User
 from app.logger import get_logger, safe_preview
 from app.config import settings as app_settings, PROJECT_ROOT
-from app.services.ai_service import AIService, create_user_ai_service, create_user_ai_service_with_mcp, normalize_provider
+from app.services.ai_service import (
+    AIService, create_user_ai_service, create_user_ai_service_with_mcp,
+    detect_context_window, effective_base_url, normalize_provider,
+)
+from app.services.model_capability_probe import (
+    MIN_CONTEXT_WINDOW_TOKENS,
+    TRIGGER_MANUAL,
+    TRIGGER_SAVE,
+    VERDICT_QUALIFIED,
+    ensure_model_allowed,
+    probe_model_context_window,
+    write_verdict,
+)
 from app.services.email_service import email_service
 from app.security import validate_ai_http_url
 
@@ -532,6 +544,65 @@ async def test_system_smtp_settings(
     }
 
 
+async def _gate_saved_model_context_window(
+    *,
+    user_id: str,
+    db: AsyncSession,
+    settings_dict: Dict[str, Any],
+    fallback_row: Optional[Settings],
+    require_model_in_payload_only: bool = False,
+) -> None:
+    """保存路径的上下文窗口硬拦（需求 #55 步骤 3，交付物 9）。
+
+    ⚠️ 必须在 `db_write_lock` **之外**调用：探测结论的缓存写入自己会取同一把
+    per-user 锁，而那把锁**不可重入** ⇒ 临界区内调用即自死锁（#56 评审已确认
+    既有 8 个 preferences 临界区内只有 DB 操作，本函数正是为此保持在锁外）。
+
+    Args:
+        require_model_in_payload_only: PUT 的部分更新形态只在请求显式带模型时判定，
+            避免「改个温度」被存量不合格配置挡住（POST 表单保存走 False＝判有效模型）。
+    """
+    declared = settings_dict.pop("context_window_tokens", None)
+
+    # 显式带 llm_model（含空串＝清空配置）时以请求为准；省略该字段时才回落到存量配置。
+    # 清空必须放行：否则持有存量不合格配置的用户连「把模型字段清空」都做不到。
+    if "llm_model" in settings_dict:
+        effective_model = (settings_dict.get("llm_model") or "").strip()
+    elif require_model_in_payload_only or fallback_row is None:
+        effective_model = ""
+    else:
+        effective_model = (fallback_row.llm_model or "").strip()
+    if not effective_model:
+        # 未配置模型不在这里拦：使用点抛 validation.ai_model_not_configured（步骤 2）
+        return
+
+    raw_provider = settings_dict.get("api_provider") or (
+        fallback_row.api_provider if fallback_row is not None else None
+    )
+    api_key = settings_dict.get("api_key") if settings_dict.get("api_key") is not None else (
+        fallback_row.api_key if fallback_row is not None else None
+    )
+    api_base_url = settings_dict.get("api_base_url") if settings_dict.get("api_base_url") is not None else (
+        fallback_row.api_base_url if fallback_row is not None else None
+    )
+    resolved = resolve_runtime_ai_config(raw_provider, api_key, api_base_url)
+    provider = resolved["api_provider"]
+    base_url = effective_base_url(resolved["api_base_url"]) or ""
+
+    # 声明只在探测判不出时被采纳（实测 <1M 时声明无效，无勾选放行通道）
+    await ensure_model_allowed(
+        user_id=user_id,
+        db=db,
+        provider=provider,
+        base_url=base_url,
+        api_key=resolved["api_key"],
+        model=effective_model,
+        trigger=TRIGGER_SAVE,
+        hint_window_tokens=detect_context_window(effective_model),
+        declared_tokens=declared,
+    )
+
+
 @router.post("", response_model=SettingsResponse)
 async def save_settings(
     data: SettingsCreate,
@@ -550,13 +621,27 @@ async def save_settings(
     `preferences` blob（取消预设激活态），与后台写入并发时不得互相抹键。
     客户端若在请求体里带 `preferences` 字符串，仍是整串覆盖语义（未改动），
     但覆盖动作已被串行化。
+
+    需求 #55 步骤 3：保存前先过上下文窗口硬拦（实测 <1M 直接拒，无勾选放行通道；
+    探测不出/未登记则要求显式声明 `context_window_tokens >= 1_000_000`）。
+    该判定**刻意放在写锁之外**——探测结论的缓存写入自己会取同一把不可重入的锁。
     """
+    # 门禁判定（含同步补测）与锁内事务分开：锁外读一次仅作为判定的输入基线
+    pre_gate_row = await load_settings_row_fresh(db, user.user_id)
+    settings_dict = data.model_dump(exclude_unset=True)
+    await _gate_saved_model_context_window(
+        user_id=user.user_id,
+        db=db,
+        settings_dict=settings_dict,
+        fallback_row=pre_gate_row,
+    )
+
     async with db_write_lock(user.user_id):
         # 查找现有设置（临界区内绕过身份映射，取其他写入方刚提交的版本）
         settings = await load_settings_row_fresh(db, user.user_id)
 
-        # 准备数据
-        settings_dict = data.model_dump(exclude_unset=True)
+        # settings_dict 已在门禁前 dump 并剥掉 context_window_tokens（非数据库列）；
+        # 这里绝不能再 dump 一次，否则会把声明字段 setattr 到 ORM 行上
 
         if settings:
             # 更新现有设置
@@ -622,15 +707,26 @@ async def update_settings(
 
     读改写在 per-user 写锁内执行（#56）：SettingsUpdate 继承了 `preferences`
     文本字段，本端点同样能整串覆盖偏好 blob。
+
+    需求 #55 步骤 3：请求体显式带 `llm_model` 时同样过上下文窗口硬拦
+    （部分更新如只改温度不重判存量配置，避免「连改个温度都被拒」）。
     """
+    update_data = data.model_dump(exclude_unset=True)
+    await _gate_saved_model_context_window(
+        user_id=user.user_id,
+        db=db,
+        settings_dict=update_data,
+        fallback_row=await load_settings_row_fresh(db, user.user_id),
+        require_model_in_payload_only=True,
+    )
+
     async with db_write_lock(user.user_id):
         settings = await load_settings_row_fresh(db, user.user_id)
 
         if not settings:
             raise ApiError(code="not_found.setting")
 
-        # 更新设置
-        update_data = data.model_dump(exclude_unset=True)
+        # 更新设置（update_data 已剥掉 context_window_tokens，它不是数据库列）
         for key, value in update_data.items():
             setattr(settings, key, value)
 
@@ -1178,6 +1274,123 @@ async def check_function_calling_support(data: ApiTestRequest):
             "error_type": error_type,
             "suggestions": suggestions
         }
+
+
+class ContextWindowCheckRequest(ApiTestRequest):
+    """上下文窗口探测请求：在 ApiTestRequest 形态上追加显式声明字段。"""
+
+    # 用户填的窗口（>= MIN_CONTEXT_WINDOW_TOKENS 才算声明有效）；仅用于三段数展示，
+    # 真正的声明落库发生在保存路径（_gate_saved_model_context_window）
+    context_window_tokens: Optional[int] = None
+
+
+# 已知盲区（对外须诚实，勿暗示系统万无一失）：③ needle 回读本期未接线，
+# 静默截断型网关可以通过 ①② 被判合格；两次探测之间（最长一个自然日）
+# 网关侧换模型/降配，当天首个请求按旧结论放行。
+_CONTEXT_WINDOW_BLIND_SPOT = (
+    "①② 档只能证明服务端「接受了这个量级的请求」，无法证明模型真读进去了："
+    "静默截断型网关会被判为合格（③ needle 回读本期未接线）。"
+    "另外两次探测之间网关侧换模型/降配，当天首个请求按旧结论放行。"
+)
+
+
+@router.post("/check-context-window")
+async def check_context_window_support(
+    data: ContextWindowCheckRequest,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db),
+):
+    """探测模型上下文窗口是否 >= MIN_CONTEXT_WINDOW_TOKENS（需求 #55 步骤 3）。
+
+    与 `POST /check-function-calling` 同一形态：真发请求、按可观察信号判定，
+    结果结构（success/supported/message/response_time_ms/provider/model/details/
+    suggestions）保持一致，便于表单复用同一渲染路径。
+
+    与保存路径的分工：本端点**只测不拦**（探测端点必须能碰不合格模型，否则没法实测），
+    并把结论缓存进 preferences；拒绝保存由 `save_settings` 的门禁负责。
+
+    返回的三段数（3b 表单同屏显示）：
+    `details.window_display` = 探测到的窗口 / 你填写的窗口 / 系统要求的下限。
+    """
+    raw_provider = _normalize_raw_provider(data.provider)
+    resolved_config = resolve_runtime_ai_config(raw_provider, data.api_key, data.api_base_url)
+    provider = resolved_config["api_provider"]
+    api_key = resolved_config["api_key"]
+    base_url = effective_base_url(resolved_config["api_base_url"]) or ""
+    llm_model = (data.llm_model or "").strip()
+
+    if not llm_model:
+        raise ApiError(code="validation.ai_model_not_configured")
+
+    start_time = time.time()
+    # manual 触发点：允许 ①②（③ 已登记在白名单但实现未接线，调用即 inconclusive）
+    outcome = await probe_model_context_window(
+        provider=provider,
+        base_url=base_url,
+        api_key=api_key,
+        model=llm_model,
+        trigger=TRIGGER_MANUAL,
+        hint_window_tokens=detect_context_window(llm_model),
+    )
+    # 手动「重新检测」的结论要落地，否则下次派发又从零探一遍
+    await write_verdict(
+        db, user.user_id, provider=provider, base_url=base_url, model=llm_model, outcome=outcome
+    )
+
+    response_time = round((time.time() - start_time) * 1000, 2)
+    supported = outcome.verdict == VERDICT_QUALIFIED
+    declared = data.context_window_tokens
+
+    result = {
+        "success": True,
+        "supported": supported,
+        "message": (
+            f"✅ 模型上下文窗口满足要求（>= {MIN_CONTEXT_WINDOW_TOKENS} tokens）"
+            if supported
+            else f"❌ 模型上下文窗口不满足要求（下限 {MIN_CONTEXT_WINDOW_TOKENS} tokens）"
+        ),
+        "response_time_ms": response_time,
+        "provider": provider,
+        "model": llm_model,
+        "details": {
+            "verdict": outcome.verdict,
+            "source": outcome.source,
+            "tier": outcome.tier,
+            "min_window": MIN_CONTEXT_WINDOW_TOKENS,
+            "context_window_tokens": outcome.context_window_tokens,
+            "detail": outcome.detail,
+            "checked_at": outcome.checked_at,
+            "tiers_run": list(outcome.tiers_run),
+            "needle_tier_wired": False,
+            "blind_spot": _CONTEXT_WINDOW_BLIND_SPOT,
+            # 三段数：探测到的 / 用户填写的 / 系统要求（采用的预算下限）
+            "window_display": {
+                "probed_context_window_tokens": outcome.context_window_tokens,
+                "declared_context_window_tokens": declared,
+                "minimum_required_context_window_tokens": MIN_CONTEXT_WINDOW_TOKENS,
+                "adopted_context_window_tokens": (
+                    outcome.context_window_tokens
+                    if supported
+                    else (declared if isinstance(declared, int) and declared >= MIN_CONTEXT_WINDOW_TOKENS else None)
+                ),
+            },
+        },
+        "suggestions": (
+            [
+                "✅ 该模型通过上下文窗口探测，可以保存",
+                f"下限为 {MIN_CONTEXT_WINDOW_TOKENS} tokens（产品要求 >=1M 上下文）",
+                "注意：探测判不出输入是否被静默截断，见 blind_spot 说明",
+            ]
+            if supported
+            else [
+                "❌ 上下文窗口不足或不判而未知（未知即不合格），保存会被拒绝",
+                f"请改用窗口 >= {MIN_CONTEXT_WINDOW_TOKENS} tokens 的模型",
+                "探测判不出的模型：可在表单里显式填写并确认 context_window_tokens"
+                f"（>= {MIN_CONTEXT_WINDOW_TOKENS}）后保存；实测 <1M 的模型即使声明也不放行",
+            ]
+        ),
+    }
+    return result
 
 
 @router.post("/test")

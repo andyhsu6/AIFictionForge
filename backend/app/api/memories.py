@@ -73,7 +73,11 @@ async def analyze_chapter(
             api_base_url=runtime_config["api_base_url"],
             model_name=settings.llm_model,
             temperature=settings.temperature,
-            max_tokens=settings.max_tokens
+            max_tokens=settings.max_tokens,
+            # 需求 #55 步骤 3：产品派发路径必须绑定用户与会话，
+            # 否则上下文窗口门禁取不到结论 ⇒ 形同绕过
+            user_id=user_id,
+            db_session=db,
         )
         
         # 获取已埋入的伏笔列表（用于回收匹配）

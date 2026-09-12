@@ -21,11 +21,25 @@ from app.services.ai_providers.anthropic_provider import AnthropicProvider
 from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
+from app.services.model_capability_probe import (
+    TRIGGER_DAILY,
+    ensure_model_allowed,
+)
 
 # 导出清理函数
 cleanup_http_clients = cleanup_all_clients
 
 logger = get_logger(__name__)
+
+
+def effective_base_url(api_base_url: Optional[str]) -> Optional[str]:
+    """实发请求真正会用的 base_url（AIService 与结论缓存键的唯一口径）。
+
+    缓存键是 (provider, base_url, model) 三元组，所以「存结论时算的 base_url」与
+    「派发时算的 base_url」必须是同一个函数算出来的，否则缓存永远命不中，
+    等价于每次派发都重新探测。
+    """
+    return api_base_url or app_settings.openai_base_url
 
 
 def normalize_provider(provider: Optional[str]) -> Optional[str]:
@@ -108,7 +122,11 @@ def ensure_thinking_model_min_tokens(
     return max_tokens
 
 
-# 已知模型上下文窗口（D4 模型能力分级；未列出的按保守值处理）
+# 已知模型上下文窗口。**需求 #55 步骤 3 起降级为「提示」**：只用来决定探测
+# 从哪个刻度开始探（见 model_capability_probe.hint_window_tokens），
+# **不再参与任何接受/拒绝判定**——判定一律以实测/显式声明的结论为准。
+# 静态登记表维护成本高且必然过期，所以它退出判据；`detect_context_window`
+# 目前仍被 prompt 预算换算使用，其未知回退语义在步骤 4 处理。
 _KNOWN_CONTEXT_WINDOWS = {
     "deepseek-v4": 1000000,
     "deepseek-v3": 1000000,
@@ -271,7 +289,10 @@ class AIService:
         self.default_model: Optional[str] = (default_model or "").strip() or None
         self.default_temperature = default_temperature or app_settings.default_temperature
         self.default_max_tokens = default_max_tokens or app_settings.default_max_tokens
-        self.base_url = api_base_url or app_settings.openai_base_url
+        # 探测需要按 (provider, base_url, key) 直连模型，所以 key/base_url 要留在实例上；
+        # base_url 统一走 effective_base_url，保证与结论缓存键同一口径。
+        self.api_key = api_key
+        self.base_url = effective_base_url(api_base_url)
         self.default_system_prompt = default_system_prompt
         self.config = config or default_config
         
@@ -360,16 +381,46 @@ class AIService:
             return self._gemini_provider
         raise ValueError(f"Provider {p} 未初始化")
 
-    def _require_model(self, model: Optional[str] = None) -> str:
+    @staticmethod
+    def _resolve_model_or_raise(model: Optional[str], default_model: Optional[str]) -> str:
         """解析本次请求的实发模型：显式传入优先，否则用**用户配置的**默认模型。
 
         两者都为空时抛 `validation.ai_model_not_configured`——系统绝不替用户猜一个
         模型（需求 #55 步骤 2），也绝不允许 None/空串穿透到 provider 变成
         400/422 或 provider 端随机报错。所有 provider 调用点都必须经此取模型。
         """
-        resolved = (model or self.default_model or "").strip()
+        resolved = (model or default_model or "").strip()
         if not resolved:
             raise ApiError(code="validation.ai_model_not_configured")
+        return resolved
+
+    async def _require_model(self, model: Optional[str] = None) -> str:
+        """实发模型的唯一汇合点：解析 + 上下文窗口硬拦门禁，返回后才允许发请求。
+
+        为什么门禁必须长在这里（需求 #55 步骤 3 的审核致命项）：
+        `custom_model` 取自请求体 `generate_request.model` 与后台任务的
+        `task_input["model"]`，最终写进 `generate_kwargs["model"]`。用户配好合格的
+        1M 模型后，仍可逐次传 `gpt-4o-mini` 进去 ⇒ 静默截断，**只在保存时判定的门禁
+        会被这条路径完全绕过**。per-usage 预设本就允许多个不同模型，也不能靠
+        「删掉 per-request 覆盖」了事。所以判定收敛到「model 已解析、请求还没发出」
+        的这里，查的是 preferences 里的缓存结论：一次 dict/行查询，**零网络、零 token**。
+
+        异步是因为「从未有过结论」的三元组要同步补测 ①② 再定论（成本是一次 GET +
+        一次极小请求）；已有结论只是过期时走 fire-and-forget 后台复测，不 await。
+        触发点固定用 `daily`：它的档白名单只有 ①②，结构上就把 ≈1M token 的 needle
+        档挡在派发路径之外（`TRIGGER_ALLOWED_TIERS` + `assert_tier_allowed`）。
+        """
+        resolved = self._resolve_model_or_raise(model, self.default_model)
+        await ensure_model_allowed(
+            user_id=self.user_id,
+            db=self.db_session,
+            provider=self.api_provider,
+            base_url=self.base_url or "",
+            api_key=self.api_key,
+            model=resolved,
+            trigger=TRIGGER_DAILY,
+            hint_window_tokens=detect_context_window(resolved),
+        )
         return resolved
 
     def _build_call_metrics(
@@ -543,13 +594,15 @@ class AIService:
                 
                 # 继续调用AI
                 prov = self._get_provider(kwargs.get("provider"))
+                # 实发模型统一经 _require_model（含上下文窗口门禁）取一次并复用
+                next_model = await self._require_model(kwargs.get("model"))
                 next_response = await prov.generate(
                     prompt=prompt,
-                    model=self._require_model(kwargs.get("model")),
+                    model=next_model,
                     temperature=kwargs.get("temperature") or self.default_temperature,
                     max_tokens=resolve_effective_max_tokens(
                         kwargs.get("max_tokens"), self.default_max_tokens,
-                        self._require_model(kwargs.get("model")), self.base_url,
+                        next_model, self.base_url,
                     ),
                     system_prompt=kwargs.get("system_prompt") or self.default_system_prompt,
                     tools=None if tool_choice == "none" else self._cached_tools,
@@ -620,7 +673,7 @@ class AIService:
             包含生成内容的字典
         """
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = self._require_model(model)
+        model = await self._require_model(model)
         # 使用全局配置的MCP轮数（如果未指定）
         if mcp_max_rounds is None:
             mcp_max_rounds = app_settings.mcp_max_rounds
@@ -720,7 +773,7 @@ class AIService:
         """
         logger.debug(f"🔧 generate_text_stream: auto_mcp={auto_mcp}, tool_choice={tool_choice}")
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = self._require_model(model)
+        model = await self._require_model(model)
         
         tools_to_use = None
         
@@ -817,7 +870,7 @@ class AIService:
         """
         tools_to_use = None
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = self._require_model(model)
+        model = await self._require_model(model)
         if auto_mcp:
             tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
 
@@ -897,7 +950,7 @@ class AIService:
             解析后的JSON数据
         """
         # 未配置模型即明确报错：重试循环一次都不启动，也不发请求（需求 #55 步骤 2）
-        model = self._require_model(model)
+        model = await self._require_model(model)
         last_response = ""
         aggregate_usage = TokenUsage()
         metrics = self._build_call_metrics(
@@ -1058,11 +1111,18 @@ def create_user_ai_service(
     temperature: float,
     max_tokens: int,
     system_prompt: Optional[str] = None,
+    user_id: Optional[str] = None,
+    db_session=None,
 ) -> AIService:
     """创建用户 AI 服务（不带MCP支持）
 
     model_name 为**用户配置的**默认模型；None/空表示未配置，调用 AI 时会抛
     validation.ai_model_not_configured（需求 #55 步骤 2）。
+
+    user_id / db_session：需求 #55 步骤 3 起，**产品路径必须传**。上下文窗口门禁
+    按 (user, provider, base_url, model) 读结论缓存，未绑定用户的服务拿不到结论
+    ⇒ 等于给该路径开了一个绕过门禁的口子。仅「诊断类临时实例」（设置页测试按钮）
+    允许不绑定。
     """
     return AIService(
         api_provider=api_provider,
@@ -1072,6 +1132,8 @@ def create_user_ai_service(
         default_temperature=temperature,
         default_max_tokens=max_tokens,
         default_system_prompt=system_prompt,
+        user_id=user_id,
+        db_session=db_session,
     )
 
 
