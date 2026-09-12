@@ -77,6 +77,7 @@
     "noBypass": "Saving is rejected below the minimum; there is no override checkbox.",
     "probedLabel": "Probed window",
     "probeFailed": "Context window probe failed, check the config and retry",
+    "probeInconclusive": "Probe could not decide: no context window was measured this time, so its size is still unknown. Declare one at or above the minimum below, or check the API base URL and key and retry",
     "probeQualified": "Probe passed: this model meets the context window requirement",
     "probeUnqualified": "Probe failed: this model's context window is below the requirement",
     "recheck": "Re-check",

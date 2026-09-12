@@ -15,6 +15,7 @@ import {
   gateRejectionFromCachedState,
   MIN_CONTEXT_WINDOW_TOKENS,
   NO_GATE_EVIDENCE,
+  probeToastKey,
   type ContextWindowProbe,
   type GateEvidence,
   type GateRejection,
@@ -395,5 +396,73 @@ describe('evidence ordering: a probe that could not decide is not new evidence (
     expect(gateEvidenceAfterProbe(carried, probe('inconclusive', null, false), 'other-model'))
       .toEqual(NO_GATE_EVIDENCE);
     expect(gateEvidenceAfterProbe(NO_GATE_EVIDENCE, null, 'other-model')).toEqual(NO_GATE_EVIDENCE);
+  });
+});
+
+describe('probe toast: three outcomes, not two (issue #55 review)', () => {
+  it('states a pass for a qualified probe', () => {
+    expect(probeToastKey(probe('qualified', MIN, true))).toBe('gate.probeQualified');
+  });
+
+  it('states the below-minimum rejection only when the window really was measured small', () => {
+    expect(probeToastKey(probe('unqualified', 128_000, false))).toBe('gate.probeUnqualified');
+  });
+
+  it('states "could not decide" for an explicit inconclusive verdict', () => {
+    // 网关可达但问不出信息：后端照实回 200 + inconclusive。
+    expect(probeToastKey(probe('inconclusive', null, false))).toBe('gate.probeInconclusive');
+  });
+
+  it('treats `supported: false` with no verdict string as a non-measurement', () => {
+    // 这就是浏览器验证抓到的那条文案 bug：过去按 `supported` 二分，这里会被送去
+    // `gate.probeUnqualified`，于是一台临时不可达的网关会被告知「你的窗口低于要求」
+    // ——一句从未发生过的测量结论，且此刻正确建议恰好相反（去声明／查端点）。
+    expect(probeToastKey({ supported: false })).toBe('gate.probeInconclusive');
+    expect(probeToastKey({ supported: false, details: { min_window: MIN } }))
+      .toBe('gate.probeInconclusive');
+    expect(probeToastKey({ supported: false, details: { verdict: 'garbage' } }))
+      .toBe('gate.probeInconclusive');
+  });
+
+  it('returns a key the three-number card agrees with', () => {
+    // 同一个探测结果不许同时说「可以保存」和「窗口低于要求」。
+    for (const result of [
+      probe('qualified', MIN, true),
+      probe('unqualified', 128_000, false),
+      probe('inconclusive', null, false),
+      { supported: false } satisfies ContextWindowProbe,
+    ]) {
+      const gate = deriveGateNumbers(result, null, null);
+      const key = probeToastKey(result);
+      if (key === 'gate.probeQualified') expect(gate.verdict).toBe('qualified');
+      else if (key === 'gate.probeUnqualified') expect(gate.verdict).toBe('unqualified');
+      else expect(gate.status).toBe('needs-declaration');
+    }
+  });
+
+  it('ships a translation for every key it can return, and never claims a measurement', () => {
+    // 少一条翻译，toast 上就会直接出现裸 key 路径；措辞越界（宣称「窗口低于要求」）就是
+    // 本次要修的 bug 本身，所以把它钉在文案上，而不是只钉在分支上。
+    // 注意「不低于下限」是**要求**不是结论，必须用后顾排除，否则正解也会被误判。
+    const notMeasured: Record<'zh' | 'en', RegExp> = {
+      zh: /无法判定|没有测|未测出/,
+      en: /could not decide|no .* was measured|unknown/i,
+    };
+    const measurementClaim: Record<'zh' | 'en', RegExp> = {
+      zh: /(?<!不)低于|(?<!不)小于/,
+      en: /below the requirement|\b(?:is|was|were) below\b|under the minimum/i,
+    };
+    for (const ns of ['zh', 'en'] as const) {
+      const gate = JSON.parse(
+        readFileSync(join(FRONTEND_ROOT, 'src', 'locales', ns, 'settings.json'), 'utf8'),
+      ).gate as Record<string, string>;
+      expect(typeof gate.probeQualified, `${ns}: gate.probeQualified`).toBe('string');
+      expect(typeof gate.probeUnqualified, `${ns}: gate.probeUnqualified`).toBe('string');
+      expect(typeof gate.probeInconclusive, `${ns}: gate.probeInconclusive`).toBe('string');
+      expect(gate.probeInconclusive.trim(), `${ns}: gate.probeInconclusive is empty`).not.toBe('');
+      expect(gate.probeInconclusive, `${ns}: must admit it decided nothing`).toMatch(notMeasured[ns]);
+      expect(gate.probeInconclusive, `${ns}: asserts a measurement that never happened`)
+        .not.toMatch(measurementClaim[ns]);
+    }
   });
 });

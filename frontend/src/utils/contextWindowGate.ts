@@ -120,6 +120,32 @@ function probeVerdictOf(probe: ContextWindowProbe): GateVerdict {
   return verdict === 'unknown' ? 'inconclusive' : verdict;
 }
 
+/** Toast the settings page shows for a live probe. One key per decidable outcome. */
+export type ProbeToastKey = 'gate.probeQualified' | 'gate.probeUnqualified' | 'gate.probeInconclusive';
+
+/**
+ * Which toast a probe deserves, as the same three-way verdict the three numbers use.
+ *
+ * `supported` cannot answer this: it is a boolean, so branching on it collapses
+ * 「measured below the minimum」 and 「could not measure」 into one message, and the
+ * merged text asserts a measurement that never happened. An unreachable gateway would
+ * then tell the user their window is too small — while the only useful advice in that
+ * state is the opposite one (declare the window, or check the endpoint). Same
+ * measured/not-measured conflation `d341e8e` removed from the verdict cache, which
+ * survived only in this toast (issue #55 review).
+ *
+ * Deliberately a key and not a translated string: this module is React- and i18n-free,
+ * and the caller has to write the three `t()` calls out statically anyway — a key built
+ * from a template literal is invisible to the extractor, so the entry would silently
+ * drop out of the generated type surface.
+ */
+export function probeToastKey(probe: ContextWindowProbe): ProbeToastKey {
+  const verdict = probeVerdictOf(probe);
+  if (verdict === 'qualified') return 'gate.probeQualified';
+  if (verdict === 'unqualified') return 'gate.probeUnqualified';
+  return 'gate.probeInconclusive';
+}
+
 /** The verdict carried evidence states (a cached conclusion or a rejected save). */
 function carriedVerdictOf(rejection: GateRejection): GateVerdict {
   const verdict = asVerdict(rejection.verdict);

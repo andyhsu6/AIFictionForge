@@ -12,6 +12,7 @@ import {
   formatWindowTokens,
   gateEvidenceAfterProbe,
   gateRejectionFromCachedState,
+  probeToastKey,
   NO_GATE_EVIDENCE,
   type ContextWindowProbe,
   type GateEvidence,
@@ -600,7 +601,13 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       // `deriveGateNumbers` 同一条强度序（`gateEvidenceAfterProbe`）。
       setGateEvidence((prev) => gateEvidenceAfterProbe(prev, result, modelName));
       if (!options?.silent) {
-        if (result.supported) message.success(t('gate.probeQualified'));
+        // 三分而不是二分：`supported` 是布尔值，拿它分支会把「实测低于下限」和
+        // 「压根没测出来」并成一条文案，于是网关临时不可达也会被告知「你的窗口不够大」
+        // ——一句没发生过的测量结论。此时唯一有用的建议恰好相反（去声明窗口/查端点）。
+        // 判定口径与三段数同一条：`probeToastKey` 复用的就是 `probeVerdictOf` 的三分结果。
+        const toastKey = probeToastKey(result);
+        if (toastKey === 'gate.probeInconclusive') message.warning(t('gate.probeInconclusive'));
+        else if (toastKey === 'gate.probeQualified') message.success(t('gate.probeQualified'));
         else message.error(t('gate.probeUnqualified'));
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
