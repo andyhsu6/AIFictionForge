@@ -1,4 +1,6 @@
 // 用户类型定义
+import type { CachedGateState } from '../utils/contextWindowGate';
+
 export interface User {
   user_id: string;
   username: string;
@@ -88,6 +90,13 @@ export interface Settings {
   cover_image_model?: string;
   cover_enabled?: boolean;
   preferences?: string;
+  /**
+   * Issue #55 step 5: the context-window verdict already cached for this user's
+   * configured (provider, base_url, model) triple. Read-only, computed by the server
+   * from the preferences cache, `null` when that triple was never concluded.
+   * Not a database column, so it must never be posted back.
+   */
+  context_window_gate?: CachedGateState | null;
   created_at: string;
   updated_at: string;
 }

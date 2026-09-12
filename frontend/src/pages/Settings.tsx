@@ -10,6 +10,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import {
   deriveGateNumbers,
   formatWindowTokens,
+  gateRejectionFromCachedState,
   type ContextWindowProbe,
   type GateRejection,
   type GateStatus,
@@ -200,9 +201,13 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
         setContentLanguage(parseServerContentLanguage(settings.preferences) ?? 'auto');
       }
 
+      // `context_window_gate` 是后端算出来的只读结论（非数据库列），既不该进表单 store，
+      // 更不该被原样 POST 回去 —— 先摘出来。
+      const { context_window_gate: cachedGate, ...configFields } = settings;
+
       form.setFieldsValue({
         ...defaultCoverSettings,
-        ...settings,
+        ...configFields,
         cover_api_provider: settings.cover_api_provider || defaultCoverSettings.cover_api_provider,
         cover_api_key: settings.cover_api_key ?? defaultCoverSettings.cover_api_key,
         cover_api_base_url: settings.cover_api_base_url || defaultCoverSettings.cover_api_base_url,
@@ -222,10 +227,18 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       // 三段数必须在打开设置页时就是活的（探测只测不拦）。未配置模型时不发这一枪：
       // 后端已不代猜，没有模型可测，硬发只会在屏幕上砸一个错误码。
       if (((settings.llm_model as string) || '').trim()) {
+        // 存量用户收口（#55 步骤 5）：先把**已缓存**的结论摆上屏幕，再打探测那一枪。
+        // 顺序不能反：硬拦发生在保存时，所以配着 128K 模型的存量用户从来没被拦过；
+        // 他的首个 AI 请求被拒后顺着引导回到这一页，若网关此刻不可达，探测只能回
+        // 「未检测」，屏幕上就只剩下「AI 坏了」这一条线索。缓存结论是后端确实知道的
+        // 事实（128,000 < 下限），当场就该显示。探测成功后 `handleCheckContextWindow`
+        // 会清掉这份预置、改用刚测到的数（更新的证据优先）。
+        setGateRejection(gateRejectionFromCachedState(cachedGate));
         void handleCheckContextWindow({ silent: true });
       } else {
         setWindowProbe(null);
         setProbedModel('');
+        setGateRejection(null);
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {

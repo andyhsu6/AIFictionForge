@@ -190,3 +190,53 @@ export function deriveGateNumbers(
 export function formatWindowTokens(value: number | null): string {
   return value === null ? '—' : value.toLocaleString('en-US');
 }
+
+/**
+ * `GET /settings` → `context_window_gate`: the verdict already cached for the user's
+ * configured (provider, base_url, model) triple. Same keys as the rejection params
+ * (both sides are produced by `model_capability_probe.gate_state_payload`), plus the
+ * bookkeeping fields the server knows and the form does not have to guess.
+ */
+export interface CachedGateState {
+  model?: string;
+  verdict?: string;
+  source?: string;
+  min_window?: number;
+  measured_context_window_tokens?: number | null;
+  requires_explicit_declaration?: boolean;
+  checked_at?: string;
+  due_for_recheck?: boolean;
+}
+
+/**
+ * Seed the form from the cached conclusion (issue #55 step 5: legacy users).
+ *
+ * Why this exists: the hard gate fires when a config is *saved*, so a user who was
+ * already sitting on a 128K model was never stopped. The dispatch gate does refuse
+ * their first AI request, and the sticky guidance links here — but if their gateway
+ * happens to be unreachable, the live probe on this page can only say "unprobed",
+ * and the one thing they need to see ("your model measures 128,000, pick another")
+ * is invisible even though the server already knows it.
+ *
+ * `null` means "render nothing extra", and that covers two different inputs on
+ * purpose: no cached verdict at all (a page render must never reject anybody — the
+ * synchronous probe of tiers ①② belongs to the request path) and a qualified verdict
+ * (nothing to warn about).
+ */
+export function gateRejectionFromCachedState(
+  state: CachedGateState | null | undefined,
+): GateRejection | null {
+  if (!state || state.verdict === 'qualified') return null;
+  return {
+    verdict: typeof state.verdict === 'string' ? state.verdict : null,
+    min_window: asNumber(state.min_window),
+    measured_context_window_tokens: asNumber(state.measured_context_window_tokens),
+    // A cached verdict never carries a declaration: the declaration is what the user
+    // is about to type into this form, and `deriveGateNumbers` reads it live.
+    declared_context_window_tokens: null,
+    requires_explicit_declaration:
+      typeof state.requires_explicit_declaration === 'boolean'
+        ? state.requires_explicit_declaration
+        : null,
+  };
+}

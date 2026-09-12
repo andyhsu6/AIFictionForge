@@ -41,6 +41,7 @@ from app.services.model_capability_probe import (
     TRIGGER_MANUAL,
     TRIGGER_SAVE,
     VERDICT_QUALIFIED,
+    describe_cached_gate_state,
     ensure_model_allowed,
     probe_model_context_window,
     write_verdict,
@@ -382,6 +383,29 @@ async def get_user_ai_service_from_db_by_usage(
     )
 
 
+async def _describe_configured_context_window_gate(
+    db: AsyncSession,
+    user_id: str,
+    row: Settings,
+) -> Optional[Dict[str, Any]]:
+    """存量用户收口（需求 #55 步骤 5）：把**已缓存**的门禁结论随设置一起交给表单。
+
+    三元组口径必须与保存路径（`_gate_saved_model_context_window`）和派发路径
+    （`AIService._require_model`）**完全一致**，否则缓存永远命不中，存量用户在设置页
+    永远只看到「未检测」。这里刻意不碰 api_key：读缓存不需要凭据，也**绝不发探测请求**
+    （理由见 `model_capability_probe.describe_cached_gate_state` 上方那段）。
+    """
+    resolved = resolve_runtime_ai_config(row.api_provider, row.api_key, row.api_base_url)
+    base_url = effective_base_url(resolved["api_base_url"]) or ""
+    return await describe_cached_gate_state(
+        db,
+        user_id,
+        provider=resolved["api_provider"],
+        base_url=base_url,
+        model=row.llm_model,
+    )
+
+
 @router.get("", response_model=SettingsResponse)
 async def get_settings(
     user: User = Depends(require_login),
@@ -390,6 +414,11 @@ async def get_settings(
     """
     获取当前用户的设置
     如果用户没有保存过设置，自动从.env创建并保存到数据库
+
+    需求 #55 步骤 5：响应额外带 `context_window_gate` —— 当前配置模型三元组**已缓存**
+    的上下文窗口结论（零网络，见 `_describe_configured_context_window_gate`）。
+    硬拦发生在保存时，所以配着 128K 模型的存量用户从来不会被自动拦住；这个字段就是
+    「弹出同一表单要求重配」在设置页的落点，让缓存结论在网关不可达时也看得见。
     """
     result = await db.execute(
         select(Settings).where(Settings.user_id == user.user_id)
@@ -412,7 +441,10 @@ async def get_settings(
         logger.info(f"用户 {user.user_id} 的设置已从.env同步到数据库")
     
     logger.info(f"用户 {user.user_id} 获取已保存的设置")
-    return settings
+    gate_state = await _describe_configured_context_window_gate(db, user.user_id, settings)
+    return SettingsResponse.model_validate(settings).model_copy(
+        update={"context_window_gate": gate_state}
+    )
 
 
 @router.post("/cover/test")

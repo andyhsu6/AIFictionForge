@@ -693,17 +693,34 @@ def _all_verdicts(blob: Dict[str, Any]) -> List[Tuple[str, ProbeOutcome]]:
 BELOW_MINIMUM_CODE = "validation.ai_model_below_minimum"
 
 
-def _below_minimum_error(model: str, outcome: ProbeOutcome) -> ApiError:
-    """不合格 / 判不出都拒绝，且没有「勾选放行」通道。"""
-    params: Dict[str, Any] = {
+def gate_state_payload(model: str, outcome: ProbeOutcome) -> Dict[str, Any]:
+    """门禁状态的**唯一**对外形态。
+
+    两个消费方共用它，否则「保存被拒的信封」与「设置页读到的缓存结论」会各自漂移：
+    - `_below_minimum_error`：拒绝时的 `params`
+    - `describe_cached_gate_state`：步骤 5 的存量收口（只读缓存，供表单渲染三段数）
+
+    `requires_explicit_declaration`：只有「探测判不出」才需要用户显式声明窗口；
+    实测 `<1M` 时声明不是放行通道（计划 §2 表第 2 行）。
+    注意本函数只会在非合格结论上被调用（`ensure_model_allowed` 对 qualified 直接放行），
+    所以 `verdict != unqualified` 与 `verdict == inconclusive` 在此等价，取后者更直白。
+    """
+    return {
         "model": model,
         "min_window": MIN_CONTEXT_WINDOW_TOKENS,
         "verdict": outcome.verdict,
         "source": outcome.source,
         "measured_context_window_tokens": outcome.context_window_tokens,
-        "requires_explicit_declaration": outcome.verdict != VERDICT_UNQUALIFIED,
+        "requires_explicit_declaration": outcome.verdict == VERDICT_INCONCLUSIVE,
         "detail": outcome.detail,
+        "checked_at": outcome.checked_at,
+        "due_for_recheck": is_due_for_daily_recheck(outcome),
     }
+
+
+def _below_minimum_error(model: str, outcome: ProbeOutcome) -> ApiError:
+    """不合格 / 判不出都拒绝，且没有「勾选放行」通道。"""
+    params = gate_state_payload(model, outcome)
     if outcome.verdict == VERDICT_UNQUALIFIED:
         detail = (
             f"模型 {model} 实测上下文窗口不足 {MIN_CONTEXT_WINDOW_TOKENS} tokens，"
@@ -999,3 +1016,47 @@ async def get_effective_context_window(
     if outcome is None or not outcome.is_qualified:
         raise _below_minimum_error(model, outcome or _inconclusive("no verdict on file"))
     return int(outcome.context_window_tokens or MIN_CONTEXT_WINDOW_TOKENS)
+
+
+# ========== 步骤 5：存量用户收口（只读缓存，供表单渲染） ==========
+#
+# 计划 §5 的触发点是「应用启动 / 首个 AI 请求」。本仓库选**首个 AI 请求**，理由是
+# 启动路径做不了这件事，而不是它不重要：
+#   1. `lifespan` 里没有任何用户上下文 ⇒ 拒绝了也无法「弹出表单」——表单只存在于某个
+#      已登录用户的这一次会话里。
+#   2. 启动要枚举用户就得扫全表、并用**每个用户自己的** API Key 向各家网关发探测请求：
+#      无人对着屏幕判断结果，失败只能写进日志；一旦某家网关把 ② 档当真开始生成，
+#      这就是无人监督的计费。
+#   3. 拒绝的执行点本来就在 `AIService._require_model`（= 实发模型的唯一汇合点），
+#      它天然就是「首个 AI 请求」。
+#
+# 本函数补的是另一半：拒绝**已经在派发路径发生**了，但缓存结论此前只躺在 preferences
+# blob 里，界面上没有任何地方能读出它 —— 用户点「AI 功能」吃一个错误码、顺着引导回到
+# 设置页，如果他的网关这一刻不可达，表单只会显示「未检测」。存量收口要的是「当场看到
+# 需要重新选择模型」，所以缓存结论必须可寻址。
+#
+# ⚠️ 这里**绝不发探测请求**：页面渲染不是 AI 功能，§3 的「缺结论 ⇒ 同步补测 ①②」
+# 只约束真要跑 AI 功能的那条路。若设置页一打开就打网关，等于给每个用户每次开设置
+# 都加一次对外请求与一次潜在计费。
+async def describe_cached_gate_state(
+    db: AsyncSession,
+    user_id: str,
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """返回某三元组**已缓存**的门禁结论（表单可直接渲染），没有结论就返回 `None`。
+
+    返回 `None` 的含义是「从未定论」，**不是**「不合格」：那种用户的首次补测发生在
+    派发路径（`ensure_model_allowed`），由 §3 同步 await ①② 后再定论。据 `None` 直接
+    拒绝就是计划 §5 明确禁止的写法。
+    """
+    wanted = (model or "").strip()
+    if not wanted:
+        # 未配置模型没有可判定的三元组；使用点报 validation.ai_model_not_configured
+        return None
+    outcome = await read_verdict(db, user_id, provider=provider, base_url=base_url, model=wanted)
+    if outcome is None:
+        return None
+    return gate_state_payload(wanted, outcome)

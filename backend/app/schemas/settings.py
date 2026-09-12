@@ -1,6 +1,6 @@
 """设置相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Annotated, Literal
+from typing import Any, Dict, Optional, List, Annotated, Literal
 from datetime import datetime
 
 from app.schemas.common import ContentLanguageLiteral
@@ -71,6 +71,16 @@ class SettingsResponse(SettingsBase):
     user_id: str
     created_at: datetime
     updated_at: datetime
+
+    # 需求 #55 步骤 5（存量用户收口）：当前配置模型三元组**已缓存**的上下文窗口结论，
+    # 形态与 `validation.ai_model_below_minimum` 的 params 同一来源
+    # （`model_capability_probe.gate_state_payload`），设置页的门禁表单可直接渲染三段数。
+    # 非数据库列：只有 GET /settings 会计算填充（只读缓存，零探测请求）。
+    # None = 「从未定论」，**不是**「不合格」——那种用户的首次补测发生在派发路径。
+    context_window_gate: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="已缓存的上下文窗口门禁结论（只读，不触发探测）；None 表示从未定论",
+    )
 
 
 class PreferencesUpdate(BaseModel):

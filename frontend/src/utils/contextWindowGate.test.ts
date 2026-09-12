@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveGateNumbers,
   formatWindowTokens,
+  gateRejectionFromCachedState,
   MIN_CONTEXT_WINDOW_TOKENS,
   type ContextWindowProbe,
   type GateRejection,
@@ -139,5 +140,48 @@ describe('settings page wiring (issue #55 step 3b)', () => {
     // Hard gate: nothing in the gate card may acknowledge-and-continue.
     const gateCard = source.slice(source.indexOf('gate.title'), source.indexOf('gate.stale'));
     expect(gateCard).not.toMatch(/Checkbox|allowBelow|override/i);
+  });
+});
+
+describe('legacy closure from the cached verdict (issue #55 step 5)', () => {
+  it('renders the below-minimum three numbers straight from a cached unqualified verdict', () => {
+    // The user was never stopped at save time (the gate only exists since this
+    // release), and their gateway may be unreachable right now — the conclusion the
+    // server already holds must still reach the screen.
+    const rejection = gateRejectionFromCachedState({
+      model: 'gpt-4o-mini',
+      verdict: 'unqualified',
+      min_window: MIN,
+      measured_context_window_tokens: 128_000,
+      requires_explicit_declaration: false,
+    });
+    const gate = deriveGateNumbers(null, null, rejection);
+    expect(gate.status).toBe('below-minimum');
+    expect(gate.probed).toBe(128_000);
+    expect(gate.adopted).toBeNull();
+    expect(gate.requiresDeclaration).toBe(false);
+  });
+
+  it('says nothing when the triple was never concluded', () => {
+    // A page render must never reject anybody: "no verdict" is resolved by the
+    // synchronous probe of tiers ①② on the request path, not by the form.
+    expect(gateRejectionFromCachedState(null)).toBeNull();
+    expect(gateRejectionFromCachedState(undefined)).toBeNull();
+    expect(deriveGateNumbers(null, null, gateRejectionFromCachedState(null)).status).toBe('unprobed');
+  });
+
+  it('says nothing for a cached qualified verdict', () => {
+    expect(
+      gateRejectionFromCachedState({ verdict: 'qualified', measured_context_window_tokens: MIN }),
+    ).toBeNull();
+  });
+
+  it('settings page seeds the rejection from the cached state and never posts it back', () => {
+    const source = readFileSync(join(FRONTEND_ROOT, 'src', 'pages', 'Settings.tsx'), 'utf8');
+    expect(source).toContain('gateRejectionFromCachedState(cachedGate)');
+    expect(source).toContain('const { context_window_gate: cachedGate, ...configFields } = settings');
+    expect(source).toContain('...configFields');
+    // The read-only conclusion must not stay inside the values written to the form.
+    expect(source).not.toMatch(/\.\.\.settings,\s*\n\s*cover_api_provider/);
   });
 });
