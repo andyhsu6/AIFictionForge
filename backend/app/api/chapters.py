@@ -2000,7 +2000,7 @@ async def generate_chapter_content_stream(
                         logger.info("章节生成事务已回滚（异常）")
                 except Exception as rollback_error:
                     logger.error(f"回滚失败: {str(rollback_error)}")
-            yield await tracker.error(str(e))
+            yield await tracker.error_from_exception(e, str(e))
         finally:
             # 确保数据库会话被正确关闭
             if db_session:
@@ -2114,7 +2114,7 @@ async def generate_chapter_content_background(
 
             except Exception as e:
                 logger.error(f"❌ 后台章节生成失败: {e}", exc_info=True)
-                await tracker.error(str(e))
+                await tracker.error_from_exception(e)
 
     await background_task_service.spawn_background_task(
         task.id, user_id, _run_chapter_generation
@@ -2647,7 +2647,7 @@ async def generate_chapter_content_background_legacy(
 
             except Exception as e:
                 logger.error(f"❌ 后台章节生成失败: {e}", exc_info=True)
-                await tracker.error(str(e))
+                await tracker.error_from_exception(e)
 
     await background_task_service.spawn_background_task(
         task.id, user_id, _run_chapter_generation
@@ -4901,7 +4901,7 @@ async def regenerate_chapter_stream(
                 except Exception as update_error:
                     logger.error(f"更新任务失败状态失败: {str(update_error)}")
             
-            yield await tracker.error(str(e))
+            yield await tracker.error_from_exception(e, str(e))
         
         finally:
             if db_session:
@@ -5361,7 +5361,7 @@ async def partial_regenerate_stream(
 
         except Exception as e:
             logger.error(f"❌ AI续写失败: {str(e)}", exc_info=True)
-            yield await tracker.error(str(e))
+            yield await tracker.error_from_exception(e, str(e))
 
     if mode == "continue":
         return create_sse_response(continue_event_generator())
@@ -5510,7 +5510,7 @@ async def partial_regenerate_stream(
             
         except Exception as e:
             logger.error(f"❌ 局部重写失败: {str(e)}", exc_info=True)
-            yield await tracker.error(str(e))
+            yield await tracker.error_from_exception(e, str(e))
     
     return create_sse_response(event_generator())
 

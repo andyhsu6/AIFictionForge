@@ -265,7 +265,33 @@ class WizardProgressTracker:
                 raw=raw or error_message,
             )
         return await SSEResponse.send_error(error_message, code)
-    
+
+    async def error_from_exception(
+        self,
+        exc: BaseException,
+        message: Optional[str] = None,
+        fallback_code: str = "internal.generation_failed",
+    ) -> str:
+        """泛型失败收尾：**不吞掉**用户可自助修正的 ApiError 错误码（#55 步骤 3b）。
+
+        为什么需要这个方法：`AIService.generate_text_stream` 是异步生成器，实发模型
+        守卫（`validation.ai_model_not_configured` / `validation.ai_model_below_minimum`）
+        在**首次 `__anext__`** 才抛，也就是落在 handler 的 `except Exception` 里。各站点
+        硬编码 `internal.generation_failed` 后，用户只看到一句通用失败，拿不到通往
+        设置页的码——正是本需求要根除的「静默失败」形态。
+
+        规则复用 `sse_code_for_exception`（registry 既有映射器）：ApiError/HTTPException
+        自带码就沿用它，只有真正无法归类的异常才退回 `fallback_code`。
+        `message` 保留站点自己的诊断前缀（进 raw 通道，不参与选文案）。
+        """
+        from app.core.errors import sse_code_for_exception
+
+        code, params = sse_code_for_exception(exc)
+        detail = message if message is not None else (getattr(exc, "detail", None) or str(exc))
+        if code is None:
+            return await self.error(str(detail), error_code=fallback_code, params={"error": str(exc)})
+        return await self.error(str(detail), error_code=code, params=params or None)
+
     async def result(self, data: Dict[str, Any]) -> str:
         """发送结果数据"""
         return await SSEResponse.send_result(data)
@@ -473,7 +499,14 @@ async def create_sse_generator(
         
     except Exception as e:
         logger.error(f"SSE生成器错误: {str(e)}")
-        yield await SSEResponse.send_error(str(e))
+        # 同上：泛型包装器也不得抹掉 ApiError 自带的码（#55 步骤 3b）
+        from app.core.errors import sse_code_for_exception
+
+        code, params = sse_code_for_exception(e)
+        if code is None:
+            yield await SSEResponse.send_error(str(e), "internal.generation_failed", {"error": str(e)})
+        else:
+            yield await SSEResponse.send_error(str(e), code, params or None)
 
 
 class _HeartbeatSentinel:

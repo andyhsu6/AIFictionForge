@@ -170,6 +170,27 @@ class TaskProgressTracker:
             update_kwargs["status_params"] = params or {}
         await self._update_task(**update_kwargs)
 
+    async def error_from_exception(
+        self,
+        exc: BaseException,
+        message: Optional[str] = None,
+        fallback_code: str = "task.failed",
+    ):
+        """后台任务失败落点：保住 ApiError 的错误码（#55 步骤 3b 交付物 3）。
+
+        后台任务弹不出表单，前端只会看到一行 failed 任务，因此**必须**把可自助修正的
+        码写进既有的结构化列 `status_code`/`status_params`（i18n todo13 已建），
+        FloatingTaskPanel 才能按码渲染本地化文案并链到设置页。硬编码 `task.failed`
+        会把 `validation.ai_model_below_minimum` + 模型名降级成一句通用失败。
+
+        诊断原文照旧进 `error_message`/`status_message`（DEV 通道），不受影响。
+        """
+        from app.core.errors import sse_code_for_exception
+
+        code, params = sse_code_for_exception(exc)
+        text = message if message is not None else (getattr(exc, "detail", None) or str(exc))
+        await self.error(str(text), error_code=code or fallback_code, params=params or None)
+
     async def warning(self, message: str, code: Optional[str] = None,
                       params: Optional[Dict[str, Any]] = None):
         update_kwargs: Dict[str, Any] = dict(

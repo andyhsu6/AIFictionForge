@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
-from app.core.errors import ApiError
+from app.core.errors import ApiError, sse_code_for_exception
 from app.database import get_db
 from app.user_manager import User
 from app.api.settings import require_login
@@ -177,9 +177,15 @@ async def skill_chat(
 
         except Exception as e:
             logger.error(f"Skill 聊天生成失败: {e}")
+            # 泛型收尾不得吞掉实发模型守卫的码（#55 步骤 3b）：`generate_text_stream`
+            # 是异步生成器，守卫在首次 `__anext__` 才抛，正好落进本 `except Exception`。
+            # 硬编码 internal.generation_failed 会让用户只看到一句通用失败、
+            # 拿不到通往设置页的码。ApiError 自带码时沿用它，否则退回通用码。
+            code, params = sse_code_for_exception(e)
             yield await SSEResponse.send_error(
                 error=f"生成失败: {str(e)}",
-                code="internal.generation_failed", params={"error": str(e)},
+                code=code or "internal.generation_failed",
+                params=params or {"error": str(e)},
                 raw=f"生成失败: {str(e)}",
             )
 

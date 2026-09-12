@@ -1957,13 +1957,21 @@ async def create_preset_from_current(
     快捷方式：将当前激活的配置保存为新预设
     """
     settings = await get_user_settings(user.user_id, db)
-    
+
+    # #55 步骤 2 移除了 llm_model 的列默认值，全新安装被自动创建的 Settings 行存的是
+    # NULL；而 APIKeyPresetConfig.llm_model 是必填 str，直接构造会抛 pydantic
+    # ValidationError 冒成 500 信封（评审在 ffbf434 实测）。判空后走干净错误码：
+    # 「未配置模型」本来就是用户可自助修正的状态，不是服务器错误。
+    preset_model = (settings.llm_model or "").strip()
+    if not preset_model:
+        raise ApiError(code="validation.ai_model_not_configured")
+
     # 从当前Settings主字段读取配置
     current_config = APIKeyPresetConfig(
         api_provider=_normalize_raw_provider(settings.api_provider),
-        api_key=settings.api_key,
+        api_key=settings.api_key or "",
         api_base_url=settings.api_base_url,
-        llm_model=settings.llm_model,
+        llm_model=preset_model,
         temperature=settings.temperature,
         max_tokens=settings.max_tokens,
         system_prompt=settings.system_prompt

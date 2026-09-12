@@ -10,6 +10,7 @@
   "deleteTaskConfirm": "确认删除任务记录？",
   "empty": "暂无任务",
   "errorMessage": "错误: {{message}}",
+  "gateGoToSettings": "前往设置修改模型",
   "refresh": "刷新",
   "statusCancelled": "已取消",
   "statusCompleted": "已完成",

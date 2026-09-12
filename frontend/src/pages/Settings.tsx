@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, Switch, theme } from 'antd';
 import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined, GlobalOutlined } from '@ant-design/icons';
 import { settingsApi, mcpPluginApi } from '../services/api';
@@ -7,6 +7,14 @@ import { eventBus, EventNames } from '../store/eventBus';
 import i18n, { normalizeLanguage } from '../i18n';
 import { parseServerLanguage, parseServerContentLanguage } from '../utils/languageSync';
 import { Trans, useTranslation } from 'react-i18next';
+import {
+  deriveGateNumbers,
+  formatWindowTokens,
+  type ContextWindowProbe,
+  type GateRejection,
+  type GateStatus,
+} from '../utils/contextWindowGate';
+import { isModelGateError } from '../services/errorMapper';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -210,16 +218,28 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
         setIsDefaultSettings(false);
         setHasSettings(true);
       }
+
+      // 三段数必须在打开设置页时就是活的（探测只测不拦）。未配置模型时不发这一枪：
+      // 后端已不代猜，没有模型可测，硬发只会在屏幕上砸一个错误码。
+      if (((settings.llm_model as string) || '').trim()) {
+        void handleCheckContextWindow({ silent: true });
+      } else {
+        setWindowProbe(null);
+        setProbedModel('');
+      }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       // 如果404表示还没有设置，使用默认值
       if (error?.response?.status === 404) {
         setHasSettings(false);
         setIsDefaultSettings(true);
+        // #55 步骤 2 的定案：系统不再替用户猜模型。这里曾预填 `gpt-4`（窗口表内仅
+        // 8192 tokens），全新安装只要点一次保存就会把一个 8K 模型写回去、再被步骤 3
+        // 的硬拦拒掉——正是本分支要根除的形态。留空，让门禁表单直接要求填写。
         form.setFieldsValue({
           api_provider: 'openai',
           api_base_url: 'https://api.openai.com/v1',
-          llm_model: 'gpt-4',
+          llm_model: '',
           temperature: 0.7,
           max_tokens: 2000,
           disable_thinking: false,
@@ -296,6 +316,9 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       // 保存后清除测试结果，因为配置可能已变更
       setTestResult(null);
       setShowTestResult(false);
+      // 门禁被拒的面板同理：保存成功说明这一轮的三段数已经成立，
+      // 继续留着红色「保存会被拒绝」会让用户以为改动没生效。
+      setGateRejection(null);
       
       // 手动保存配置后，同步刷新预设激活状态。
       // 后端会在配置与激活预设不一致时自动取消激活，这里统一拉取最新状态，
@@ -371,8 +394,12 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
           console.error('Failed to disable MCP plugins:', err);
         }
       }
-    } catch {
-      message.error(t('toast.saveFailed'));
+    } catch (error) {
+      // 保存路径才是真正硬拦的地方：把被拒的三段数接进同屏面板，
+      // 让用户看见「为什么没保存进去」而不是一句通用失败（#55 步骤 3b）。
+      if (!captureGateRejection(error)) {
+        message.error(t('toast.saveFailed'));
+      }
     } finally {
       setLoading(false);
     }
@@ -386,16 +413,22 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       okText: t('confirm.ok'),
       cancelText: t('confirm.cancel'),
       onOk: () => {
+        // 与 404 回退同一处修复：重置不得再预填 `gpt-4`（8K 窗口），否则「重置」
+        // 本身就是把不合格模型写回配置的动作（#55 步骤 2/3b）。
         form.setFieldsValue({
           api_provider: 'openai',
           api_key: '',
           api_base_url: 'https://api.openai.com/v1',
-          llm_model: 'gpt-4',
+          llm_model: '',
           temperature: 0.7,
           max_tokens: 2000,
           disable_thinking: false,
+          context_window_tokens: undefined,
           ...defaultCoverSettings,
         });
+        setWindowProbe(null);
+        setProbedModel('');
+        setGateRejection(null);
         message.info(t('toast.resetDone'));
       },
     });
@@ -455,6 +488,92 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   const selectedProvider = Form.useWatch('api_provider', form);
   const selectedCoverProvider = Form.useWatch('cover_api_provider', form);
   const selectedPresetProvider = Form.useWatch('api_provider', presetForm);
+
+  // ========== 上下文窗口门禁（#55 步骤 3b：三段数同屏） ==========
+  // 三个数分别是：探测到的窗口 / 用户填写的窗口 / 系统实际采用的预算。产品前提是
+  // >=1M 窗口，低于它失败是**静默**的，所以门禁是硬拦、没有勾选放行通道；表单必须
+  // 把「为什么保存被拒」摆在同一屏，而不是只丢一个错误码。
+  const [windowProbe, setWindowProbe] = useState<ContextWindowProbe | null>(null);
+  const [probingWindow, setProbingWindow] = useState(false);
+  const [gateRejection, setGateRejection] = useState<GateRejection | null>(null);
+  const watchedLlmModel = Form.useWatch('llm_model', form);
+  const watchedDeclaredWindow = Form.useWatch('context_window_tokens', form);
+
+  const gate = useMemo(
+    () => deriveGateNumbers(windowProbe, watchedDeclaredWindow ?? null, gateRejection),
+    [windowProbe, watchedDeclaredWindow, gateRejection],
+  );
+
+  // `deriveGateNumbers` 看不到模型字段，给不出「没有模型」这一态。而自步骤 2 起
+  // `llm_model` 不再预填，空模型正是全新安装打开设置页看到的第一屏：那时该说的是
+  // 「先填模型」，不是「点重新检测」（检测按钮此时也只会回一句 needModel）。
+  const gateStatus: GateStatus = ((watchedLlmModel as string) || '').trim()
+    ? gate.status
+    : 'model-missing';
+
+  /** 从错误信封里取门禁三段数（探测端点与保存路径抛的是同一个码、同一组 params）。 */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const captureGateRejection = (error: any): boolean => {
+    const body = error?.response?.data;
+    if (!isModelGateError(body?.code)) return false;
+    const params = (body?.params || {}) as Record<string, unknown>;
+    setGateRejection({
+      verdict: typeof params.verdict === 'string' ? params.verdict : null,
+      min_window: typeof params.min_window === 'number' ? params.min_window : null,
+      measured_context_window_tokens:
+        typeof params.measured_context_window_tokens === 'number' ? params.measured_context_window_tokens : null,
+      declared_context_window_tokens:
+        typeof params.declared_context_window_tokens === 'number' ? params.declared_context_window_tokens : null,
+      requires_explicit_declaration:
+        typeof params.requires_explicit_declaration === 'boolean' ? params.requires_explicit_declaration : null,
+    });
+    return true;
+  };
+
+  /** 手动/自动触发「重新检测」：只测不拦，拦人是保存路径门禁的活。 */
+  const handleCheckContextWindow = async (options?: { silent?: boolean }) => {
+    const modelName = ((form.getFieldValue('llm_model') as string) || '').trim();
+    if (!modelName) {
+      // 后端已不再替用户猜模型：没有模型就没有可探测的对象，表单自己说明这点
+      setWindowProbe(null);
+      setGateRejection(null);
+      if (!options?.silent) message.warning(t('gate.needModel'));
+      return;
+    }
+    const provider = (form.getFieldValue('api_provider') as string) || '';
+    const builtInKey = builtInKeyProviders.includes(provider);
+    setProbingWindow(true);
+    try {
+      const result = await settingsApi.checkContextWindow({
+        provider,
+        llm_model: modelName,
+        api_key: builtInKey ? '' : (form.getFieldValue('api_key') as string) || '',
+        api_base_url: (form.getFieldValue('api_base_url') as string) || '',
+        context_window_tokens: (form.getFieldValue('context_window_tokens') as number) ?? undefined,
+      });
+      setWindowProbe(result);
+      setProbedModel(modelName);
+      setGateRejection(null);
+      if (!options?.silent) {
+        if (result.supported) message.success(t('gate.probeQualified'));
+        else message.error(t('gate.probeUnqualified'));
+      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      // 探测端点自己也可能抛门禁码（例如清空模型后点了按钮）
+      setWindowProbe(null);
+      if (!captureGateRejection(error) && !options?.silent) {
+        message.error(t('gate.probeFailed'));
+      }
+    } finally {
+      setProbingWindow(false);
+    }
+  };
+
+  // 换了模型，上一轮探测结论就不再描述这次要保存的模型：标记待复测，避免用户拿着
+  // 旧结论去保存然后吃一次拒绝。
+  const [probedModel, setProbedModel] = useState('');
+  const staleProbe = !!windowProbe && probedModel !== ((watchedLlmModel as string) || '');
 
   const handleProviderChange = (value: string) => {
     const provider = apiProviders.find(p => p.value === value);
@@ -1554,6 +1673,108 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                               )}
                             />
                           </Form.Item>
+
+                          {/* ===== 上下文窗口门禁：三段数同屏（#55 步骤 3b） =====
+                              计划要求这里不是「只回一个错误码」：用户必须同时看见
+                              探测到的窗口 / 自己填写的窗口 / 系统实际采用的预算，
+                              才能明白保存为什么被拒。只渲染本地化文案——后端的
+                              message/suggestions/blind_spot 是未翻译的诊断原文，
+                              按 task 14a 策略不得参与选文案。 */}
+                          <Card
+                            size="small"
+                            title={
+                              <Space size={6}>
+                                <ThunderboltOutlined style={{ color: token.colorPrimary }} />
+                                <span>{t('gate.title')}</span>
+                              </Space>
+                            }
+                            extra={
+                              <Button
+                                size="small"
+                                icon={<ReloadOutlined />}
+                                loading={probingWindow}
+                                onClick={() => void handleCheckContextWindow()}
+                              >
+                                {t('gate.recheck')}
+                              </Button>
+                            }
+                            style={{ marginBottom: 16, background: token.colorFillQuaternary }}
+                          >
+                            <Row gutter={[12, 12]}>
+                              <Col xs={24} sm={8}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {t('gate.probedLabel')}
+                                </Text>
+                                <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 600 }}>
+                                  {formatWindowTokens(gate.probed)}
+                                </div>
+                              </Col>
+                              <Col xs={24} sm={8}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {t('gate.declaredLabel')}
+                                </Text>
+                                <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 600 }}>
+                                  {formatWindowTokens(gate.declared)}
+                                </div>
+                              </Col>
+                              <Col xs={24} sm={8}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {t('gate.adoptedLabel')}
+                                </Text>
+                                <div
+                                  style={{
+                                    fontSize: isMobile ? 18 : 22,
+                                    fontWeight: 600,
+                                    color: gate.adopted === null ? token.colorError : token.colorSuccess,
+                                  }}
+                                >
+                                  {formatWindowTokens(gate.adopted)}
+                                </div>
+                              </Col>
+                            </Row>
+
+                            <Alert
+                              style={{ marginTop: 12 }}
+                              type={
+                                gateStatus === 'qualified'
+                                  ? 'success'
+                                  : gateStatus === 'unprobed' || gateStatus === 'model-missing'
+                                    ? 'info'
+                                    : 'error'
+                              }
+                              showIcon
+                              message={t(`gate.status.${gateStatus}`)}
+                              description={
+                                <Space direction="vertical" size={2}>
+                                  <span>{t('gate.minimumRequired', { min: formatWindowTokens(gate.minimum) })}</span>
+                                  {/* 硬拦没有勾选放行通道：把这句话显式写在表单里，
+                                      免得用户继续在界面上找一个不存在的「我已知晓」。 */}
+                                  <span>{t('gate.noBypass')}</span>
+                                </Space>
+                              }
+                            />
+
+                            {staleProbe && (
+                              <Text type="warning" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+                                {t('gate.stale')}
+                              </Text>
+                            )}
+
+                            <Form.Item
+                              name="context_window_tokens"
+                              label={t('gate.declaredInput')}
+                              extra={t('gate.declaredHelp')}
+                              style={{ marginTop: 12, marginBottom: 0 }}
+                            >
+                              <InputNumber
+                                style={{ width: '100%' }}
+                                min={1}
+                                step={1_000_000}
+                                controls={false}
+                                placeholder={String(gate.minimum)}
+                              />
+                            </Form.Item>
+                          </Card>
 
                           <Form.Item
                             label={

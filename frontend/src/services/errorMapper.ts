@@ -251,3 +251,16 @@ export function mapTaskStatusMessage(task: {
 export function isUnauthenticatedError(code?: string | null, status?: number | null): boolean {
   return code === AUTH_UNAUTHORIZED_CODE || status === 401;
 }
+
+/**
+ * Issue #55 step 3b: the two dispatched-model guards (`validation.ai_model_not_configured`,
+ * `validation.ai_model_below_minimum`) are the codes whose fix lives on the settings
+ * page, and they are also the codes that surface on paths which cannot open a form
+ * (SSE streams, background task rows). Prefix match rather than a literal list, so a
+ * guard added in step 4/5 under the same family routes to settings without a second edit.
+ */
+const MODEL_GATE_CODE_PREFIX = 'validation.ai_model_';
+
+export function isModelGateError(code?: string | null): boolean {
+  return !!code && code.startsWith(MODEL_GATE_CODE_PREFIX);
+}
