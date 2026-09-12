@@ -12,6 +12,9 @@
 7. **绕过路径**：配好合格 1M 默认模型的用户，逐次传 `model="gpt-4o-mini"`
    （请求体 / 后台任务 task_input）必须在**发请求那一刻**被拦，而不是只在保存时。
 8. `get_effective_context_window` 无合格结论即抛错，绝不返回 0/None（0 在本仓库＝禁用）。
+9. **per-call `provider` 覆盖**：`provider` 同样取自请求体并决定 `_get_provider` 选哪个
+   槽位 ⇒ 门禁必须判定**实发**的 (provider, base_url, model) 三元组，探测与缓存键同源
+   （审核 b09a047 发现的 wrong-host admit：用用户自己的合格网关给别家 host 开合格证）。
 
 测试值一律中性占位（big-model / gw.test / "chapter one body text"），
 不含任何导入原文、角色人名或书名（AGENTS.md 原文数据脱敏硬约束）。
@@ -38,7 +41,12 @@ from app.core.db_write_lock import db_write_lock, db_write_locks
 from app.core.errors import ERROR_REGISTRY, ApiError, register_exception_handlers
 from app.database import Base, get_db
 from app.models.settings import Settings
-from app.services.ai_service import AIService, _KNOWN_CONTEXT_WINDOWS, detect_context_window
+from app.services.ai_service import (
+    AIService,
+    _FULL_BOOK_BUDGET_RATIO,
+    _KNOWN_CONTEXT_WINDOWS,
+    detect_context_window,
+)
 from app.services.model_capability_probe import (
     MIN_CONTEXT_WINDOW_TOKENS,
     PREFERENCES_KEY,
@@ -69,6 +77,9 @@ QUALIFIED_MODEL = "big-model"
 SMALL_MODEL = "gpt-4o-mini"          # 真实 128K 级模型（登记表内 128000）
 UNKNOWN_MODEL = "mystery-model"      # 未登记，且 ①② 都判不出
 GATEWAY = "https://gw.test/v1"
+# 另一家的 host：per-call `provider` 覆盖实际会派发到那里（anthropic 的探测 URL
+# 由 `_metadata_url` 拼成 `<base>/v1/models/<id>`，所以 base 不带 /v1）。
+OTHER_GATEWAY = "https://other-gw.test"
 API_KEY = "sk-stub-not-a-real-key"
 NEUTRAL_PROMPT = "chapter one body text"
 
@@ -123,7 +134,12 @@ class _Gateway:
         return len(self.calls)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        self.calls.append({"path": request.url.path, "method": request.method, "body": request.content})
+        self.calls.append({
+            "url": str(request.url),
+            "path": request.url.path,
+            "method": request.method,
+            "body": request.content,
+        })
 
         if request.url.path.startswith("/v1/models/"):
             if self.metadata_status >= 400:
@@ -353,6 +369,17 @@ def _qualified_entry(tokens=1_048_576, *, source=SOURCE_PROBE, checked_at=None):
     }
 
 
+def _unqualified_entry(tokens=128_000):
+    return {
+        "result": VERDICT_UNQUALIFIED,
+        "source": SOURCE_PROBE,
+        "context_window_tokens": tokens,
+        "tier": TIER_MAX_TOKENS_BOUND,
+        "detail": "seeded",
+        "checked_at": _now_iso(),
+    }
+
+
 @pytest.fixture
 async def db_factory():
     db_path = f"/tmp/test_ctxwin_{uuid.uuid4().hex}.db"
@@ -476,6 +503,121 @@ async def test_per_request_small_model_is_rejected_at_dispatch(db_factory, servi
     assert exc_info.value.params["model"] == SMALL_MODEL
     assert provider.calls == [], f"{entry}: 带着 128K 模型的请求真的发出去了"
     assert gateway.bound_calls == 1, "未见过的三元组必须同步补测 ①② 后再定论"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", AI_ENTRIES)
+async def test_per_call_provider_override_is_judged_on_the_dispatched_triple(
+    db_factory, service_factory, entry, gateway, monkeypatch
+):
+    """门禁判定的是**本次实发**的三元组，不是用户保存的那家网关（#55 审核项）。
+
+    `provider` 与 `model` 一样取自请求体（outlines/wizard_stream/polish 都传
+    `data.get("provider")` / `request.provider`），最终喂给 `_get_provider(provider)`。
+    修复前 `_require_model` 只看实例自己的 (api_provider, base_url, api_key) ⇒ 拿用户的
+    合格网关给**另一个 host** 开合格证（wrong-host admit）。窗口是 (provider, base_url,
+    model) 三元组的属性，不是模型名的属性 —— 所以两半都种成**同一个模型名**：
+    只有键不同，才测得出「门禁查的是哪一把键」。
+    """
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
+    )
+    own = triple_key("openai", GATEWAY, QUALIFIED_MODEL)          # 用户保存的网关
+    dispatched = triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL)  # 本次真正会发的 host
+
+    # 实发三元组不合格 ⇒ 必须被拦（哪怕保存的那条合格）
+    user_id = f"u-override-bad-{entry}"
+    await seed_settings(db_factory, user_id, preferences={
+        PREFERENCES_KEY: {own: _qualified_entry(), dispatched: _unqualified_entry()}
+    })
+    async with db_factory() as session:
+        svc, own_stub = service_factory(user_id, session)
+        other_stub = _RecordingProvider()
+        svc._anthropic_provider = other_stub
+        with pytest.raises(ApiError) as exc_info:
+            await _dispatch(svc, entry, provider="anthropic")
+
+    assert exc_info.value.code == BELOW_MINIMUM
+    assert exc_info.value.params["model"] == QUALIFIED_MODEL
+    assert other_stub.calls == [] and own_stub.calls == [], f"{entry}: 别家的不合格模型真的发出去了"
+    assert gateway.total_calls == 0, "两个三元组都已有结论 ⇒ 派发路径不该打任何网络"
+
+    # 反向对照：只有实发三元组换成合格才放行，且请求确实落在别家槽位
+    # （门禁若仍按保存的三元组判定，这一步会被误拒 ⇒ 两半合起来才钉住「同一把键」）
+    user_id = f"u-override-ok-{entry}"
+    await seed_settings(db_factory, user_id, preferences={
+        PREFERENCES_KEY: {own: _unqualified_entry(), dispatched: _qualified_entry()}
+    })
+    async with db_factory() as session:
+        svc, own_stub = service_factory(user_id, session)
+        other_stub = _RecordingProvider()
+        svc._anthropic_provider = other_stub
+        await _dispatch(svc, entry, provider="anthropic")
+
+    assert other_stub.calls and other_stub.calls[0]["model"] == QUALIFIED_MODEL, f"{entry}: 没派发到别家槽位"
+    assert own_stub.calls == [], f"{entry}: 请求发给了保存的 provider"
+    assert gateway.total_calls == 0, "命中缓存还去探测 ⇒ 门禁算的不是实发三元组"
+
+
+@pytest.mark.anyio
+async def test_per_call_provider_override_probes_and_caches_the_dispatched_triple(
+    db_factory, service_factory, gateway, monkeypatch
+):
+    """别家三元组**从未有过结论** ⇒ 同步补测必须打在别家 host 上，结论也按别家的键落缓存。
+
+    钉住「键算错」的另一半：修复前探测与写键都用用户自己的 (openai, gw.test) ⇒
+    一个从没被量过的 host 白拿合格证。这里让别家在 ① 档自报 128K（同一个模型名在
+    用户自己的网关上是合格的），于是「探了谁家」直接由 URL 与缓存键可观察。
+    """
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
+    )
+    gateway.metadata_status = 200
+    gateway.metadata_body = {"context_length": 128_000}
+    user_id = "u-override-probe"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    async with db_factory() as session:
+        svc, own_stub = service_factory(user_id, session)
+        other_stub = _RecordingProvider()
+        svc._anthropic_provider = other_stub
+        with pytest.raises(ApiError) as exc_info:
+            await svc.generate_text(prompt=NEUTRAL_PROMPT, provider="anthropic")
+
+    assert exc_info.value.code == BELOW_MINIMUM
+    assert own_stub.calls == [] and other_stub.calls == []
+    assert gateway.metadata_calls == 1 and gateway.bound_calls == 0, "未见过的三元组必须同步补测 ①②"
+    assert [c["url"] for c in gateway.calls] == [f"{OTHER_GATEWAY}/v1/models/{QUALIFIED_MODEL}"], (
+        "补测打到了用户自己的网关 ⇒ 门禁量的不是本次实发的 host"
+    )
+    async with db_factory() as check:
+        row = (await check.execute(select(Settings).where(Settings.user_id == user_id))).scalar_one()
+        blob = json.loads(row.preferences)
+        stored = blob[PREFERENCES_KEY]
+        assert stored[triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL)]["result"] == VERDICT_UNQUALIFIED
+        assert triple_key("openai", GATEWAY, QUALIFIED_MODEL) not in stored, "结论被写到了保存的三元组上"
+        assert blob["theme_seed"] == 7, "缓存写入抹掉了无关的偏好键"
+
+
+@pytest.mark.anyio
+async def test_full_book_budget_follows_the_dispatched_provider(db_factory, service_factory, monkeypatch):
+    """预算换算同样按**实发三元组**读窗口：两家都合格但窗口不同 ⇒ 数字必须跟着覆盖走。"""
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
+    )
+    user_id = "u-override-budget"
+    await seed_settings(db_factory, user_id, preferences={PREFERENCES_KEY: {
+        triple_key("openai", GATEWAY, QUALIFIED_MODEL): _qualified_entry(tokens=1_048_576),
+        triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL): _qualified_entry(tokens=2_000_000),
+    }})
+    async with db_factory() as session:
+        svc, _ = service_factory(user_id, session)
+        own_budget = await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL)
+        override_budget = await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL, "anthropic")
+
+    assert own_budget == int(1_048_576 * _FULL_BOOK_BUDGET_RATIO)
+    assert override_budget == int(2_000_000 * _FULL_BOOK_BUDGET_RATIO), (
+        "预算按保存的三元组读 ⇒ 窗口量错了 host"
+    )
 
 
 @pytest.mark.anyio

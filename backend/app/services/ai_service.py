@@ -5,7 +5,7 @@
 - 如果有启用的MCP插件且有可用工具，自动发送tools
 - 通过 auto_mcp 参数控制是否启用自动工具加载
 """
-from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable
+from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable, Tuple
 
 from app.config import settings as app_settings
 from app.core.errors import ApiError
@@ -327,15 +327,31 @@ class AIService:
         
         # 初始化 Anthropic
         anthropic_key = api_key if self.api_provider == "anthropic" else app_settings.anthropic_api_key
+        anthropic_base_url = api_base_url if self.api_provider == "anthropic" else app_settings.anthropic_base_url
         if anthropic_key:
-            base_url = api_base_url if self.api_provider == "anthropic" else app_settings.anthropic_base_url
-            client = AnthropicClient(anthropic_key, base_url, self.config)
+            client = AnthropicClient(anthropic_key, anthropic_base_url, self.config)
             self._anthropic_provider = AnthropicProvider(client)
         
         # 初始化 Gemini
+        gemini_key = api_key if self.api_provider == "gemini" else None
+        gemini_base_url = api_base_url if self.api_provider == "gemini" else None
         if self.api_provider == "gemini" and api_key:
-            client = GeminiClient(api_key, api_base_url, self.config)
+            client = GeminiClient(gemini_key, gemini_base_url, self.config)
             self._gemini_provider = GeminiProvider(client)
+
+        # 派发口径登记表（需求 #55 审核项）：每个槽位**真正会打的** host/key 就是喂给上面
+        # 三个 client 构造函数的那两个局部变量。客户端可能因为没拿到 key 而不建（槽位为
+        # None），但登记必须照建 ⇒ 门禁与 `_get_provider` 读同一份登记，两边不再各留一套
+        # 算法（各算各的正是 b09a047 被审核出的 wrong-host admit 的成因）。登记不等于
+        # 无法绕过：用户仍能把某个 host 配成自己的默认网关，那部分的诚实说明见
+        # model_capability_probe 模块头的盲区清单。
+        # base_url 一律过 `effective_base_url`，与保存路径（settings.py）同一口径，
+        # 否则结论缓存永远命不中（等价于每次派发都重探一遍）。
+        self._provider_endpoints: Dict[str, Tuple[str, Optional[str]]] = {
+            "openai": (effective_base_url(openai_base_url) or "", openai_key),
+            "anthropic": (effective_base_url(anthropic_base_url) or "", anthropic_key),
+            "gemini": (effective_base_url(gemini_base_url) or "", gemini_key),
+        }
 
     @property
     def enable_mcp(self) -> bool:
@@ -378,6 +394,29 @@ class AIService:
             return self._gemini_provider
         raise ValueError(f"Provider {p} 未初始化")
 
+    def _dispatch_endpoint(self, provider: Optional[str] = None) -> Tuple[str, str, Optional[str]]:
+        """本次调用**实际派发到**的 (provider, base_url, api_key) 三元组。
+
+        provider 的解析表达式与 `_get_provider` 逐字相同（`normalize_provider(provider
+        or self.api_provider)`），host/key 直接读构造期登记的 `_provider_endpoints`
+        ⇒ 门禁与派发共用同一个来源，不存在「各算各的」这种漂移。
+
+        为什么必须按 per-call 参数算：`provider` 和 `model` 一样取自请求体
+        （`api/outlines.py` 的 `data.get("provider")`、`api/wizard_stream.py`、
+        `api/polish.py` 的 `request.provider`），而窗口是 **(provider, base_url, model)
+        三元组的属性**，不是模型名的属性。用实例自己的网关去判定、却把请求发给别家
+        ＝ 门禁给一个它没量过的 host 开合格证。
+        """
+        p = normalize_provider(provider or self.api_provider)
+        entry = self._provider_endpoints.get(p or "")
+        if entry is None:
+            # 未知 provider 名（`_get_provider` 同样会抛 ValueError）：没有槽位就没有
+            # host 可登记，退回实例口径。请求在派发那一刻必失败 ⇒ 不存在「按错误的
+            # host 放行」，因为根本没有请求发出去。
+            return p or "", self.base_url or "", self.api_key
+        base_url, api_key = entry
+        return p or "", base_url, api_key
+
     @staticmethod
     def _resolve_model_or_raise(model: Optional[str], default_model: Optional[str]) -> str:
         """解析本次请求的实发模型：显式传入优先，否则用**用户配置的**默认模型。
@@ -391,7 +430,9 @@ class AIService:
             raise ApiError(code="validation.ai_model_not_configured")
         return resolved
 
-    async def _require_model(self, model: Optional[str] = None) -> str:
+    async def _require_model(
+        self, model: Optional[str] = None, provider: Optional[str] = None
+    ) -> str:
         """实发模型的唯一汇合点：解析 + 上下文窗口硬拦门禁，返回后才允许发请求。
 
         为什么门禁必须长在这里（需求 #55 步骤 3 的审核致命项）：
@@ -402,25 +443,33 @@ class AIService:
         「删掉 per-request 覆盖」了事。所以判定收敛到「model 已解析、请求还没发出」
         的这里，查的是 preferences 里的缓存结论：一次 dict/行查询，**零网络、零 token**。
 
+        `provider`（同一份请求体里的 per-call 覆盖）必须一起进来：调用点怎么选槽位用的是
+        `_get_provider(provider)`，门禁就必须用 `_dispatch_endpoint(provider)` 算出的
+        同一三元组去查/写结论（需求 #55 审核项：门禁绑定的是**实发**三元组，
+        漏掉 provider 等于给一个没量过的 host 开合格证）。
+
         异步是因为「从未有过结论」的三元组要同步补测 ①② 再定论（成本是一次 GET +
         一次极小请求）；已有结论只是过期时走 fire-and-forget 后台复测，不 await。
         触发点固定用 `daily`：它的档白名单只有 ①②，结构上就把 ≈1M token 的 needle
         档挡在派发路径之外（`TRIGGER_ALLOWED_TIERS` + `assert_tier_allowed`）。
         """
         resolved = self._resolve_model_or_raise(model, self.default_model)
+        gate_provider, gate_base_url, gate_api_key = self._dispatch_endpoint(provider)
         await ensure_model_allowed(
             user_id=self.user_id,
             db=self.db_session,
-            provider=self.api_provider,
-            base_url=self.base_url or "",
-            api_key=self.api_key,
+            provider=gate_provider,
+            base_url=gate_base_url,
+            api_key=gate_api_key,
             model=resolved,
             trigger=TRIGGER_DAILY,
             hint_window_tokens=detect_context_window(resolved),
         )
         return resolved
 
-    async def resolve_full_book_budget_chars(self, model: Optional[str] = None) -> int:
+    async def resolve_full_book_budget_chars(
+        self, model: Optional[str] = None, provider: Optional[str] = None
+    ) -> int:
         """全书注入字符预算的**唯一来源**：本次实发模型实测/声明的上下文窗口。
 
         需求 #55 步骤 4（取代按模型名分三档的 `resolve_context_budget_chars`）：
@@ -435,8 +484,12 @@ class AIService:
         失败契约：未配置 → `validation.ai_model_not_configured`；窗口不合格/无合格
         结论 → `validation.ai_model_below_minimum`。返回值恒 > 0 ⇒「没有预算」不再是
         一个可表示的状态（计划 §4b：`0 = 禁用` 就是静默失效）。
+
+        `provider` 与派发路径同源（需求 #55 审核项）：调用方如果允许请求体里的
+        per-call `provider` 覆盖走到派发，就必须把同一个值传进来，否则预算会按
+        **另一个 host** 的结论换算。默认 None ⇒ 用实例自己的网关。
         """
-        resolved = await self._require_model(model)
+        resolved = await self._require_model(model, provider)
         if not self.user_id or self.db_session is None:
             # 未绑定用户的诊断实例在门禁里允许直通（它不发产品 AI 请求），但结论缓存
             # 按 (user, provider, base_url, model) 存 ⇒ 这里必然拿不到窗口。
@@ -447,12 +500,15 @@ class AIService:
                 params={"model": resolved},
                 raw="resolve_full_book_budget_chars called on an unbound AIService",
             )
+        # 窗口必须按**实发三元组**读：`_require_model` 刚刚判定的就是这把键，
+        # 这里换成实例自己的网关会读到另一条结论（甚至读不到）。
+        gate_provider, gate_base_url, _ = self._dispatch_endpoint(provider)
         window = await get_effective_context_window(
             self.user_id,
             resolved,
             self.db_session,
-            provider=self.api_provider,
-            base_url=self.base_url or "",
+            provider=gate_provider,
+            base_url=gate_base_url,
         )
         budget = int(window * _FULL_BOOK_BUDGET_RATIO)
         if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 1M
@@ -629,9 +685,12 @@ class AIService:
                     tool_choice = kwargs.get("tool_choice", "auto")
                 
                 # 继续调用AI
-                prov = self._get_provider(kwargs.get("provider"))
-                # 实发模型统一经 _require_model（含上下文窗口门禁）取一次并复用
-                next_model = await self._require_model(kwargs.get("model"))
+                next_provider = kwargs.get("provider")
+                prov = self._get_provider(next_provider)
+                # 实发模型统一经 _require_model（含上下文窗口门禁）取一次并复用；
+                # provider 必须与上面 `_get_provider` 选槽位用的是同一个值，否则门禁
+                # certify 的是另一家网关（需求 #55 审核项）。
+                next_model = await self._require_model(kwargs.get("model"), next_provider)
                 next_response = await prov.generate(
                     prompt=prompt,
                     model=next_model,
@@ -709,7 +768,8 @@ class AIService:
             包含生成内容的字典
         """
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = await self._require_model(model)
+        # provider 一起传入：门禁判定的三元组必须与下面 `_get_provider(provider)` 一致
+        model = await self._require_model(model, provider)
         # 使用全局配置的MCP轮数（如果未指定）
         if mcp_max_rounds is None:
             mcp_max_rounds = app_settings.mcp_max_rounds
@@ -809,7 +869,8 @@ class AIService:
         """
         logger.debug(f"🔧 generate_text_stream: auto_mcp={auto_mcp}, tool_choice={tool_choice}")
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = await self._require_model(model)
+        # provider 一起传入：门禁判定的三元组必须与下面 `_get_provider(provider)` 一致
+        model = await self._require_model(model, provider)
         
         tools_to_use = None
         
@@ -906,7 +967,8 @@ class AIService:
         """
         tools_to_use = None
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
-        model = await self._require_model(model)
+        # provider 一起传入：门禁判定的三元组必须与下面 `_get_provider(provider)` 一致
+        model = await self._require_model(model, provider)
         if auto_mcp:
             tools_to_use = await self._prepare_mcp_tools(auto_mcp=auto_mcp)
 
@@ -986,7 +1048,9 @@ class AIService:
             解析后的JSON数据
         """
         # 未配置模型即明确报错：重试循环一次都不启动，也不发请求（需求 #55 步骤 2）
-        model = await self._require_model(model)
+        # provider 一起传入：门禁判定的三元组必须与循环里转发给 `generate_text_stream`
+        # 的那个 provider 一致，否则判的是别家网关。
+        model = await self._require_model(model, provider)
         last_response = ""
         aggregate_usage = TokenUsage()
         metrics = self._build_call_metrics(
