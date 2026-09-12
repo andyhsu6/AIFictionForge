@@ -15,6 +15,13 @@ jobs:
 
     steps:
       - name: Translate issue or comment (non-English -> English)
+        id: translate
         uses: usthe/issues-translate-action@v2.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Report translation failure
+        if: steps.translate.outcome == 'failure'
+        run: |
+          echo "::warning::Translation step failed (upstream translate API flake); issue/comment left untranslated. Non-blocking by design - see run log."
