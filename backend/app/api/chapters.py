@@ -14,6 +14,7 @@ from math import ceil
 from app.database import get_db, get_engine
 from app.api.common import verify_project_access
 from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
+from app.core.db_write_lock import get_db_write_lock
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
     OneToOneContextBuilder,
@@ -73,8 +74,6 @@ from app.utils.sse_response import HEARTBEAT, SSEResponse, create_sse_response, 
 router = APIRouter(prefix="/chapters", tags=["章节管理"])
 logger = get_logger(__name__)
 
-# 全局数据库写入锁（每个用户一个锁，用于保护SQLite写入操作）
-db_write_locks: dict[str, Lock] = {}
 analysis_background_tasks: set[asyncio.Task] = set()
 
 ANALYSIS_TASK_TIMEOUT_SECONDS = 600
@@ -128,14 +127,6 @@ def _build_lightweight_chapter_summary(content: str, max_length: int = 300) -> s
         return ""
     normalized = " ".join(content.split())
     return normalized[:max_length]
-
-
-async def get_db_write_lock(user_id: str) -> Lock:
-    """获取或创建用户的数据库写入锁"""
-    if user_id not in db_write_locks:
-        db_write_locks[user_id] = Lock()
-        logger.debug(f"🔒 为用户 {user_id} 创建数据库写入锁")
-    return db_write_locks[user_id]
 
 
 async def _set_analysis_task_terminal_state(

@@ -16,6 +16,7 @@ import time
 
 from app.database import get_db
 from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
+from app.core.db_write_lock import db_write_lock
 from app.models.settings import Settings
 from app.services.cover_generation_service import cover_generation_service
 from app.schemas.settings import (
@@ -122,6 +123,25 @@ def _safe_load_preferences(raw_preferences: Optional[str]) -> Dict[str, Any]:
         return json.loads(raw_preferences or '{}')
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+async def load_settings_row_fresh(db: AsyncSession, user_id: str) -> Optional[Settings]:
+    """读取用户 Settings 行，绕过 ORM 身份映射取数据库真值。
+
+    专供 per-user 写锁临界区使用：会话工厂是 `expire_on_commit=False`，本会话
+    早前读过的行会一直留在身份映射里，普通 select 只会把那个旧对象还给你。
+    用 populate_existing 强制回读列值，合并基线才是其他写入方已提交的
+    `preferences` blob——否则读改写照样抹键（#56），锁形同虚设。
+
+    （本机 SQLite/pysqlite 恰好也会刷新身份映射，这条是跨驱动的形状保证：
+    PostgreSQL 等固定读快照的后端必须要它。）
+    """
+    result = await db.execute(
+        select(Settings)
+        .where(Settings.user_id == user_id)
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
 
 
 def _get_api_presets_payload(prefs: Dict[str, Any]) -> Dict[str, Any]:
@@ -519,66 +539,69 @@ async def save_settings(
     
     注意：手动保存配置后会自动取消之前激活的预设状态，
     因为手动修改的配置可能与预设不一致
+
+    整个读改写事务在 per-user 写锁内执行（#56）：本端点会改写
+    `preferences` blob（取消预设激活态），与后台写入并发时不得互相抹键。
+    客户端若在请求体里带 `preferences` 字符串，仍是整串覆盖语义（未改动），
+    但覆盖动作已被串行化。
     """
-    # 查找现有设置
-    result = await db.execute(
-        select(Settings).where(Settings.user_id == user.user_id)
-    )
-    settings = result.scalar_one_or_none()
-    
-    # 准备数据
-    settings_dict = data.model_dump(exclude_unset=True)
-    
-    if settings:
-        # 更新现有设置
-        for key, value in settings_dict.items():
-            setattr(settings, key, value)
-        
-        # 检查并取消预设激活状态
-        # 因为用户手动修改了配置，可能与之前激活的预设不一致
-        try:
-            prefs = json.loads(settings.preferences or '{}')
-            api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
-            presets = api_presets.get('presets', [])
-            
-            # 找到激活的预设并检查是否与当前保存的配置一致
-            active_preset = next((p for p in presets if p.get('is_active')), None)
-            if active_preset:
-                preset_config = active_preset.get('config', {})
-                # 检查配置是否发生变化
-                config_changed = (
-                    preset_config.get('api_provider') != settings_dict.get('api_provider', settings.api_provider) or
-                    preset_config.get('api_key') != settings_dict.get('api_key', settings.api_key) or
-                    preset_config.get('api_base_url') != settings_dict.get('api_base_url', settings.api_base_url) or
-                    preset_config.get('llm_model') != settings_dict.get('llm_model', settings.llm_model) or
-                    preset_config.get('temperature') != settings_dict.get('temperature', settings.temperature) or
-                    preset_config.get('max_tokens') != settings_dict.get('max_tokens', settings.max_tokens)
-                )
-                
-                if config_changed:
-                    # 取消激活状态
-                    active_preset['is_active'] = False
-                    prefs['api_presets'] = api_presets
-                    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-                    logger.info(f"用户 {user.user_id} 手动修改配置，已取消预设 {active_preset.get('name')} 的激活状态")
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"解析用户 {user.user_id} 的preferences失败: {e}")
-        
-        await db.commit()
-        await db.refresh(settings)
-        logger.info(f"用户 {user.user_id} 更新设置")
-    else:
-        # 创建新设置
-        settings = Settings(
-            user_id=user.user_id,
-            **settings_dict
-        )
-        db.add(settings)
-        await db.commit()
-        await db.refresh(settings)
-        logger.info(f"用户 {user.user_id} 创建设置")
-    
-    return settings
+    async with db_write_lock(user.user_id):
+        # 查找现有设置（临界区内绕过身份映射，取其他写入方刚提交的版本）
+        settings = await load_settings_row_fresh(db, user.user_id)
+
+        # 准备数据
+        settings_dict = data.model_dump(exclude_unset=True)
+
+        if settings:
+            # 更新现有设置
+            for key, value in settings_dict.items():
+                setattr(settings, key, value)
+
+            # 检查并取消预设激活状态
+            # 因为用户手动修改了配置，可能与之前激活的预设不一致
+            try:
+                prefs = json.loads(settings.preferences or '{}')
+                api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+                presets = api_presets.get('presets', [])
+
+                # 找到激活的预设并检查是否与当前保存的配置一致
+                active_preset = next((p for p in presets if p.get('is_active')), None)
+                if active_preset:
+                    preset_config = active_preset.get('config', {})
+                    # 检查配置是否发生变化
+                    config_changed = (
+                        preset_config.get('api_provider') != settings_dict.get('api_provider', settings.api_provider) or
+                        preset_config.get('api_key') != settings_dict.get('api_key', settings.api_key) or
+                        preset_config.get('api_base_url') != settings_dict.get('api_base_url', settings.api_base_url) or
+                        preset_config.get('llm_model') != settings_dict.get('llm_model', settings.llm_model) or
+                        preset_config.get('temperature') != settings_dict.get('temperature', settings.temperature) or
+                        preset_config.get('max_tokens') != settings_dict.get('max_tokens', settings.max_tokens)
+                    )
+
+                    if config_changed:
+                        # 取消激活状态
+                        active_preset['is_active'] = False
+                        prefs['api_presets'] = api_presets
+                        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+                        logger.info(f"用户 {user.user_id} 手动修改配置，已取消预设 {active_preset.get('name')} 的激活状态")
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"解析用户 {user.user_id} 的preferences失败: {e}")
+
+            await db.commit()
+            await db.refresh(settings)
+            logger.info(f"用户 {user.user_id} 更新设置")
+        else:
+            # 创建新设置
+            settings = Settings(
+                user_id=user.user_id,
+                **settings_dict
+            )
+            db.add(settings)
+            await db.commit()
+            await db.refresh(settings)
+            logger.info(f"用户 {user.user_id} 创建设置")
+
+        return settings
 
 
 @router.put("", response_model=SettingsResponse)
@@ -590,25 +613,26 @@ async def update_settings(
     """
     更新当前用户的设置
     仅保存到数据库
+
+    读改写在 per-user 写锁内执行（#56）：SettingsUpdate 继承了 `preferences`
+    文本字段，本端点同样能整串覆盖偏好 blob。
     """
-    result = await db.execute(
-        select(Settings).where(Settings.user_id == user.user_id)
-    )
-    settings = result.scalar_one_or_none()
-    
-    if not settings:
-        raise ApiError(code="not_found.setting")
-    
-    # 更新设置
-    update_data = data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(settings, key, value)
-    
-    await db.commit()
-    await db.refresh(settings)
-    logger.info(f"用户 {user.user_id} 更新设置")
-    
-    return settings
+    async with db_write_lock(user.user_id):
+        settings = await load_settings_row_fresh(db, user.user_id)
+
+        if not settings:
+            raise ApiError(code="not_found.setting")
+
+        # 更新设置
+        update_data = data.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(settings, key, value)
+
+        await db.commit()
+        await db.refresh(settings)
+        logger.info(f"用户 {user.user_id} 更新设置")
+
+        return settings
 
 
 @router.put("/preferences")
@@ -624,31 +648,35 @@ async def update_preferences(
     auto/zh/en；None 或 auto 表示跟随界面语言，注入行为在后续 todo 接入）。
     采用增量合并：仅覆盖请求中显式提供的键，保留 preferences 中的其他既有键（如 api_presets）。
     键为 None（显式传 null）时不写该项并移除既有值；GET /settings 的 preferences 原样返回供前端读取。
+
+    读改写在 per-user 写锁内执行（#56）：blob 是整读整写的，锁 + 临界区内
+    refresh 读取才能保住其他写入方刚写入的键。
     """
-    settings = await get_user_settings(user.user_id, db)
-    prefs = _safe_load_preferences(settings.preferences)
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+        prefs = _safe_load_preferences(settings.preferences)
 
-    update_data = data.model_dump(exclude_unset=True)
-    if "language" in update_data:
-        if update_data["language"] is None:
-            prefs.pop("language", None)
-        else:
-            prefs["language"] = update_data["language"]
+        update_data = data.model_dump(exclude_unset=True)
+        if "language" in update_data:
+            if update_data["language"] is None:
+                prefs.pop("language", None)
+            else:
+                prefs["language"] = update_data["language"]
 
-    if "content_language" in update_data:
-        if update_data["content_language"] is None:
-            prefs.pop("content_language", None)
-        else:
-            prefs["content_language"] = update_data["content_language"]
+        if "content_language" in update_data:
+            if update_data["content_language"] is None:
+                prefs.pop("content_language", None)
+            else:
+                prefs["content_language"] = update_data["content_language"]
 
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    await db.commit()
-    await db.refresh(settings)
-    logger.info(
-        f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')} content_language={prefs.get('content_language')}"
-    )
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+        await db.commit()
+        await db.refresh(settings)
+        logger.info(
+            f"用户 {user.user_id} 更新偏好设置: language={prefs.get('language')} content_language={prefs.get('content_language')}"
+        )
 
-    return {"message": "偏好设置已更新", "preferences": settings.preferences}
+        return {"message": "偏好设置已更新", "preferences": settings.preferences}
 
 
 @router.delete("")
@@ -1334,12 +1362,19 @@ async def test_api_connection(data: ApiTestRequest):
 
 # ========== API配置预设管理（零数据库改动方案）==========
 
-async def get_user_settings(user_id: str, db: AsyncSession) -> Settings:
-    """获取用户settings，如果不存在则创建"""
-    result = await db.execute(
-        select(Settings).where(Settings.user_id == user_id)
-    )
-    settings = result.scalar_one_or_none()
+async def get_user_settings(user_id: str, db: AsyncSession, refresh: bool = False) -> Settings:
+    """获取用户settings，如果不存在则创建
+
+    refresh=True 供写锁临界区使用：绕过身份映射重新读取数据库真值，
+    保证读改写基于其他写入方刚提交的 `preferences` blob（#56）。
+    """
+    if refresh:
+        settings = await load_settings_row_fresh(db, user_id)
+    else:
+        result = await db.execute(
+            select(Settings).where(Settings.user_id == user_id)
+        )
+        settings = result.scalar_one_or_none()
     
     if not settings:
         # 创建默认设置
@@ -1408,42 +1443,45 @@ async def create_preset(
     创建新预设
     
     将预设添加到preferences字段的JSON中
+
+    读改写在 per-user 写锁内执行（#56），避免整串覆盖其他写入方刚提交的键。
     """
-    settings = await get_user_settings(user.user_id, db)
-    
-    # 解析preferences
-    try:
-        prefs = json.loads(settings.preferences or '{}')
-    except json.JSONDecodeError:
-        prefs = {}
-    
-    api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
-    presets = api_presets.get('presets', [])
-    
-    # 创建新预设
-    new_preset = {
-        "id": f"preset_{int(datetime.now().timestamp() * 1000)}",
-        "name": data.name,
-        "description": data.description,
-        "is_active": False,
-        "created_at": datetime.now().isoformat(),
-        "config": {
-            **data.config.model_dump(),
-            "api_provider": _normalize_raw_provider(data.config.api_provider)
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+
+        # 解析preferences
+        try:
+            prefs = json.loads(settings.preferences or '{}')
+        except json.JSONDecodeError:
+            prefs = {}
+
+        api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+        presets = api_presets.get('presets', [])
+
+        # 创建新预设
+        new_preset = {
+            "id": f"preset_{int(datetime.now().timestamp() * 1000)}",
+            "name": data.name,
+            "description": data.description,
+            "is_active": False,
+            "created_at": datetime.now().isoformat(),
+            "config": {
+                **data.config.model_dump(),
+                "api_provider": _normalize_raw_provider(data.config.api_provider)
+            }
         }
-    }
-    
-    presets.append(new_preset)
-    
-    # 保存回preferences
-    api_presets['presets'] = presets
-    prefs['api_presets'] = api_presets
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    
-    await db.commit()
-    
-    logger.info(f"用户 {user.user_id} 创建预设: {data.name}")
-    return new_preset
+
+        presets.append(new_preset)
+
+        # 保存回preferences
+        api_presets['presets'] = presets
+        prefs['api_presets'] = api_presets
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+
+        await db.commit()
+
+        logger.info(f"用户 {user.user_id} 创建预设: {data.name}")
+        return new_preset
 
 
 @router.put("/presets/{preset_id}", response_model=PresetResponse)
@@ -1457,42 +1495,45 @@ async def update_preset(
     更新预设
     
     在preferences字段的JSON中更新指定预设
+
+    读改写在 per-user 写锁内执行（#56），避免整串覆盖其他写入方刚提交的键。
     """
-    settings = await get_user_settings(user.user_id, db)
-    
-    # 解析preferences
-    try:
-        prefs = json.loads(settings.preferences or '{}')
-    except json.JSONDecodeError:
-        raise ApiError(code="validation.config")
-    
-    api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
-    presets = api_presets.get('presets', [])
-    
-    # 找到并更新预设
-    target_preset = next((p for p in presets if p['id'] == preset_id), None)
-    if not target_preset:
-        raise ApiError(code="not_found.preset")
-    
-    # 更新字段
-    if data.name is not None:
-        target_preset['name'] = data.name
-    if data.description is not None:
-        target_preset['description'] = data.description
-    if data.config is not None:
-        target_preset['config'] = {
-            **data.config.model_dump(),
-            'api_provider': _normalize_raw_provider(data.config.api_provider)
-        }
-    
-    # 保存回preferences
-    prefs['api_presets'] = api_presets
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    
-    await db.commit()
-    
-    logger.info(f"用户 {user.user_id} 更新预设: {preset_id}")
-    return target_preset
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+
+        # 解析preferences
+        try:
+            prefs = json.loads(settings.preferences or '{}')
+        except json.JSONDecodeError:
+            raise ApiError(code="validation.config")
+
+        api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+        presets = api_presets.get('presets', [])
+
+        # 找到并更新预设
+        target_preset = next((p for p in presets if p['id'] == preset_id), None)
+        if not target_preset:
+            raise ApiError(code="not_found.preset")
+
+        # 更新字段
+        if data.name is not None:
+            target_preset['name'] = data.name
+        if data.description is not None:
+            target_preset['description'] = data.description
+        if data.config is not None:
+            target_preset['config'] = {
+                **data.config.model_dump(),
+                'api_provider': _normalize_raw_provider(data.config.api_provider)
+            }
+
+        # 保存回preferences
+        prefs['api_presets'] = api_presets
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+
+        await db.commit()
+
+        logger.info(f"用户 {user.user_id} 更新预设: {preset_id}")
+        return target_preset
 
 
 @router.delete("/presets/{preset_id}")
@@ -1505,41 +1546,44 @@ async def delete_preset(
     删除预设
     
     从preferences字段的JSON中删除指定预设
+
+    读改写在 per-user 写锁内执行（#56），避免整串覆盖其他写入方刚提交的键。
     """
-    settings = await get_user_settings(user.user_id, db)
-    
-    # 解析preferences
-    try:
-        prefs = json.loads(settings.preferences or '{}')
-    except json.JSONDecodeError:
-        raise ApiError(code="validation.config")
-    
-    api_presets = _get_api_presets_payload(prefs)
-    presets = api_presets.get('presets', [])
-    
-    # 找到预设
-    target_preset = next((p for p in presets if p['id'] == preset_id), None)
-    if not target_preset:
-        raise ApiError(code="not_found.preset")
-    
-    # 检查是否是激活的预设
-    if target_preset.get('is_active'):
-        raise ApiError(code="validation.preset_active_delete_blocked")
-    
-    # 删除预设
-    presets = [p for p in presets if p['id'] != preset_id]
-    if prefs.get('chapter_analysis_preset_id') == preset_id:
-        prefs.pop('chapter_analysis_preset_id', None)
-    
-    # 保存回preferences
-    api_presets['presets'] = presets
-    prefs['api_presets'] = api_presets
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    
-    await db.commit()
-    
-    logger.info(f"用户 {user.user_id} 删除预设: {preset_id}")
-    return {"message": "预设已删除", "preset_id": preset_id}
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+
+        # 解析preferences
+        try:
+            prefs = json.loads(settings.preferences or '{}')
+        except json.JSONDecodeError:
+            raise ApiError(code="validation.config")
+
+        api_presets = _get_api_presets_payload(prefs)
+        presets = api_presets.get('presets', [])
+
+        # 找到预设
+        target_preset = next((p for p in presets if p['id'] == preset_id), None)
+        if not target_preset:
+            raise ApiError(code="not_found.preset")
+
+        # 检查是否是激活的预设
+        if target_preset.get('is_active'):
+            raise ApiError(code="validation.preset_active_delete_blocked")
+
+        # 删除预设
+        presets = [p for p in presets if p['id'] != preset_id]
+        if prefs.get('chapter_analysis_preset_id') == preset_id:
+            prefs.pop('chapter_analysis_preset_id', None)
+
+        # 保存回preferences
+        api_presets['presets'] = presets
+        prefs['api_presets'] = api_presets
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+
+        await db.commit()
+
+        logger.info(f"用户 {user.user_id} 删除预设: {preset_id}")
+        return {"message": "预设已删除", "preset_id": preset_id}
 
 
 @router.post("/presets/{preset_id}/activate")
@@ -1552,50 +1596,53 @@ async def activate_preset(
     激活预设
     
     将预设的配置应用到Settings主字段
+
+    读改写（Settings 主字段 + preferences 激活标记）在 per-user 写锁内执行（#56）。
     """
-    settings = await get_user_settings(user.user_id, db)
-    
-    # 解析preferences
-    try:
-        prefs = json.loads(settings.preferences or '{}')
-    except json.JSONDecodeError:
-        raise ApiError(code="validation.config")
-    
-    api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
-    presets = api_presets.get('presets', [])
-    
-    # 找到目标预设
-    target_preset = next((p for p in presets if p['id'] == preset_id), None)
-    if not target_preset:
-        raise ApiError(code="not_found.preset")
-    
-    # 应用配置到Settings主字段
-    config = target_preset['config']
-    resolved_config = _apply_provider_defaults(config.get('api_provider'), config.get('api_key'), config.get('api_base_url'))
-    settings.api_provider = _normalize_raw_provider(config['api_provider'])
-    settings.api_key = config.get('api_key') or ""
-    settings.api_base_url = resolved_config["api_base_url"]
-    settings.llm_model = config['llm_model']
-    settings.temperature = config['temperature']
-    settings.max_tokens = config['max_tokens']
-    settings.system_prompt = config.get('system_prompt')
-    
-    # 更新所有预设的is_active状态
-    for preset in presets:
-        preset['is_active'] = (preset['id'] == preset_id)
-    
-    # 保存回preferences
-    prefs['api_presets'] = api_presets
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    
-    await db.commit()
-    
-    logger.info(f"用户 {user.user_id} 激活预设: {target_preset['name']}")
-    return {
-        "message": "预设已激活",
-        "preset_id": preset_id,
-        "preset_name": target_preset['name']
-    }
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+
+        # 解析preferences
+        try:
+            prefs = json.loads(settings.preferences or '{}')
+        except json.JSONDecodeError:
+            raise ApiError(code="validation.config")
+
+        api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
+        presets = api_presets.get('presets', [])
+
+        # 找到目标预设
+        target_preset = next((p for p in presets if p['id'] == preset_id), None)
+        if not target_preset:
+            raise ApiError(code="not_found.preset")
+
+        # 应用配置到Settings主字段
+        config = target_preset['config']
+        resolved_config = _apply_provider_defaults(config.get('api_provider'), config.get('api_key'), config.get('api_base_url'))
+        settings.api_provider = _normalize_raw_provider(config['api_provider'])
+        settings.api_key = config.get('api_key') or ""
+        settings.api_base_url = resolved_config["api_base_url"]
+        settings.llm_model = config['llm_model']
+        settings.temperature = config['temperature']
+        settings.max_tokens = config['max_tokens']
+        settings.system_prompt = config.get('system_prompt')
+
+        # 更新所有预设的is_active状态
+        for preset in presets:
+            preset['is_active'] = (preset['id'] == preset_id)
+
+        # 保存回preferences
+        prefs['api_presets'] = api_presets
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+
+        await db.commit()
+
+        logger.info(f"用户 {user.user_id} 激活预设: {target_preset['name']}")
+        return {
+            "message": "预设已激活",
+            "preset_id": preset_id,
+            "preset_name": target_preset['name']
+        }
 
 
 @router.put("/presets/usage/chapter-analysis")
@@ -1604,33 +1651,37 @@ async def set_chapter_analysis_preset_selection(
     user: User = Depends(require_login),
     db: AsyncSession = Depends(get_db)
 ):
-    """设置章节内容分析专用API预设；为空则使用默认API配置。"""
-    settings = await get_user_settings(user.user_id, db)
-    prefs = _safe_load_preferences(settings.preferences)
-    api_presets = _get_api_presets_payload(prefs)
-    presets = api_presets.get('presets', [])
+    """设置章节内容分析专用API预设；为空则使用默认API配置。
 
-    preset_id = data.preset_id.strip() if data.preset_id else None
-    preset_name = None
-    if preset_id:
-        target_preset = next((p for p in presets if p.get('id') == preset_id), None)
-        if not target_preset:
-            raise ApiError(code="not_found.preset")
-        prefs['chapter_analysis_preset_id'] = preset_id
-        preset_name = target_preset.get('name')
-    else:
-        prefs.pop('chapter_analysis_preset_id', None)
+    读改写在 per-user 写锁内执行（#56），避免整串覆盖其他写入方刚提交的键。
+    """
+    async with db_write_lock(user.user_id):
+        settings = await get_user_settings(user.user_id, db, refresh=True)
+        prefs = _safe_load_preferences(settings.preferences)
+        api_presets = _get_api_presets_payload(prefs)
+        presets = api_presets.get('presets', [])
 
-    prefs['api_presets'] = api_presets
-    settings.preferences = json.dumps(prefs, ensure_ascii=False)
-    await db.commit()
+        preset_id = data.preset_id.strip() if data.preset_id else None
+        preset_name = None
+        if preset_id:
+            target_preset = next((p for p in presets if p.get('id') == preset_id), None)
+            if not target_preset:
+                raise ApiError(code="not_found.preset")
+            prefs['chapter_analysis_preset_id'] = preset_id
+            preset_name = target_preset.get('name')
+        else:
+            prefs.pop('chapter_analysis_preset_id', None)
 
-    logger.info(f"用户 {user.user_id} 设置章节内容分析API预设: {preset_id or '默认配置'}")
-    return {
-        "message": "章节内容分析API配置已更新",
-        "chapter_analysis_preset_id": preset_id,
-        "preset_name": preset_name
-    }
+        prefs['api_presets'] = api_presets
+        settings.preferences = json.dumps(prefs, ensure_ascii=False)
+        await db.commit()
+
+        logger.info(f"用户 {user.user_id} 设置章节内容分析API预设: {preset_id or '默认配置'}")
+        return {
+            "message": "章节内容分析API配置已更新",
+            "chapter_analysis_preset_id": preset_id,
+            "preset_name": preset_name
+        }
 
 
 @router.post("/presets/{preset_id}/test")
