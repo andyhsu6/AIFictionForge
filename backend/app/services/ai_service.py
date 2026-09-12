@@ -24,6 +24,7 @@ from app.services.json_helper import clean_json_response, parse_json
 from app.services.model_capability_probe import (
     TRIGGER_DAILY,
     ensure_model_allowed,
+    get_effective_context_window,
 )
 
 # 导出清理函数
@@ -125,8 +126,8 @@ def ensure_thinking_model_min_tokens(
 # 已知模型上下文窗口。**需求 #55 步骤 3 起降级为「提示」**：只用来决定探测
 # 从哪个刻度开始探（见 model_capability_probe.hint_window_tokens），
 # **不再参与任何接受/拒绝判定**——判定一律以实测/显式声明的结论为准。
-# 静态登记表维护成本高且必然过期，所以它退出判据；`detect_context_window`
-# 目前仍被 prompt 预算换算使用，其未知回退语义在步骤 4 处理。
+# 静态登记表维护成本高且必然过期，所以它退出判据；步骤 4 起未知模型也不再
+# 伪装成某个窗口值（未登记的保守回退值已删除，见 detect_context_window）。
 _KNOWN_CONTEXT_WINDOWS = {
     "deepseek-v4": 1000000,
     "deepseek-v3": 1000000,
@@ -147,11 +148,16 @@ _KNOWN_CONTEXT_WINDOWS = {
 }
 
 
-def detect_context_window(model: Optional[str]) -> int:
-    """检测模型上下文窗口（token 数）。
+def detect_context_window(model: Optional[str]) -> Optional[int]:
+    """登记表给出的窗口**提示**（token 数）；未登记返回 `None`。
 
-    按键长度降序匹配已知表（更具体的键优先，如 gpt-4o 先于 gpt-4），
-    未命中的返回保守值 32K。
+    按键长度降序匹配已知表（更具体的键优先，如 gpt-4o 先于 gpt-4）。
+
+    需求 #55 步骤 4：未知模型不再有保守回退值（原先未命中即返回一个固定的
+    保守窗口）。那个回退是一个**伪装成实测结论的猜测**：它把「不知道」渲染成
+    「32K」，下游据此把窗口预算压到 3K 字符、拆书路径整体退回章节摘录，
+    功能还在跑但质量已经塌了 —— 正是本需求要根除的静默降级。
+    返回 None 才是诚实的「无提示」。
     """
     name = (model or "").lower()
     for key, window in sorted(
@@ -159,7 +165,7 @@ def detect_context_window(model: Optional[str]) -> int:
     ):
         if key in name:
             return window
-    return 32768
+    return None
 
 
 # 保守默认输出上限（章内续写 B0：未登记模型按此值推导输出预算）
@@ -210,22 +216,13 @@ def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = Non
 # 800K 字符 prompt 的 prefill TTFB 未实测，且 1M 窗口需容纳基础上下文栈
 # + 输出预算；或acle 评审 F1 指出单位错配风险，保守化先行）
 _FULL_BOOK_BUDGET_RATIO = 0.6
-_1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入
+_1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入（#57 范围外，本步不动）
 
-
-def resolve_context_budget_chars(model: Optional[str]) -> int:
-    """按模型上下文窗口解析全书注入字符预算（Tier3）。
-
-    - 1M 以上窗口 → 全书全量注入预算（≈窗口的 80% 字符）
-    - 128K-1M → 降级为中等预算（摘要+检索为主，不触发全书全量）
-    - 小窗口 → 保守预算（基本不注入全书）
-    """
-    window = detect_context_window(model)
-    if window >= 1000000:
-        return int(window * _FULL_BOOK_BUDGET_RATIO)
-    if window >= 128000:
-        return int(window * 0.3)
-    return int(window * 0.1)
+# 需求 #55 步骤 4：原先的 `resolve_context_budget_chars(model)` 已删除。它按模型名
+# 查静态登记表再分三档（1M→0.6 / 128K–1M→0.3 / 小窗口→0.1），后两档是「小模型半支持」
+# 的降级，第一档也建立在猜测窗口之上。预算现在是**单一来源**：本次实发模型
+# 实测/显式声明的窗口 × `_FULL_BOOK_BUDGET_RATIO`，见
+# `AIService.resolve_full_book_budget_chars`。
 
 
 class AIService:
@@ -422,6 +419,45 @@ class AIService:
             hint_window_tokens=detect_context_window(resolved),
         )
         return resolved
+
+    async def resolve_full_book_budget_chars(self, model: Optional[str] = None) -> int:
+        """全书注入字符预算的**唯一来源**：本次实发模型实测/声明的上下文窗口。
+
+        需求 #55 步骤 4（取代按模型名分三档的 `resolve_context_budget_chars`）：
+        窗口来自 `get_effective_context_window`（计划 §4a 定死的对外访问器），
+        不再查静态登记表、不再有 128K/小窗口降级档。
+
+        先过 `_require_model` 而不是裸读缓存，是为了保持与派发**同一套**缺结论语义：
+        「从未有过结论」必须同步补测 ①② 再定论（计划 §5），绝不能因为预算换算
+        抢在门禁之前而把一个合格模型直接拒掉。缓存命中时这两次读取都是内存字典
+        （`read_verdict` 的 memo），热路径不额外花网络。
+
+        失败契约：未配置 → `validation.ai_model_not_configured`；窗口不合格/无合格
+        结论 → `validation.ai_model_below_minimum`。返回值恒 > 0 ⇒「没有预算」不再是
+        一个可表示的状态（计划 §4b：`0 = 禁用` 就是静默失效）。
+        """
+        resolved = await self._require_model(model)
+        if not self.user_id or self.db_session is None:
+            # 未绑定用户的诊断实例在门禁里允许直通（它不发产品 AI 请求），但结论缓存
+            # 按 (user, provider, base_url, model) 存 ⇒ 这里必然拿不到窗口。
+            # 「拿不到预算」必须是错误，不能退回 0 或某个猜测值（计划 §4b）。
+            raise ApiError(
+                code="validation.ai_model_below_minimum",
+                detail="该 AI 服务未绑定用户与会话，无法取得上下文窗口结论",
+                params={"model": resolved},
+                raw="resolve_full_book_budget_chars called on an unbound AIService",
+            )
+        window = await get_effective_context_window(
+            self.user_id,
+            resolved,
+            self.db_session,
+            provider=self.api_provider,
+            base_url=self.base_url or "",
+        )
+        budget = int(window * _FULL_BOOK_BUDGET_RATIO)
+        if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 1M
+            raise ApiError(code="validation.ai_model_below_minimum", params={"model": resolved})
+        return budget
 
     def _build_call_metrics(
         self,

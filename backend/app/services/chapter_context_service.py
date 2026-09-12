@@ -215,9 +215,28 @@ class OneToOneContext:
 
 # ==================== 全书上下文共享函数（1-N / 1-1 双模式共用） ====================
 
+def _require_full_book_budget_chars(value: Any) -> int:
+    """全书注入预算的入口守卫：必须是正整数，否则当场抛错（计划 §4b）。
+
+    历史签名是 `full_book_budget_chars: int = 0`，并在 build() 里用
+    `if self.full_book_budget_chars > 0:` 决定要不要注入全书 ⇒ 「预算没算出来」
+    与「刻意不注入」在代码里长得一模一样，功能被静默关掉且没有任何信号。
+    参数改为**无默认值必填**后，这里再挡住 0 / 负数 / 非整数，
+    使「没有预算」不再是一个可表示的状态。
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"full_book_budget_chars 必须是正整数，收到 {value!r}")
+    if value <= 0:
+        raise ValueError(
+            f"full_book_budget_chars 必须是正整数（0 不再是「禁用全书注入」语义），收到 {value!r}"
+        )
+    return value
+
+
 def _build_full_book_context(
     chapters: list[Any],
-    budget_chars: int = 1000000,
+    *,
+    budget_chars: int,
     tail_chapters: int = 30,
 ) -> str:
     """构建全书注入上下文（Tier3 1M 上下文利用，拆分优先，无单章硬截断）。
@@ -231,12 +250,17 @@ def _build_full_book_context(
 
     Args:
         chapters: 按章节号升序的章节列表
-        budget_chars: 注入字符预算（默认 1M，对齐 1M 上下文模型）
+        budget_chars: 注入字符预算，**必填**（计划 §4b：原先的隐藏默认值 1M 会让
+            「没算出预算」伪装成「按 1M 窗口算过」）。唯一来源是本次实发模型
+            实测/显式声明的窗口（`AIService.resolve_full_book_budget_chars`），
+            非正数直接抛错——「没有预算」不再是可表示的状态。
         tail_chapters: 超预算时保留的尾部章节数
 
     Returns:
         格式化后的全书上下文文本
     """
+    if budget_chars <= 0:
+        raise ValueError(f"全书注入预算必须为正数，收到 {budget_chars}")
     if not chapters:
         return ""
 
@@ -355,19 +379,26 @@ class OneToManyContextBuilder:
     MEMORY_SIMILARITY_THRESHOLD = 0.6  # 记忆相关度阈值
     RECENT_CHAPTERS_COUNT = 10   # 最近章节规划数量
     
-    def __init__(self, memory_service=None, foreshadow_service=None, full_book_budget_chars: int = 0):
+    def __init__(
+        self,
+        memory_service=None,
+        foreshadow_service=None,
+        *,
+        full_book_budget_chars: int,
+    ):
         """
         初始化构建器
 
         Args:
             memory_service: 记忆服务实例（可选，用于检索相关记忆）
             foreshadow_service: 伏笔服务实例（可选，用于获取伏笔提醒）
-            full_book_budget_chars: Tier3 全书注入字符预算（0=禁用，
-                由模型上下文能力分级决定，见 D4 方案）
+            full_book_budget_chars: Tier3 全书注入字符预算，**必填无默认值**；
+                唯一来源是本次实发模型实测/显式声明的上下文窗口
+                （`AIService.resolve_full_book_budget_chars`，需求 #55 步骤 4）
         """
         self.memory_service = memory_service
         self.foreshadow_service = foreshadow_service
-        self.full_book_budget_chars = full_book_budget_chars
+        self.full_book_budget_chars = _require_full_book_budget_chars(full_book_budget_chars)
     
     async def build(
         self,
@@ -430,18 +461,19 @@ class OneToManyContextBuilder:
             logger.info(f"  ✅ 最近章节规划: {len(context.recent_chapters_context or '')}字符")
 
         # === Tier3 全书注入（1M 上下文利用，双模式）===
-        if self.full_book_budget_chars > 0:
-            full_book_result = await db.execute(
-                select(Chapter)
-                .where(Chapter.project_id == project.id)
-                .where(Chapter.chapter_number <= chapter_number)
-                .order_by(Chapter.chapter_number)
-            )
-            context.full_book_context = _build_full_book_context(
-                full_book_result.scalars().all(),
-                budget_chars=self.full_book_budget_chars,
-            )
-            logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        # 预算已在构造处守卫为正数 ⇒ 全书注入是无条件步骤，
+        # 「取不到预算就悄悄不注入」这一状态已随需求 #55 步骤 4 消失。
+        full_book_result = await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project.id)
+            .where(Chapter.chapter_number <= chapter_number)
+            .order_by(Chapter.chapter_number)
+        )
+        context.full_book_context = _build_full_book_context(
+            full_book_result.scalars().all(),
+            budget_chars=self.full_book_budget_chars,
+        )
+        logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
         
         # === 衔接锚点（上一章完整正文 + 摘要）===
         if chapter_number == 1:
@@ -1273,19 +1305,26 @@ class OneToOneContextBuilder:
     MEMORY_CONTEXT_LIMIT = 10    # 最终注入提示词的记忆条数
     MEMORY_FALLBACK_COUNT = 5    # 无高分命中时保留的候选数量
 
-    def __init__(self, memory_service=None, foreshadow_service=None, full_book_budget_chars: int = 0):
+    def __init__(
+        self,
+        memory_service=None,
+        foreshadow_service=None,
+        *,
+        full_book_budget_chars: int,
+    ):
         """
         初始化构建器
 
         Args:
             memory_service: 记忆服务实例（可选）
             foreshadow_service: 伏笔服务实例（可选）
-            full_book_budget_chars: Tier3 全书注入字符预算（0=禁用，
-                由模型上下文能力分级决定，见 D4 方案）
+            full_book_budget_chars: Tier3 全书注入字符预算，**必填无默认值**；
+                唯一来源是本次实发模型实测/显式声明的上下文窗口
+                （`AIService.resolve_full_book_budget_chars`，需求 #55 步骤 4）
         """
         self.memory_service = memory_service
         self.foreshadow_service = foreshadow_service
-        self.full_book_budget_chars = full_book_budget_chars
+        self.full_book_budget_chars = _require_full_book_budget_chars(full_book_budget_chars)
     
     async def build(
         self,
@@ -1339,18 +1378,19 @@ class OneToOneContextBuilder:
             logger.info(f"  ✅ P1-最近章节摘要: {len(context.recent_chapters_context or '')}字符")
 
         # 0.5 Tier3 全书注入（1M 上下文利用，双模式）
-        if self.full_book_budget_chars > 0:
-            full_book_result = await db.execute(
-                select(Chapter)
-                .where(Chapter.project_id == project.id)
-                .where(Chapter.chapter_number <= chapter_number)
-                .order_by(Chapter.chapter_number)
-            )
-            context.full_book_context = _build_full_book_context(
-                full_book_result.scalars().all(),
-                budget_chars=self.full_book_budget_chars,
-            )
-            logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        # 预算已在构造处守卫为正数 ⇒ 全书注入是无条件步骤，
+        # 「取不到预算就悄悄不注入」这一状态已随需求 #55 步骤 4 消失。
+        full_book_result = await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project.id)
+            .where(Chapter.chapter_number <= chapter_number)
+            .order_by(Chapter.chapter_number)
+        )
+        context.full_book_context = _build_full_book_context(
+            full_book_result.scalars().all(),
+            budget_chars=self.full_book_budget_chars,
+        )
+        logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
 
         # 1. 获取上一章完整正文和上一章摘要
         if chapter_number > 1:

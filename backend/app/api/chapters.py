@@ -59,7 +59,6 @@ from app.services.ai_service import (
     AIService,
     detect_max_output_tokens,
     ensure_thinking_model_min_tokens,
-    resolve_context_budget_chars,
 )
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
@@ -87,20 +86,26 @@ CONTINUE_MAX_TARGET_CHARS = 200000
 CONTINUE_MIN_SEGMENT_CHARS = 1000
 
 
-def _resolve_full_book_budget(model_name: Optional[str]) -> int:
-    """按模型上下文窗口解析全书注入预算（Tier3 + D4 能力分级）。
+async def _resolve_full_book_budget(
+    ai_service: AIService,
+    model_name: Optional[str],
+) -> int:
+    """全书注入字符预算：本次**实发**模型的实测/声明窗口换算（单一来源）。
 
-    1M 模型 → 大预算（全书全量注入）；128K → 中预算（摘要+检索）；
-    小窗口/未知 → 保守预算。模型名取自定义 model 优先，否则用服务默认。
+    需求 #55 步骤 4：原先的三档语义（1M → 大预算 / 128K → 中预算 /
+    小窗口与未知 → 保守预算）已随 `resolve_context_budget_chars` 一起删除。
+    窗口一律取 `get_effective_context_window` 的结论，因此拿不到合格结论时这里是
+    **抛错**（`validation.ai_model_not_configured` / `validation.ai_model_below_minimum`），
+    不存在「预算为 0 ⇒ 悄悄不注入全书」这种中间态。
     """
-    return resolve_context_budget_chars(model_name)
+    return await ai_service.resolve_full_book_budget_chars(model_name)
 
 
 def _append_full_book_context(prompt: str, full_book_context: Optional[str]) -> str:
     """把全书注入上下文追加到生成 prompt（Tier3）。
 
     以独立块追加而非模板占位符，避免用户自定义模板缺少占位符时
-    触发 format KeyError；预算为 0（小窗口模型）时原样返回。
+    触发 format KeyError；无注入内容时原样返回。
     """
     if not full_book_context:
         return prompt
@@ -1612,8 +1617,9 @@ async def generate_chapter_content_stream(
                     context_builder = OneToOneContextBuilder(
                         memory_service=memory_service,
                         foreshadow_service=foreshadow_service,
-                        full_book_budget_chars=_resolve_full_book_budget(
-                            custom_model or getattr(user_ai_service, "default_model", None)
+                        full_book_budget_chars=await _resolve_full_book_budget(
+                            user_ai_service,
+                            custom_model or getattr(user_ai_service, "default_model", None),
                         ),
                     )
                     chapter_context = await context_builder.build(
@@ -1640,8 +1646,9 @@ async def generate_chapter_content_stream(
                     context_builder = OneToManyContextBuilder(
                         memory_service=memory_service,
                         foreshadow_service=foreshadow_service,
-                        full_book_budget_chars=_resolve_full_book_budget(
-                            custom_model or getattr(user_ai_service, "default_model", None)
+                        full_book_budget_chars=await _resolve_full_book_budget(
+                            user_ai_service,
+                            custom_model or getattr(user_ai_service, "default_model", None),
                         ),
                     )
                     chapter_context = await context_builder.build(
@@ -2201,8 +2208,9 @@ async def _run_chapter_generation_bg(
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(
@@ -2217,8 +2225,9 @@ async def _run_chapter_generation_bg(
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(
@@ -2735,8 +2744,9 @@ async def _run_chapter_generation_bg(
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(
@@ -2751,8 +2761,9 @@ async def _run_chapter_generation_bg(
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(
@@ -4286,8 +4297,9 @@ async def generate_single_chapter_for_batch(
         context_builder = OneToOneContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(
@@ -4304,8 +4316,9 @@ async def generate_single_chapter_for_batch(
         context_builder = OneToManyContextBuilder(
             memory_service=memory_service,
             foreshadow_service=foreshadow_service,
-            full_book_budget_chars=_resolve_full_book_budget(
-                custom_model or getattr(ai_service, "default_model", None)
+            full_book_budget_chars=await _resolve_full_book_budget(
+                ai_service,
+                custom_model or getattr(ai_service, "default_model", None),
             ),
         )
         chapter_context = await context_builder.build(

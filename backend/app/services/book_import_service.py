@@ -46,8 +46,6 @@ from app.schemas.book_import import (
 from app.services.ai_service import (
     AIService,
     create_user_ai_service_with_mcp,
-    detect_context_window,
-    resolve_context_budget_chars,
 )
 from app.services.import_validators import (
     _looks_like_pasted_narration,
@@ -1876,8 +1874,7 @@ class BookImportService:
         self,
         chapters: list[Any],
         *,
-        model_name: Optional[str] = None,
-        budget_chars: Optional[int] = None,
+        budget_chars: int,
     ) -> str:
         """构建拆书全文本注入（Tier3 拆分优先，无单章硬截断）。
 
@@ -1886,31 +1883,26 @@ class BookImportService:
         - 预算内 → 全部章节逐字返回（单章超长也不截断）
         - 超预算 → 三级：head 全文 + 尾部加权全文（单章放不下 continue 跳过，
           跳过章进摘要链）+ 中间摘要链（tail 优先，每章一行，零 LLM 调用）
-        - 未知模型（detect_context_window == 32768）且未显式给预算 →
-          退回 `_build_chapter_excerpt`（1800 字符/章），不强制全文本
-        - 显式预算优先于模型推导
+
+        需求 #55 步骤 4：删除了「未登记模型 ⇒ 当作 32K 保守窗口 ⇒ 整本书退回
+        `_build_chapter_excerpt`（每章 1800 字符）」这条降级：它的判据是一个猜测
+        （静态登记表未命中就回退成一个假的窗口值），后果是把正文换成截断摘录。
+        窗口现在只有一个来源（实发模型实测/显式声明的结论），拿不到即抛错。
+        注意：上面那条**超预算**拆分与模型窗口无关，它处理的是「书太大」，
+        按 AGENTS.md 拆分优先原则必须在。
 
         Args:
             chapters: 章节列表（按 chapter_number 排序）
-            model_name: 用户默认模型名（由调用方传入，本方法不自行获取）
-            budget_chars: 显式字符预算；缺省时按模型上下文窗口推导
+            budget_chars: 字符预算，**必填无默认值**（唯一来源：
+                `AIService.resolve_full_book_budget_chars`）
 
         Returns:
-            格式化后的全文本/摘要链/excerpt 文本
+            格式化后的全文本 / head+尾全文+中间摘要链
         """
+        if budget_chars <= 0:
+            raise ValueError(f"拆书全文注入预算必须为正数，收到 {budget_chars}")
         if not chapters:
             return ""
-
-        explicit_budget = budget_chars is not None
-        if not explicit_budget:
-            window = detect_context_window(model_name)
-            if window == 32768:
-                logger.warning(
-                    f"未知模型 {model_name!r}（detect_context_window=32768），"
-                    "拆书全文本注入退回 _build_chapter_excerpt（1800 字符/章）"
-                )
-                return self._build_chapter_excerpt(chapters)
-            budget_chars = resolve_context_budget_chars(model_name)
 
         def _render(c: Any) -> str:
             return f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')}"
@@ -2262,7 +2254,7 @@ class BookImportService:
         """根据反向生成的项目基础信息，优先生成并写入世界观。
 
         拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
-        让世界观基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        让世界观基于真实正文生成（预算来自实发模型实测/声明的上下文窗口）。
         """
 
         async def _notify(
@@ -2286,7 +2278,10 @@ class BookImportService:
             if chapters:
                 if not model_name:
                     model_name = getattr(ai_service, "default_model", None)
-                full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
+                full_book_context = self._build_import_fulltext(
+                    chapters,
+                    budget_chars=await ai_service.resolve_full_book_budget_chars(model_name),
+                )
             # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
             generation_language = await resolve_user_generation_language(db, user_id, content_language)
             prompt = PromptService.format_prompt(
@@ -2353,7 +2348,7 @@ class BookImportService:
         """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
 
         拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
-        让职业体系基于真实正文生成（未知模型自动退回 _build_chapter_excerpt）。
+        让职业体系基于真实正文生成（预算来自实发模型实测/声明的上下文窗口）。
         """
 
         async def _notify(
@@ -2376,7 +2371,10 @@ class BookImportService:
         if chapters:
             if not model_name:
                 model_name = getattr(ai_service, "default_model", None)
-            full_book_context = self._build_import_fulltext(chapters, model_name=model_name)
+            full_book_context = self._build_import_fulltext(
+                chapters,
+                budget_chars=await ai_service.resolve_full_book_budget_chars(model_name),
+            )
         # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
         prompt = PromptService.format_prompt(
@@ -2539,7 +2537,10 @@ class BookImportService:
         source_text = ""
         if db_chapters:
             source_text = self._build_import_fulltext(
-                db_chapters, model_name=getattr(ai_service, "default_model", None)
+                db_chapters,
+                budget_chars=await ai_service.resolve_full_book_budget_chars(
+                    getattr(ai_service, "default_model", None)
+                ),
             )
         # 明确第一人称文本：别名核心名（"我"/"我（男主角）"）不得创建为真实角色
         is_first_person = bool(db_chapters) and self._is_clear_first_person(
