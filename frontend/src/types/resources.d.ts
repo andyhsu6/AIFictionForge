@@ -1601,6 +1601,7 @@ export default interface Resources {
     "statusPending": "等待中",
     "statusRunning": "运行中",
     "title": "后台任务",
+    "typeAgentPlan": "创作计划",
     "typeCareerGenerate": "职业生成",
     "typeChapterAnalysis": "章节分析",
     "typeChapterBatch": "批量章节生成",

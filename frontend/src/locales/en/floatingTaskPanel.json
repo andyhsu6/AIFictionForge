@@ -19,6 +19,7 @@
   "statusPending": "Pending",
   "statusRunning": "Running",
   "title": "Background Tasks",
+  "typeAgentPlan": "Creation Plan",
   "typeCareerGenerate": "Career Generation",
   "typeChapterAnalysis": "Chapter Analysis",
   "typeChapterBatch": "Batch Chapter Generation",

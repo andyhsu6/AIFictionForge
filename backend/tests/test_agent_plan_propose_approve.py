@@ -913,3 +913,49 @@ def test_plan_error_codes_are_registered_with_right_status():
     assert ERROR_REGISTRY["validation.agent_plan_invalid"][1] == 400
     # 只注册不使用：护栏在 PR-2c 落地，先把码占住避免同区域冲突
     assert ERROR_REGISTRY["conflict.agent_plan_running"][1] == 409
+
+
+def test_agent_plan_task_type_maps_every_reachable_resource():
+    """`agent_plan` 必须有非空资源映射，且每个名字都是前端真的在监听的那种。
+
+    漏掉这个键的失败是**静默**的：`affected_resources_for_task()` 走
+    `get(task_type, ())` 回 `[]` ⇒ SETTLED 事件 resources 为空 ⇒ 没有任何页面
+    监听器命中 ⇒ 用户批准一份计划、任务跑完、数据落库，界面上却什么都没变；
+    同一份漏项还会让 `FloatingTaskPanel` 的 `default: return taskType` 把
+    "agent_plan" 这个原始字符串画给用户（前端侧由
+    `frontend/src/i18n-integrity/task-type-label.test.ts` 钉住标签那一半）。
+
+    `careers` / `organizations` 是最容易漏的两项：计划步骤可以写职业与组织，
+    而它们只有 `career_generate` / `organization_generate` 两个窄映射，
+    单看邻近条目很容易以为不必列。
+
+    下面的"前端认识的资源名"是前端侧字面量（I6 约定）：后端 pytest 不读
+    `../frontend`（纯后端环境/Docker 镜像只装 `backend/`，评审 F3 已裁定），
+    清单在两侧各存一份，消费者见 `frontend/src/pages/*.tsx` 里
+    `AGENT_DATA_CHANGED` 与任务 SETTLED 监听中的 `resources?.includes(...)`。
+    """
+    from app.services.task_resources import (
+        TASK_TYPE_RESOURCES,
+        affected_resources_for_task,
+    )
+
+    frontend_known_resources = {
+        "tasks",  # ProjectAgentPanel 特殊处理，只用于刷新任务列表本身
+        "projects",
+        "outlines",
+        "chapters",
+        "characters",
+        "careers",
+        "organizations",
+        "analysis",
+        "foreshadows",
+    }
+
+    assert "agent_plan" in TASK_TYPE_RESOURCES, "缺条目 ⇒ affected_resources_for_task 静默回 []"
+    resources = affected_resources_for_task("agent_plan")
+    assert resources == [
+        "chapters", "outlines", "characters", "careers",
+        "organizations", "analysis", "projects", "foreshadows",
+    ]
+    assert {"careers", "organizations"} <= set(resources)
+    assert [name for name in resources if name not in frontend_known_resources] == []
