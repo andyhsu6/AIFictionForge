@@ -526,6 +526,11 @@ async def approve_plan(
             code="validation.agent_plan_invalid", params={"reason": str(exc)}
         ) from exc
 
+    # 省略 `selected_step_ids` ⇒ **批准全部步骤**（架构计划 §2 定案：客户端不传即整份批准）。
+    # 这不是"未校验的默认值"：字段名写错会被 `ConfigDict(extra="forbid")` 直接判 422，
+    # 所以本分支唯一可能的入站形态就是"客户端有意省略"（= 计划卡的「全选」）。
+    # 改成拒绝会让 PR-3 的全选路径静默失效；两种语义由
+    # tests/test_agent_plan_propose_approve.py 的省略/子集配对用例钉住。
     selected = payload.selected_step_ids
     if selected is None:
         approved_steps = plan["steps"]

@@ -500,6 +500,66 @@ async def test_propose_plan_rejects_a_tool_the_round_never_offered(env):
     assert "计划格式需要修正" in failed[0]["content"]
 
 
+@pytest.mark.anyio
+async def test_propose_plan_outside_planning_round_never_opens_plan_card(env):
+    """N2：特判必须 gate 在 `plan_mode` 上，不然幻觉调用会凭空产出一张计划卡。
+
+    `propose_plan` 只在规划回合被提供给模型；模型在非规划回合凭幻觉调用它时，若特判
+    不看 `plan_mode`，就会落一张 `waiting_confirmation` 的"等待批准的计划"卡——一步都
+    不会执行，但用户看见一次错报（而且这张卡真能被批准）。正确行为是走**既有的**
+    失败收口：registry 的终止型工具安全网抛 ValueError ⇒ record/step 都 failed。
+
+    反向配对：同样这份计划、同一个回合形状，`plan_mode=True` 时仍必须产出
+    waiting_confirmation 卡（否则这条 gate 会被"干脆整支删掉"糊过去）。
+    """
+    events = await run_turn(
+        env,
+        [
+            tool_call(
+                PROPOSE_PLAN_TOOL_NAME,
+                json.loads(json.dumps(VALID_PLAN)),
+                call_id="call-hallucinated",
+            ),
+            answer("普通回合，我直接回答。"),
+        ],
+        plan_mode=False,
+        calls=[],
+    )
+
+    rows = await read_tool_calls(env)
+    plan_rows = [row for row in rows if row.tool_name == PROPOSE_PLAN_TOOL_NAME]
+    assert len(plan_rows) == 1
+    assert plan_rows[0].status == "failed", (
+        "非规划回合的 propose_plan 必须显式失败，不得停在等待批准"
+    )
+    assert "waiting_confirmation" not in {row.status for row in rows}
+    assert plan_rows[0].result is None and plan_rows[0].executed_at is None
+    assert await read_plan_tasks(env) == [], "幻觉调用绝不得建 agent_plan 任务行"
+    assert [e for e in events if e["type"] == "result"][-1]["data"]["status"] == "completed"
+    tool_steps = [
+        e["data"] for e in events
+        if e["type"] == "step_update" and e["data"]["step_type"] == "tool"
+    ]
+    assert tool_steps and all(step["status"] == "failed" for step in tool_steps)
+    assert not [
+        step for step in tool_steps
+        if (step.get("detail") or {}).get("plan")
+    ], "非规划回合不得下发计划卡 payload"
+
+    plan_events = await run_turn(
+        env, [_plan_response(call_id="call-real-plan")], plan_mode=True, calls=[]
+    )
+    real = [
+        row for row in await read_tool_calls(env)
+        if row.tool_name == PROPOSE_PLAN_TOOL_NAME and row.id != plan_rows[0].id
+    ]
+    assert len(real) == 1
+    assert real[0].status == "waiting_confirmation"
+    assert [e for e in plan_events if e["type"] == "result"][-1]["data"]["status"] == (
+        "waiting_confirmation"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Task 4：产出校验的有界重试（≤2 次）与可读收口
 # --------------------------------------------------------------------------- #
@@ -880,6 +940,49 @@ async def test_approve_plan_rejects_unknown_or_empty_selection(env):
         await approve(env, tool_call_id, selected_step_ids=[])
     assert empty.value.code == "validation.agent_plan_step_selection"
     assert await read_plan_tasks(env) == []
+
+
+@pytest.mark.anyio
+async def test_approve_plan_omitting_selection_approves_every_step(env):
+    """N1 语义钉子：省略 `selected_step_ids` ⇒ **批准全部步骤**，顺序按计划。
+
+    架构计划 §2 定的就是"客户端不传即整份批准"，而计划卡的「全选」走的正是这条
+    路径（PR-3）。把默认改成拒绝不会有任何既有用例变红——那是一次静默的功能删除，
+    所以这里显式钉住它。真正的危险（字段名写错被静默丢弃当成省略）已由
+    `ConfigDict(extra="forbid")` 挡在 422，见
+    `test_plan_approval_request_field_name_is_exact`。
+
+    反向配对：传子集 ⇒ 只落子集。两种语义必须在同一个用例里互相制衡，
+    否则"把默认改成全部/改成拒绝"都能只靠改一边通过。
+    """
+    started: list[dict] = []
+
+    async def fake_runner(**kwargs):
+        started.append(kwargs)
+        return object()
+
+    dispatch.register_plan_runner(fake_runner)
+
+    all_call = await seed_waiting_plan_call(env)
+    all_result = await approve(env, all_call)          # 不传 selected_step_ids
+    assert all_result.steps_total == 3
+    assert [s["id"] for s in started[0]["steps"]] == ["s1", "s2", "s3"], \
+        "省略字段必须等价于按计划的完整步骤序列"
+
+    subset_call = await seed_waiting_plan_call(env)
+    subset_result = await approve(env, subset_call, selected_step_ids=["s2"])
+    assert subset_result.steps_total == 1
+    assert [s["id"] for s in started[1]["steps"]] == ["s2"]
+
+    by_call = {t.task_input["tool_call_id"]: t for t in await read_plan_tasks(env)}
+    assert [s["id"] for s in by_call[all_call].task_input["steps"]] == ["s1", "s2", "s3"]
+    assert [s["id"] for s in by_call[subset_call].task_input["steps"]] == ["s2"]
+    # 落库的任务行同样保留 objective：省略字段不得连带丢掉计划本体
+    assert by_call[all_call].task_input["objective"] == "build three chapters"
+    assert by_call[subset_call].task_input["objective"] == "build three chapters"
+    assert len(by_call) == 2, "两次批准各自只建一行任务"
+    assert (await load_tool_call(env, all_call)).status == "executing"
+    assert (await load_tool_call(env, subset_call)).status == "executing"
 
 
 @pytest.mark.anyio

@@ -611,8 +611,12 @@ class ProjectAgentService:
                 yield {"type": "step_start", "data": self._step_data(tool_step)}
                 call_id = raw_call.get("id") or record.id
 
-                if name == PROPOSE_PLAN_TOOL_NAME:
+                if plan_mode and name == PROPOSE_PLAN_TOOL_NAME:
                     # 终止型规划工具：只落计划，不 preview、不 execute（架构计划 §1 定案）。
+                    # 必须 gate 在 plan_mode 上：非规划回合里模型幻觉调用 propose_plan 时，
+                    # 特判会凭空产出一张「等待批准的计划卡」——一步都不会执行，却让用户
+                    # 看见一次错报。关掉特判后它落入既有的失败收口（registry 的终止型
+                    # 工具安全网抛 ValueError ⇒ record.status=failed），不新造错误码。
                     # 必须前置到 requires_confirmation 判定之前：它 risk_level=0，落到
                     # 下面任何一条既有分支都会被 registry 以「只读工具」路径拒收
                     # （registry 的两条安全网就是为了让这种绕过显式失败，而不是静默执行）。
@@ -656,6 +660,11 @@ class ProjectAgentService:
                     if auto_approve:
                         # Task 3 预留的接缝：auto_approve 的同回合直路由。
                         # 绝不进 registry.execute —— 计划一步都没执行过。
+                        # ⚠️ §7 的「同会话仅一个运行中计划」护栏对 auto_approve 同样生效，
+                        # 但**本 PR 未实现，属 PR-2c**：所以现在可以在同一会话里叠加放行
+                        # 多份计划。错误码 `conflict.agent_plan_running` 已注册（409）但
+                        # 零消费者，就是留给这条护栏的。
+                        # TODO(PR-2c): 直路由之前先查同会话 running 的 agent_plan 任务行。
                         async for event in self._auto_approve_plan(
                             record=record,
                             plan=plan,
