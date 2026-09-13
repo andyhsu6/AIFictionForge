@@ -12,6 +12,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api import project_agent as agent_api
+from app.core.errors import ApiError
 from app.database import Base
 import app.services.agent_plan_dispatch as dispatch
 from app.models.background_task import BackgroundTask
@@ -745,3 +747,169 @@ async def test_registered_runner_receives_anchors_after_commit(env):
     assert seen["visible_task"] is not None, "调度早于提交：runner 读不到自己的任务行"
     assert seen["visible_task"].status == "pending"
     assert events[-1]["data"]["plan_task_id"] == seen["plan_task_id"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 6：approve-plan 一次性批准端点
+# --------------------------------------------------------------------------- #
+
+APPROVABLE_STEPS = [
+    {"id": "s1", "tool": "list_outlines", "arguments": {}},
+    {"id": "s2", "tool": "start_project_task", "action": "expand_outline",
+     "arguments": {"outline_id": "o1"}},
+    {"id": "s3", "tool": "list_outlines", "arguments": {}},
+]
+
+
+async def seed_waiting_plan_call(env, *, steps=None, tool_name=PROPOSE_PLAN_TOOL_NAME,
+                                 status="waiting_confirmation") -> str:
+    """直接落一条待批准行（不依赖流式路径），返回 tool_call_id。"""
+    arguments = {
+        "objective": "build three chapters",
+        "steps": APPROVABLE_STEPS if steps is None else steps,
+    }
+    if tool_name == PROPOSE_PLAN_TOOL_NAME:
+        arguments = validate_plan(
+            arguments, allowed_tools={"list_outlines", "start_project_task"},
+        )
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        row = AgentToolCall(
+            conversation_id=env.conversation_id, user_id=env.user_id,
+            project_id=env.project_id, tool_name=tool_name, arguments=arguments,
+            risk_level=0, requires_confirmation=False, status=status,
+        )
+        session.add(row)
+        await session.commit()
+        return row.id
+
+
+def _fake_request(env):
+    """`_user_id(request)` 读 request.state.user_id（api/project_agent.py:48）。"""
+    return SimpleNamespace(state=SimpleNamespace(user_id=env.user_id))
+
+
+async def approve(env, tool_call_id, **payload_fields):
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        return await agent_api.approve_plan(
+            project_id=env.project_id,
+            tool_call_id=tool_call_id,
+            payload=agent_api.AgentPlanApprovalRequest(**payload_fields),
+            request=_fake_request(env),
+            db=session,
+        )
+
+
+async def load_tool_call(env, tool_call_id) -> AgentToolCall:
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        return await session.get(AgentToolCall, tool_call_id)
+
+
+@pytest.mark.anyio
+async def test_approve_plan_returns_501_before_creating_any_task_row(env):
+    """执行器未注册 ⇒ 501 必须判在**建任务行之前**，且抢占回滚、卡片没被吃掉。"""
+    tool_call_id = await seed_waiting_plan_call(env)
+
+    with pytest.raises(ApiError) as caught:
+        await approve(env, tool_call_id)
+
+    assert caught.value.code == dispatch.PLAN_RUNNER_UNAVAILABLE_CODE
+    assert caught.value.status == 501
+    assert (await load_tool_call(env, tool_call_id)).status == "waiting_confirmation"
+    assert await read_plan_tasks(env) == []
+
+
+@pytest.mark.anyio
+async def test_approve_plan_claims_once_and_second_is_409(env):
+    """勾选只保留被选步骤、顺序按计划；第二次批准必须 409（不新增第二套抢占）。"""
+    started: list[dict] = []
+
+    async def fake_runner(**kwargs):
+        started.append(kwargs)
+        return object()
+
+    dispatch.register_plan_runner(fake_runner)
+    tool_call_id = await seed_waiting_plan_call(env)
+
+    first = await approve(env, tool_call_id, selected_step_ids=["s3", "s1"])
+    assert first.steps_total == 2 and first.status == "executing"
+    assert first.tool_call_id == tool_call_id
+    assert [s["id"] for s in started[0]["steps"]] == ["s1", "s3"], "顺序必须按计划，不按勾选"
+    assert started[0]["conversation_id"] == env.conversation_id
+
+    record = await load_tool_call(env, tool_call_id)
+    assert record.status == "executing"
+    assert record.confirmed_at is not None
+    tasks = await read_plan_tasks(env)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.id == first.plan_task_id
+    assert task.task_type == "agent_plan"
+    assert task.status == "pending", "端点只建 pending 行，running 归 runner"
+    assert task.task_input["tool_call_id"] == tool_call_id
+    assert task.task_input["conversation_id"] == env.conversation_id
+    assert [s["id"] for s in task.task_input["steps"]] == ["s1", "s3"]
+    # PR-3 刷新后靠 result 的 {entity_id, task_type} 找计划行
+    assert record.result == {"entity_id": task.id, "task_type": "agent_plan"}
+    # 原始计划完整留在 arguments（批准的是子集，不改写提案本身）
+    assert [s["id"] for s in record.arguments["steps"]] == ["s1", "s2", "s3"]
+
+    with pytest.raises(ApiError) as again:
+        await approve(env, tool_call_id)
+    assert again.value.code == "conflict.agent_modification_state"
+    assert again.value.status == 409
+    assert len(await read_plan_tasks(env)) == 1, "第二次批准不得再建任务行"
+
+
+@pytest.mark.anyio
+async def test_approve_plan_rejects_unknown_or_empty_selection(env):
+    """勾选非法 ⇒ 400 + 卡片回到 waiting_confirmation（用户还能重试）。"""
+    dispatch.register_plan_runner(_noop_runner)
+    tool_call_id = await seed_waiting_plan_call(env)
+
+    with pytest.raises(ApiError) as unknown:
+        await approve(env, tool_call_id, selected_step_ids=["nope"])
+    assert unknown.value.code == "validation.agent_plan_step_selection"
+    assert unknown.value.status == 400
+    assert (await load_tool_call(env, tool_call_id)).status == "waiting_confirmation"
+    assert await read_plan_tasks(env) == []
+
+    with pytest.raises(ApiError) as empty:
+        await approve(env, tool_call_id, selected_step_ids=[])
+    assert empty.value.code == "validation.agent_plan_step_selection"
+    assert await read_plan_tasks(env) == []
+
+
+@pytest.mark.anyio
+async def test_approve_plan_refuses_a_tool_call_that_is_not_a_plan(env):
+    """端点只吃 propose_plan：拿一张差异确认卡来批准必须被拒并回滚抢占。"""
+    dispatch.register_plan_runner(_noop_runner)
+    tool_call_id = await seed_waiting_plan_call(env, tool_name="update_project")
+
+    with pytest.raises(ApiError) as caught:
+        await approve(env, tool_call_id)
+    assert caught.value.code == "conflict.agent_modification_state"
+    assert (await load_tool_call(env, tool_call_id)).status == "waiting_confirmation"
+    assert await read_plan_tasks(env) == []
+
+
+def test_plan_approval_request_field_name_is_exact():
+    """字段名写错 = 静默丢弃 = 等价于批准全部步骤，所以形状必须钉死。"""
+    from pydantic import ValidationError
+
+    assert set(agent_api.AgentPlanApprovalRequest.model_fields) == {"selected_step_ids"}
+    assert agent_api.AgentPlanApprovalRequest().selected_step_ids is None
+    with pytest.raises(ValidationError):
+        agent_api.AgentPlanApprovalRequest(selected_ids=["s1"])
+
+
+def test_plan_error_codes_are_registered_with_right_status():
+    from app.core.errors import ERROR_REGISTRY
+
+    assert ERROR_REGISTRY["internal.agent_plan_not_available"][1] == 501
+    assert ERROR_REGISTRY["validation.agent_plan_step_selection"][1] == 400
+    assert ERROR_REGISTRY["validation.agent_plan_invalid"][1] == 400
+    # 只注册不使用：护栏在 PR-2c 落地，先把码占住避免同区域冲突
+    assert ERROR_REGISTRY["conflict.agent_plan_running"][1] == 409

@@ -51,6 +51,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "auth.verification_code_required": ("请先发送验证码", 400),
     "auth.verification_code_wrong": ("验证码错误", 400),
     "conflict.agent_modification_state": ("该修改已处理或正在执行", 409),
+    # PR-2a 只注册不使用：「同会话仅一个运行中计划」护栏在 PR-2c 落地。
+    "conflict.agent_plan_running": ("本会话已有正在执行的计划，请等待完成或先取消", 409),
     "conflict.agent_preview_stale": ("数据已发生变化，差异预览已刷新，请重新确认", 409),
     "conflict.agent_tool_unavailable": ("工具已不再可用", 409),
     "conflict.career_in_use": ("该职业被{{usage_count}}个角色使用，无法删除。请先移除角色的职业关联。", 400),
@@ -171,6 +173,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "import.warning.filteredChaptersFull": ("已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
     "import.warning.filteredChaptersTail": ("已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
     "internal.agent_execution_failed": ("灵创创作助手执行失败：{{error}}", 200),
+    # 执行器未注册（PR-2b 未落地或已回滚）⇒ 批准端点必须在建任务行之前返回带码 501。
+    "internal.agent_plan_not_available": ("后台计划执行器尚未启用，批准暂时不可用", 501),
     "internal.ai_chapter_plan_failed": ("AI分析失败，未能生成章节规划", 200),
     "internal.ai_empty_response": ("AI服务返回空响应", 200),
     "internal.ai_json_unparsable": ("AI返回的内容无法解析为JSON：{{error}}", 200),
@@ -266,6 +270,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "task.failed": ("任务失败", 500),
     "task.not_completed": ("任务尚未完成，无法获取预览", 400),
     "task.running_mutation_blocked": ("无法删除进行中的任务，请先取消", 400),
+    "validation.agent_plan_invalid": ("计划内容已不再可用：{{reason}}", 400),
+    "validation.agent_plan_step_selection": ("勾选的计划步骤无效，请重新选择", 400),
     "validation.ai_config_missing": ("请先在「设置 → 文本模型配置」中配置模型", 400),
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),

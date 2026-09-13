@@ -37,6 +37,19 @@ def plan_runner() -> Optional[_RunPlan]:
     return _PLAN_RUNNER
 
 
+def plan_tool_names(plan: dict[str, Any]) -> set[str]:
+    """已存计划里出现过的工具名。
+
+    批准时不再查 MCP loader：计划里的 MCP 步骤若届时不可用，由 PR-2b 逐步失败并记录，
+    而不是让整个计划被 400 拒收（那样用户连重试的卡片都没有）。
+    """
+    names: set[str] = set()
+    for step in (plan or {}).get("steps") or []:
+        if isinstance(step, dict) and isinstance(step.get("tool"), str):
+            names.add(step["tool"])
+    return names
+
+
 def build_plan_task_input(
     *, conversation_id: str, tool_call_id: str, plan: dict[str, Any]
 ) -> dict[str, Any]:
