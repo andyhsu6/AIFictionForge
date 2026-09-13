@@ -659,13 +659,15 @@ class ProjectAgentService:
                             "tool_call": self._tool_call_data(record),
                         },
                     )
-                # 后台任务已在本调用内创建并自行提交任务行；助手侧的行
-                # （AgentToolCall / step / role=tool）要到回合末才提交，
-                # 而 tool_executed 会让前端立刻发请求回读 ⇒ 先提交再下发。
-                await self.db.commit()
                 yield {"type": "step_update", "data": self._step_data(tool_step)}
                 executed_resources = (executed_result or {}).get("resources") or []
                 if executed_result is not None and executed_resources:
+                    # 后台任务已在本调用内创建并自行提交任务行；助手侧的行
+                    # （AgentToolCall / step / role=tool）要到回合末才提交，
+                    # 而 tool_executed 会让前端立刻发请求回读 ⇒ 先提交再下发。
+                    # 只在真要通知前端刷新时提交：只读工具不带 resources，多一次
+                    # WAL 提交纯属把成本摊给每一次只读调用（回合末本来就提交一次）。
+                    await self.db.commit()
                     yield {
                         "type": "tool_executed",
                         "data": {

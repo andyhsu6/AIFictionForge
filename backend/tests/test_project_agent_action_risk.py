@@ -8,6 +8,7 @@ import os
 import uuid
 
 import pytest
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.services.project_agent_risk as risk_module
@@ -15,6 +16,7 @@ from app.database import Base
 from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.project import Project
+from app.models.project_agent import AgentConversation, AgentMessage
 from app.services.project_agent_risk import resolve_tool_risk
 from app.services.project_agent_tools import (
     ProjectAgentTool,
@@ -94,7 +96,8 @@ async def test_exempt_operational_write_tool_still_routes_to_operational(db_sess
 
     现状回归点：ProjectAgentToolRegistry.execute() 用 if tool.requires_confirmation
     包住名单路由，一旦 action 级降级把 start_project_task 变成免确认，
-    它会掉进 _resolve_update() 并抛 "不支持的写入工具"。
+    它就掉出写入分派、落到 execute() 末尾的 handler 兜底并抛
+    "工具尚未实现：start_project_task"（注册表上没有 _start_project_task 方法）。
     """
     registry = ProjectAgentToolRegistry(
         Project(id="proj-1", user_id="test", title="测试项目"), db_session
@@ -210,7 +213,7 @@ async def test_analyze_chapter_needs_confirmation_when_only_memories_exist(db_se
     db_session.add(StoryMemory(
         project_id="proj-1", chapter_id=chapter.id,
         memory_type="plot_point", content="synthetic memory text",
-        # story_timeline 是 NOT NULL 列（app/models/memory.py:42），缺了会在
+        # story_timeline 是 NOT NULL 列（见 app/models/memory.py 的 StoryMemory），缺了会在
         # flush 阶段就 IntegrityError，探测分支根本没跑到。
         story_timeline=1,
     ))
@@ -238,6 +241,88 @@ async def test_probe_failure_fails_closed_to_confirmation(db_session, monkeypatc
     )
     assert (decision.risk_level, decision.requires_confirmation) == (2, True)
     assert decision.reason == "analysis_probe_failed"
+
+
+async def _seed_an_uncommitted_turn_row(db) -> AgentMessage:
+    """造一条"本轮已写、尚未提交"的行，代表 stream_chat 循环里已 flush 的 step/记录。
+
+    探针的善后写法会不会把它一起丢掉，只能靠这种未提交的行看出来。
+    """
+    conversation = AgentConversation(user_id="test", project_id="proj-1", title="探针事务护栏")
+    db.add(conversation)
+    await db.flush()
+    message = AgentMessage(conversation_id=conversation.id, role="user", content="分析第 1 章")
+    db.add(message)
+    await db.flush()
+    return message
+
+
+@pytest.mark.anyio
+async def test_probe_sql_error_keeps_the_outer_transaction_committable(db_session, monkeypatch):
+    """F1：探针里的真实 SQL 异常不得把会话带进不可提交状态。
+
+    app/config.py 的默认 DATABASE_URL 是 postgresql+asyncpg：PG 上语句报错会中止
+    整个事务，没有 SAVEPOINT 时主流程随后的 flush/commit 直接抛 PendingRollbackError
+    ⇒ 用户拿到 500 而不是确认卡。SQLite 不中止事务，所以本用例能证的是
+    "risk 2 + 外层仍可提交 + 本轮未提交的行仍在"（后者专门打掉 db.rollback() 这种修法）；
+    PG 的中止行为本身无法在本机复现。
+    """
+    chapter = await _seed_chapter(db_session)
+    message = await _seed_an_uncommitted_turn_row(db_session)
+
+    async def sql_error(db, **kwargs):
+        await db.execute(text("SELECT * FROM pr1_table_that_does_not_exist"))
+
+    monkeypatch.setattr(risk_module, "_chapter_has_analysis_results", sql_error)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "analysis_probe_failed"
+
+    await db_session.commit()  # 拿掉 SAVEPOINT 的 PG、或改用 db.rollback() 的写法都会在此失败/丢行
+    committed = (await db_session.execute(
+        select(AgentMessage).where(AgentMessage.id == message.id)
+    )).scalars().all()
+    assert len(committed) == 1, "本轮已写的行被探针善后逻辑一起回滚掉了"
+
+
+@pytest.mark.anyio
+async def test_probe_runs_inside_a_savepoint_so_its_own_writes_are_undone(db_session, monkeypatch):
+    """F1 的可证伪护栏：探针的语句必须跑在 SAVEPOINT 内。
+
+    SQLite 不会因语句错误中止事务 ⇒ 单靠"报错后仍可提交"拿不到变异信号，
+    所以让探针写一条脏数据再抛错，用事务级可见性证明保存点真的在包住它：
+    - 拿掉 `db.begin_nested()` ⇒ 脏写留在外层事务、随 commit 落库 ⇒ 第一条断言红；
+    - 改成 `db.rollback()` ⇒ 本轮未提交的行被一起丢掉 ⇒ 第二条断言红。
+    """
+    chapter = await _seed_chapter(db_session)
+    message = await _seed_an_uncommitted_turn_row(db_session)
+
+    async def dirty_then_boom(db, **kwargs):
+        await db.execute(
+            text("UPDATE projects SET title = '脏写：探针没有被保存点包住' WHERE id = 'proj-1'")
+        )
+        raise RuntimeError("探针写脏之后才报错")
+
+    monkeypatch.setattr(risk_module, "_chapter_has_analysis_results", dirty_then_boom)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "analysis_probe_failed"
+
+    await db_session.commit()
+    title = (await db_session.execute(
+        select(Project.title).where(Project.id == "proj-1")
+    )).scalar_one()
+    assert title == "测试项目", "探针的写入没被 SAVEPOINT 撤销 ⇒ 它跑在外层事务里"
+    survivors = (await db_session.execute(
+        select(AgentMessage).where(AgentMessage.id == message.id)
+    )).scalars().all()
+    assert len(survivors) == 1, "外层事务被回滚 ⇒ 本轮已写的行丢了"
 
 
 @pytest.mark.anyio

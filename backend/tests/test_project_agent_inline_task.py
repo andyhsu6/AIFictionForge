@@ -8,9 +8,10 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import app.services.project_agent_risk as risk_module
 from app.database import Base
 from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis
@@ -76,14 +77,27 @@ def answer(content: str) -> dict:
     return {"content": content, "tool_calls": [], "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
 
 
-def install_fake_model(svc: ProjectAgentService, responses: list[dict], calls: list[dict]) -> None:
-    """两个出口都要 patch：generate_text（工具决策轮）与 generate_text_stream_full（force_answer 轮）。"""
+def install_fake_model(
+    svc: ProjectAgentService,
+    responses: list[dict],
+    calls: list[dict],
+    *,
+    on_call=None,
+) -> None:
+    """两个出口都要 patch：generate_text（工具决策轮）与 generate_text_stream_full（force_answer 轮）。
+
+    on_call 在每次模型调用前触发，供用例观察"此刻已经提交过几次"。
+    """
 
     async def fake_generate_text(**kwargs):
+        if on_call is not None:
+            on_call()
         calls.append(kwargs)
         return responses[min(len(calls) - 1, len(responses) - 1)]
 
     async def fake_stream_full(**kwargs):
+        if on_call is not None:
+            on_call()
         calls.append(kwargs)
         return responses[min(len(calls) - 1, len(responses) - 1)]
 
@@ -225,6 +239,42 @@ async def test_analyze_chapter_with_existing_analysis_still_needs_confirmation(d
 
 
 @pytest.mark.anyio
+async def test_probe_sql_error_yields_confirmation_card_not_a_broken_turn(db_session, monkeypatch):
+    """F1 的用户可见结果：探测报数据库错误 ⇒ 弹确认卡，且整轮照常提交。
+
+    单元侧（test_project_agent_action_risk）钉的是 SAVEPOINT；本用例钉主流程在探针之后
+    还要 add(AgentToolCall)/flush/commit —— 用 db.rollback() 收尾会把这些行一起回滚，
+    回合末的确认卡就没有对应记录 ⇒ 本用例红。
+    SQLite 不因语句错误中止事务，所以"拿掉 SAVEPOINT"在这里不会红；PG 上的
+    PendingRollbackError ⇒ 500 无法在本机复现，已写进 PR CONCERNS。
+    """
+    await seed_project_and_chapter(db_session)
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+
+    async def sql_error(db, **kwargs):
+        await db.execute(text("SELECT * FROM pr1_table_that_does_not_exist"))
+
+    monkeypatch.setattr(risk_module, "_chapter_has_analysis_results", sql_error)
+
+    events, _ = await run_turn(svc, conversation, [
+        tool_call("start_project_task", {"action": "analyze_chapter", "chapter_number": 1}),
+        answer("不该被走到"),
+    ])
+
+    record = await only_tool_call(db_session)
+    assert (record.status, record.requires_confirmation, record.risk_level) == (
+        "waiting_confirmation", True, 2,
+    )
+    step = (await db_session.execute(
+        select(AgentExecutionStep).where(AgentExecutionStep.tool_call_id == record.id)
+    )).scalars().one()
+    assert step.detail["risk"]["reason"] == "analysis_probe_failed"
+    assert [e for e in events if e["type"] == "tool_executed"] == []
+    assert [e for e in events if e["type"] == "result"][-1]["data"]["status"] == "waiting_confirmation"
+
+
+@pytest.mark.anyio
 async def test_regenerate_chapter_still_needs_confirmation(db_session):
     await seed_project_and_chapter(db_session)
     conversation = await make_conversation(db_session)
@@ -331,6 +381,44 @@ async def test_read_only_tool_does_not_emit_tool_executed(db_session):
 
 
 @pytest.mark.anyio
+async def test_read_only_tool_does_not_commit_inside_the_tool_loop(db_session):
+    """F2：只读工具不发 tool_executed ⇒ 也不得为它单独提交一次。
+
+    回合末本来就有一次提交（持久化 assistant 的 tool_calls 与 role=tool 响应），
+    把循环内的提交收窄到"要通知前端刷新之前"才不把一次 WAL 提交摊给每个只读调用。
+    断言取每次模型调用前的累计提交次数：
+    1 = stream_chat 开头提交 user 消息；2 = 工具轮末尾提交本回合消息。
+    提交挪回无条件执行（未收窄形态）⇒ 第二个数字变 3，本用例红。
+    """
+    await seed_project_and_chapter(db_session)
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    counter: dict = {"n": 0}
+    instrument_commits(svc, counter)
+    commits_before_model_call: list[int] = []
+    calls: list[dict] = []
+    install_fake_model(
+        svc,
+        [
+            tool_call("get_chapter_detail", {"chapter_number": 1, "include_content": True}),
+            answer("看到了。"),
+        ],
+        calls,
+        on_call=lambda: commits_before_model_call.append(counter["n"]),
+    )
+
+    events = [
+        e async for e in svc.stream_chat(
+            conversation_id=conversation.id, message="看下第 1 章正文",
+            page_context={"route": "/project/1"}, auto_approve=False,
+        )
+    ]
+
+    assert [e for e in events if e["type"] == "tool_executed"] == []
+    assert commits_before_model_call == [1, 2]
+
+
+@pytest.mark.anyio
 async def test_tool_executed_is_emitted_only_after_the_agent_rows_are_committed(db_session):
     """tool_executed 会让前端立刻另开请求读库（刷新会话、查任务）。
     未提交就下发 ⇒ 前端读到旧数据（与 auto_approve 分支同一决定）。"""
@@ -363,8 +451,8 @@ async def test_tool_executed_is_emitted_only_after_the_agent_rows_are_committed(
         if event["type"] == "tool_executed":
             commits_at_event.append(counter["n"])
 
-    # 1 = stream_chat 开头的 user 消息提交（project_agent_service.py:215）；
-    # 工具循环本身在调用工具前不得再提交任何行。
+    # 1 = stream_chat 开头写入 user 消息后那次提交（见 stream_chat 里 add(user_message)
+    # 之后的 commit）；工具循环本身在调用工具前不得再提交任何行。
     assert commits_at_execute == [1]
     assert commits_at_event and commits_at_event[0] > commits_at_execute[0]
 
@@ -437,23 +525,30 @@ def test_agent_task_action_types_covers_every_start_task_action():
     assert set(spec["parameters"]["properties"]["action"]["enum"]) == set(AGENT_TASK_ACTION_TYPES)
 
 
-def test_frontend_agent_task_type_union_matches_backend_task_types():
-    """PR-1 Task 7 契约面：前端 `AgentTaskType` 联合类型必须与后端
-    `AGENT_TASK_ACTION_TYPES` 的 value 集合逐字一致。
+def test_agent_task_types_all_resolve_to_a_known_resource_mapping():
+    """后端自洽性：`AGENT_TASK_ACTION_TYPES` 的每个 value 必须是 `TASK_TYPE_RESOURCES` 的键。
 
-    entity_id 无跨表唯一性 ⇒ PR-3 与 PR-2b 的反查全靠这个值，两侧漂移必须立刻红，
-    不能让前端拿到一个后端从不产生的 task_type（或反过来漏掉新任务类型）。
+    原用例读 `frontend/src/types/index.ts` 做跨语言 parity，已删——Docker 镜像与纯后端
+    环境只装 `backend/`，后端 pytest 依赖 `../frontend` 会直接失败。前端侧的
+    "联合类型存在"断言改由 `frontend/src/types/agent-task-type.test.ts` 承担。
+    这里补的是链路后端那一半：execute() 回出的 task_type 若不在
+    `TASK_TYPE_RESOURCES` 里，`affected_resources_for_task()` 静默回 [] ⇒
+    tool_executed 少带 resources，前端不刷新，而 PR-2b/PR-3 的反查全靠这个值。
     """
-    import re
-    from pathlib import Path
-
+    from app.services.task_resources import (
+        TASK_TYPE_RESOURCES,
+        affected_resources_for_task,
+    )
     from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
-    source = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "types" / "index.ts"
-    ).read_text(encoding="utf-8")
-    declaration = re.search(r"export type AgentTaskType =([^;]*);", source)
-    assert declaration is not None, "frontend/src/types/index.ts 缺少 AgentTaskType 声明"
-    union = set(re.findall(r"'([^']*)'", declaration.group(1)))
-    assert union == set(AGENT_TASK_ACTION_TYPES.values())
-    assert union, "AgentTaskType 联合类型不得为空"
+    unmapped = sorted(
+        task_type for task_type in set(AGENT_TASK_ACTION_TYPES.values())
+        if task_type not in TASK_TYPE_RESOURCES
+    )
+    assert unmapped == [], f"task_type 缺资源映射：{unmapped}"
+    # 反向钉住"不静默回空"：每个 agent 侧 task_type 都要有非空 resources。
+    empty = sorted(
+        task_type for task_type in set(AGENT_TASK_ACTION_TYPES.values())
+        if not affected_resources_for_task(task_type)
+    )
+    assert empty == []
