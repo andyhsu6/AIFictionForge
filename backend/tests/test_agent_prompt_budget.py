@@ -530,3 +530,86 @@ def test_budget_rounding_does_not_off_by_one_at_the_upper_clamp():
     assert compute_history_budget_chars(2_000_000) == 400_000
     assert compute_history_budget_chars(1_000_000) == 300_000
     assert compute_history_budget_chars(1_000_001) == 300_000   # 300000.3 -> 300000
+
+
+# --------------------------------------------------------------------------
+# Task 5：单条 tool ≤8000 防回归断言（实现在 PR-0a 护栏 2，这里只钉住）
+# --------------------------------------------------------------------------
+
+
+def make_tool_item(content: str, call_id: str):
+    """`_serialize_tool_response` 只读 content / tool_call_id（其余字段是给别的分支用的）。"""
+    return types.SimpleNamespace(
+        role="tool", content=content, tool_call_id=call_id,
+        name="analyze_chapter", tool_name="analyze_chapter", error_message=None,
+    )
+
+
+def test_single_tool_result_is_capped_by_pr0a_guardrail():
+    """护栏 2 属于 PR-0a；这里只钉住它，别在 PR-0c 里重复实现截断。"""
+    cap = ProjectAgentService.TOOL_RESULT_MAX_CHARS
+    # §5 ③ 的字面判据就是"≤8000"这个数字本身；常量被改要先重新评估本 PR 的分层。
+    assert cap == 8_000, f"PR-0a 的单条 tool 上限常量已漂移：{cap}"
+    part = ProjectAgentService._serialize_tool_response(
+        make_tool_item("R" * 200_000, "call_1")
+    )
+    # 实测发射长度 = 8083（8000 正文 + 15 截断标记 + 68 层 `<tool>/<tool_call_id>/<result>`
+    # 包裹标签）。计划文本写的 `8_000 + 64` 装不下"标记+包裹"这两块**服务端自己的**开销
+    # ⇒ 按实测改成 `+ 200`。这不是放宽成无意义上界：截断分支一旦被短路，part 立刻变成
+    # 200_068 字符（实测），仍是允许值的 24 倍 ⇒ 必红。
+    assert len(part) <= cap + 200, (
+        "PR-0a 的单条 tool 结果上限回归了：一条未截断的结果即可把可裁剪历史挤出预算"
+        f"（实测 len={len(part)}，上限应为 {cap} + 服务端包裹开销）"
+    )
+    assert "截断" in part
+    payload = part.split("<result>", 1)[1].rsplit("</result>", 1)[0]
+    assert payload.startswith("R" * cap), "结果体不是从截断点收尾 ⇒ 截断位置不对"
+
+
+def test_huge_tool_results_never_evict_the_original_ask():
+    """§5 验收原文的强化版：预算再小，锚点段也不参与裁剪。
+
+    两个预算各测一件事：300000 证"换算式生效后装得下整段工具历史"，30000 证
+    "确实在丢东西、锚点却仍不失"（后者带非空断言，防本用例退化成"没东西可舍"的空场景）。
+    """
+    svc = bare_service()
+    history = [make_msg("user", "THE ASK")] + [
+        make_tool_item("T" * 90_000, f"call_{i}") for i in range(30)
+    ] + [make_msg("user", "latest follow-up")]
+
+    loose_trace = apb.PromptBudgetTrace(budget_chars=300_000)
+    loose = build(svc, history, 300_000, loose_trace)
+    assert "THE ASK" in loose
+    assert "latest follow-up" in loose
+    assert loose.count("<tool>") == 30            # 30 x 8083 ≈ 242k < 300k
+    assert loose_trace.dropped_messages == 0
+
+    tight_trace = apb.PromptBudgetTrace(budget_chars=30_000)
+    tight = build(svc, history, 30_000, tight_trace)
+    assert "THE ASK" in tight
+    assert "latest follow-up" in tight
+    assert tight_trace.dropped_messages > 0, (
+        "前置失效：30000 预算下什么都没被舍 ⇒ 锚点仍在是本用例的空场景，不是永不裁剪的证据"
+    )
+    assert tight.count("<tool>") < 30
+
+
+def test_1m_window_budget_accommodates_more_tool_results_than_the_legacy_60000():
+    """换算式真的生效：300000 预算下装下的 tool 条数严格多于旧 60000 预算。
+
+    这条是 §5 ①「1M 与非 1M 的预算差异」的**实测**形态（不是读代码推断）：
+    同一份历史、同一个 `_build_prompt`，唯一变量是注入的预算数字。
+    """
+    svc = bare_service()
+    history = [make_msg("user", "ASK")] + [
+        make_tool_item("K" * 7_000, f"call_{i}") for i in range(40)
+    ]
+
+    def kept(budget):
+        return build(svc, history, budget).count("<tool>")
+
+    # 实测值（每条 part = 7068 字符）：60000 装 8 条，300000 装 40 条。
+    # 写成等号而不只是 `>`：只写 `>` 时"下限 clamp 把两者都变成 8"这类失效会被放过。
+    assert kept(60_000) == 8, "旧预算下的装载数变了 ⇒ 分桶前提失效，先查 part 大小"
+    assert kept(300_000) == 40, "1M 窗口预算下应装下全部 40 条"
+    assert kept(300_000) > kept(60_000)
