@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 from datetime import datetime
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -87,6 +88,34 @@ def _handle_with_steps(count: int = 3) -> runner._PlanHandle:
 @pytest.fixture
 def handle_with_steps():
     return _handle_with_steps(3)
+
+
+class ClosingAIService:
+    """收尾 LLM 出口：捕获 kwargs；流式/JSON 重试出口一律炸（runner 不得使用）。"""
+
+    default_model = "closing-test-model"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate_text(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return {
+            "content": "计划已执行完成，共 2/3 步。",
+            "model": self.default_model,
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+        }
+
+    async def generate_text_stream(self, *args: Any, **kwargs: Any):
+        raise AssertionError("收尾不得使用流式出口")
+        yield ""  # pragma: no cover —— 保持 async generator 形状
+
+    async def generate_text_stream_full(self, *args: Any, **kwargs: Any):
+        raise AssertionError("收尾不得使用流式出口")
+        yield ""  # pragma: no cover
+
+    async def call_with_json_retry(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("收尾不得使用 JSON 重试出口")
 
 
 @pytest.mark.anyio
@@ -418,3 +447,79 @@ async def test_summary_is_idempotent_per_plan(session_factory, handle_with_steps
             AgentMessage.conversation_id == handle_with_steps.conversation_id
         ))).scalars().all()
     assert [row.role for row in rows] == ["tool"]
+
+
+@pytest.mark.anyio
+async def test_closing_call_carries_mandatory_headless_params(session_factory, handle_with_steps):
+    ai = ClosingAIService()
+    handle_with_steps.ai_service = ai
+    await runner._closing_stage(handle_with_steps, session_factory, "completed", "plan finished")
+    assert len(ai.calls) == 1
+    call = ai.calls[0]
+    assert call["args"] == ()
+    kwargs = call["kwargs"]
+    assert kwargs["tools"] is None
+    assert kwargs["auto_mcp"] is False
+    assert kwargs["handle_tool_calls"] is False
+    assert "plan_run_summary" in kwargs["prompt"] or "steps_total" in kwargs["prompt"]
+    assert "灵创创作助手" in kwargs["system_prompt"]
+
+
+@pytest.mark.anyio
+async def test_closing_writes_one_assistant_and_one_tool_row(session_factory, handle_with_steps):
+    ai = ClosingAIService()
+    handle_with_steps.ai_service = ai
+    await runner._closing_stage(handle_with_steps, session_factory, "completed", "plan finished")
+    async with session_factory() as db:
+        rows = (await db.execute(select(AgentMessage).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ).order_by(AgentMessage.created_at.asc()))).scalars().all()
+    assert [row.role for row in rows] == ["tool", "assistant"]
+    assistant = rows[1]
+    assert assistant.content == "计划已执行完成，共 2/3 步。"
+    assert assistant.model == "closing-test-model"
+    assert assistant.prompt_tokens == 11
+    assert assistant.completion_tokens == 7
+    assert assistant.tool_call_id is None
+
+
+@pytest.mark.anyio
+async def test_cancelled_plan_skips_llm_but_still_persists_facts(session_factory, handle_with_steps):
+    ai = ClosingAIService()
+    handle_with_steps.ai_service = ai
+    handle_with_steps.cancel_requested = True
+    await runner._closing_stage(handle_with_steps, session_factory, "cancelled", "计划已取消")
+    assert ai.calls == []
+    async with session_factory() as db:
+        rows = (await db.execute(select(AgentMessage).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ))).scalars().all()
+    assert [row.role for row in rows] == ["tool"]
+    stored = json.loads(rows[0].content)
+    assert stored["result"]["outcome"] == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_missing_ai_service_never_breaks_the_plan(session_factory, handle_with_steps):
+    handle_with_steps.ai_service = None
+    await runner._closing_stage(handle_with_steps, session_factory, "completed", "plan finished")
+    async with session_factory() as db:
+        rows = (await db.execute(select(AgentMessage).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ))).scalars().all()
+    assert [row.role for row in rows] == ["tool"]
+
+
+@pytest.mark.anyio
+async def test_llm_calls_stay_one_regardless_of_step_count(session_factory):
+    async def close_with(count: int) -> ClosingAIService:
+        handle = _handle_with_steps(count)
+        ai = ClosingAIService()
+        handle.ai_service = ai
+        await runner._closing_stage(handle, session_factory, "completed", "plan finished")
+        return ai
+
+    three = await close_with(3)
+    eight = await close_with(8)
+    assert len(three.calls) == 1
+    assert len(eight.calls) == 1

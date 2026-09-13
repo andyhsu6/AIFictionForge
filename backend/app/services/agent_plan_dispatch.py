@@ -17,7 +17,10 @@ from typing import Any, Awaitable, Callable, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
+from app.logger import get_logger
 from app.models.background_task import BackgroundTask
+
+logger = get_logger(__name__)
 
 PLAN_TASK_TYPE = "agent_plan"
 PLAN_RUNNER_UNAVAILABLE_CODE = "internal.agent_plan_not_available"
@@ -113,3 +116,28 @@ async def dispatch_plan(
         conversation_id=conversation_id,
         steps=steps,
     )
+
+
+async def build_closing_ai_service(user_id: str) -> Any:
+    """收尾 LLM 用的用户级 AIService：detached runner 拿不到请求态实例。
+
+    构建失败返回 None（runner 收尾降级为只写聚合消息），绝不阻断计划调度。
+    """
+    if not user_id:
+        return None
+    try:
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        from app.api.settings import get_user_ai_service_from_db
+        from app.database import get_engine
+
+        engine = await get_engine(user_id)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as session:
+            service = await get_user_ai_service_from_db(user_id, session)
+        # 收尾调用强制 auto_mcp=False / handle_tool_calls=False，不会再碰这个 session。
+        service.db_session = None
+        return service
+    except Exception as exc:                  # noqa: BLE001 —— 收尾缺失不得阻断调度
+        logger.warning(f"计划收尾 AI 服务构建失败（收尾降级为聚合消息）: {exc}")
+        return None

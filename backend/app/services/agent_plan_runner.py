@@ -41,6 +41,8 @@ from app.models.project_agent import (
     _naive_utc_now,
 )
 from app.services.agent_plan_schema import PROPOSE_PLAN_TOOL_NAME
+from app.services.language_resolver import resolve_user_generation_language
+from app.services.project_agent_service import agent_system_prompt
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
@@ -65,6 +67,13 @@ SUMMARY_MAX_CHARS = 8000        # PR-2c 聚合消息裁剪；键名 agent_plan_s
 
 PLAN_SUMMARY_TOOL_NAME = "plan_run_summary"   # 单条聚合 tool 行的哨兵（幂等按它过滤）
 _SUMMARY_FIELD_MAX_CHARS = 300                # 单字段上限，绝不透传 step 原文
+
+PLAN_CLOSING_INSTRUCTION = (
+    "下面是后台计划执行器生成的结构化执行摘要（JSON）。请用一段简洁的总结向用户说明："
+    "计划整体结果、已完成步数与失败位置；只依据摘要内容，不得编造。"
+    "章节级分析结论不在摘要里，如需查看详情，提示用户在后续对话中使用 "
+    "get_chapter_analysis 工具。不要调用任何工具，直接输出总结文本。\n"
+)
 
 _DEFAULT_LIMITS: dict[str, Any] = {
     "agent_plan_max_steps": MAX_PLAN_STEPS,
@@ -611,6 +620,96 @@ async def _insert_plan_summary_message(
         return message.id
 
 
+async def _insert_plan_assistant_message(
+    session_factory: async_sessionmaker,
+    *,
+    conversation_id: str,
+    content: str,
+    model: str | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> str | None:
+    """落收尾 role=assistant 消息；空 content 不写。绝不写 role=user。"""
+    if not content or not content.strip():
+        return None
+    now = _naive_utc_now()
+    async with session_factory() as session:
+        message = AgentMessage(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=content,
+            model=model,
+            prompt_tokens=prompt_tokens or None,
+            completion_tokens=completion_tokens or None,
+            created_at=now,
+        )
+        session.add(message)
+        await session.execute(
+            update(AgentConversation)
+            .where(AgentConversation.id == conversation_id)
+            .values(last_message_at=now)
+        )
+        await session.commit()
+        return message.id
+
+
+async def _closing_stage(
+    handle: _PlanHandle, factory: async_sessionmaker, outcome: str, summary: str
+) -> None:
+    """收尾：恒写 1 条聚合 tool 消息；非取消且有 ai_service 时恰好 1 次 headless LLM。
+
+    幂等经 handle.closing_done；所有异常在此吞掉并 log —— 收尾失败不得改计划终态，
+    也不得让计划行卡在 running（ai_service 缺失只降级为聚合消息）。
+    """
+    if handle.closing_done:
+        return
+    handle.closing_done = True
+    try:
+        provider_call_id = await resolve_provider_call_id(
+            factory,
+            tool_call_id=handle.tool_call_id,
+            conversation_id=handle.conversation_id,
+            plan_task_input=handle.task_input,
+        )
+        handle.summary_message_id = await _insert_plan_summary_message(
+            factory, handle=handle, provider_call_id=provider_call_id,
+            outcome=outcome, summary=summary,
+        )
+        if outcome == "cancelled":
+            logger.info(f"计划已取消，跳过收尾 LLM 调用 {handle.plan_task_id[:8]}")
+            return
+        if handle.ai_service is None:
+            logger.warning(f"计划收尾缺少 ai_service，仅写聚合消息 {handle.plan_task_id[:8]}")
+            return
+        async with factory() as session:
+            generation_language = await resolve_user_generation_language(session, handle.user_id)
+        payload = build_plan_summary_payload(handle, outcome, summary)
+        response = await handle.ai_service.generate_text(
+            prompt=PLAN_CLOSING_INSTRUCTION + json.dumps(payload, ensure_ascii=False, default=str),
+            system_prompt=agent_system_prompt(
+                generation_language,
+                approval_prompt=(
+                    "\n\n当前为手动批准模式：写入工具生成预览后必须等待用户在界面确认，"
+                    "不得提前声称修改已生效。"
+                ),
+            ),
+            tools=None,
+            auto_mcp=False,
+            handle_tool_calls=False,
+        )
+        usage = (response or {}).get("usage") or {}
+        await _insert_plan_assistant_message(
+            factory,
+            conversation_id=handle.conversation_id,
+            content=(response or {}).get("content") or "",
+            model=(response or {}).get("model") or getattr(handle.ai_service, "default_model", None),
+            prompt_tokens=usage.get("prompt_tokens") or 0,
+            completion_tokens=usage.get("completion_tokens") or 0,
+        )
+    except Exception as exc:                  # noqa: BLE001 —— 收尾失败不得影响终态
+        logger.error(f"计划收尾失败（不影响终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+
+
 class PlanStepError(RuntimeError):
     """步骤级失败（发起报错、子任务失败/超时、子任务不存在）。一律导致失败即停。"""
 
@@ -642,6 +741,8 @@ class _PlanHandle:
     uncancellable_sub_tasks: list[str] = field(default_factory=list)
     step_results: list[dict[str, Any]] = field(default_factory=list)
     task_input: dict[str, Any] | None = None   # run_plan 起跑时缓存，收尾 payload/配对复用
+    summary_message_id: str | None = None      # 聚合 tool 行 id（收尾幂等锚点 + 可观测）
+    closing_done: bool = False                 # 收尾一旦开跑就不再重复（含取消兜底）
 
 
 # plan_task_id -> handle：模块级强引用（范式同 api/chapters.py:77 + :116-121 的
@@ -690,6 +791,7 @@ def _details(handle: _PlanHandle, stage: str, summary: str) -> dict[str, Any]:
             "uncancellable_sub_tasks": list(handle.uncancellable_sub_tasks),
         },
         "step_results": list(handle.step_results),
+        "summary_message_id": handle.summary_message_id,
     }
 
 
@@ -756,11 +858,14 @@ async def _supervise(handle: _PlanHandle, factory: async_sessionmaker) -> None:
     except asyncio.CancelledError:
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
         await _cancel_in_flight(handle, factory)
+        # shield：第二次取消不得把收尾打断在半路（取消也要把聚合行写完）。
+        await asyncio.shield(_closing_stage(handle, factory, outcome, summary))
         await _write_final_state(handle, factory, outcome, summary)
         raise
     except Exception as exc:                  # noqa: BLE001 —— 含权限校验失败
         outcome, summary = "failed", str(exc)
         logger.error(f"❌ 计划执行异常 {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+    await _closing_stage(handle, factory, outcome, summary)
     await _write_final_state(handle, factory, outcome, summary)
 
 

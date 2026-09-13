@@ -27,6 +27,16 @@ setup_logging(
 logger = get_logger(__name__)
 
 
+async def _run_plan_with_closing_ai_service(**kwargs):
+    """注册给 dispatch 的 run_plan 包装：detached runner 收尾需要一个用户级 AIService，
+    请求态实例传不进后台任务，所以调度时按 user_id 构建（失败则 None，收尾降级）。"""
+    from app.services.agent_plan_dispatch import build_closing_ai_service
+    from app.services.agent_plan_runner import run_plan
+
+    kwargs["ai_service"] = await build_closing_ai_service(str(kwargs.get("user_id") or ""))
+    return await run_plan(**kwargs)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -36,9 +46,8 @@ async def lifespan(app: FastAPI):
     # 计划执行器注册（PR-2a 的 approve-plan 未注册时返回 501；revert 这一段即回滚）
     try:
         from app.api.project_agent import register_plan_runner
-        from app.services.agent_plan_runner import run_plan
 
-        register_plan_runner(run_plan)
+        register_plan_runner(_run_plan_with_closing_ai_service)
         logger.info("plan runner registered")
     except Exception as exc:  # noqa: BLE001 —— 注册失败不得挡住启动
         logger.warning(f"计划执行器注册失败（批准将返回 501）: {exc}")
