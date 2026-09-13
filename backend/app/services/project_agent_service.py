@@ -106,12 +106,18 @@ async def execute_mcp_tool_call(
 
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
-    # 一个最坏工具回合落 12 行（1 user + 6 assistant + 5 tool）⇒ 20 行只够 1.7
-    # 个回合，会把整回合的原始诉求挤出窗口。40 行 ≈ 3 个完整回合，仍是**有界**窗口。
-    HISTORY_LIMIT = 40
-    # 单条工具结果进 prompt 的上限：落库侧 _save_tool_response 允许到 50000 字符，
+    # 落库侧单条工具结果的行长上限（原 `[:50000]` 字面量提为常量，值与行为不变），
+    # 供测试与 TOOL_RESULT_MAX_CHARS 配对断言。
+    TOOL_RESULT_PERSIST_MAX_CHARS = 50000
+    # 单条工具结果进 prompt 的上限：落库侧允许到 TOOL_RESULT_PERSIST_MAX_CHARS，
     # 若不在此收口，一条即可吃光 _build_prompt 的 60000 历史预算并挤掉首条用户诉求。
     TOOL_RESULT_MAX_CHARS = 8000
+    # 有界窗口，不是容量保证：一回合落库的行数没有固定上界——单工具调用/轮实测 10 行
+    # （1 user + 5 assistant + 4 tool），一轮多并行调用按调用数线性增长（实测 4 轮 ×
+    # 3 并行 = 18 行）。真正的约束在 _build_prompt 的 60000 字符预算：实测 8 条打满
+    # TOOL_RESULT_MAX_CHARS 的 tool 行只能带进 7 条，首条用户诉求仍被挤掉。40 只解决
+    # "整回合被行数舍掉"这一层，字节层面的取舍归 PR-0c 的预算分层。
+    HISTORY_LIMIT = 40
 
     def __init__(
         self,
@@ -952,7 +958,7 @@ class ProjectAgentService:
             "tool": tool_name,
             "error": error,
             "result": result,
-        }, ensure_ascii=False, default=str)[:50000]
+        }, ensure_ascii=False, default=str)[: self.TOOL_RESULT_PERSIST_MAX_CHARS]
         tool_msg = AgentMessage(
             conversation_id=conversation.id,
             role="tool",
