@@ -708,3 +708,42 @@ async def test_second_cancel_impulse_during_closing_still_finalizes(session_fact
         runner._PLAN_HANDLES.pop(handle.plan_task_id, None)
         ai.release.set()
         await asyncio.sleep(0)
+
+
+@pytest.mark.anyio
+async def test_late_cancel_does_not_overwrite_failed_outcome(session_factory):
+    """取消晚到只能翻转 completed；failed 的父任务码/摘要/error 不得被抹掉。"""
+    handle = _handle_with_steps(3)
+    handle.cancel_requested = True
+    handle.cancel_reason = "用户停止"
+    async with session_factory() as db:
+        db.add(BackgroundTask(
+            id=handle.plan_task_id, user_id=handle.user_id, project_id=handle.project_id,
+            task_type="agent_plan", status="running", progress=0,
+        ))
+        await db.commit()
+    await runner._close_and_finalize(handle, session_factory, "failed", "第 2 步失败：boom")
+    async with session_factory() as db:
+        plan = await db.get(BackgroundTask, handle.plan_task_id)
+    assert plan.status == "failed"
+    assert plan.status_code == "internal.agent_plan_step_failed"
+    assert plan.status_message == "第 2 步失败：boom"
+    assert (plan.task_result or {}).get("outcome") == "failed"
+
+
+@pytest.mark.anyio
+async def test_late_cancel_still_flips_completed_to_cancelled(session_factory):
+    handle = _handle_with_steps(3)
+    handle.cancel_requested = True
+    handle.cancel_reason = "用户停止"
+    async with session_factory() as db:
+        db.add(BackgroundTask(
+            id=handle.plan_task_id, user_id=handle.user_id, project_id=handle.project_id,
+            task_type="agent_plan", status="running", progress=0,
+        ))
+        await db.commit()
+    await runner._close_and_finalize(handle, session_factory, "completed", "计划执行完成（3/3 步）")
+    async with session_factory() as db:
+        plan = await db.get(BackgroundTask, handle.plan_task_id)
+    assert plan.status == "cancelled"
+    assert plan.status_message == "用户停止"

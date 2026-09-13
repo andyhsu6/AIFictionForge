@@ -729,7 +729,7 @@ async def _close_and_finalize(
         await _closing_stage(handle, factory, outcome, summary)
     except Exception as exc:                  # noqa: BLE001 —— 收尾异常也要把终态写完
         logger.error(f"计划收尾异常（继续写终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
-    if handle.cancel_requested and outcome != "cancelled":
+    if handle.cancel_requested and outcome == "completed":
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
     await _write_final_state(handle, factory, outcome, summary)
 
