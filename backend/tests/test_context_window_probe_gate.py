@@ -70,6 +70,7 @@ from app.services.model_capability_probe import (
     probe_model_context_window,
     probe_needle_tier,
     triple_key,
+    verdict_may_overwrite,
 )
 
 BELOW_MINIMUM = "validation.ai_model_below_minimum"
@@ -243,6 +244,142 @@ async def test_probe_tier_two_uses_stream_and_stops_at_first_delta(gateway):
     assert sent["stream"] is True
     assert sent["max_tokens"] >= MIN_CONTEXT_WINDOW_TOKENS
     assert gateway.bound_calls == 1, "拿到首个 delta 后必须立即断开，不该继续读流"
+
+
+# ========== 1b. ② 档拒绝路径：不许记录没测到的东西（#65） ==========
+#
+# `unqualified` 是**实测**结论，#59 之后用户自己的声明抹不掉它。于是一次**假**的
+# unqualified 会把一台合规模型**永久锁死**：界面上连个数字都没有，声明出口又被刻意关闭。
+# 所以拒绝路径的判据必须是「这条报错真的排除了 >=1M 吗」：
+#   A 报错讲的是**输出**上限（`max_tokens must be <= 16384`）——一次能生成多少
+#     跟窗口有多大是两件事 ⇒ inconclusive，出口（声明）保持开着
+#   B 刻度恰为 1M、prompt 非空 ⇒ 被拒只证明 `window < 1M + prompt`，排除不了
+#     `window == 1M`（登记表里 deepseek-v3 / gemini-2 恰好就是 1000000）⇒ inconclusive
+#   C 网关自己报出一个**低于下限的上下文数字** ⇒ 仍是实测 unqualified、仍不可声明翻盘
+#     ——这才是门禁存在的意义，本节的修法绝不能把它一起放掉。
+
+_OUTPUT_CAP_BODY = b'{"error":{"message":"max_tokens must be <= 16384"}}'
+_ZERO_MARGIN_BODY = (
+    b'{"error":{"message":"This model\'s context window is 1000000 tokens, '
+    b'but your prompt (10 tokens) plus max_tokens (1000000) exceeds it. '
+    b'Reduce max_tokens."}}'
+)
+_HONEST_128K_BODY = (
+    b'{"error":{"message":"This model\'s maximum context length is 128000 tokens. '
+    b'However, you requested 1000000 tokens (10 in messages + 1000000 in completion). '
+    b'Please reduce the length of the messages or completion."}}'
+)
+
+
+@pytest.mark.anyio
+async def test_probe_output_cap_rejection_is_inconclusive(gateway):
+    """A：输出上限的 400 推不出任何窗口结论 ⇒ inconclusive，不是 unqualified。"""
+    gateway.bound_body = _OUTPUT_CAP_BODY
+
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL
+    )
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE, (
+        "把输出上限当成上下文窗口证据 = 永久锁死一台合规模型（#65）"
+    )
+    assert outcome.context_window_tokens is None
+    assert "output cap" in (outcome.detail or "")
+
+
+@pytest.mark.anyio
+async def test_probe_boundary_rejection_at_exact_minimum_is_inconclusive(gateway):
+    """B：恰好 1M 刻度 + 非空 prompt 被拒，只证明 `window < 1M+prompt` ⇒ 判不出。"""
+    gateway.bound_body = _ZERO_MARGIN_BODY
+
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL
+    )
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE, (
+        "零边际的边界拒绝不能当成 `<1M` 的实证（#65）"
+    )
+    assert "margin" in (outcome.detail or "")
+
+
+@pytest.mark.anyio
+async def test_probe_honest_context_number_stays_measured_unqualified(gateway):
+    """C：网关报得出 128000 ⇒ 依旧是实测 unqualified，并带上那个数字（门禁的靶心）。"""
+    gateway.bound_body = _HONEST_128K_BODY
+
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=SMALL_MODEL
+    )
+
+    assert outcome.verdict == VERDICT_UNQUALIFIED
+    assert outcome.tier == TIER_MAX_TOKENS_BOUND
+    assert outcome.context_window_tokens == 128_000, "报得出的数字必须落进结论，界面才有数可显示"
+    assert "128000" in (outcome.detail or "")
+
+
+@pytest.mark.anyio
+async def test_probe_metadata_exact_minimum_is_qualified(gateway):
+    """边界接受：① 档报 exactly 1,000,000 ⇒ 合规（判据是 `>=`，不得写成 `>`）。"""
+    gateway.metadata_status = 200
+    gateway.metadata_body = {"id": QUALIFIED_MODEL, "context_length": MIN_CONTEXT_WINDOW_TOKENS}
+
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL
+    )
+
+    assert outcome.verdict == VERDICT_QUALIFIED
+    assert outcome.context_window_tokens == MIN_CONTEXT_WINDOW_TOKENS
+    assert gateway.bound_calls == 0, "① 档已定论时不该再打 ② 档"
+
+
+def test_bound_rejection_needs_a_number_beside_a_context_phrase():
+    """判据来自网关自己报的数，而不是 `exceeds`/`reduce` 这类裸子串。"""
+    classify = probe_module._classify_bound_rejection
+
+    honest = classify(_HONEST_128K_BODY.decode())
+    assert honest.proves_below_minimum is True
+    assert honest.reported_context_tokens == 128_000
+
+    for body in (
+        _OUTPUT_CAP_BODY.decode(),
+        _ZERO_MARGIN_BODY.decode(),
+        "you asked for 1000000 tokens but this endpoint emits at most 16384 completion tokens",
+        "reduce your prompt: it exceeds the model context window",   # 讲清了是上下文，但没报数
+        # 裸子串不算判据：`exceeds` + 一个小于下限的数，读不出报的是**哪个**上限
+        "your request exceeds 128000 tokens",
+        # 同一分句里既有输出上限措辞又有上下文措辞 ⇒ 归属不确定 ⇒ 不许记录
+        "input tokens plus max_tokens must fit in 16384 context tokens",
+        # 多个候选时取**最大**那个（最保守）：这里 10 是回显的请求大小、2000000 才是窗口
+        "you sent 10 prompt tokens, the maximum context length is 2000000 tokens",
+        # 网关自己报的窗口 >= 下限：即便同一句里还有个很小的输出上限，也不许判成不合格
+        "this model's context window is 2000000 tokens, but max_tokens must be at most 16384",
+    ):
+        evidence = classify(body)
+        assert evidence.proves_below_minimum is False, f"不该记成实测不合格：{body}"
+
+    # 数字必须**贴着**上下文措辞才算窗口证据
+    lonely = classify("error 500: bad request, upstream returned an unexpected payload")
+    assert lonely.proves_below_minimum is False
+    assert lonely.is_bound_related is False
+
+
+def test_fix_is_not_a_lower_threshold_or_a_declaration_override():
+    """#65 的修法不能是「把刻度调小」或「让声明盖过实测」——那等于重开 #59 的洞。"""
+    assert probe_module.MAX_TOKENS_PROBE_VALUE == MIN_CONTEXT_WINDOW_TOKENS
+
+    measured_small = ProbeOutcome(
+        verdict=VERDICT_UNQUALIFIED, context_window_tokens=128_000, tier=TIER_METADATA
+    )
+    declared_big = ProbeOutcome(
+        verdict=VERDICT_QUALIFIED,
+        context_window_tokens=2_000_000,
+        source=SOURCE_USER_DECLARED,
+    )
+    no_verdict = ProbeOutcome(verdict=VERDICT_INCONCLUSIVE, tier=TIER_MAX_TOKENS_BOUND)
+
+    assert verdict_may_overwrite(measured_small, declared_big) is False
+    assert verdict_may_overwrite(measured_small, no_verdict) is False
+    assert verdict_may_overwrite(measured_small, ProbeOutcome(verdict=VERDICT_UNQUALIFIED)) is True
 
 
 # ========== 2. 绕重试 / 绕信号量 ==========
@@ -930,6 +1067,66 @@ async def test_declaration_cannot_overwrite_a_measured_small_model(env, gateway)
 
     assert resp.status_code == 400, resp.text
     assert resp.json()["params"]["verdict"] == VERDICT_UNQUALIFIED
+    assert (await read_row(env, user_id)).llm_model != SMALL_MODEL
+
+
+@pytest.mark.anyio
+async def test_false_reject_from_output_cap_is_rescued_by_declaration(env, gateway):
+    """#65 的出口：输出上限造成的判不出，用户声明 >=1M 就该救得回来。
+
+    旧行为是把它当成 `<1M` 的实测 ⇒ 声明通道被 #59 刻意关闭 ⇒ 一台合规的大窗口模型
+    永久锁死，而且界面上一个数字都没有（无从解释，也无从自救）。
+    """
+    user_id = "u-65-output-cap"
+    await seed_settings(env.session_factory, user_id, llm_model="")
+    gateway.bound_body = _OUTPUT_CAP_BODY
+
+    first = await post_settings(env, user_id, {
+        "api_provider": "openai", "api_key": API_KEY, "api_base_url": GATEWAY, "llm_model": QUALIFIED_MODEL,
+    })
+    assert first.status_code == 400, first.text
+    params = first.json()["params"]
+    assert params["verdict"] == VERDICT_INCONCLUSIVE, "输出上限不是窗口证据，不该报成实测不合格"
+    assert params["requires_explicit_declaration"] is True
+    assert params["measured_context_window_tokens"] is None
+
+    ok = await post_settings(env, user_id, {
+        "api_provider": "openai", "api_key": API_KEY, "api_base_url": GATEWAY,
+        "llm_model": QUALIFIED_MODEL, "context_window_tokens": MIN_CONTEXT_WINDOW_TOKENS,
+    })
+    assert ok.status_code == 200, ok.text
+    entry = json.loads((await read_row(env, user_id)).preferences)[PREFERENCES_KEY][
+        triple_key("openai", GATEWAY, QUALIFIED_MODEL)
+    ]
+    assert entry["result"] == VERDICT_QUALIFIED
+    assert entry["source"] == SOURCE_USER_DECLARED
+
+
+@pytest.mark.anyio
+async def test_measured_128k_rejection_body_is_still_not_rescuable(env, gateway):
+    """#59 的护栏在 #65 修法之后必须照样成立：报得出 128000 的网关，声明翻不了盘。"""
+    user_id = "u-65-honest-small"
+    await seed_settings(env.session_factory, user_id, llm_model="")
+    gateway.bound_body = _HONEST_128K_BODY
+
+    first = await post_settings(env, user_id, {
+        "api_provider": "openai", "api_key": API_KEY, "api_base_url": GATEWAY, "llm_model": SMALL_MODEL,
+    })
+    assert first.status_code == 400, first.text
+    params = first.json()["params"]
+    assert params["verdict"] == VERDICT_UNQUALIFIED
+    assert params["measured_context_window_tokens"] == 128_000
+    assert params["requires_explicit_declaration"] is False, (
+        "实测低于下限还提示「去声明」= 给一条走不通的路画饼"
+    )
+
+    for attempt in (1, 2):
+        lied = await post_settings(env, user_id, {
+            "api_provider": "openai", "api_key": API_KEY, "api_base_url": GATEWAY,
+            "llm_model": SMALL_MODEL, "context_window_tokens": 2_000_000,
+        })
+        assert lied.status_code == 400, f"第 {attempt} 次声明居然放行了实测 128K 的模型"
+        assert lied.json()["params"]["verdict"] == VERDICT_UNQUALIFIED
     assert (await read_row(env, user_id)).llm_model != SMALL_MODEL
 
 

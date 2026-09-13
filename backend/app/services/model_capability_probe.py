@@ -18,6 +18,22 @@
 ③ **本期只定义接口形状、不接线**：`probe_needle_tier` 一次请求都不发，调用即返回
 `inconclusive`。它绝不返回 `qualified`——未接线的档若报合格，等于给小模型开合格证。
 
+② 档的**拒绝**结论怎么定（#65，判据见 `_classify_bound_rejection`）
+---------------------------------------------------------------
+`unqualified` 是实测结论，而 #59 之后实测结论不可被用户声明翻盘。两者相加的后果：
+一次**假**的 unqualified 会把一台合规模型永久锁死——界面上显示不出任何数字（无从解释），
+声明出口又被关闭（无从自救）。所以拒绝路径与 #59 同一条规则：**没测到的不许记录**。
+只有「这条报错确实排除了 >=1M」才算 unqualified，其余一律 inconclusive：
+
+| 网关的报错                          | 排除了 >=1M 吗             | 结论           |
+|-------------------------------------|----------------------------|----------------|
+| `max_tokens must be <= 16384`       | 否：讲的是**输出**上限     | inconclusive   |
+| 刻度恰为下限 + prompt 非空而被拒    | 否：只证明 `< 1M + prompt` | inconclusive   |
+| `maximum context length is 128000`  | **是**：它自己报的数       | unqualified    |
+
+代价（如实承认）：报不出数字的网关一律判不出，其中确实不合规的那一部分要靠用户显式
+声明才会被拒——这比误锁合规模型便宜，故取此侧。
+
 已知盲区（对外必须诚实，勿暗示系统万无一失）
 --------------------------------------------
 1. **静默截断型网关可以通过 ①②**：许多兼容网关不报错而直接把输入截断，
@@ -26,6 +42,8 @@
 2. **两次探测之间网关换模型/降配**：日频复测的粒度是一个自然日，当天首个请求
    按旧结论放行。README 只承诺「要求 ≥1M、保存时实测、低于此不受支持」，
    **不得**外推成「任何时刻都不会被绕过」。
+3. **② 档的判据只是「网关自己报数」这一条**：它不报数（或报的数不贴着上下文措辞）
+   时一律判不出，此时门禁退回「未知即不合格 + 需显式声明」，不会自动放行。
 
 绝对不允许「查不到就放行」：未知即不合格，必须由用户在表单里显式声明
 `context_window_tokens >= MIN_CONTEXT_WINDOW_TOKENS`（source=user_declared）才开绿灯。
@@ -34,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -109,6 +128,9 @@ class ProbeOutcome:
 
     `context_window_tokens` 在 verdict=qualified 时恒为正整数：① 档是网关报的窗口，
     ② 档是「已被接受的探测刻度」（保守下界，不是猜的），user_declared 是用户声明值。
+    verdict=unqualified 时它只可能是**网关自己报出的**那个窗口数字（① 档的字段，或
+    ② 档报错里贴着上下文措辞的数）；没测到数就留 `None`——绝不拿「我们发出去的刻度」
+    或任何猜测值去填它（#65：一个凭空的断言会同时毁掉解释力和 #59 的强度序）。
     """
 
     verdict: str
@@ -184,9 +206,14 @@ PROBE_MAX_ATTEMPTS = 1
 PROBE_TRANSPORT_RETRIES = 0
 PROBE_CONNECT_TIMEOUT_SECONDS = 10.0
 PROBE_READ_TIMEOUT_SECONDS = 25.0
-# ② 档默认刻度：恰为产品下限。接受 ⇒ 窗口 >= 1M（成立证据）；被上界校验拒绝 ⇒ < 1M。
-# 登记表提示可以把刻度抬到 > 1M（更强的证据），此时被拒会再退到本刻度探一次。
+# ② 档默认刻度：恰为产品下限。**接受** ⇒ 窗口 >= 1M（成立证据）；**被拒** 单独不构成
+# 「< 1M」的证据——校验 `prompt + max_tokens <= window` 的网关会拒掉一个恰好等于窗口
+# 的请求，而 prompt 非空，故被拒只证明 `window < 刻度 + prompt`。登记表提示可以把刻度
+# 抬到 > 1M（更强的证据），此时被拒会再退到本刻度探一次。判据见 `_classify_bound_rejection`。
 MAX_TOKENS_PROBE_VALUE = MIN_CONTEXT_WINDOW_TOKENS
+# ② 档 prompt 的 token 量级（"ping" + 模板开销）；只用来把「这次被拒证明了什么」说清楚，
+# 不参与接受/拒绝判定。刻意取宽：宁可少断言，不可多断言。
+PROBE_PROMPT_TOKENS_ESTIMATE = 32
 # ③ 档形状常量（未接线，仅为将来实现留契约）
 NEEDLE_FILL_RATIO = 1.05
 NEEDLE_MAX_OUTPUT_TOKENS = 64
@@ -200,17 +227,39 @@ _METADATA_WINDOW_KEYS = (
     "total_context",
     "n_ctx",
 )
-_BOUND_REJECTION_HINTS = (
+# 「这个数字说的是上下文/输入上限」的措辞。**刻意不含** `exceeds` / `too long` /
+# `reduce` 这类裸子串：它们只说明「某处报了个太大的数」，不说明报的是**哪个**上限
+# （#65 路径 A 就是这么把输出上限读成窗口上限的）。
+_CONTEXT_BOUND_HINTS = (
     "maximum context",
+    "max context",
     "context length",
     "context window",
-    "exceeds",
-    "too long",
-    "reduce",
+    "context size",
+    "context tokens",
+    "model context",
+    "n_ctx",
+    "prompt tokens",
+    "input tokens",
+    "total tokens",
+    "token limit",
+    "too many tokens",
+    "prompt is too long",
+    "input is too long",
+)
+# 「这个数字说的是输出/补全上限」——与窗口多大无关，一律不得当成不合格的证据。
+_OUTPUT_CAP_HINTS = (
     "max_tokens",
     "max tokens",
-    "input tokens",
-    "not enough tokens",
+    "maximum tokens",
+    "output tokens",
+    "output length",
+    "max_completion",
+    "completion tokens",
+    "response tokens",
+    "output cap",
+    "completion",
+    "output",
 )
 
 
@@ -356,9 +405,141 @@ async def probe_metadata_tier(
     )
 
 
-def _looks_like_bound_rejection(body: str) -> bool:
-    lowered = (body or "").lower()
-    return any(hint in lowered for hint in _BOUND_REJECTION_HINTS)
+# ========== ② 档拒绝路径的证据判据（#65：没测到的不许记录） ==========
+REJECT_MEASURED_BELOW_MINIMUM = "measured_below_minimum"
+REJECT_WINDOW_AT_LEAST_MINIMUM = "reports_window_at_least_minimum"
+REJECT_OUTPUT_CAP = "output_cap"
+REJECT_NO_BOUND_NUMBER = "no_bound_number"
+REJECT_NOT_BOUND_RELATED = "not_bound_related"
+
+# 句读切分用：数字只按它**所在的分句**判定含义，跨分句的措辞不算它的判据。
+_BOUND_CLAUSE_BREAKS = frozenset('.;!?,\n\r{}[]()"')
+_NUMBER_PATTERN = re.compile(
+    r"(?P<number>\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?:\s*(?P<suffix>[km]))?(?![0-9a-z])",
+    re.IGNORECASE,
+)
+_CLAUSE_BEFORE_CHARS = 80
+_CLAUSE_AFTER_CHARS = 24
+
+
+@dataclass(frozen=True)
+class BoundRejectionEvidence:
+    """一次 400/422 报错**实际**排除了什么。
+
+    `reported_context_tokens` 只在网关自己报出上下文数字时非空——那条报错本身就是
+    ① 档级别的元数据，所以它既能支持 unqualified，也让界面有数可显示。
+    """
+
+    kind: str
+    reported_context_tokens: Optional[int] = None
+
+    @property
+    def proves_below_minimum(self) -> bool:
+        """这条报错确实排除了 >=1M ⇒ 可以记成实测 unqualified。"""
+        return self.kind == REJECT_MEASURED_BELOW_MINIMUM
+
+    @property
+    def is_bound_related(self) -> bool:
+        return self.kind != REJECT_NOT_BOUND_RELATED
+
+
+def _clause_of(text: str, start: int, end: int) -> str:
+    """数字所在的分句：向前到上一个句读（最多 _CLAUSE_BEFORE_CHARS），向后到下一个句读。"""
+    begin = max(0, start - _CLAUSE_BEFORE_CHARS)
+    for index in range(start - 1, begin - 1, -1):
+        if text[index] in _BOUND_CLAUSE_BREAKS:
+            begin = index + 1
+            break
+    finish = min(len(text), end + _CLAUSE_AFTER_CHARS)
+    for index in range(end, finish):
+        if text[index] in _BOUND_CLAUSE_BREAKS:
+            finish = index
+            break
+    return text[begin:finish]
+
+
+def _number_value(match: "re.Match[str]") -> Optional[int]:
+    digits = (match.group("number") or "").replace(",", "")
+    try:
+        value = float(digits)
+    except ValueError:  # pragma: no cover - 正则已保证是数字，留兜底
+        return None
+    suffix = (match.group("suffix") or "").lower()
+    if suffix == "k":
+        value *= 1_000
+    elif suffix == "m":
+        value *= 1_000_000
+    return int(value)
+
+
+def _matches_any(text: str, hints: Tuple[str, ...]) -> bool:
+    return any(hint in text for hint in hints)
+
+
+def _classify_bound_rejection(body: str) -> BoundRejectionEvidence:
+    """把一次上界类拒绝读成「它排除了 >=1M 吗」，判据是**网关自己报出的数字**。
+
+    规则（按 #65 的三行表）：
+
+    1. 逐个看报错文本里的数字，只看它所在的分句。分句里出现**输出/补全**上限措辞的
+       数字直接丢掉：`max_tokens must be <= 16384` 说的是「一次能生成多少」，
+       与窗口有多大无关（路径 A）。同一分句里输出与上下文措辞**都**出现时也算输出上限
+       ——归属都不确定了，更不许拿它当实测的证据（宁可退回声明出口）。
+    2. 剩下的数字里只认分句带**上下文/输入**上限措辞的那些为窗口候选。
+    3. 候选取**最大值**：多个候选说明措辞归属有噪声，取最大是最保守的读法——
+       宁可漏判一个真不合格的网关（退回声明出口），不可误判一个合规的（永久锁死）。
+    4. 候选 >= 下限 ⇒ 网关报的窗口本身就合规，它拒绝只是因为 prompt + 刻度没有边际
+       （路径 B）；没有候选 ⇒ 要么它在讲输出上限，要么它压根没报数。两种都排除不了
+       `window >= 1M`，一律 inconclusive。
+    """
+    text = (body or "").lower()
+    candidates: List[int] = []
+    for match in _NUMBER_PATTERN.finditer(text):
+        value = _number_value(match)
+        if value is None or value <= 0:
+            continue
+        clause = _clause_of(text, match.start("number"), match.end())
+        if _matches_any(clause, _OUTPUT_CAP_HINTS):
+            continue
+        if _matches_any(clause, _CONTEXT_BOUND_HINTS):
+            candidates.append(value)
+
+    if candidates:
+        reported = max(candidates)
+        if reported < MIN_CONTEXT_WINDOW_TOKENS:
+            return BoundRejectionEvidence(REJECT_MEASURED_BELOW_MINIMUM, reported)
+        return BoundRejectionEvidence(REJECT_WINDOW_AT_LEAST_MINIMUM, reported)
+    if _matches_any(text, _CONTEXT_BOUND_HINTS):
+        return BoundRejectionEvidence(REJECT_NO_BOUND_NUMBER)
+    if _matches_any(text, _OUTPUT_CAP_HINTS):
+        return BoundRejectionEvidence(REJECT_OUTPUT_CAP)
+    return BoundRejectionEvidence(REJECT_NOT_BOUND_RELATED)
+
+
+def _rejection_reason(evidence: BoundRejectionEvidence, value: int) -> Optional[str]:
+    """判不出时把「为什么这条报错不构成实测」写进 detail；不相关返回 None。
+
+    措辞刻意保守：只陈述「这条报错没排除什么」，绝不替网关断言它没说的数字。
+    """
+    ceiling = value + PROBE_PROMPT_TOKENS_ESTIMATE
+    if evidence.kind == REJECT_OUTPUT_CAP:
+        return (
+            f"server rejected max_tokens={value} over an output cap, not a context bound "
+            "(an output limit says nothing about how much input fits)"
+        )
+    if evidence.kind == REJECT_WINDOW_AT_LEAST_MINIMUM:
+        return (
+            f"the context figure in the error ({evidence.reported_context_tokens} tokens) is "
+            f"itself >= {MIN_CONTEXT_WINDOW_TOKENS}, so rejecting max_tokens={value} on top of a "
+            "non-empty prompt has no margin and neither proves nor excludes non-compliance"
+        )
+    if evidence.kind == REJECT_NO_BOUND_NUMBER:
+        return (
+            f"server rejected max_tokens={value} without stating a context bound; with a "
+            f"non-empty prompt that only proves the window is below ~{ceiling} tokens, so "
+            f"there is no margin and a {MIN_CONTEXT_WINDOW_TOKENS}-token window is not excluded"
+        )
+    return None
 
 
 async def probe_max_tokens_bound_tier(
@@ -375,8 +556,11 @@ async def probe_max_tokens_bound_tier(
     必须 `stream=true` 且**收到首个 delta 立即断开**：少数实现不校验上界而直接开始
     生成，不断开就会真的烧掉一整个输出预算。
 
-    判定：接受（拿到流式首块）⇒ 窗口 >= 本次刻度 ⇒ 合格；
-    被上界类 400/422 拒绝 ⇒ 窗口 < 刻度。刻度恰为 1M 时这就是「< 1M」的实证；
+    判定（两不对称）：
+    - **接受**（拿到流式首块）⇒ 窗口 >= 本次刻度 ⇒ 合格（静默截断型除外，见盲区 1）。
+    - **被拒** ⇒ 只有网关自己报出一个低于下限的**上下文**数字才算实测不合格（#65）；
+      输出上限、以及「刻度恰为下限 + prompt 非空」这种没有边际的边界拒绝一律判不出——
+      被拒最多证明 `window < 刻度 + prompt`，而那条不等式排除不了 `window == 刻度`。
     刻度 > 1M（登记表提示抬上去的）时被拒只给出一个上界，故退回 1M 刻度再探一次。
     """
     ladder = [probe_value]
@@ -396,18 +580,32 @@ async def probe_max_tokens_bound_tier(
                         body = (await response.aread()).decode("utf-8", errors="replace")[:500]
                     except Exception:  # 读不到 body 也别抛：判不出而已
                         pass
-                    if response.status_code in (400, 422) and _looks_like_bound_rejection(body):
-                        if value > MAX_TOKENS_PROBE_VALUE:
-                            last = _inconclusive(
-                                f"max_tokens={value} rejected (upper bound only), retrying at {MAX_TOKENS_PROBE_VALUE}",
-                                TIER_MAX_TOKENS_BOUND,
-                            )
-                            continue
+                    evidence = (
+                        _classify_bound_rejection(body)
+                        if response.status_code in (400, 422)
+                        else BoundRejectionEvidence(REJECT_NOT_BOUND_RELATED)
+                    )
+                    if value > MAX_TOKENS_PROBE_VALUE and evidence.is_bound_related:
+                        last = _inconclusive(
+                            f"max_tokens={value} rejected (upper bound only), retrying at {MAX_TOKENS_PROBE_VALUE}",
+                            TIER_MAX_TOKENS_BOUND,
+                        )
+                        continue
+                    if evidence.proves_below_minimum:
                         return ProbeOutcome(
                             verdict=VERDICT_UNQUALIFIED,
-                            context_window_tokens=None,
+                            context_window_tokens=evidence.reported_context_tokens,
                             tier=TIER_MAX_TOKENS_BOUND,
-                            detail=f"server rejected max_tokens={value}: {body}",
+                            detail=(
+                                f"the error states a context bound of "
+                                f"{evidence.reported_context_tokens} tokens, below "
+                                f"{MIN_CONTEXT_WINDOW_TOKENS}; rejected max_tokens={value}: {body}"
+                            ),
+                        )
+                    reason = _rejection_reason(evidence, value)
+                    if reason is not None:
+                        return _inconclusive(
+                            f"{reason}; rejected max_tokens={value}: {body}", TIER_MAX_TOKENS_BOUND
                         )
                     return _inconclusive(
                         f"max_tokens tier HTTP {response.status_code}: {body}", TIER_MAX_TOKENS_BOUND
