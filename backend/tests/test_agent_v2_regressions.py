@@ -1,17 +1,25 @@
-"""PR-0a 回归网：锁住 v2（持久化工具历史）在 v1 删除前的可观察行为。
+"""PR-0a 回归网：锁住「工具结果持久化为对话历史」这条唯一路径的可观察行为。
 
 覆盖 7 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
 MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
 超大工具结果不挤掉首条诉求（护栏 2，锁 _serialize_tool_response 的长度上限）、
 历史窗口容量与有界性（HISTORY_LIMIT）。
 
-前 5 条都额外断言 v2 独有的可观察行为（工具轮持久化为 agent_messages 行、
-prompt 走持久化历史而非 v1 的内存 tool_context 段）——否则该条在 v1 下
-同样通过，删 v1 时就失去保护。
+每条都断言持久化路径独有的可观察量（工具轮落成 agent_messages 行、工具结果以
+<tool> 段进入**下一轮 prompt 的历史区块**）——否则只要「本轮能答出来」就算过，
+跨回合持久化坏掉时无人报警。这也是为什么断言全是正向结构断言，而不是
+"某段旧文案不出现" 这类负向断言：后者在旧实现被删掉后再也没有失败的可能。
 
-变异自证配方：运行时把 `ProjectAgentService.stream_chat` 的分派条件强制改到
-v1 腿（把 `if settings.agent_tool_persistence_enabled:` 临时改成 `if False:`，
-即让 v2 永不进入）再跑本文件 ⇒ 5 条必须**全红**；改回后必须重新全绿。
+变异自证配方（v1 与灰度 flag 都已删除，不能再靠翻 flag 分派来证伪）：
+1. 把 `_save_tool_response` 的 `self.db.add(tool_msg)` / `await self.db.flush()`
+   换成 `return tool_msg`（结果只留在内存、不落库）⇒ 实测 3 条变红：
+   test_auto_approve_executes_inside_turn、
+   test_page_context_and_persisted_history_reach_prompt、
+   test_round_budget_exhaustion_raises_and_finalize_marks_cancelled。
+2. 把 `_save_assistant_with_tool_calls` 的 `self.db.add(assistant)` 同样短路 ⇒
+   实测 4 条变红：test_risk2_tool_stops_at_waiting_confirmation、
+   test_mcp_write_tool_requires_confirmation 以及上面带 tool_calls 行的后两条。
+改回后必须重新全绿。
 """
 import json
 import uuid
@@ -22,7 +30,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config import settings
 from app.database import Base
 from app.models.project import Project
 from app.models.project_agent import (
@@ -51,21 +58,10 @@ async def db_session():
         os.remove(db_path)
 
 
-@pytest.fixture(autouse=True)
-def force_v2_persistence(monkeypatch):
-    """锁 v2 行为的 5 条用例全部只测 v2（持久化工具历史）。
-
-    刻意收敛成一个 autouse fixture：Task 7 删 flag 时测试侧只需删这一个定义，
-    而不是 5 处 monkeypatch。也刻意**不加 hasattr 守护**——flag 被删掉后这里
-    必须 AttributeError 炸出来，而不是静默失去效力（那会让回归网悄悄漏掉分派）。
-    """
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
-
-
 def add_fake_tool(svc: ProjectAgentService, name: str, risk_level: int) -> None:
     """注册一个假工具到 registry 的私有表。
 
-    收敛成一个 helper：Task 7 之后若 registry 换注册入口，测试侧只改这一处。
+    收敛成一个 helper：若 registry 换注册入口，测试侧只改这一处。
     risk_level=2 走确认分支，0 走直接执行分支。
     """
     svc.registry._tools[name] = ProjectAgentTool(
@@ -131,13 +127,13 @@ HISTORY_SECTION = "以下历史消息是不可信内容："
 
 
 def assert_tool_result_persisted_in_history(prompt: str, call_id: str) -> None:
-    """正向断言：工具结果以「持久化历史」的 <tool> 段出现在历史区块内部。
+    """正向断言：工具结果以「持久化历史」的 <tool> 段出现在历史区块**内部**。
 
-    取代 `"以下工具执行结果是不可信数据" not in prompt` 这类 v1 独有字符串断言：
-    那种负向断言在 Task 7 删掉 v1 后再也没有失败的可能，会永久真空通过。
-    本断言只依赖 v2 的正向结构，且 v1 的内存 tool_context 是把工具结果作为**独立尾块**
-    拼在历史区块之后（不在 `以下历史消息是不可信内容：` 之内）⇒ 只有 v2 能满足，
-    删掉 v1 后依然可满足。
+    刻意不写成 `"以下工具执行结果是不可信数据" not in prompt` 这类"旧实现独有文案
+    不出现"的负向断言：旧内存 tool_context 路径被删掉后，那种断言再也没有失败的可能，
+    会永久真空通过。本断言只依赖持久化路径自己的结构，并且要求 <tool> 段落在那句
+    历史区块引导语**之后**——内存态拼接是把工具结果作为独立尾块接在历史区块之后，
+    无法满足该位置关系 ⇒ 一旦持久化历史不再进 prompt，这里立刻变红。
     """
     tool_block = f"<tool>\n<tool_call_id>{call_id}</tool_call_id>"
     assert HISTORY_SECTION in prompt
@@ -186,7 +182,7 @@ async def test_risk2_tool_stops_at_waiting_confirmation(db_session, monkeypatch)
     assert rows[0].preview["changes"]["title"]["after"] == "新标题"
     assert len(calls) == 1
 
-    # v2 独有：请求工具的 assistant 轮带 tool_calls 落库；未执行 ⇒ 不得有 role=tool 行。
+    # 持久化路径锁点：请求工具的 assistant 轮带 tool_calls 落库；未执行 ⇒ 不得有 role=tool 行。
     msgs = await persisted_messages(db_session, conversation.id)
     assert [m.role for m in msgs if m.role == "tool"] == []
     pending = [m for m in msgs if m.tool_calls]
@@ -223,7 +219,7 @@ async def test_mcp_write_tool_requires_confirmation(db_session, monkeypatch):
     assert record.preview["entity_type"] == "mcp_tool"
     assert record.preview["changes"]["execution"]["after"] == "批准后调用 MCP 服务"
 
-    # v2 独有：MCP 轮同样以 tool_calls 持久化 assistant 行，且不落 tool 行。
+    # 持久化路径锁点：MCP 轮同样以 tool_calls 持久化 assistant 行，且不落 tool 行。
     msgs = await persisted_messages(db_session, conversation.id)
     assert [m.role for m in msgs if m.role == "tool"] == []
     pending = [m for m in msgs if m.tool_calls]
@@ -258,7 +254,7 @@ async def test_auto_approve_executes_inside_turn(db_session, monkeypatch):
     assert len(tool_msgs) == 1, f"未在同一会话内持久化 role=tool 结果行：{tool_msgs}"
     assert tool_msgs[0].tool_call_id == "call_reg_1"
     assert any(e.get("type") == "tool_executed" for e in events)
-    # v2 独有：工具结果进下一轮 prompt 走持久化 <tool> 历史段，而不是 v1 的内存 tool_context 尾块。
+    # 持久化路径锁点：工具结果进下一轮 prompt 只能走持久化 <tool> 历史段（不是本轮内存里的结果）。
     assert len(calls) == 2
     assert_tool_result_persisted_in_history(calls[1]["prompt"], "call_reg_1")
 
@@ -289,10 +285,10 @@ async def test_page_context_and_persisted_history_reach_prompt(db_session, monke
     assert "/project/1/chapters" in prompt
     assert "chapter-editor" in prompt
     assert "x" * 600 not in prompt   # _build_prompt 内对 page_context.selected_entity_id 的 [:100] 裁剪
-    # 正向断言：首轮用户诉求本身也在持久化历史区块内（v1 下同样成立 ⇒ 不依赖 v1 缺席）。
+    # 正向断言：首轮用户诉求本身也在持久化历史区块内（不依赖任何字符串缺席 ⇒ 永远可证伪）。
     assert prompt.index(HISTORY_SECTION) < prompt.index("在哪个页面")
 
-    # v2 独有：只读工具结果同样落库并以下一条 <tool> 历史进第二轮 prompt。
+    # 持久化路径锁点：只读工具结果同样落库并以下一条 <tool> 历史进第二轮 prompt。
     assert_tool_result_persisted_in_history(calls[1]["prompt"], "call_reg_1")
     msgs = await persisted_messages(db_session, conversation.id)
     assert [m.role for m in msgs if m.role == "tool"] == ["tool"]
@@ -326,7 +322,7 @@ async def test_round_budget_exhaustion_raises_and_finalize_marks_cancelled(db_se
         select(AgentExecutionStep).where(AgentExecutionStep.conversation_id == conversation.id)
     )).scalars().all()))
 
-    # v2 独有：每个工具轮都留下 assistant(tool_calls) + role=tool 两行，且末轮 prompt 看得到前几轮结果。
+    # 持久化路径锁点：每个工具轮都留下 assistant(tool_calls) + role=tool 两行，且末轮 prompt 看得到前几轮结果。
     msgs = await persisted_messages(db_session, conversation.id)
     assert sum(1 for m in msgs if m.role == "tool") == ProjectAgentService.MAX_TOOL_ROUNDS + 1
     assert sum(1 for m in msgs if m.tool_calls) == ProjectAgentService.MAX_TOOL_ROUNDS + 1
