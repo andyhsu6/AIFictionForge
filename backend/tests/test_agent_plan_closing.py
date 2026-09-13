@@ -2,14 +2,18 @@
 import json
 import os
 import uuid
+from datetime import datetime
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base
-from app.models.project_agent import AgentMessage, AgentToolCall
+from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services import agent_plan_runner as runner
 from app.services.agent_plan_schema import validate_plan
+
+SECRET_CHAPTER_TEXT = "PLACEHOLDER-NEUTRAL-BODY-TEXT-9f3c"
 
 
 @pytest.fixture
@@ -42,6 +46,47 @@ def _tool_call_row(*, message_id: str | None,
         requires_confirmation=False,
         status="executing",
     )
+
+
+def _handle_with_steps(count: int = 3) -> runner._PlanHandle:
+    """_PlanHandle 真实形状 + step_results 真实条目；条目刻意多带 result/detail 哨兵键，
+    聚合白名单必须把它们挡在 payload 外（不查库）。"""
+    handle = runner._PlanHandle(
+        plan_task_id="plan-agg-1",
+        user_id="u-1",
+        project_id="p-1",
+        conversation_id="conv-agg-1",
+        steps=[
+            {"id": f"s{i}", "tool": "list_background_tasks" if i < count else "start_project_task",
+             "action": "" if i < count else "generate_chapter",
+             "arguments": ({"chapter_number": i} if i < count
+                           else {"chapter_number": i, "prompt": SECRET_CHAPTER_TEXT}),
+             "note": ""}
+            for i in range(1, count + 1)
+        ],
+        tool_call_id="tool-anchor-1",
+        task_input={"tool_call_id": "tool-anchor-1", "objective": "aggregate the steps"},
+    )
+    handle.step_results = [
+        {"index": i, "action": "list_background_tasks", "status": "completed",
+         "inline": True, "entity_id": "", "detail": {"body": SECRET_CHAPTER_TEXT}}
+        for i in range(1, count)
+    ] + [
+        {"index": count, "action": "generate_chapter", "status": "failed",
+         "inline": False, "sub_task_id": f"task-{count}",
+         "sub_task_type": "chapter_generate", "sub_task_status": "failed",
+         "sub_task_progress": 40, "error": "step failed",
+         "error_code": "internal.agent_plan_step_failed",
+         "result": {"body": SECRET_CHAPTER_TEXT}},
+    ]
+    handle.steps_done = max(count - 1, 0)
+    handle.failed_at_step = count
+    return handle
+
+
+@pytest.fixture
+def handle_with_steps():
+    return _handle_with_steps(3)
 
 
 @pytest.mark.anyio
@@ -301,3 +346,75 @@ async def test_whitespace_provider_id_is_ignored(session_factory):
             plan_task_input={"provider_call_id": "   "},
         )
     assert provider_call_id == record.id
+
+
+@pytest.mark.anyio
+async def test_one_plan_writes_exactly_one_tool_message(session_factory, handle_with_steps):
+    async with session_factory() as db:
+        db.add(AgentConversation(
+            id=handle_with_steps.conversation_id, user_id="u-1", project_id="p-1",
+            title="plan conv", last_message_at=datetime(2020, 1, 1, 0, 0, 0),
+        ))
+        await db.commit()
+    message_id = await runner._insert_plan_summary_message(
+        session_factory, handle=handle_with_steps, provider_call_id="call_agg",
+        outcome="completed", summary="plan finished",
+    )
+    async with session_factory() as db:
+        rows = (await db.execute(select(AgentMessage).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ))).scalars().all()
+        conversation = await db.get(AgentConversation, handle_with_steps.conversation_id)
+    assert message_id
+    assert [row.role for row in rows] == ["tool"]
+    assert all(row.role != "system" for row in rows)
+    tool_row = rows[0]
+    assert tool_row.id == message_id
+    assert tool_row.tool_call_id == "call_agg"
+    stored = json.loads(tool_row.content)
+    assert stored["tool"] == "plan_run_summary"
+    assert stored["result"]["outcome"] == "completed"
+    assert stored["result"]["steps_total"] == 3
+    assert stored["result"]["steps_done"] == 2
+    assert conversation.last_message_at > datetime(2020, 1, 1, 0, 0, 0)
+
+
+@pytest.mark.anyio
+async def test_summary_payload_carries_no_step_result_blobs(session_factory, handle_with_steps):
+    payload = runner.build_plan_summary_payload(handle_with_steps, "completed", "plan finished")
+    dumped = json.dumps(payload, ensure_ascii=False, default=str)
+    assert SECRET_CHAPTER_TEXT not in dumped
+    assert all(
+        SECRET_CHAPTER_TEXT not in json.dumps(step, ensure_ascii=False, default=str)
+        for step in payload["steps"]
+    )
+    assert set().union(*(set(step) for step in payload["steps"])) <= {
+        "id", "tool", "status", "action", "sub_task_id", "task_type", "error_code",
+    }
+    await runner._insert_plan_summary_message(
+        session_factory, handle=handle_with_steps, provider_call_id="call_agg",
+        outcome="completed", summary="plan finished",
+    )
+    async with session_factory() as db:
+        content = (await db.execute(select(AgentMessage.content).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ))).scalar_one()
+    assert SECRET_CHAPTER_TEXT not in content
+
+
+@pytest.mark.anyio
+async def test_summary_is_idempotent_per_plan(session_factory, handle_with_steps):
+    first = await runner._insert_plan_summary_message(
+        session_factory, handle=handle_with_steps, provider_call_id="call_agg",
+        outcome="completed", summary="plan finished",
+    )
+    second = await runner._insert_plan_summary_message(
+        session_factory, handle=handle_with_steps, provider_call_id="call_agg",
+        outcome="failed", summary="plan failed",
+    )
+    assert first == second
+    async with session_factory() as db:
+        rows = (await db.execute(select(AgentMessage).where(
+            AgentMessage.conversation_id == handle_with_steps.conversation_id
+        ))).scalars().all()
+    assert [row.role for row in rows] == ["tool"]

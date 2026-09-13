@@ -33,7 +33,13 @@ from app.logger import get_logger
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
-from app.models.project_agent import AgentExecutionStep, AgentMessage, AgentToolCall
+from app.models.project_agent import (
+    AgentConversation,
+    AgentExecutionStep,
+    AgentMessage,
+    AgentToolCall,
+    _naive_utc_now,
+)
 from app.services.agent_plan_schema import PROPOSE_PLAN_TOOL_NAME
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
@@ -56,6 +62,9 @@ STATUS_MESSAGE_MAX_CHARS = 120      # status_message 是 String(500)，PG 超长
 CANCEL_SETTLE_TIMEOUT_SECONDS = 10.0
 
 SUMMARY_MAX_CHARS = 8000        # PR-2c 聚合消息裁剪；键名 agent_plan_summary_max_chars
+
+PLAN_SUMMARY_TOOL_NAME = "plan_run_summary"   # 单条聚合 tool 行的哨兵（幂等按它过滤）
+_SUMMARY_FIELD_MAX_CHARS = 300                # 单字段上限，绝不透传 step 原文
 
 _DEFAULT_LIMITS: dict[str, Any] = {
     "agent_plan_max_steps": MAX_PLAN_STEPS,
@@ -502,6 +511,106 @@ async def resolve_provider_call_id(
         return record.id
 
 
+def build_plan_summary_payload(
+    handle: _PlanHandle, outcome: str, summary: str
+) -> dict[str, Any]:
+    """服务端白名单聚合 payload：step 原文（result/detail/arguments 等）一律不透传。"""
+    results = {
+        entry.get("index"): entry
+        for entry in handle.step_results
+        if isinstance(entry, dict)
+    }
+    steps: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(handle.steps, start=1):
+        if not isinstance(raw_step, dict):
+            continue
+        result = results.get(index) or {}
+        item: dict[str, Any] = {
+            "id": raw_step.get("id"),
+            "tool": raw_step.get("tool"),
+            "status": result.get("status") or "pending",
+        }
+        action = raw_step.get("action")
+        if action:
+            item["action"] = action
+        for source_key, target_key in (
+            ("sub_task_id", "sub_task_id"),
+            ("sub_task_type", "task_type"),
+            ("error_code", "error_code"),
+        ):
+            value = result.get(source_key)
+            if value:
+                item[target_key] = value
+        steps.append(item)
+    task_input = handle.task_input if isinstance(handle.task_input, dict) else {}
+    return {
+        "tool": PLAN_SUMMARY_TOOL_NAME,
+        "plan_task_id": handle.plan_task_id,
+        "objective": _clip(task_input.get("objective") or "", _SUMMARY_FIELD_MAX_CHARS),
+        "outcome": outcome,
+        "steps_total": len(handle.steps),
+        "steps_done": handle.steps_done,
+        "failed_at_step": handle.failed_at_step,
+        "cancelled": handle.cancel_requested or outcome == "cancelled",
+        "steps": steps,
+        "server_note": _clip(summary, _SUMMARY_FIELD_MAX_CHARS),
+        "detail_source": "AgentExecutionStep",
+    }
+
+
+async def _insert_plan_summary_message(
+    session_factory: async_sessionmaker,
+    *,
+    handle: _PlanHandle,
+    provider_call_id: str,
+    outcome: str,
+    summary: str,
+) -> str:
+    """写唯一一条 role=tool 聚合消息（DB 级幂等：同会话/同 tool_call_id 已有则不重复写）。"""
+    content = _clip(
+        json.dumps(
+            {
+                "tool": PLAN_SUMMARY_TOOL_NAME,
+                "error": None,
+                "result": build_plan_summary_payload(handle, outcome, summary),
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+        _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS),
+    )
+    now = _naive_utc_now()
+    async with session_factory() as session:
+        existing = (await session.execute(
+            select(AgentMessage.id)
+            .where(
+                AgentMessage.conversation_id == handle.conversation_id,
+                AgentMessage.role == "tool",
+                AgentMessage.tool_call_id == provider_call_id,
+                AgentMessage.content.like(f"%{PLAN_SUMMARY_TOOL_NAME}%"),
+            )
+            .order_by(AgentMessage.created_at.asc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        message = AgentMessage(
+            conversation_id=handle.conversation_id,
+            role="tool",
+            content=content,
+            tool_call_id=provider_call_id,
+            created_at=now,
+        )
+        session.add(message)
+        await session.execute(
+            update(AgentConversation)
+            .where(AgentConversation.id == handle.conversation_id)
+            .values(last_message_at=now)
+        )
+        await session.commit()
+        return message.id
+
+
 class PlanStepError(RuntimeError):
     """步骤级失败（发起报错、子任务失败/超时、子任务不存在）。一律导致失败即停。"""
 
@@ -532,6 +641,7 @@ class _PlanHandle:
     cancelled_sub_tasks: list[str] = field(default_factory=list)
     uncancellable_sub_tasks: list[str] = field(default_factory=list)
     step_results: list[dict[str, Any]] = field(default_factory=list)
+    task_input: dict[str, Any] | None = None   # run_plan 起跑时缓存，收尾 payload/配对复用
 
 
 # plan_task_id -> handle：模块级强引用（范式同 api/chapters.py:77 + :116-121 的
@@ -601,6 +711,13 @@ async def run_plan(
     「执行阶段零 LLM 调用」与「中途取消」两条验收根本不可证伪。
     """
     factory = session_factory or await _default_session_factory(user_id)
+    task_input: dict[str, Any] | None = None
+    async with factory() as session:
+        raw_input = (await session.execute(
+            select(BackgroundTask.task_input).where(BackgroundTask.id == plan_task_id)
+        )).scalar_one_or_none()
+    if isinstance(raw_input, dict):
+        task_input = raw_input
     tool_call_id = await _resolve_tool_call_id(
         factory, plan_task_id=plan_task_id, project_id=project_id, user_id=user_id
     )
@@ -612,6 +729,7 @@ async def run_plan(
         steps=[dict(step) for step in (steps or []) if isinstance(step, dict)],
         ai_service=ai_service,
         tool_call_id=tool_call_id,
+        task_input=task_input,
     )
     task = asyncio.create_task(_supervise(handle, factory))
     handle.task = task
