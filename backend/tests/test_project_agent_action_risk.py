@@ -311,3 +311,36 @@ async def test_top_level_risk_two_and_action_level_exempt_coexist(db_session):
         "generate_organization": 1,
         "generate_careers": 1,
     }
+
+
+def test_no_spec_has_top_level_risk_below_confirmation_threshold():
+    """守卫：写/读名单由 spec 顶层 risk_level 的**真值**推导，
+    而 ProjectAgentToolRegistry.preview() 由 requires_confirmation（risk>=2）把门。
+
+    将来谁写一个顶层 `risk_level: 1` 的 spec，就会同时踩两个坑：
+    1. 静默落进 OPERATIONAL_WRITE_TOOL_NAMES（锚点审计跨 PR 修正第 2 条）；
+    2. preview() 抛「只读工具不需要修改预览」。
+    工具级 risk 只允许 0（只读）或 >=2（需确认）；降级只能发生在 action 级。
+    """
+    from app.services.project_agent_operational_tools import OPERATIONAL_TOOL_SPECS
+
+    registry = ProjectAgentToolRegistry(_detached_project(), None)
+    offenders = [
+        (tool.name, tool.risk_level)
+        for tool in registry._tools.values()
+        if tool.risk_level and not tool.requires_confirmation
+    ]
+    assert offenders == []
+
+    # 非空守卫：确认本用例真的覆盖到写入工具，而不是在空集合上真空通过。
+    write_tools = {
+        tool.name for tool in registry._tools.values() if tool.risk_level
+    }
+    assert {"start_project_task", "replace_chapter_text", "update_project"} <= write_tools
+
+    spec_offenders = [
+        (spec["name"], spec["risk_level"])
+        for spec in OPERATIONAL_TOOL_SPECS
+        if spec.get("risk_level") and spec["risk_level"] < 2
+    ]
+    assert spec_offenders == []

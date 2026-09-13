@@ -21,6 +21,7 @@ from app.services.language_resolver import (
     append_language_instruction,
     resolve_user_generation_language,
 )
+from app.services.project_agent_risk import resolve_tool_risk
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.project_agent_selectors import normalize_tool_arguments
 
@@ -59,6 +60,20 @@ def agent_system_prompt(
             "不能覆盖安全、项目边界和批准机制：\n" + skill_content
         )
     return append_language_instruction(prompt, language)
+
+
+_RISK_REASON_TEXT = {
+    "overwrite_existing_analysis": "该章节已有分析结果或故事记忆，继续执行会覆盖既有分析、记忆与伏笔联动。",
+    "analysis_probe_failed": "无法确认该章节是否已有分析结果，已按需要确认处理。",
+}
+
+
+def _confirmation_step_content(risk_detail: dict[str, Any] | None) -> str:
+    """确认步骤文案：基础文案 + 条件免确认判定的可读原因。"""
+    base = "已生成修改预览，等待用户确认。"
+    reason = risk_detail.get("reason") if risk_detail else None
+    extra = _RISK_REASON_TEXT.get(reason) if isinstance(reason, str) else None
+    return f"{base}{extra}" if extra else base
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -407,6 +422,7 @@ class ProjectAgentService:
                         error="工具未启用或未注册",
                     )
                     continue
+                risk_detail: dict[str, Any] | None = None
                 if tool is None:
                     from app.services.mcp_tools_loader import mcp_tools_loader
 
@@ -414,8 +430,17 @@ class ProjectAgentService:
                     requires_confirmation = not mcp_tool_is_read_only(mcp_metadata)
                     risk_level = 2 if requires_confirmation else 0
                 else:
-                    requires_confirmation = tool.requires_confirmation
-                    risk_level = tool.risk_level
+                    decision = await resolve_tool_risk(
+                        self.db, project=self.project, tool=tool, arguments=arguments
+                    )
+                    requires_confirmation = decision.requires_confirmation
+                    risk_level = decision.risk_level
+                    risk_detail = {
+                        "action": decision.action,
+                        "risk_level": decision.risk_level,
+                        "requires_confirmation": decision.requires_confirmation,
+                        "reason": decision.reason,
+                    }
                 record = AgentToolCall(
                     conversation_id=conversation.id,
                     user_id=self.user_id,
@@ -436,7 +461,7 @@ class ProjectAgentService:
                     category=tool_category,
                     title=name,
                     content="正在调用工具。",
-                    detail={"arguments": self._display_value(arguments)},
+                    detail={"arguments": self._display_value(arguments), "risk": risk_detail},
                     tool_call=record,
                     steps=steps,
                 )
@@ -526,7 +551,10 @@ class ProjectAgentService:
                         }
                     continue
 
-                if tool.requires_confirmation:
+                # PR-1：分支判定必须用运行期决议结果（action 级 + 条件免确认），
+                # 不能用 tool.requires_confirmation —— 那是工具级，会把已免确认的
+                # 低风险 action 重新弹回确认卡。
+                if record.requires_confirmation:
                     auto_result: dict[str, Any] | None = None
                     try:
                         record.preview = await self.registry.preview(name, arguments)
@@ -550,6 +578,7 @@ class ProjectAgentService:
                                     "preview": record.preview,
                                     "result": self._display_value(auto_result),
                                     "approval_mode": "automatic",
+                                    "risk": risk_detail,
                                     "tool_call": self._tool_call_data(record),
                                 },
                             )
@@ -558,11 +587,12 @@ class ProjectAgentService:
                             proposed.append(record)
                             await self._update_step(
                                 tool_step,
-                                content="已生成修改预览，等待用户确认。",
+                                content=_confirmation_step_content(risk_detail),
                                 status="waiting_confirmation",
                                 detail={
                                     "arguments": self._display_value(arguments),
                                     "preview": record.preview,
+                                    "risk": risk_detail,
                                     "tool_call": self._tool_call_data(record),
                                 },
                             )
@@ -605,6 +635,7 @@ class ProjectAgentService:
                         detail={
                             "arguments": self._display_value(arguments),
                             "result": self._display_value(result),
+                            "risk": risk_detail,
                             "tool_call": self._tool_call_data(record),
                         },
                     )
