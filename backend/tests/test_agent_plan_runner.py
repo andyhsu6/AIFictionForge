@@ -467,13 +467,23 @@ async def complete_sub_task(factory, sub_task_id, *, status="completed", delay=0
 async def test_background_step_waits_for_sub_task_terminal_state(env, monkeypatch):
     monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.01)
     seen: list[str] = []
-    install_fake_launcher(
-        monkeypatch, env,
-        on_launch=lambda db, sub: complete_sub_task(
-            env.factory, sub.id, status="completed", delay=0.05
-        ),
-        registry_calls=seen,
-    )
+    reads: list[str] = []
+    real_snapshot = runner.resolve_task_snapshot
+
+    async def counting_snapshot(db, *, task_type, task_id):
+        reads.append(task_id)
+        return await real_snapshot(db, task_type=task_type, task_id=task_id)
+
+    monkeypatch.setattr(runner, "resolve_task_snapshot", counting_snapshot)
+
+    async def launcher(db, sub):
+        # 完成动作异步排程（不 await）：第一次轮询必须先看到一个 pending 的中间态，
+        # 否则本条无法区分"等终态"与"只读一次"。
+        asyncio.create_task(
+            complete_sub_task(env.factory, sub.id, status="completed", delay=0.05)
+        )
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher, registry_calls=seen)
     result = await start_plan(env, [
         plan_step(1, tool="start_project_task", action="generate_chapter",
                   arguments={"chapter_number": 1})
@@ -483,6 +493,7 @@ async def test_background_step_waits_for_sub_task_terminal_state(env, monkeypatc
     detail = result.plan.progress_details["step_results"][0]
     assert detail["sub_task_type"] == "chapter_generate"
     assert detail["sub_task_status"] == "completed"
+    assert len(reads) >= 2          # 至少先读到一次 pending，再读到终态
 
 
 @pytest.mark.anyio
@@ -692,10 +703,23 @@ async def test_manual_background_task_still_progresses_while_plan_polls(
 @pytest.mark.anyio
 async def test_spawn_queue_is_never_used_by_the_runner(env):
     """硬约束：runner 模块内不得出现 spawn_background_task 调用（否则会饿死子任务）。"""
+    import ast
     import inspect
 
-    source = inspect.getsource(runner)
-    # 修正（deviation）：模块 docstring 本就写着这个禁词来解释"为什么不能入队"，
-    # 裸字符串断言必红；改成查**调用形态**，既保住门禁又不逼文档回避 API 名。
-    assert "spawn_background_task(" not in source
-    assert "_user_worker_loop(" not in source
+    # 修正（deviation）：裸子串检查可被 `import x as y` / 先取属性再调用绕开，且模块
+    # docstring 本就写着这个禁词来解释"为什么不能入队"。改成 AST 检查：任何属性引用
+    # （fn = svc.spawn_background_task）与任何导入名/别名（import x as spawn）都算命中。
+    tree = ast.parse(inspect.getsource(runner))
+    forbidden = {"spawn_background_task", "_user_worker_loop"}
+    referenced: set[str] = set()
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            referenced.add(node.attr)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                short = alias.name.rsplit(".", 1)[-1]
+                imported.add(short)
+                imported.add(alias.asname or short)
+    assert not (referenced & forbidden), f"runner 引用了禁用的队列入口：{referenced & forbidden}"
+    assert not (imported & forbidden), f"runner 导入了禁用的队列入口：{imported & forbidden}"
