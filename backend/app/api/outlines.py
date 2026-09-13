@@ -1799,7 +1799,7 @@ def _resolve_outline_generation_model(data: Dict[str, Any], ai_service: AIServic
     这里只做「task_input 记录与实际执行模型对齐」的提前归一化，**不是兜底**：
     `ai_service.generate_text_stream` 自 #55 步骤 2 起不再有 `model or default_model`
     回退，它经 `_resolve_model_or_raise` 取值，请求模型与用户默认模型都为空即抛
-    `validation.ai_model_not_configured`（步骤 3 再对实发模型做 >=1M 窗口硬拦）。
+    `validation.ai_model_not_configured`（步骤 3 再对实发模型做 >= 下限窗口硬拦）。
     系统不替用户猜模型，所以本函数返回空串时由派发点报错，而不是在这里回填常量。
     """
     raw = data.get("model") if hasattr(data, "get") else getattr(data, "model", None)

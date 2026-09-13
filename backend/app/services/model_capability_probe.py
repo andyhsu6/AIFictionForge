@@ -2,9 +2,10 @@
 
 为什么存在
 ----------
-产品前提：底座模型的上下文窗口必须 >= 1M tokens。低于 1M 的失败是**静默**的——
+产品前提：底座模型的上下文窗口必须 >= 900_000 tokens（产品下限，`MIN_CONTEXT_WINDOW_TOKENS`）。
+低于这条下限的失败是**静默**的——
 助手会丢掉它最早读到的指令，一次批次摘要覆盖了半本书却仍然「读起来很完整」。
-所以「<1M 半支持」比「不支持」更糟，门禁必须是硬拦，且必须绑在**本次真正发出去
+所以「低于下限的半支持」比「不支持」更糟，门禁必须是硬拦，且必须绑在**本次真正发出去
 的那个模型**上（只在保存时判定可被逐次传 model 完全绕过）。
 
 三档探测（本期只接 ①②）
@@ -23,12 +24,12 @@
 `unqualified` 是实测结论，而 #59 之后实测结论不可被用户声明翻盘。两者相加的后果：
 一次**假**的 unqualified 会把一台合规模型永久锁死——界面上显示不出任何数字（无从解释），
 声明出口又被关闭（无从自救）。所以拒绝路径与 #59 同一条规则：**没测到的不许记录**。
-只有「这条报错确实排除了 >=1M」才算 unqualified，其余一律 inconclusive：
+只有「这条报错确实排除了 >= 下限」才算 unqualified，其余一律 inconclusive：
 
-| 网关的报错                          | 排除了 >=1M 吗             | 结论           |
+| 网关的报错                          | 排除了 >= 下限吗           | 结论           |
 |-------------------------------------|----------------------------|----------------|
 | `max_tokens must be <= 16384`       | 否：讲的是**输出**上限     | inconclusive   |
-| 刻度恰为下限 + prompt 非空而被拒    | 否：只证明 `< 1M + prompt` | inconclusive   |
+| 刻度恰为下限 + prompt 非空而被拒    | 否：只证明 `< 下限 + prompt` | inconclusive   |
 | `maximum context length is 128000`  | **是**：它自己报的数       | unqualified    |
 
 代价（如实承认）：报不出数字的网关一律判不出，其中确实不合规的那一部分要靠用户显式
@@ -37,11 +38,11 @@
 已知盲区（对外必须诚实，勿暗示系统万无一失）
 --------------------------------------------
 1. **静默截断型网关可以通过 ①②**：许多兼容网关不报错而直接把输入截断，
-   「接受 max_tokens=1M」不等于「真读进去 1M」。③ 的 needle 回读是唯一解，
+   「接受探测刻度」不等于「模型真读进去这么多」。③ 的 needle 回读是唯一解，
    本期未接线，故该误判可能如实发生，只能靠用户显式重测与表单三段数缓解。
 2. **网关换模型/降配不会被自动发现**：定论一旦落库就长期沿用，本实现不再有周期性
    复测（原日频复测已删除）。只有改动三元组（provider/base URL/模型名）或用户显式
-   重新检测才会重新探测。README 只承诺「要求 ≥1M、保存时实测、低于此不受支持」，
+   重新检测才会重新探测。README 只承诺「要求达到下限、保存时实测、低于此不受支持」，
    **不得**外推成「任何时刻都不会被绕过」。
 3. **② 档的判据只是「网关自己报数」这一条**：它不报数（或报的数不贴着上下文措辞）
    时一律判不出，此时门禁退回「未知即不合格 + 需显式声明」，不会自动放行。
@@ -73,7 +74,7 @@ logger = get_logger(__name__)
 # ========== 产品下限 ==========
 # ⚠️ 刻意不复用 ai_service._1M_THRESHOLD：那是「全书注入启用线」，语义不同
 # （实测它还是死代码，见 issue #57）。这里是「产品最低要求」。
-MIN_CONTEXT_WINDOW_TOKENS = 1_000_000
+MIN_CONTEXT_WINDOW_TOKENS = 900_000
 
 # ========== 探测档与触发点 ==========
 TIER_METADATA = "metadata"
@@ -155,7 +156,7 @@ class ProbeOutcome:
 # 浏览器验收里被抓到过：设置页加载那一枪静默探测打到不可达的网关，后端照实回
 # HTTP 200 + `inconclusive`，`write_verdict` 把它落了库，于是「实测 128,000」这条
 # 唯一能解释「为什么 AI 被拒」的证据被一次「没测出来」抹掉——一个真实测量过的 128K
-# 用户被永久降级成「你去声明一个窗口」，而显式声明正是实测 `<1M` 本该挡住的出口。
+# 用户被永久降级成「你去声明一个窗口」，而显式声明正是实测低于下限本该挡住的出口。
 #
 # 强度只有三档，判据是「这条结论凭什么成立」，与它是 qualified 还是 unqualified 无关：
 #
@@ -167,7 +168,7 @@ class ProbeOutcome:
 #
 # 写入规则：`强度(新) >= 强度(旧)` 才允许覆盖，同强度＝新的赢。展开即：
 # - 实测覆盖实测 ✅ 日常复测就是它。实测之间**刻意不分强弱**：网关侧把窗口升到
-#   >=1M 必须能被重新接纳，降配也必须能被重新拒绝，两条都靠「新的实测赢」。
+#   >= 下限必须能被重新接纳，降配也必须能被重新拒绝，两条都靠「新的实测赢」。
 #   强度序因此不会把任何人永久锁死。
 # - 实测覆盖声明 ✅ 声明只是探测判不出时的出口，真测出来就轮不到它说话。
 # - 声明覆盖判不出 ✅ 出口本来就是为这一态准备的。
@@ -209,10 +210,10 @@ PROBE_READ_TIMEOUT_SECONDS = 25.0
 # 超时按 inconclusive 处理：判定语义不变（未知即不合格，仍走拒绝/显式声明出口），
 # 只是不再无限等一个不会答的网关。
 PROBE_TOTAL_DEADLINE_SECONDS = 60.0
-# ② 档默认刻度：恰为产品下限。**接受** ⇒ 窗口 >= 1M（成立证据）；**被拒** 单独不构成
-# 「< 1M」的证据——校验 `prompt + max_tokens <= window` 的网关会拒掉一个恰好等于窗口
+# ② 档默认刻度：恰为产品下限 900,000。**接受** ⇒ 窗口 >= 下限（成立证据）；**被拒** 单独不构成
+# 「< 下限」的证据——校验 `prompt + max_tokens <= window` 的网关会拒掉一个恰好等于窗口
 # 的请求，而 prompt 非空，故被拒只证明 `window < 刻度 + prompt`。登记表提示可以把刻度
-# 抬到 > 1M（更强的证据），此时被拒会再退到本刻度探一次。判据见 `_classify_bound_rejection`。
+# 抬到 > 下限（更强的证据），此时被拒会再退到本刻度探一次。判据见 `_classify_bound_rejection`。
 MAX_TOKENS_PROBE_VALUE = MIN_CONTEXT_WINDOW_TOKENS
 # ② 档 prompt 的 token 量级（"ping" + 模板开销）；只用来把「这次被拒证明了什么」说清楚，
 # 不参与接受/拒绝判定。刻意取宽：宁可少断言，不可多断言。
@@ -438,7 +439,7 @@ class BoundRejectionEvidence:
 
     @property
     def proves_below_minimum(self) -> bool:
-        """这条报错确实排除了 >=1M ⇒ 可以记成实测 unqualified。"""
+        """这条报错确实排除了 >= 下限 ⇒ 可以记成实测 unqualified。"""
         return self.kind == REJECT_MEASURED_BELOW_MINIMUM
 
     @property
@@ -480,7 +481,7 @@ def _matches_any(text: str, hints: Tuple[str, ...]) -> bool:
 
 
 def _classify_bound_rejection(body: str) -> BoundRejectionEvidence:
-    """把一次上界类拒绝读成「它排除了 >=1M 吗」，判据是**网关自己报出的数字**。
+    """把一次上界类拒绝读成「它排除了 >= 下限吗」，判据是**网关自己报出的数字**。
 
     规则（按 #65 的三行表）：
 
@@ -493,7 +494,7 @@ def _classify_bound_rejection(body: str) -> BoundRejectionEvidence:
        宁可漏判一个真不合格的网关（退回声明出口），不可误判一个合规的（永久锁死）。
     4. 候选 >= 下限 ⇒ 网关报的窗口本身就合规，它拒绝只是因为 prompt + 刻度没有边际
        （路径 B）；没有候选 ⇒ 要么它在讲输出上限，要么它压根没报数。两种都排除不了
-       `window >= 1M`，一律 inconclusive。
+       `window >= 下限`，一律 inconclusive。
     """
     text = (body or "").lower()
     candidates: List[int] = []
@@ -564,7 +565,7 @@ async def probe_max_tokens_bound_tier(
     - **被拒** ⇒ 只有网关自己报出一个低于下限的**上下文**数字才算实测不合格（#65）；
       输出上限、以及「刻度恰为下限 + prompt 非空」这种没有边际的边界拒绝一律判不出——
       被拒最多证明 `window < 刻度 + prompt`，而那条不等式排除不了 `window == 刻度`。
-    刻度 > 1M（登记表提示抬上去的）时被拒只给出一个上界，故退回 1M 刻度再探一次。
+    刻度 > 下限（登记表提示抬上去的）时被拒只给出一个上界，故退回下限刻度再探一次。
     """
     ladder = [probe_value]
     if probe_value > MAX_TOKENS_PROBE_VALUE:
@@ -975,7 +976,7 @@ def gate_state_payload(model: str, outcome: ProbeOutcome) -> Dict[str, Any]:
     - `describe_cached_gate_state`：步骤 5 的存量收口（只读缓存，供表单渲染三段数）
 
     `requires_explicit_declaration`：只有「探测判不出」才需要用户显式声明窗口；
-    实测 `<1M` 时声明不是放行通道（计划 §2 表第 2 行）。
+    实测低于下限时声明不是放行通道（计划 §2 表第 2 行）。
     注意本函数只会在非合格结论上被调用（`ensure_model_allowed` 对 qualified 直接放行），
     所以 `verdict != unqualified` 与 `verdict == inconclusive` 在此等价，取后者更直白。
     """
@@ -1125,8 +1126,8 @@ async def ensure_model_allowed(
     零 token。绝不允许「查不到就放行」。
 
     `declared_tokens`（仅保存路径会传）：**不能抢在实测之前**。先定论（必要时同步补测
-    ①②），只有结论是 inconclusive/未登记时才接受显式声明；实测 <1M 的模型即使
-    用户声明 >=1M 也照样拒——声明是给「探测判不出」留的出口，不是勾选放行通道。
+    ①②），只有结论是 inconclusive/未登记时才接受显式声明；实测低于下限的模型即使
+    用户声明 >= 下限也照样拒——声明是给「探测判不出」留的出口，不是勾选放行通道。
     """
     if not user_id or db is None:
         # 未绑定用户的诊断实例（/settings/test、/check-function-calling 的临时 AIService、
@@ -1149,7 +1150,7 @@ async def ensure_model_allowed(
         return outcome
 
     if outcome.verdict == VERDICT_INCONCLUSIVE and declared_tokens is not None:
-        declared = user_declared_outcome(declared_tokens)  # 声明 <1M 在这里直接抛
+        declared = user_declared_outcome(declared_tokens)  # 声明低于下限在这里直接抛
         await write_verdict(
             db, user_id, provider=provider, base_url=base_url, model=model, outcome=declared
         )
@@ -1165,7 +1166,7 @@ async def ensure_model_allowed(
 
 
 def user_declared_outcome(declared_tokens: Optional[int]) -> ProbeOutcome:
-    """把「用户显式声明的窗口」变成一条结论。声明 <1M 仍然拒绝（无勾选放行通道）。"""
+    """把「用户显式声明的窗口」变成一条结论。声明低于下限仍然拒绝（无勾选放行通道）。"""
     if not isinstance(declared_tokens, int) or isinstance(declared_tokens, bool):
         raise ApiError(
             code=BELOW_MINIMUM_CODE,

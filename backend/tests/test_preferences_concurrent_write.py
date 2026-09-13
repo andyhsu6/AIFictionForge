@@ -334,7 +334,7 @@ def _qualified_context_verdict() -> dict:
         triple_key,
     )
 
-    assert MIN_CONTEXT_WINDOW_TOKENS == 1_000_000
+    assert 1_048_576 > MIN_CONTEXT_WINDOW_TOKENS
     return {
         PREFERENCES_KEY: {
             triple_key("openai", "https://gw.test/v1", "stub-model"): {

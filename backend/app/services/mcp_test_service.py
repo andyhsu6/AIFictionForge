@@ -188,7 +188,7 @@ class MCPTestService:
                 temperature=0.3,
                 max_tokens=1000,
                 # 需求 #55 步骤 3：绑定用户与会话，否则这条路径拿不到上下文窗口结论，
-                # 等于绕开 >=1M 硬拦门禁
+                # 等于绕开 >= 下限硬拦门禁
                 user_id=user.user_id,
                 db_session=db_session,
             )

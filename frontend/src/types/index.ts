@@ -118,8 +118,9 @@ export interface SettingsUpdate {
   preferences?: string;
   /**
    * Issue #55 step 3: explicit window declaration (tokens) for models the probe
-   * cannot decide. Only >= 1_000_000 is accepted, and it never overrides a
-   * measured sub-1M model. Not a DB column — it lands in the verdict cache.
+   * cannot decide. Only values at or above the floor are accepted, and a declaration
+   * never overrides a measured below-floor model. Not a DB column — it lands in the
+   * verdict cache.
    */
   context_window_tokens?: number;
 }

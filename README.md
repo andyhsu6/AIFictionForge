@@ -24,13 +24,13 @@
 
 ---
 
-## ⚠️ Breaking change: a model with a ≥1M token context window is now required
+## ⚠️ Breaking change: a model with a ≥900,000 token context window is now required
 
 **Version note: applies from the first release after `v1.5.4`.** The last tagged release (`v1.5.4`, still current in the badge above) accepted smaller models and silently degraded them; the release after it does not.
 
-- Every AI feature requires a backing model with a context window of at least **1,000,000 tokens**. Below that floor the model is refused — when you save it **and** on every request that would actually dispatch it, including a per-request model override.
+- Every AI feature requires a backing model with a context window of at least **900,000 tokens**. Below that floor the model is refused — when you save it **and** on every request that would actually dispatch it, including a per-request model override.
 - **The tiered degradation is gone.** There is no "128K mode" that quietly swaps whole-book injection for recent-chapter summaries plus retrieval. There is also **no implicit fallback model**: an account with no configured model gets `validation.ai_model_not_configured` instead of a system-chosen default.
-- **Existing accounts are not migrated silently.** If you had a smaller model configured, your next AI request is refused with `validation.ai_model_below_minimum`, and the app points you at Settings (a sticky notice on streaming/background paths, the gate form inline when you are already there). That form shows three numbers from the cached verdict alone — the measured window, the window you declared, and the budget actually adopted, next to the 1M floor itself — so you can re-select and re-verify a qualifying model even if your gateway is unreachable at that moment.
+- **Existing accounts are not migrated silently.** If you had a smaller model configured, your next AI request is refused with `validation.ai_model_below_minimum`, and the app points you at Settings (a sticky notice on streaming/background paths, the gate form inline when you are already there). That form shows three numbers from the cached verdict alone — the measured window, the window you declared, and the budget actually adopted, next to the 900,000-token floor itself — so you can re-select and re-verify a qualifying model even if your gateway is unreachable at that moment.
 - **`DEFAULT_MODEL` is no longer read by the backend.** The setting was removed; the variable is ignored if it is still present in your `.env` or `docker-compose.yml`. Models are configured per account inside the app.
 - A fresh install therefore has **no usable AI model until you add one** in Settings.
 
@@ -40,7 +40,7 @@ The floor is enforced as well as the probe can measure it, which is **not** the 
 
 ## ✨ Features
 
-- 🤖 **Multiple AI Providers** - OpenAI, Gemini, Claude and any OpenAI-compatible endpoint (protocol compatibility only; the model you configure still needs a ≥1M token context window, see Model Requirements)
+- 🤖 **Multiple AI Providers** - OpenAI, Gemini, Claude and any OpenAI-compatible endpoint (protocol compatibility only; the model you configure still needs a ≥900,000 token context window, see Model Requirements)
 - 📝 **Smart Wizard** - AI automatically generates outlines, characters, and world settings
 - 👥 **Character Management** - Visual management of character relationships and organization structures
 - 📖 **Chapter Editing** - Create, edit, regenerate, and polish chapters
@@ -99,17 +99,17 @@ The floor is enforced as well as the probe can measure it, which is **not** the 
 
 ## 🧠 Model Requirements
 
-**This project requires a large-context model — a context window of at least 1M tokens.**
+**This project requires a large-context model — a context window of at least 900,000 tokens.**
 
-Almost every core feature feeds book-scale content into the prompt: chapter generation can inject the whole book, book deconstruction parses an entire imported text, and the creative assistant carries long project history plus tool results on top of that. Below 1M the failure mode is **silent**, not slow — the assistant drops your earliest instructions once its history budget is full, and a batch-analysis summary can report on only part of the book while still sounding complete. That kind of quality regression cannot be recovered after the fact, so we treat the window as a floor rather than a performance preference.
+Almost every core feature feeds book-scale content into the prompt: chapter generation can inject the whole book, book deconstruction parses an entire imported text, and the creative assistant carries long project history plus tool results on top of that. Below the floor the failure mode is **silent**, not slow — the assistant drops your earliest instructions once its history budget is full, and a batch-analysis summary can report on only part of the book while still sounding complete. That kind of quality regression cannot be recovered after the fact, so we treat the window as a floor rather than a performance preference.
 
 | Context window | Status |
 |---|---|
-| ≥ 1M tokens | ✅ Supported |
-| Measured below 1M | ❌ Not supported — the save is rejected, and every request that would dispatch that model is refused |
-| Probe could not reach a verdict | ❌ Also rejected — unknown counts as unqualified, until you declare `context_window_tokens ≥ 1M` in the settings form |
+| ≥ 900,000 tokens | ✅ Supported |
+| Measured below the floor | ❌ Not supported — the save is rejected, and every request that would dispatch that model is refused |
+| Probe could not reach a verdict | ❌ Also rejected — unknown counts as unqualified, until you declare `context_window_tokens ≥ 900,000` in the settings form |
 
-There is no middle tier and no checkbox that waves a verdict through: a model the app has **measured** below 1M stays rejected even if you declare a larger window. The declaration field is an exit for the "probe could not tell" case only.
+There is no middle tier and no checkbox that waves a verdict through: a model the app has **measured** below the floor stays rejected even if you declare a larger window. The declaration field is an exit for the "probe could not tell" case only.
 
 There is **no implicit default model** either. An account with no configured model does not silently inherit one: AI features stop with `validation.ai_model_not_configured` and send you to Settings. The retired `DEFAULT_MODEL` environment variable is not read by the backend — configure the model per account in the app, where the window is actually measured.
 
@@ -118,19 +118,21 @@ There is **no implicit default model** either. An account with no configured mod
 Verdicts are cached per **(provider, base URL, model name)** triple. Whenever the model a request is about to use has no verdict on file — a first configuration, or a change to any of those three — the app probes your endpoint and waits for the result before running:
 
 1. **Metadata**: `GET /models/<id>`, reading a context-length field if your gateway exposes one (zero tokens).
-2. **Server-side bound**: a minimal prompt with `max_tokens` set to the 1M floor, streamed, relying on the provider's own upper-bound validation — accepting that budget is evidence of a ≥1M window (≈zero tokens; the stream is cut after the first chunk). A rejection counts as evidence of a *smaller* window only when the gateway itself states a context or prompt bound below 1M. A refusal that merely rejects an oversized request without naming such a number — including one that is only about the **output** cap — is recorded as "could not decide", not as "too small", because being rejected at exactly 1M cannot exclude a window of exactly 1M. "Could not decide" is the state the declaration field exists for.
+2. **Server-side bound**: a minimal prompt with `max_tokens` set to the floor, streamed, relying on the provider's own upper-bound validation — accepting that budget is evidence of a window at or above the floor (≈zero tokens; the stream is cut after the first chunk). A rejection counts as evidence of a *smaller* window only when the gateway itself states a context or prompt bound below the floor. A refusal that merely rejects an oversized request without naming such a number — including one that is only about the **output** cap — is recorded as "could not decide", not as "too small", because being rejected at exactly the floor cannot exclude a window of exactly the floor. "Could not decide" is the state the declaration field exists for.
 
-A stored verdict is reused **indefinitely** — there is no automatic re-check, periodic or otherwise. The settings form has a manual **Re-check** that measures and caches without blocking; rejecting is the save/dispatch gate's job, and only a change to one of the three triple parts or that manual action re-probes. A third tier (fill near 1M tokens with a needle and read it back) is the only thing that separates "the endpoint accepted the request" from "the model really read 1M tokens"; **it is deliberately not wired up in this iteration**, because it would cost ≈1M input tokens per user. The form shows three numbers side by side — measured, declared, and the budget actually adopted — next to the 1M floor itself, so you can see which one decided.
+A stored verdict is reused **indefinitely** — there is no automatic re-check, periodic or otherwise. The settings form has a manual **Re-check** that measures and caches without blocking; rejecting is the save/dispatch gate's job, and only a change to one of the three triple parts or that manual action re-probes. A third tier (fill near 1M tokens with a needle and read it back) is the only thing that separates "the endpoint accepted the request" from "the model really read the window"; **it is deliberately not wired up in this iteration**, because it would cost ≈1M input tokens per user. The form shows three numbers side by side — measured, declared, and the budget actually adopted — next to the floor itself, so you can see which one decided.
+
+Tier 2 records the probe scale it **accepted**, not the model's real window, and the whole-book budget is that recorded number × 0.6. A model whose real window is 1,000,000 tokens therefore now records 900,000 and budgets 540,000 characters instead of 600,000 — a 10% smaller injection. The direction is safe: the app injects less of your book than the model could hold, never more.
 
 A first probe can fail — an unreachable gateway, a key that is momentarily invalid — and "could not decide" is not a conclusion. So when the model a request is about to dispatch has no conclusion, or only that non-conclusion, the app probes again and waits (at most once per minute per triple, so a gateway outage cannot turn every request into an outbound probe). **If that dispatch-time re-probe still cannot decide, the result is not stored**: `context_window_gate` in `GET /settings` stays `null`, the card shows "not measured", and the AI request is refused under the "unknown counts as unqualified" rule. That is more honest than recording a measurement that never happened; it does mean the card can read "not measured" while AI is refused, which is expected — a manual Re-check, or a retry once the gateway is reachable, resolves it.
 
 Eligibility is **not** decided by a hardcoded model list. A built-in registry only hints which probe size to start from; it can never qualify or disqualify a model. **You choose the model, and you declare what your own endpoint gives you — you are the authority on it, not our table.**
 
-> **Blind spot 1 — a silent-truncating gateway can pass.** Plenty of compatibility relays do not error on an oversized request, they just cut it down. Such an endpoint answers tier 2 as if it accepted 1M and is recorded as qualified. With tier 3 unwired there is no defence, so a model that passed the gate can still lose the beginning of your book. If output quality is worse than the reported window suggests, suspect the gateway, not the model name.
+> **Blind spot 1 — a silent-truncating gateway can pass.** Plenty of compatibility relays do not error on an oversized request, they just cut it down. Such an endpoint answers tier 2 as if it accepted the probe scale and is recorded as qualified. With tier 3 unwired there is no defence, so a model that passed the gate can still lose the beginning of your book. If output quality is worse than the reported window suggests, suspect the gateway, not the model name.
 
 > **Blind spot 2 — a gateway that swaps or downgrades your model, and a stale verdict that is never re-checked.** Verdicts are cached per (provider, base URL, model name) triple and are **not** refreshed automatically — not on a UTC schedule, not on dispatch. Requests keep being admitted under the stale verdict until you change one of the three triple parts or run the manual Re-check; a gateway-side downgrade therefore stays invisible until you do.
 
-> **What even a correct verdict cannot tell you**: accepting 1M tokens is not the same as *using* them well. Long-range consistency in the middle of a novel stays a per-model property, so judge a new model on your own text before committing to it.
+> **What even a correct verdict cannot tell you**: accepting the probe scale is not the same as *using* the window well. Long-range consistency in the middle of a novel stays a per-model property, so judge a new model on your own text before committing to it.
 
 > Supporting an API protocol is not the same as meeting the window requirement — the integrations listed in Tech Stack (OpenAI/Claude/Gemini SDKs) describe transport compatibility only. Eligibility is decided by the probed or declared window of the specific model you configure.
 
@@ -174,7 +176,7 @@ Eligibility is **not** decided by a hardcoded model list. A built-in registry on
 ### Prerequisites
 
 - Docker and Docker Compose (optional, not required for local development)
-- At least one AI service API Key (OpenAI/Gemini/Claude/DeepSeek-compatible) — **for a model with a ≥1M token context window**, see Model Requirements above
+- At least one AI service API Key (OpenAI/Gemini/Claude/DeepSeek-compatible) — **for a model with a ≥900,000 token context window**, see Model Requirements above
 
 ### Docker Compose Deployment
 
@@ -273,7 +275,7 @@ DEFAULT_AI_PROVIDER=openai
 # DEFAULT_MODEL has been RETIRED: the backend no longer reads this variable, and
 # there is no system default model to fall back to. Configure the model per
 # account in the app (Settings), where its real context window is probed.
-# The model must have a >=1M token context window — see "Model Requirements" above.
+# The model must have a >=900,000 token context window — see "Model Requirements" above.
 # Whole-book context injection scales with the window you configure; for
 # long-output tasks like book deconstruction, streaming is recommended.
 

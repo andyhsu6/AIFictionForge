@@ -267,7 +267,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "task.not_completed": ("任务尚未完成，无法获取预览", 400),
     "task.running_mutation_blocked": ("无法删除进行中的任务，请先取消", 400),
     "validation.ai_config_missing": ("请先在「设置 → 文本模型配置」中配置模型", 400),
-    # ---- 需求 #55：≥1M 上下文模型硬前提（步骤 2 注册；below_minimum 的实发门禁在步骤 3）----
+    # ---- 需求 #55：上下文窗口 >= 下限的硬前提（步骤 2 注册；below_minimum 的实发门禁在步骤 3）----
     # ai_model_not_configured：用户未配置任何模型时明确报错，系统不得代猜一个。
     # ai_model_below_minimum：实发模型上下文窗口不足下限（参数化码，raise 时须显式
     # 传原文案 detail 以保证旧客户端 byte-identity）。

@@ -1,8 +1,8 @@
 /**
  * Context-window gate math for the settings form (issue #55 step 3b).
  *
- * The product premise is a >=1M token context window; below that the failure is
- * silent, so the gate is hard. The plan requires the form to show **three numbers
+ * The product premise is a context window at or above the 900,000-token floor;
+ * below the floor the failure is silent, so the gate is hard. The plan requires the form to show **three numbers
  * on one screen** — the probed window / the window you declared / the budget the
  * system will actually adopt — rather than only an error code, because a user who
  * cannot see *why* a save was rejected cannot fix it.
@@ -23,7 +23,7 @@
  * pre-probe frame before any response exists. `tests/test_context_window_probe_gate.py`
  * pins it against `MIN_CONTEXT_WINDOW_TOKENS` so the two cannot drift.
  */
-export const MIN_CONTEXT_WINDOW_TOKENS = 1_000_000;
+export const MIN_CONTEXT_WINDOW_TOKENS = 900_000;
 
 /** Verdicts from `app/services/model_capability_probe.py` (`VERDICT_*`). */
 export type GateVerdict = 'qualified' | 'unqualified' | 'inconclusive' | 'unknown';
@@ -34,11 +34,11 @@ export type GateStatus =
   | 'model-missing'
   /** Model filled but never probed from this form: 「重新检测」 is the next step. */
   | 'unprobed'
-  /** >= 1M measured or declared-and-accepted: saving is allowed. */
+  /** At or above the floor, measured or declared-and-accepted: saving is allowed. */
   | 'qualified'
-  /** Measured < 1M: hard reject, a declaration cannot override it. */
+  /** Measured below the floor: hard reject, a declaration cannot override it. */
   | 'below-minimum'
-  /** Probe could not decide: an explicit declaration >= 1M is required to save. */
+  /** Probe could not decide: an explicit declaration at or above the floor is required to save. */
   | 'needs-declaration';
 
 export interface ContextWindowProbe {
@@ -199,7 +199,7 @@ function asNumber(value: unknown): number | null {
  * strong as what we already hold**. A probe that could not decide is a non-measurement
  * (the gateway was unreachable, the answer was a 401, ...), so it must leave a cached
  * 「measured 128,000 / below the minimum」 on screen instead of blanking it to
- * 「— / declare a window」 — that demand is precisely the exit a measured sub-1M
+ * 「— / declare a window」 — that demand is precisely the exit a measured below-floor
  * verdict exists to close. Equal strength means the fresher one wins, which is what the
  * daily recheck is for. `declared` always comes from the form field, so the second
  * number tracks typing live.
@@ -219,8 +219,8 @@ function asNumber(value: unknown): number | null {
  *     on screen, so only this branch falls back to the documented local rule.
  *
  * The rule itself stays spelled out as the fallback, and it is the backend's rule, not a
- * UI opinion: a measured <1M model is rejected even when the user declares 1M+
- * (`ensure_model_allowed` only consults the declaration after tiers ①② came back
+ * UI opinion: a measured below-floor model is rejected even when the user declares
+ * at or above the floor (`ensure_model_allowed` only consults the declaration after tiers ①② came back
  * inconclusive) — that is why there is no "acknowledge and continue" checkbox here either.
  */
 export function deriveGateNumbers(
@@ -268,7 +268,7 @@ export function deriveGateNumbers(
 
   // 本地回退分支复刻后端规则：实测低于下限时后端直接拒保存，声明再大也进不了采纳分支
   // （`ensure_model_allowed` 只在 ①② 判不出时才看声明），所以这里必须回 null：
-  // 否则表单会在门禁拒绝的同时显示一个 1,000,000 的预算，等于告诉用户「会用这个窗口」
+  // 否则表单会在门禁拒绝的同时显示一个按窗口算出的预算，等于告诉用户「会用这个窗口」
   // ——正是本需求要根除的静默失败形态。
   const locallyAdopted = qualified
     ? (probed ?? effectiveDeclared ?? minimum)

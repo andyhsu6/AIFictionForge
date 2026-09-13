@@ -13,6 +13,7 @@ import {
   gateEvidenceAfterProbe,
   gateRejectionFromCachedState,
   probeToastKey,
+  MIN_CONTEXT_WINDOW_TOKENS,
   NO_GATE_EVIDENCE,
   type ContextWindowProbe,
   type GateEvidence,
@@ -245,7 +246,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
         });
         // **页面渲染绝不发探测**（#59 第 2 项，`d38ca31` 在 `describe_cached_gate_state`
         // 上方就把这条写成原则，`e4d3f6c` 的挂载探测违反它）。一打开设置页就打用户网关
-        // = 每次开设置一次对外请求 + ② 档 `max_tokens=1M` 的潜在计费，而渲染本身
+        // = 每次开设置一次对外请求 + ② 档 `max_tokens=下限` 的潜在计费，而渲染本身
         // 不需要任何新证据：缓存结论就是后端的事实。复测属于派发路径
         // （`ensure_model_allowed` 的 fire-and-forget）与显式的「重新检测」按钮，两者都不在这里。
         //
@@ -523,7 +524,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
 
   // ========== 上下文窗口门禁（#55 步骤 3b：三段数同屏） ==========
   // 三个数分别是：探测到的窗口 / 用户填写的窗口 / 系统实际采用的预算。产品前提是
-  // >=1M 窗口，低于它失败是**静默**的，所以门禁是硬拦、没有勾选放行通道；表单必须
+  // 不低于下限的窗口，低于它失败是**静默**的，所以门禁是硬拦、没有勾选放行通道；表单必须
   // 把「为什么保存被拒」摆在同一屏，而不是只丢一个错误码。
   const [windowProbe, setWindowProbe] = useState<ContextWindowProbe | null>(null);
   const [probingWindow, setProbingWindow] = useState(false);
@@ -597,7 +598,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       setProbedModel(modelName);
       // #59：这一枪**判不出**（网关不可达时后端照实回 200 + inconclusive）不是新证据，
       // 不许把已握有的结论从屏幕上抹掉——抹掉后表单只剩「你去声明一个窗口」，而那正是
-      // 实测 `<1M` 本该挡住的出口。只有测出了什么的探测才替换它。判定口径与
+      // 实测低于下限本该挡住的出口。只有测出了什么的探测才替换它。判定口径与
       // `deriveGateNumbers` 同一条强度序（`gateEvidenceAfterProbe`）。
       setGateEvidence((prev) => gateEvidenceAfterProbe(prev, result, modelName));
       if (!options?.silent) {
@@ -1828,7 +1829,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                               <InputNumber
                                 style={{ width: '100%' }}
                                 min={1}
-                                step={1_000_000}
+                                step={MIN_CONTEXT_WINDOW_TOKENS}
                                 controls={false}
                                 placeholder={String(gate.minimum)}
                               />

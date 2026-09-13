@@ -286,7 +286,7 @@ export const settingsApi = {
     }>('/settings/check-function-calling', params),
 
   /**
-   * Issue #55 step 3b: probe whether a model's context window meets the >=1M floor.
+   * Issue #55 step 3b: probe whether a model's context window meets the floor.
    * Same result envelope as `checkFunctionCalling` (the backend deliberately mirrors
    * it), plus `details.window_display` — the three numbers the settings form shows
    * live. This endpoint only measures; rejecting the save is `save_settings`'s gate.

@@ -438,7 +438,7 @@ class AIService:
         为什么门禁必须长在这里（需求 #55 步骤 3 的审核致命项）：
         `custom_model` 取自请求体 `generate_request.model` 与后台任务的
         `task_input["model"]`，最终写进 `generate_kwargs["model"]`。用户配好合格的
-        1M 模型后，仍可逐次传 `gpt-4o-mini` 进去 ⇒ 静默截断，**只在保存时判定的门禁
+        合格模型后，仍可逐次传 `gpt-4o-mini` 进去 ⇒ 静默截断，**只在保存时判定的门禁
         会被这条路径完全绕过**。per-usage 预设本就允许多个不同模型，也不能靠
         「删掉 per-request 覆盖」了事。所以判定收敛到「model 已解析、请求还没发出」
         的这里，查的是 preferences 里的缓存结论：一次 dict/行查询，**零网络、零 token**。
@@ -511,7 +511,7 @@ class AIService:
             base_url=gate_base_url,
         )
         budget = int(window * _FULL_BOOK_BUDGET_RATIO)
-        if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 1M
+        if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 下限
             raise ApiError(code="validation.ai_model_below_minimum", params={"model": resolved})
         return budget
 

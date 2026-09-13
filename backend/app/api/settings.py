@@ -595,7 +595,7 @@ async def _gate_model_triple(
     既有 8 个 preferences 临界区内只有 DB 操作）。两个调用方（保存路径、预设激活）
     都保持本判定在锁外、只把写入放进锁内。
 
-    `declared` 只在探测判不出时被采纳；实测 <1M 时声明无效（无勾选放行通道）。
+    `declared` 只在探测判不出时被采纳；实测低于下限时声明无效（无勾选放行通道）。
     """
     await ensure_model_allowed(
         user_id=user_id,
@@ -683,8 +683,8 @@ async def save_settings(
     客户端若在请求体里带 `preferences` 字符串，仍是整串覆盖语义（未改动），
     但覆盖动作已被串行化。
 
-    需求 #55 步骤 3：保存前先过上下文窗口硬拦（实测 <1M 直接拒，无勾选放行通道；
-    探测不出/未登记则要求显式声明 `context_window_tokens >= 1_000_000`）。
+    需求 #55 步骤 3：保存前先过上下文窗口硬拦（实测低于下限直接拒，无勾选放行通道；
+    探测不出/未登记则要求显式声明 `context_window_tokens >= MIN_CONTEXT_WINDOW_TOKENS`）。
     该判定**刻意放在写锁之外**——探测结论的缓存写入自己会取同一把不可重入的锁。
     """
     # 门禁判定（含同步补测）与锁内事务分开：锁外读一次仅作为判定的输入基线
@@ -1438,7 +1438,7 @@ async def check_context_window_support(
         "suggestions": (
             [
                 "✅ 该模型通过上下文窗口探测，可以保存",
-                f"下限为 {MIN_CONTEXT_WINDOW_TOKENS} tokens（产品要求 >=1M 上下文）",
+                f"下限为 {MIN_CONTEXT_WINDOW_TOKENS} tokens（产品要求达到此下限）",
                 "注意：探测判不出输入是否被静默截断，见 blind_spot 说明",
             ]
             if supported
@@ -1446,7 +1446,7 @@ async def check_context_window_support(
                 "❌ 上下文窗口不足或不判而未知（未知即不合格），保存会被拒绝",
                 f"请改用窗口 >= {MIN_CONTEXT_WINDOW_TOKENS} tokens 的模型",
                 "探测判不出的模型：可在表单里显式填写并确认 context_window_tokens"
-                f"（>= {MIN_CONTEXT_WINDOW_TOKENS}）后保存；实测 <1M 的模型即使声明也不放行",
+                f"（>= {MIN_CONTEXT_WINDOW_TOKENS}）后保存；实测低于下限的模型即使声明也不放行",
             ]
         ),
     }

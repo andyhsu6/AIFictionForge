@@ -52,11 +52,11 @@ describe('context window gate derivation', () => {
       join(FRONTEND_ROOT, '..', 'backend', 'app', 'services', 'model_capability_probe.py'),
       'utf8',
     );
-    expect(source).toMatch(/MIN_CONTEXT_WINDOW_TOKENS\s*=\s*1_000_000\b/);
-    expect(MIN).toBe(1_000_000);
+    expect(source).toMatch(/MIN_CONTEXT_WINDOW_TOKENS\s*=\s*900_000\b/);
+    expect(MIN).toBe(900_000);
   });
 
-  it('a measured >=1M model adopts the measured window', () => {
+  it('a measured at-or-above-floor model adopts the measured window', () => {
     const gate = deriveGateNumbers(probe('qualified', MIN, true), null, null);
     expect(gate.status).toBe('qualified');
     expect(gate.probed).toBe(MIN);
@@ -64,7 +64,7 @@ describe('context window gate derivation', () => {
     expect(gate.requiresDeclaration).toBe(false);
   });
 
-  it('a measured sub-1M model stays rejected even when the user declares >=1M', () => {
+  it('a measured below-floor model stays rejected even when the user declares at or above the floor', () => {
     // This is the "no checkbox override" rule: `ensure_model_allowed` only consults a
     // declaration after the probe came back inconclusive, so the form must not pretend
     // a big enough number rescues a measured 128K model.
@@ -230,7 +230,7 @@ describe('the third number is the server\'s, not a local re-derivation (issue #5
     );
     expect(gate.status).toBe('qualified');
     expect(gate.adopted).toBe(MIN);
-    expect(formatWindowTokens(gate.adopted)).toBe('1,000,000');
+    expect(formatWindowTokens(gate.adopted)).toBe('900,000');
   });
 });
 
@@ -239,7 +239,7 @@ describe('formatWindowTokens', () => {
     // 0 already means "whole-book injection disabled" in this codebase, so a bare 0
     // would read as a decision the probe never made.
     expect(formatWindowTokens(null)).toBe('—');
-    expect(formatWindowTokens(MIN)).toBe('1,000,000');
+    expect(formatWindowTokens(MIN)).toBe('900,000');
   });
 });
 

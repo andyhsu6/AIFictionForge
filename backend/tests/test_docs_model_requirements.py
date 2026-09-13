@@ -2,7 +2,7 @@
 
 文档一旦「外推」就比代码更危险，所以这里把 README 的措辞钉在**已实现的行为**上：
 
-1. **下限数字与代码同源**：README 顶栏公告写的 1M 必须等于
+1. **下限数字与代码同源**：README 顶栏公告写的 900,000 必须等于
    `MIN_CONTEXT_WINDOW_TOKENS`（改常量而忘改文档 ⇒ 红）。
 2. **破坏性公告必须在 README 顶部**：出现在特性章节**之前**，且带版本号说明。
 3. **两个盲区必须写出来**：③ needle 档未接线（静默截断型网关可通过 ①②）、
@@ -84,7 +84,7 @@ def _uncommented_assignments(text: str) -> list:
 
 def test_readme_states_the_same_floor_as_the_code_constant():
     spelled = f"{MIN_CONTEXT_WINDOW_TOKENS:,}"
-    assert MIN_CONTEXT_WINDOW_TOKENS == 1_000_000
+    assert MIN_CONTEXT_WINDOW_TOKENS == 900_000
     for text in (README_EN, README_ZH):
         assert spelled in text, f"README 未写出与常量同源的下限数字 {spelled}"
 

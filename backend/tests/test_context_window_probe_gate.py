@@ -7,9 +7,9 @@
 3. ③ needle 档**未接线**：调用即 inconclusive 且一次请求都不发。
 4. `dispatch` 触发点选 needle 档必须抛断言错误（架构层禁止误挂，否则每次实发都可能 ≈1M token）。
 5. 真实 128K 级模型（gpt-4o-mini）保存 ⇒ **被拒**。
-6. 未登记/探测不出 ⇒ 要求显式声明 context_window_tokens；声明 ≥1M 可保存、
-   声明 <1M 仍被拒；实测 <1M 的模型即使声明 ≥1M 也**不放行**（无勾选放行通道）。
-7. **绕过路径**：配好合格 1M 默认模型的用户，逐次传 `model="gpt-4o-mini"`
+6. 未登记/探测不出 ⇒ 要求显式声明 context_window_tokens；声明 ≥ 下限可保存、
+   声明低于下限仍被拒；实测低于下限的模型即使声明 ≥ 下限也**不放行**（无勾选放行通道）。
+7. **绕过路径**：配好合格大窗口默认模型的用户，逐次传 `model="gpt-4o-mini"`
    （请求体 / 后台任务 task_input）必须在**发请求那一刻**被拦，而不是只在保存时。
 8. `get_effective_context_window` 无合格结论即抛错，绝不返回 0/None（0 在本仓库＝禁用）。
 9. **per-call `provider` 覆盖**：`provider` 同样取自请求体并决定 `_get_provider` 选哪个
@@ -105,7 +105,7 @@ class _Gateway:
     """MockTransport 假网关：记录每一次出网请求，按档位可编程返回。
 
     默认行为贴近现实网关：不支持 `GET /models/<id>`（404），
-    对 `max_tokens >= 1M` 的请求回上界类 400。
+    对 `max_tokens >= 下限` 的请求回上界类 400。
     """
 
     def __init__(
@@ -176,7 +176,7 @@ def gateway(monkeypatch):
 
 @pytest.mark.anyio
 async def test_probe_qualified_from_metadata_tier(gateway):
-    """① 档报 >=1M ⇒ qualified，且不必再走 ② 档（0 token 判定优先）。"""
+    """① 档报 >= 下限 ⇒ qualified，且不必再走 ② 档（0 token 判定优先）。"""
     gateway.metadata_status = 200
     gateway.metadata_body = {"id": QUALIFIED_MODEL, "context_length": 1_048_576}
 
@@ -219,7 +219,7 @@ async def test_probe_inconclusive_when_gateway_gives_no_useful_information(gatew
 
 @pytest.mark.anyio
 async def test_probe_qualified_from_streaming_acceptance(gateway):
-    """② 档接受 max_tokens=1M 并吐出首个 delta ⇒ qualified。"""
+    """② 档接受 product 下限刻度并吐出首个 delta ⇒ qualified。"""
     gateway.bound_status = 200
 
     outcome = await probe_model_context_window(
@@ -229,6 +229,47 @@ async def test_probe_qualified_from_streaming_acceptance(gateway):
     assert outcome.verdict == VERDICT_QUALIFIED
     assert outcome.context_window_tokens == MIN_CONTEXT_WINDOW_TOKENS
     assert outcome.tier == TIER_MAX_TOKENS_BOUND
+
+
+@pytest.mark.anyio
+async def test_a_956k_gateway_is_now_measured_qualified(gateway):
+    """真实窗口 956K 的网关：① 404、② 在 900,000 刻度被接受 ⇒ qualified。
+
+    ② 档刻度即产品下限。旧下限 1,000,000 时这台网关会在自己的 956K 上界被拒
+    （报出的 956000 < 1,000,000 ⇒ unqualified），降到 900,000 后 900K 刻度落在
+    余量内。结论记录的是**被接受的刻度**（900,000），不是真实窗口。
+    """
+    async def handler(request: httpx.Request) -> httpx.Response:
+        gateway.calls.append({
+            "path": request.url.path,
+            "method": request.method,
+            "body": request.content,
+        })
+        if "/models/" in request.url.path:
+            return httpx.Response(404, json={"error": {"message": "no such endpoint"}})
+        payload = json.loads(request.content.decode() or "{}")
+        if payload.get("max_tokens", 0) > 956_000:
+            return httpx.Response(
+                400,
+                content=(
+                    b'{"error":{"message":"This model\'s maximum context length is '
+                    b'956000 tokens"}}'
+                ),
+            )
+        return httpx.Response(
+            200, content=_SSE_FIRST_DELTA, headers={"content-type": "text/event-stream"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, client=client
+    )
+    await client.aclose()
+
+    assert outcome.verdict == VERDICT_QUALIFIED
+    assert outcome.context_window_tokens == 900_000
+    assert outcome.tier == TIER_MAX_TOKENS_BOUND
+    assert gateway.bound_calls == 1
 
 
 @pytest.mark.anyio
@@ -250,11 +291,11 @@ async def test_probe_tier_two_uses_stream_and_stops_at_first_delta(gateway):
 #
 # `unqualified` 是**实测**结论，#59 之后用户自己的声明抹不掉它。于是一次**假**的
 # unqualified 会把一台合规模型**永久锁死**：界面上连个数字都没有，声明出口又被刻意关闭。
-# 所以拒绝路径的判据必须是「这条报错真的排除了 >=1M 吗」：
+# 所以拒绝路径的判据必须是「这条报错真的排除了 >= 下限 吗」：
 #   A 报错讲的是**输出**上限（`max_tokens must be <= 16384`）——一次能生成多少
 #     跟窗口有多大是两件事 ⇒ inconclusive，出口（声明）保持开着
-#   B 刻度恰为 1M、prompt 非空 ⇒ 被拒只证明 `window < 1M + prompt`，排除不了
-#     `window == 1M`（登记表里 deepseek-v3 / gemini-2 恰好就是 1000000）⇒ inconclusive
+#   B 刻度恰为下限、prompt 非空 ⇒ 被拒只证明 `window < 下限 + prompt`，排除不了
+#     `window == 下限`（登记表里 deepseek-v3 / gemini-2 恰好就是 1000000）⇒ inconclusive
 #   C 网关自己报出一个**低于下限的上下文数字** ⇒ 仍是实测 unqualified、仍不可声明翻盘
 #     ——这才是门禁存在的意义，本节的修法绝不能把它一起放掉。
 
@@ -289,7 +330,7 @@ async def test_probe_output_cap_rejection_is_inconclusive(gateway):
 
 @pytest.mark.anyio
 async def test_probe_boundary_rejection_at_exact_minimum_is_inconclusive(gateway):
-    """B：恰好 1M 刻度 + 非空 prompt 被拒，只证明 `window < 1M+prompt` ⇒ 判不出。"""
+    """B：恰好等于下限的刻度 + 非空 prompt 被拒，只证明 `window < 下限+prompt` ⇒ 判不出。"""
     gateway.bound_body = _ZERO_MARGIN_BODY
 
     outcome = await probe_model_context_window(
@@ -297,7 +338,7 @@ async def test_probe_boundary_rejection_at_exact_minimum_is_inconclusive(gateway
     )
 
     assert outcome.verdict == VERDICT_INCONCLUSIVE, (
-        "零边际的边界拒绝不能当成 `<1M` 的实证（#65）"
+        "零边际的边界拒绝不能当成 `低于下限` 的实证（#65）"
     )
     assert "margin" in (outcome.detail or "")
 
@@ -319,7 +360,7 @@ async def test_probe_honest_context_number_stays_measured_unqualified(gateway):
 
 @pytest.mark.anyio
 async def test_probe_metadata_exact_minimum_is_qualified(gateway):
-    """边界接受：① 档报 exactly 1,000,000 ⇒ 合规（判据是 `>=`，不得写成 `>`）。"""
+    """边界接受：① 档报 exactly 下限（900,000）⇒ 合规（判据是 `>=`，不得写成 `>`）。"""
     gateway.metadata_status = 200
     gateway.metadata_body = {"id": QUALIFIED_MODEL, "context_length": MIN_CONTEXT_WINDOW_TOKENS}
 
@@ -364,7 +405,11 @@ def test_bound_rejection_needs_a_number_beside_a_context_phrase():
 
 
 def test_fix_is_not_a_lower_threshold_or_a_declaration_override():
-    """#65 的修法不能是「把刻度调小」或「让声明盖过实测」——那等于重开 #59 的洞。"""
+    """#65 的修法不能是「让刻度低于下限」或「让声明盖过实测」——那等于重开 #59 的洞。
+
+    下限取 900,000 是产品决策、不是不变量：这条钉的是两条**结构性**约束（刻度不得低于
+    下限、声明永不压过测量），常量本身随产品调整而动；想要更强的证据可把刻度抬过下限，
+    但绝不能反过来掉到下限之下。"""
     assert probe_module.MAX_TOKENS_PROBE_VALUE == MIN_CONTEXT_WINDOW_TOKENS
 
     measured_small = ProbeOutcome(
@@ -1035,7 +1080,7 @@ async def test_saving_a_real_128k_model_is_rejected(env, gateway):
 
 @pytest.mark.anyio
 async def test_unknown_model_requires_explicit_declaration_then_accepts_it(env, gateway):
-    """未登记模型 ⇒ 先拒（要求显式声明）；声明 ≥1M 后可保存并落 user_declared 结论。"""
+    """未登记模型 ⇒ 先拒（要求显式声明）；声明 ≥ 下限后可保存并落 user_declared 结论。"""
     user_id = "u-save-unknown"
     await seed_settings(env.session_factory, user_id, llm_model="")
     gateway.bound_status = 401
@@ -1063,7 +1108,7 @@ async def test_unknown_model_requires_explicit_declaration_then_accepts_it(env, 
 
 @pytest.mark.anyio
 async def test_declaring_below_minimum_still_rejects(env, gateway):
-    """声明 <1M 依然被拒——声明不是勾选放行通道。"""
+    """声明低于下限依然被拒——声明不是勾选放行通道。"""
     user_id = "u-save-bad-declaration"
     await seed_settings(env.session_factory, user_id, llm_model="")
     gateway.bound_status = 401
@@ -1082,7 +1127,7 @@ async def test_declaring_below_minimum_still_rejects(env, gateway):
 
 @pytest.mark.anyio
 async def test_declaration_cannot_overwrite_a_measured_small_model(env, gateway):
-    """实测 <1M 的模型即使声明 ≥1M 也不放行：硬拦没有勾选通道（计划 §2 表第 2 行）。"""
+    """实测低于下限的模型即使声明 ≥ 下限也不放行：硬拦没有勾选通道（计划 §2 表第 2 行）。"""
     user_id = "u-save-lie"
     await seed_settings(env.session_factory, user_id, llm_model="")
 
@@ -1098,9 +1143,9 @@ async def test_declaration_cannot_overwrite_a_measured_small_model(env, gateway)
 
 @pytest.mark.anyio
 async def test_false_reject_from_output_cap_is_rescued_by_declaration(env, gateway):
-    """#65 的出口：输出上限造成的判不出，用户声明 >=1M 就该救得回来。
+    """#65 的出口：输出上限造成的判不出，用户声明 >= 下限就该救得回来。
 
-    旧行为是把它当成 `<1M` 的实测 ⇒ 声明通道被 #59 刻意关闭 ⇒ 一台合规的大窗口模型
+    旧行为是把它当成 `低于下限` 的实测 ⇒ 声明通道被 #59 刻意关闭 ⇒ 一台合规的大窗口模型
     永久锁死，而且界面上一个数字都没有（无从解释，也无从自救）。
     """
     user_id = "u-65-output-cap"
@@ -1158,7 +1203,7 @@ async def test_measured_128k_rejection_body_is_still_not_rescuable(env, gateway)
 
 @pytest.mark.anyio
 async def test_saving_a_probed_qualified_model_passes(env, gateway):
-    """未被误伤：实测 >=1M 的模型照常保存。"""
+    """未被误伤：实测 >= 下限的模型照常保存。"""
     gateway.metadata_status = 200
     gateway.metadata_body = {"id": QUALIFIED_MODEL, "context_length": 1_048_576}
     user_id = "u-save-ok"
@@ -1290,7 +1335,8 @@ async def test_check_context_window_adopted_number_follows_the_gate_not_the_decl
     probe_module.memo_clear()
     verdict, shown = await display_for(
         metadata_body=None, bound_status=401,
-        bound_body=b'{"error":{"message":"invalid api key"}}', declared=900_000,
+        bound_body=b'{"error":{"message":"invalid api key"}}',
+        declared=MIN_CONTEXT_WINDOW_TOKENS - 1,
     )
     assert verdict == VERDICT_INCONCLUSIVE
     assert shown["adopted_context_window_tokens"] is None
@@ -1392,8 +1438,8 @@ def test_min_window_constant_is_not_the_book_injection_line():
     """MIN_CONTEXT_WINDOW_TOKENS 是新常量；_1M_THRESHOLD 是「全书注入启用线」，语义不同。"""
     from app.services import ai_service
 
-    assert MIN_CONTEXT_WINDOW_TOKENS == 1_000_000
-    assert ai_service._1M_THRESHOLD != MIN_CONTEXT_WINDOW_TOKENS
+    assert MIN_CONTEXT_WINDOW_TOKENS == 900_000
+    assert ai_service._1M_THRESHOLD < MIN_CONTEXT_WINDOW_TOKENS
 
 
 def test_blind_spots_are_documented_in_source():
