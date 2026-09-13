@@ -454,7 +454,14 @@ async def run_plan(
     task = asyncio.create_task(_supervise(handle, factory))
     handle.task = task
     _PLAN_HANDLES[plan_task_id] = handle
-    task.add_done_callback(lambda _completed: _PLAN_HANDLES.pop(plan_task_id, None))
+
+    def _forget_handle(_completed: "asyncio.Task") -> None:
+        # 身份守卫：完成回调是延迟执行的，同 id 的 re-run 可能已经把新 handle 放进
+        # 表里；不按身份比对就会把活句柄清掉，让 Task 5/6 的取消路由查不到它。
+        if _PLAN_HANDLES.get(plan_task_id) is handle:
+            _PLAN_HANDLES.pop(plan_task_id, None)
+
+    task.add_done_callback(_forget_handle)
     return task
 
 
