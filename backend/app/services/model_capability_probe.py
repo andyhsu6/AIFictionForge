@@ -650,13 +650,6 @@ async def probe_needle_tier(**_kwargs: Any) -> ProbeOutcome:
     )
 
 
-_TIER_IMPLEMENTATIONS = {
-    TIER_METADATA: probe_metadata_tier,
-    TIER_MAX_TOKENS_BOUND: probe_max_tokens_bound_tier,
-    TIER_NEEDLE: probe_needle_tier,
-}
-
-
 async def probe_model_context_window(
     *,
     provider: str,
@@ -741,7 +734,8 @@ _memo: Dict[Tuple[str, str], Tuple[float, ProbeOutcome]] = {}
 # 会同时通过「需要探测」的检查、一起打网关（② 档带着 max_tokens=下限）。占坑必须发生
 # 在 await **之前**，否则检查与写入之间的窗口足以让整批并发全部通过。
 # 存储形状对齐 `_memo`（存 `expires_at`、读时弹出）：条目随冷却过期自动清掉，不留下
-# 无界 per-user 注册表（`core/db_write_lock.py` 的 `db_write_locks` 不设 TTL，刻意不同）。
+# 无界 per-user 注册表；与 `core/db_write_lock.py` 的 `db_write_locks` 刻意不同——
+# 那边的锁靠 weakref 随强引用消失自驱逐，本注册表靠 deadline 过期，两者都无需手动清理。
 DISPATCH_REPROBE_COOLDOWN_SECONDS = 60.0
 _reprobe_deadlines: Dict[Tuple[str, str], float] = {}
 

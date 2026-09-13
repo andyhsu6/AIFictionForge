@@ -26,6 +26,7 @@
 角色人名或书名（AGENTS.md 原文数据脱敏硬约束）。
 """
 import asyncio
+import gc
 import json
 import os
 import uuid
@@ -416,3 +417,49 @@ async def test_every_preferences_writer_acquires_the_per_user_lock(env: _Env, ca
     assert spy_lock.acquisitions == 1, f"{case}: 未取 per-user 写锁，读改写仍会抹键（#56）"
     assert spy_lock.max_holders == 1, f"{case}: 临界区状态异常"
     assert spy_lock.holders == 0, f"{case}: 锁未释放"
+
+
+# ========== 注册表 weakref 自驱逐（#62 二次清理）==========
+
+
+@pytest.mark.anyio
+async def test_write_lock_registry_evicts_entry_once_no_strong_ref_remains():
+    """强引用消失后条目必须被驱逐：否则一 user 一把锁在进程生命周期内无界增长。"""
+    user_id = "u-evict-gc"
+    db_write_locks.pop(user_id, None)
+    baseline = len(db_write_locks)
+
+    lock = await get_db_write_lock(user_id)
+    assert user_id in db_write_locks
+    assert db_write_locks[user_id] is lock
+
+    del lock
+    gc.collect()
+
+    assert user_id not in db_write_locks, "强引用消失后注册表条目未驱逐（weakref 失效）"
+    assert len(db_write_locks) == baseline, "注册表出现无法驱逐的残留条目"
+
+
+@pytest.mark.anyio
+async def test_write_lock_mutual_exclusion_holds_under_eviction_pressure():
+    """驱逐压力下同一用户仍串行：临界区持有者峰值恒为 1，结束后条目被驱逐。"""
+    user_id = "u-evict-exclusive"
+    db_write_locks.pop(user_id, None)
+    holders = 0
+    max_holders = 0
+
+    async def critical_section():
+        nonlocal holders, max_holders
+        async with db_write_lock(user_id):
+            holders += 1
+            max_holders = max(max_holders, holders)
+            await asyncio.sleep(0)
+            gc.collect()  # 临界区内制造驱逐压力：锁必须仍被强引用
+            await asyncio.sleep(0)
+            holders -= 1
+
+    await asyncio.gather(*(critical_section() for _ in range(8)))
+
+    assert max_holders == 1, "驱逐压力下同一用户的临界区发生重叠（互斥失效）"
+    gc.collect()
+    assert user_id not in db_write_locks, "全部临界区结束后锁条目应被驱逐"

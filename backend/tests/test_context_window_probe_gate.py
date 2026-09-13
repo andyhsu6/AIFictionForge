@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.models  # noqa: F401 - 注册全部表（settings 建表需要）
 import app.api.settings as settings_module
+import app.services.ai_clients.base_client as base_client_module
 import app.services.model_capability_probe as probe_module
 from app.core.db_write_lock import db_write_lock, db_write_locks
 from app.core.errors import ERROR_REGISTRY, ApiError, register_exception_handlers
@@ -444,14 +445,34 @@ async def test_probe_issues_exactly_one_attempt_per_tier(gateway):
     assert gateway.total_calls == 2, "探测总请求数超出 ①+② 各一次"
 
 
-def test_probe_client_bypasses_shared_retry_and_semaphore_paths():
-    """探测客户端直连 httpx：不复用 BaseAIClient._request_with_retry，也不取全局信号量。"""
-    source = inspect.getsource(probe_module)
-    assert "_request_with_retry" in source, "探测必须点名它绕开了共享重试链（可审计）"
-    assert "self._request_with_retry" not in source
-    assert "await _request_with_retry" not in source
-    assert "_get_semaphore" not in source, "探测不得排队在日常生成的并发闸后面"
-    assert "_http_client_pool" not in source, "探测不得共用 AI 客户端池"
+@pytest.mark.anyio
+async def test_probe_client_bypasses_shared_retry_and_semaphore_paths(gateway, monkeypatch):
+    """行为验证：真跑一次 ①② 探测，共享重试链 / 全局信号量 / 池化客户端三条路径零触碰。"""
+    touched: list[str] = []
+
+    async def _spy_retry(*args, **kwargs):
+        touched.append("retry")
+        raise AssertionError("探测不得复用 BaseAIClient._request_with_retry")
+
+    def _spy_semaphore(*args, **kwargs):
+        touched.append("semaphore")
+        raise AssertionError("探测不得取全局 AI 信号量")
+
+    def _spy_pooled_client(*args, **kwargs):
+        touched.append("pool")
+        raise AssertionError("探测不得复用共享 AI 客户端池")
+
+    monkeypatch.setattr(base_client_module.BaseAIClient, "_request_with_retry", _spy_retry)
+    monkeypatch.setattr(base_client_module, "_get_semaphore", _spy_semaphore)
+    monkeypatch.setattr(base_client_module.BaseAIClient, "_get_or_create_client", _spy_pooled_client)
+
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=SMALL_MODEL
+    )
+
+    assert outcome.tier == TIER_MAX_TOKENS_BOUND
+    assert gateway.metadata_calls == 1 and gateway.bound_calls == 1, "①② 未各跑一次"
+    assert touched == [], f"探测触碰了共享路径: {touched}"
 
 
 # ========== 3. ③ 未接线 ==========
@@ -466,6 +487,11 @@ async def test_needle_tier_is_not_wired(gateway):
     assert outcome.tier == TIER_NEEDLE
     assert "not wired" in (outcome.detail or "")
     assert gateway.total_calls == 0
+
+
+def test_dead_tier_implementation_map_is_gone():
+    """零读者的 `_TIER_IMPLEMENTATIONS` 已删除：档位分发只走显式 if 链，防止回潮。"""
+    assert not hasattr(probe_module, "_TIER_IMPLEMENTATIONS")
 
 
 @pytest.mark.anyio
@@ -964,12 +990,41 @@ async def test_probe_inside_a_held_write_lock_times_out_instead_of_deadlocking(
     assert exc_info.value.code == BELOW_MINIMUM, "判定本身仍要成立（只是没缓存）"
 
 
-def test_dispatch_path_can_only_use_the_dispatch_trigger():
-    """派发路径的触发点必须是 dispatch：结构上禁止把 needle 档挂到每次实发上。"""
-    source = inspect.getsource(AIService._require_model)
-    assert "TRIGGER_DISPATCH" in source
-    assert "TRIGGER_SAVE" not in source
-    assert "TRIGGER_MANUAL" not in source
+@pytest.mark.anyio
+async def test_dispatch_path_can_only_use_the_dispatch_trigger(monkeypatch):
+    """行为验证：dispatch 白名单放行 ①②、拒绝 ③；且 `_require_model` 实传 TRIGGER_DISPATCH。"""
+    assert_tier_allowed(TRIGGER_DISPATCH, TIER_METADATA)
+    assert_tier_allowed(TRIGGER_DISPATCH, TIER_MAX_TOKENS_BOUND)
+    with pytest.raises(probe_module.ProbeTierNotAllowed):
+        assert_tier_allowed(TRIGGER_DISPATCH, TIER_NEEDLE)
+
+    captured: list[dict] = []
+
+    async def _capture(**kwargs):
+        captured.append(kwargs)
+        return ProbeOutcome(verdict=VERDICT_QUALIFIED, context_window_tokens=1_048_576)
+
+    import app.services.ai_service as ai_service_module
+
+    for attr in ("openai_api_key", "anthropic_api_key", "gemini_api_key"):
+        monkeypatch.setattr("app.services.ai_service.app_settings." + attr, None, raising=False)
+    monkeypatch.setattr(ai_service_module, "ensure_model_allowed", _capture)
+
+    svc = AIService(
+        api_provider="openai",
+        api_key=API_KEY,
+        api_base_url=GATEWAY,
+        default_model=QUALIFIED_MODEL,
+        user_id="u-dispatch-trigger",
+        db_session=None,
+        enable_mcp=False,
+    )
+    resolved = await svc._require_model()
+
+    assert resolved == QUALIFIED_MODEL
+    assert captured and captured[0]["trigger"] == TRIGGER_DISPATCH, (
+        "派发路径未用 dispatch 触发点（save/manual 会放开 ③ needle = 每次实发 ≈1M token）"
+    )
 
 
 # ========== 6. get_effective_context_window 失败契约 ==========
@@ -1443,7 +1498,7 @@ def test_the_book_injection_enable_line_is_no_longer_a_constant():
 
 
 def test_blind_spots_are_documented_in_source():
-    """两个已知盲区必须写进实现，注释与测试都不得暗示系统不可被绕过。"""
+    """**文档形状钉**（非行为）：两个已知盲区必须写进实现源码，注释不得暗示系统不可被绕过。"""
     source = inspect.getsource(probe_module)
     assert "静默截断" in source
     assert "任何时刻都不会被绕过" in source
@@ -1451,7 +1506,7 @@ def test_blind_spots_are_documented_in_source():
 
 
 def test_gate_reuses_the_registered_error_code_only():
-    """本步不新增错误码（文案归 3b）；前缀也禁止 warning.。"""
+    """**源码形状钉**（非行为）＋注册表行为：本步不新增错误码，前缀禁止 warning.，门禁只用 ApiError。"""
     assert BELOW_MINIMUM in ERROR_REGISTRY
     assert not any(code.startswith("warning.") for code in ERROR_REGISTRY)
     source = inspect.getsource(probe_module)
