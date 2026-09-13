@@ -90,6 +90,11 @@ async def get_engine(user_id: str):
                         "application_name": settings.app_name,
                         "jit": "off",
                         "search_path": "public",
+                        # 钉定会话时区：agent 表的 created_at 是 `timestamp without time zone`，
+                        # 其 server_default=now() 会按**会话时区**投值，而 ORM 侧默认值写的是
+                        # naive UTC。不钉 UTC ⇒ 同一列混两种基准，非 UTC 会话下
+                        # ORDER BY created_at 对不同写入路径的行颠倒排序（护栏 3）。
+                        "TimeZone": "UTC",
                     },
                     "command_timeout": 60,
                     "statement_cache_size": 500,

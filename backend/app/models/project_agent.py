@@ -1,10 +1,17 @@
 """项目智能体会话、消息与工具调用模型。"""
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.sql import func
 
 from app.database import Base
+
+
+def _naive_utc_now() -> datetime:
+    """naive UTC 当前时间：两侧 server_default 都是 UTC（SQLite 恒 UTC；PG 由
+    database.py 钉定 session TimeZone），Python 侧默认值必须同基准，见下方列注释。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class AgentConversation(Base):
@@ -48,7 +55,16 @@ class AgentMessage(Base):
     completion_tokens = Column(Integer)
     tool_calls = Column(Text)
     tool_call_id = Column(String(36), index=True)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    # naive UTC：必须与 server_default=func.now() 同基准，否则同一列混两种基准会让
+    # ORDER BY created_at 对不同写入路径的行颠倒排序。两侧均为 UTC：SQLite 恒 UTC；
+    # PG 由 database.py 钉定 session TimeZone。
+    # Python 侧默认值只为打破 SQLite CURRENT_TIMESTAMP 的秒级并列。
+    created_at = Column(
+        DateTime,
+        default=_naive_utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class AgentToolCall(Base):
@@ -80,7 +96,14 @@ class AgentToolCall(Base):
     error_message = Column(Text)
     confirmed_at = Column(DateTime)
     executed_at = Column(DateTime)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    # 同 AgentMessage.created_at：naive UTC 与 server_default 同基准，
+    # Python 侧默认值只为打破 api 侧 ORDER BY created_at 的秒级并列。
+    created_at = Column(
+        DateTime,
+        default=_naive_utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class AgentExecutionStep(Base):
