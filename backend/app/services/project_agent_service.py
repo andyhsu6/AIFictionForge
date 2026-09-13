@@ -975,6 +975,14 @@ class ProjectAgentService:
         if trace is not None:
             trace.anchor_chars = anchor_chars
             trace.anchor_truncated = anchor_truncated
+            # 轮循环复用同一个 trace（`history` 每轮从 DB 重载），所以本轮的三个字段
+            # 必须从空开始：否则"上一轮舍过、本轮没舍"会让调用点的
+            # `if trace.dropped_messages:` 再次成立，把上一轮的数字冒充成本轮
+            # （留痕行的 step_update 与日志都会错报），而 `dropped_summaries`
+            # 逐轮 append 更会让 detail 里的两个计数自相矛盾。
+            trace.dropped_messages = 0
+            trace.dropped_chars = 0
+            trace.dropped_summaries = []
         total = len(anchorless_history)
         for index, item in enumerate(reversed(anchorless_history)):
             if item.role == "assistant" and item.tool_calls:
@@ -994,11 +1002,12 @@ class ProjectAgentService:
                         anchorless_history, index
                     )
                     trace.dropped_summaries.append(f"{item.role}:{len(part)}c")
-                    trace.used_chars = history_length
                 break
             history_parts.append(part)
             history_length += len(part)
-        if trace is not None and trace.dropped_messages == 0:
+        if trace is not None:
+            # 无条件写：`used_chars` 的口径是"本轮装进 prompt 的历史字符数"，与有没有
+            # 裁剪无关。上一轮的 `== 0` 条件让未裁剪的那一轮继续沿用上一轮的装载数。
             trace.used_chars = history_length
         history_text = "\n".join(reversed(history_parts))
         safe_page_context = {

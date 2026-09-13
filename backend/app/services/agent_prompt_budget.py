@@ -51,6 +51,16 @@ class PromptBudgetTrace:
 
     `dropped_messages > 0` 即意味着"发生了静默丢弃"——PR-0c 之前这件事完全不可见。
 
+    **生命周期是"一轮"，不是"一个回合"**：轮循环复用同一个实例，`_build_prompt` 在
+    入口把 `dropped_messages` / `dropped_chars` / `dropped_summaries` 重成本轮的值，
+    在出口**无条件**写 `used_chars`。理由：`history` 每轮从 DB 重载，"上一轮舍过、
+    本轮没舍"是常态 —— 字段一旦跨轮残留，调用点的 `if trace.dropped_messages:` 就会
+    把上一轮的数字冒充本轮（用户侧错报）。
+
+    `dropped_summaries` 的口径是**本轮**"第一个装不下的 part"的一条摘要，因此与
+    `dropped_messages` 的关系恒为 `len(...) == int(dropped_messages > 0)`：裁剪循环
+    遇到第一个放不下就 `break`，其余更旧的消息不会各记一条。
+
     `anchor_chars` 口径：**写进 prompt 的用户文本长度**（即 `min(原始长度, cap)`），
     不含服务端自己加的截断标记。刻意不记原始长度 —— 这个字段存在的意义就是
     "永不裁剪段吃掉了多少预算"，而它按构造必须 <= `HISTORY_BUDGET_ANCHOR_CAP_CHARS`，

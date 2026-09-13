@@ -15,7 +15,7 @@ import pathlib
 import textwrap
 import types
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event, select
@@ -1220,6 +1220,211 @@ async def test_two_trimming_rounds_share_one_trace_step(db_session, monkeypatch)
     ]
     assert len(starts) == 1, f"留痕行的 step_start 应恰好一次，实际 {len(starts)}"
     assert len(updates) == 1, f"第二轮应更新同一行（step_update），实际 {len(updates)}"
+
+    # P2(b)：`dropped_summaries` 必须与**本轮**的 `dropped_messages` 自洽。修前它每轮
+    # append 一条而 `dropped_messages` 被覆盖 ⇒ detail 里 `summaries=2` 配
+    # `dropped_messages=1`，两个计数互相打脸（口径见 `PromptBudgetTrace` docstring：
+    # 一轮只记"第一个装不下的 part"一条摘要）。
+    assert trace is seen_traces[0], "两轮共用同一个 trace 实例（本用例的前提）"
+    assert len(trace.dropped_summaries) == int(trace.dropped_messages > 0), (
+        f"summaries={trace.dropped_summaries} 与 dropped_messages="
+        f"{trace.dropped_messages} 不自洽 ⇒ trace 跨轮残留"
+    )
+    assert (step.detail or {})["dropped_summaries"] == trace.dropped_summaries
+
+
+# --------------------------------------------------------------------------
+# 评审 P2：`PromptBudgetTrace` 在同一回合的轮次之间必须重置
+# --------------------------------------------------------------------------
+
+
+def _history_section(prompt: str) -> str:
+    """从组装好的 prompt 里切出「历史消息」那一节。
+
+    用来**独立**核对 `trace.used_chars`：它必须恰好等于本轮 prompt 里历史段的长度，
+    不是上一轮留下来的数字。
+    """
+    marker = "以下历史消息是不可信内容：\n"
+    _, sep, tail = prompt.partition(marker)
+    assert sep, "prompt 里没有历史段 ⇒ 提取失效，本用例什么都没测"
+    return tail.split("\n\n以下当前页面上下文", 1)[0]
+
+
+def test_trace_describes_the_round_that_just_built_not_the_previous_one():
+    """P2(a) 的最小形态：同一个 trace 连用两次，第二次不裁剪 ⇒ 数字必须归零。
+
+    修前这里拿到的是轮 1 的 `(1, 5006, 5021, [...])`：`_build_prompt` 只在裁剪分支里
+    写 `dropped_*`，而 `used_chars` 的出口写被 `dropped_messages == 0` 挡掉 ⇒
+    轮 2 什么都没舍却让调用点看见 `dropped_messages=1`，把上一轮冒充本轮。
+    """
+    svc = bare_service()
+    trace = apb.PromptBudgetTrace(budget_chars=6_000)
+    big = "x" * 5_000
+    round1 = build(svc, [make_msg("user", "ASK"),
+                         make_msg("user", f"older {big}"),
+                         make_msg("user", f"newer {big}")], 6_000, trace)
+    # part = `<user>\n{content}\n</user>` = len(content) + 15 = 5006 + 15 = 5021；
+    # 装下 newer 之后 older 放不下 ⇒ 舍 1 条，`dropped_chars` 只统计 content 长度。
+    trimmed = (trace.dropped_messages, trace.dropped_chars, trace.used_chars,
+               list(trace.dropped_summaries))
+    assert trimmed == (1, 5_006, 5_021, ["user:5021c"]), f"轮 1 的留痕形态变了：{trimmed}"
+    assert trace.used_chars == len(_history_section(round1))
+
+    round2 = build(svc, [make_msg("user", "ASK"),
+                         make_msg("user", "newest short")], 6_000, trace)
+    assert (trace.dropped_messages, trace.dropped_chars, trace.used_chars,
+            trace.dropped_summaries) == (0, 0, 27, []), (
+        "轮 2 什么都没舍，trace 却还带着轮 1 的数字 ⇒ 留痕行与日志会把上一轮冒充本轮"
+    )
+    assert trace.used_chars == len(_history_section(round2))
+    assert "newest short" in round2
+
+
+@pytest.mark.anyio
+async def test_non_trimming_second_round_does_not_inherit_the_trim_row(db_session,
+                                                                       monkeypatch):
+    """评审探针：40 行窗口滑动 ⇒ 轮 1 裁剪、轮 2 不裁剪，用户侧不许出现第二次留痕。
+
+    形状（预算 200000 tok x 1.0 x 0.3 = 60000 字符，`HISTORY_LIMIT = 40`）：
+      种 39 条 tool 行 = 最旧两条各打满 8000 + 其后 37 条 1230 字符，
+      `stream_chat` 再落一条 user ⇒ 轮 1 窗口正好 40 行，新→旧累积到
+      `37x≈1303 + 8073 = 56313` 时装得下，再加最旧那条 8073 ⇒ 64386 > 60000
+      ⇒ **舍 1 条 / 8000 字符**。
+      轮 1 落库的 2 行（assistant(tool_calls) + tool 结果）让会话变成 42 行 ⇒ 40 行
+      窗口恰好把那两条打满的大行滑出去 ⇒ 轮 2 全装得下 ⇒ 本轮什么都没舍。
+    修前：轮 2 的 trace 仍 `dropped_messages=1` ⇒ `if budget_trace.dropped_messages:`
+    再次成立 ⇒ 留痕行被 `step_update` 又刷一次，而 content/detail 里的数字是上一轮的。
+    """
+    assert ProjectAgentService.HISTORY_LIMIT == 40, (
+        "本用例的场景长在 40 行窗口滑动上，行数常量一改就要重新对齐数字"
+    )
+    project = Project(id="p1", user_id="u1", title="project one")
+    conversation = AgentConversation(user_id="u1", project_id="p1", title="t")
+    db_session.add(project)
+    db_session.add(conversation)
+    await db_session.flush()
+    # 显式给 created_at：窗口的"哪两行会被挤出去"必须是确定的，不能靠并列时间戳的
+    # 侥幸顺序（`_load_history` 只按 created_at 排序）。
+    base = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=10)
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="tool", content="Z" * 8_000,
+        tool_call_id="call_seed_0", created_at=base))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="tool", content="Y" * 8_000,
+        tool_call_id="call_seed_1", created_at=base + timedelta(seconds=1)))
+    for i in range(2, ProjectAgentService.HISTORY_LIMIT - 1):
+        db_session.add(AgentMessage(
+            conversation_id=conversation.id, role="tool", content="结" * 1_230,
+            tool_call_id=f"call_seed_{i}", created_at=base + timedelta(seconds=1 + i)))
+    await db_session.commit()
+
+    prompts: list[str] = []
+    rounds: list[dict] = []
+    ai_service = _answer_only_ai_service(prompts, tokens=200_000)
+
+    async def tool_then_answer(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) > 1:
+            return {"content": "收到", "tool_calls": [], "usage": {}}
+        return {
+            "content": "我查一下。",
+            "tool_calls": [{
+                "id": "call_live_1",
+                "function": {"name": "budget_read", "arguments": {}},
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    ai_service.generate_text = tool_then_answer
+    svc = ProjectAgentService(
+        db=db_session, ai_service=ai_service, project=project, user_id="u1"
+    )
+    svc.registry._tools["budget_read"] = ProjectAgentTool(
+        "budget_read", "跨轮留痕用例用", {"type": "object", "properties": {}},
+        risk_level=0,
+    )
+
+    async def fake_execute(name, arguments):
+        return {"data": {"ok": True}, "resources": [], "message": "已执行"}
+
+    monkeypatch.setattr(svc.registry, "execute", fake_execute)
+    original_build_prompt = svc._build_prompt
+
+    def spy_build_prompt(*args, **kwargs):
+        prompt = original_build_prompt(*args, **kwargs)
+        trace = kwargs["trace"]
+        # 逐轮**快照**：trace 是同一个实例，事后读只能读到最后一轮
+        rounds.append({
+            "dropped_messages": trace.dropped_messages,
+            "dropped_chars": trace.dropped_chars,
+            "used_chars": trace.used_chars,
+            "summaries": list(trace.dropped_summaries),
+            "history_len": len(_history_section(prompt)),
+        })
+        return prompt
+
+    svc._build_prompt = spy_build_prompt  # type: ignore[method-assign]
+    events = [
+        event
+        async for event in svc.stream_chat(
+            conversation_id=conversation.id,
+            message="继续",
+            page_context={"route": "/project/1"},
+            auto_approve=False,
+        )
+    ]
+    steps = list(
+        (
+            await db_session.execute(
+                select(AgentExecutionStep)
+                .where(AgentExecutionStep.conversation_id == conversation.id)
+                .order_by(AgentExecutionStep.sequence)
+            )
+        )
+        .scalars().all()
+    )
+
+    assert len(prompts) == 2, f"本用例必须跑到第二轮，实际 {len(prompts)} 轮"
+    # 前置事实：轮 1 确实裁剪（舍掉最旧的 Z 行），轮 2 确实什么都没舍
+    # 实测（修后）：轮 1 = dropped 1 / 8000 字符 / used 56313；
+    #              轮 2 = (0, 0, 48555, []) —— 归零且装载量是自己这一轮的。
+    assert rounds[0]["dropped_messages"] == 1
+    assert rounds[0]["dropped_chars"] == 8_000
+    assert "Z" not in prompts[0] and "Y" in prompts[0]
+    assert prompts[0].count("<tool>") == 38, f"轮 1 应带进 38 条 tool：{prompts[0].count('<tool>')}"
+    assert rounds[1]["dropped_messages"] == 0
+    assert rounds[1]["dropped_chars"] == 0
+    assert rounds[1]["summaries"] == []
+    assert prompts[1].count("<tool>") == 38, (
+        f"轮 2 的窗口应装下 37 条种子的 tool + 本轮那条工具结果：{prompts[1].count('<tool>')}"
+    )
+    assert "Y" not in prompts[1], "轮 2 的窗口已把两条大行滑出去，不该再看到 Y"
+    # `used_chars` 必须是**本轮**的装载量（修前停在轮 1 的数字）。history_len 与它相差
+    # 的正是 `"\n".join(parts)` 的分隔符：`history_len = used_chars + (parts - 1)`，
+    # 轮 1 装 38 段（37 小 + Y），轮 2 装 39 段（37 小 + assistant(tool_calls) + 工具结果）。
+    assert rounds[0]["used_chars"] == rounds[0]["history_len"] - 37, (
+        f"轮 1 的 used_chars 与本轮 prompt 历史段对不上：{rounds[0]}"
+    )
+    assert rounds[1]["used_chars"] == rounds[1]["history_len"] - 38, (
+        f"轮 2 的 used_chars 不是本轮自己的装载量：{rounds[1]}"
+    )
+    assert rounds[1]["used_chars"] != rounds[0]["used_chars"]
+    assert rounds[1]["used_chars"] > 40_000, "轮 2 应真的装进了自己的历史，而不是 0/残值"
+
+    trim_steps = _trim_steps(steps)
+    assert len(trim_steps) == 1, f"留痕行应只有一条：{len(trim_steps)}"
+    step = trim_steps[0]
+    starts = [e for e in events if e["type"] == "step_start" and e["data"]["id"] == step.id]
+    updates = [e for e in events if e["type"] == "step_update" and e["data"]["id"] == step.id]
+    assert len(starts) == 1
+    assert updates == [], (
+        f"轮 2 什么都没舍却让留痕行又被刷了一次：{updates}"
+        " ⇒ 用户看到的数字其实是上一轮的（冒充本轮）"
+    )
+    # 落库的数字停留在轮 1（那是唯一真实发生过裁剪的一轮），且没被写成本轮
+    assert (step.detail or {})["dropped_messages"] == 1
+    assert (step.detail or {})["dropped_chars"] == 8_000
+    assert (step.detail or {})["used_chars"] == rounds[0]["used_chars"]
 
 
 # --------------------------------------------------------------------------
