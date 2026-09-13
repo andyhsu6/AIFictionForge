@@ -65,6 +65,7 @@ import type {
   AgentConversation,
   AgentConversationDetail,
   AgentToolCall,
+  AgentTaskType,
   AgentToolDecision,
   AgentExecutionStep,
 } from '../types';
@@ -1240,7 +1241,11 @@ export interface ProjectAgentStreamCallbacks {
   onToolExecuted?: (data: {
     tool_call: AgentToolCall;
     resources: string[];
-    approval_mode: 'automatic' | 'manual';
+    // PR-1：BackgroundTask / BatchGenerationTask / AnalysisTask 的 id 无跨表唯一性，
+    // 必须同时带 task_type 才能反查表（消费点在 PR-3）。
+    task_type?: AgentTaskType;
+    // 'inline' = 免确认工具在助手回合内直接执行（既非自动批准也非人工确认）。
+    approval_mode: 'automatic' | 'manual' | 'inline';
   }) => void;
   onStepStart?: (step: AgentExecutionStep) => void;
   onStepUpdate?: (step: AgentExecutionStep) => void;

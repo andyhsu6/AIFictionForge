@@ -435,3 +435,25 @@ def test_agent_task_action_types_covers_every_start_task_action():
 
     spec = next(item for item in OPERATIONAL_TOOL_SPECS if item["name"] == "start_project_task")
     assert set(spec["parameters"]["properties"]["action"]["enum"]) == set(AGENT_TASK_ACTION_TYPES)
+
+
+def test_frontend_agent_task_type_union_matches_backend_task_types():
+    """PR-1 Task 7 契约面：前端 `AgentTaskType` 联合类型必须与后端
+    `AGENT_TASK_ACTION_TYPES` 的 value 集合逐字一致。
+
+    entity_id 无跨表唯一性 ⇒ PR-3 与 PR-2b 的反查全靠这个值，两侧漂移必须立刻红，
+    不能让前端拿到一个后端从不产生的 task_type（或反过来漏掉新任务类型）。
+    """
+    import re
+    from pathlib import Path
+
+    from app.services.task_resources import AGENT_TASK_ACTION_TYPES
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "types" / "index.ts"
+    ).read_text(encoding="utf-8")
+    declaration = re.search(r"export type AgentTaskType =([^;]*);", source)
+    assert declaration is not None, "frontend/src/types/index.ts 缺少 AgentTaskType 声明"
+    union = set(re.findall(r"'([^']*)'", declaration.group(1)))
+    assert union == set(AGENT_TASK_ACTION_TYPES.values())
+    assert union, "AgentTaskType 联合类型不得为空"
