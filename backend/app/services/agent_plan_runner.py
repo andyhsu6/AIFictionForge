@@ -535,13 +535,13 @@ def build_plan_summary_payload(
             continue
         result = results.get(index) or {}
         item: dict[str, Any] = {
-            "id": raw_step.get("id"),
-            "tool": raw_step.get("tool"),
-            "status": result.get("status") or "pending",
+            "id": _clip(raw_step.get("id"), _SUMMARY_FIELD_MAX_CHARS),
+            "tool": _clip(raw_step.get("tool"), _SUMMARY_FIELD_MAX_CHARS),
+            "status": _clip(result.get("status") or "pending", 40),
         }
         action = raw_step.get("action")
         if action:
-            item["action"] = action
+            item["action"] = _clip(action, _SUMMARY_FIELD_MAX_CHARS)
         for source_key, target_key in (
             ("sub_task_id", "sub_task_id"),
             ("sub_task_type", "task_type"),
@@ -549,11 +549,10 @@ def build_plan_summary_payload(
         ):
             value = result.get(source_key)
             if value:
-                item[target_key] = value
+                item[target_key] = _clip(value, _SUMMARY_FIELD_MAX_CHARS)
         steps.append(item)
     task_input = handle.task_input if isinstance(handle.task_input, dict) else {}
     return {
-        "tool": PLAN_SUMMARY_TOOL_NAME,
         "plan_task_id": handle.plan_task_id,
         "objective": _clip(task_input.get("objective") or "", _SUMMARY_FIELD_MAX_CHARS),
         "outcome": outcome,
@@ -563,7 +562,7 @@ def build_plan_summary_payload(
         "cancelled": handle.cancel_requested or outcome == "cancelled",
         "steps": steps,
         "server_note": _clip(summary, _SUMMARY_FIELD_MAX_CHARS),
-        "detail_source": "AgentExecutionStep",
+        "detail_source": "AgentExecutionStep; 需要章节/分析结论时调用只读工具，不要臆造",
     }
 
 
@@ -588,7 +587,8 @@ async def _insert_plan_summary_message(
         ),
         _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS),
     )
-    now = _naive_utc_now()
+    before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
+    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
     async with session_factory() as session:
         existing = (await session.execute(
             select(AgentMessage.id)
@@ -608,13 +608,13 @@ async def _insert_plan_summary_message(
             role="tool",
             content=content,
             tool_call_id=provider_call_id,
-            created_at=now,
+            created_at=before,
         )
         session.add(message)
         await session.execute(
             update(AgentConversation)
             .where(AgentConversation.id == handle.conversation_id)
-            .values(last_message_at=now)
+            .values(last_message_at=conversation_now)
         )
         await session.commit()
         return message.id
@@ -632,22 +632,23 @@ async def _insert_plan_assistant_message(
     """落收尾 role=assistant 消息；空 content 不写。绝不写 role=user。"""
     if not content or not content.strip():
         return None
-    now = _naive_utc_now()
+    before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
+    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
     async with session_factory() as session:
         message = AgentMessage(
             conversation_id=conversation_id,
             role="assistant",
-            content=content,
+            content=_clip(content, _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS)),
             model=model,
             prompt_tokens=prompt_tokens or None,
             completion_tokens=completion_tokens or None,
-            created_at=now,
+            created_at=before,
         )
         session.add(message)
         await session.execute(
             update(AgentConversation)
             .where(AgentConversation.id == conversation_id)
-            .values(last_message_at=now)
+            .values(last_message_at=conversation_now)
         )
         await session.commit()
         return message.id
@@ -671,16 +672,22 @@ async def _closing_stage(
             conversation_id=handle.conversation_id,
             plan_task_input=handle.task_input,
         )
-        handle.summary_message_id = await _insert_plan_summary_message(
-            factory, handle=handle, provider_call_id=provider_call_id,
-            outcome=outcome, summary=summary,
+    except Exception as exc:                  # noqa: BLE001 —— 锚点解析失败不得吞掉聚合行
+        logger.warning(
+            f"计划 {handle.plan_task_id[:8]} 解析 provider_call_id 失败，回退锚点: {exc}"
         )
-        if outcome == "cancelled":
-            logger.info(f"计划已取消，跳过收尾 LLM 调用 {handle.plan_task_id[:8]}")
-            return
-        if handle.ai_service is None:
-            logger.warning(f"计划收尾缺少 ai_service，仅写聚合消息 {handle.plan_task_id[:8]}")
-            return
+        provider_call_id = handle.tool_call_id or ""
+    handle.summary_message_id = await _insert_plan_summary_message(
+        factory, handle=handle, provider_call_id=provider_call_id,
+        outcome=outcome, summary=summary,
+    )
+    if outcome == "cancelled":
+        logger.info(f"计划已取消，跳过收尾 LLM 调用 {handle.plan_task_id[:8]}")
+        return
+    if handle.ai_service is None:
+        logger.warning(f"计划收尾缺少 ai_service，仅写聚合消息 {handle.plan_task_id[:8]}")
+        return
+    try:
         async with factory() as session:
             generation_language = await resolve_user_generation_language(session, handle.user_id)
         payload = build_plan_summary_payload(handle, outcome, summary)
@@ -708,6 +715,23 @@ async def _closing_stage(
         )
     except Exception as exc:                  # noqa: BLE001 —— 收尾失败不得影响终态
         logger.error(f"计划收尾失败（不影响终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+
+
+async def _close_and_finalize(
+    handle: _PlanHandle, factory: async_sessionmaker, outcome: str, summary: str
+) -> None:
+    """收尾 + 终态写入打包成一个原子单元；调用方一律 shield 它。
+
+    取消落在收尾等待中时，外层 await 会立刻抛 CancelledError，但本协程作为 shield
+    的被保护任务继续跑完：计划行绝不因为取消而停在 running（终态必须被写一次）。
+    """
+    try:
+        await _closing_stage(handle, factory, outcome, summary)
+    except Exception as exc:                  # noqa: BLE001 —— 收尾异常也要把终态写完
+        logger.error(f"计划收尾异常（继续写终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+    if handle.cancel_requested and outcome != "cancelled":
+        outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
+    await _write_final_state(handle, factory, outcome, summary)
 
 
 class PlanStepError(RuntimeError):
@@ -858,15 +882,13 @@ async def _supervise(handle: _PlanHandle, factory: async_sessionmaker) -> None:
     except asyncio.CancelledError:
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
         await _cancel_in_flight(handle, factory)
-        # shield：第二次取消不得把收尾打断在半路（取消也要把聚合行写完）。
-        await asyncio.shield(_closing_stage(handle, factory, outcome, summary))
-        await _write_final_state(handle, factory, outcome, summary)
+        # shield：第二次取消不得把「收尾 + 终态写入」打断在半路。
+        await asyncio.shield(_close_and_finalize(handle, factory, outcome, summary))
         raise
     except Exception as exc:                  # noqa: BLE001 —— 含权限校验失败
         outcome, summary = "failed", str(exc)
         logger.error(f"❌ 计划执行异常 {handle.plan_task_id[:8]}: {exc}", exc_info=True)
-    await _closing_stage(handle, factory, outcome, summary)
-    await _write_final_state(handle, factory, outcome, summary)
+    await asyncio.shield(_close_and_finalize(handle, factory, outcome, summary))
 
 
 def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str, Any]:

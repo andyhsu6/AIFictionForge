@@ -1,4 +1,5 @@
 """PR-2c §4 收尾聚合：provider_call_id 配对 / 单条 tool 消息 / 强制 headless 参数。"""
+import asyncio
 import json
 import os
 import uuid
@@ -10,7 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base
-from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
+from app.models.background_task import BackgroundTask
+from app.models.project_agent import (
+    AgentConversation,
+    AgentMessage,
+    AgentToolCall,
+    _naive_utc_now,
+)
 from app.services import agent_plan_runner as runner
 from app.services.agent_plan_schema import validate_plan
 
@@ -116,6 +123,81 @@ class ClosingAIService:
 
     async def call_with_json_retry(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         raise AssertionError("收尾不得使用 JSON 重试出口")
+
+
+class BlockingClosingAIService:
+    """收尾 LLM 出口：进入调用即置 started 并阻塞到 release，供取消用例定点打断。"""
+
+    default_model = "closing-test-model"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate_text(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        self.started.set()
+        await self.release.wait()
+        return {
+            "content": "计划收尾总结。",
+            "model": self.default_model,
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+        }
+
+
+def _assert_local_last_message_at(stamp: datetime) -> None:
+    assert abs((stamp - datetime.now()).total_seconds()) < 120
+    offset = datetime.now().astimezone().utcoffset()
+    if offset is not None and abs(offset.total_seconds()) > 120:
+        assert abs((stamp - _naive_utc_now()).total_seconds()) >= 120
+
+
+async def _conversation_roles(session_factory, conversation_id: str) -> list[str]:
+    async with session_factory() as db:
+        roles = (await db.execute(
+            select(AgentMessage.role)
+            .where(AgentMessage.conversation_id == conversation_id)
+            .order_by(AgentMessage.created_at.asc())
+        )).scalars().all()
+    return list(roles)
+
+
+async def _wait_for_plan_status(session_factory, plan_task_id: str, *, attempts: int = 200):
+    status = None
+    for _ in range(attempts):
+        async with session_factory() as db:
+            row = await db.get(BackgroundTask, plan_task_id)
+        if row is not None:
+            status = row.status
+            if status != "running":
+                return status
+        await asyncio.sleep(0.01)
+    return status
+
+
+async def _start_blocked_closing(session_factory):
+    """起一份零步计划，并停在它的收尾 LLM 调用上；返回 (ai, handle, conversation_id)。"""
+    plan_task_id = f"plan-{uuid.uuid4().hex[:8]}"
+    user_id = f"u-{uuid.uuid4().hex[:8]}"
+    project_id = f"p-{uuid.uuid4().hex[:8]}"
+    conversation_id = f"conv-{uuid.uuid4().hex[:8]}"
+    ai = BlockingClosingAIService()
+    async with session_factory() as db:
+        db.add(BackgroundTask(
+            id=plan_task_id, user_id=user_id, project_id=project_id,
+            task_type="agent_plan", status="pending", progress=0,
+        ))
+        await db.commit()
+    handle = runner._PlanHandle(
+        plan_task_id=plan_task_id, user_id=user_id, project_id=project_id,
+        conversation_id=conversation_id, steps=[], ai_service=ai,
+    )
+    runner._PLAN_HANDLES[plan_task_id] = handle
+    task = asyncio.create_task(runner._supervise(handle, session_factory))
+    handle.task = task
+    await asyncio.wait_for(ai.started.wait(), timeout=5)
+    return ai, handle, conversation_id
 
 
 @pytest.mark.anyio
@@ -523,3 +605,106 @@ async def test_llm_calls_stay_one_regardless_of_step_count(session_factory):
     eight = await close_with(8)
     assert len(three.calls) == 1
     assert len(eight.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_writers_stamp_last_message_at_in_local_time(session_factory, handle_with_steps):
+    """last_message_at 全库用本地墙钟；收尾两个 writer 不得写 UTC（否则会话列表晚 8h）。"""
+    async with session_factory() as db:
+        db.add(AgentConversation(
+            id=handle_with_steps.conversation_id, user_id="u-1", project_id="p-1",
+            title="plan conv", last_message_at=datetime(2020, 1, 1, 0, 0, 0),
+        ))
+        await db.commit()
+    await runner._insert_plan_summary_message(
+        session_factory, handle=handle_with_steps, provider_call_id="call_agg",
+        outcome="completed", summary="plan finished",
+    )
+    async with session_factory() as db:
+        conversation = await db.get(AgentConversation, handle_with_steps.conversation_id)
+    _assert_local_last_message_at(conversation.last_message_at)
+    await runner._insert_plan_assistant_message(
+        session_factory, conversation_id=handle_with_steps.conversation_id,
+        content="closing summary", model=None, prompt_tokens=0, completion_tokens=0,
+    )
+    async with session_factory() as db:
+        conversation = await db.get(AgentConversation, handle_with_steps.conversation_id)
+    _assert_local_last_message_at(conversation.last_message_at)
+
+
+@pytest.mark.anyio
+async def test_closing_clips_assistant_content(session_factory, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "agent_plan_summary_max_chars", 40)
+    conversation_id = f"conv-{uuid.uuid4().hex[:8]}"
+    message_id = await runner._insert_plan_assistant_message(
+        session_factory, conversation_id=conversation_id, content="x" * 500,
+        model=None, prompt_tokens=0, completion_tokens=0,
+    )
+    assert message_id
+    async with session_factory() as db:
+        row = await db.get(AgentMessage, message_id)
+    assert len(row.content) <= 40
+
+
+def test_summary_step_fields_are_clamped():
+    handle = _handle_with_steps(1)
+    handle.steps[0]["tool"] = "t" * 500
+    handle.steps[0]["action"] = "a" * 500
+    handle.step_results[0]["status"] = "s" * 100
+    handle.step_results[0]["sub_task_id"] = "i" * 500
+    handle.step_results[0]["sub_task_type"] = "k" * 500
+    handle.step_results[0]["error_code"] = "e" * 500
+    payload = runner.build_plan_summary_payload(handle, "completed", "done")
+    step = payload["steps"][0]
+    assert len(step["status"]) <= 40
+    assert all(len(value) <= 300 for key, value in step.items() if key != "status")
+
+
+@pytest.mark.anyio
+async def test_summary_row_written_when_provider_resolution_raises(
+    session_factory, handle_with_steps, monkeypatch
+):
+    async def boom(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("provider lookup failed")
+
+    monkeypatch.setattr(runner, "resolve_provider_call_id", boom)
+    await runner._closing_stage(handle_with_steps, session_factory, "completed", "plan finished")
+    roles = await _conversation_roles(session_factory, handle_with_steps.conversation_id)
+    assert roles.count("tool") == 1
+
+
+@pytest.mark.anyio
+async def test_single_cancel_during_closing_still_finalizes(session_factory):
+    """取消落在正常路径收尾等待中：shield 单元必须把终态写完（不得停在 running）。"""
+    ai, handle, conversation_id = await _start_blocked_closing(session_factory)
+    try:
+        assert runner.request_plan_cancellation(handle.plan_task_id, reason="用户停止") is True
+        ai.release.set()
+        status = await _wait_for_plan_status(session_factory, handle.plan_task_id)
+        assert status == "cancelled"
+        roles = await _conversation_roles(session_factory, conversation_id)
+        assert roles.count("tool") == 1
+    finally:
+        runner._PLAN_HANDLES.pop(handle.plan_task_id, None)
+        ai.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.anyio
+async def test_second_cancel_impulse_during_closing_still_finalizes(session_factory):
+    """双取消脉冲（公开 API 目前到不了）：第二发不得让终态写入被跳过。"""
+    ai, handle, conversation_id = await _start_blocked_closing(session_factory)
+    try:
+        assert runner.request_plan_cancellation(handle.plan_task_id, reason="用户停止") is True
+        runner._PLAN_HANDLES[handle.plan_task_id].task.cancel()
+        ai.release.set()
+        status = await _wait_for_plan_status(session_factory, handle.plan_task_id)
+        assert status == "cancelled"
+        roles = await _conversation_roles(session_factory, conversation_id)
+        assert roles.count("tool") == 1
+    finally:
+        runner._PLAN_HANDLES.pop(handle.plan_task_id, None)
+        ai.release.set()
+        await asyncio.sleep(0)
