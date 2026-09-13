@@ -2645,6 +2645,11 @@ export default interface Resources {
     "processChangeFailed": "处理修改失败",
     "processLabel": "思考与调用过程",
     "requestFailed": "请求失败：{{message}}",
+    "riskReason": {
+      "analysis_probe_failed": "无法确认该章节是否已有分析结果，已按需要确认处理。",
+      "chapter_unresolvable": "未能把这次请求对应到本书的具体章节，已按需要确认处理。",
+      "overwrite_existing_analysis": "该章节已有分析结果或故事记忆，继续执行会覆盖既有分析、记忆与伏笔联动。"
+    },
     "send": "发送",
     "status": {
       "cancelled": "已停止",

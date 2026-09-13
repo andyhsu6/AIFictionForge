@@ -112,6 +112,40 @@ function fieldLabel(field: string, t: TFunction<'projectAgentPanel'>): string {
   return labels[field] || field;
 }
 
+// I1：detail.risk.reason 是后端**审计码**（见 backend/app/services/project_agent_risk.py），
+// 文案只能活在这里 —— 之前后端把码翻成中文拼进 step.content，英文用户在确认卡上
+// 会读到整段中文。逐码写字面量键而不是 `riskReason.${code}`：i18next 开了 strict
+// key typing（src/types/i18next.d.ts 声明了 resources），动态模板键过不了 tsc，
+// 而且 i18next-cli extract 也扫不到动态键。未列出的码回退 undefined ⇒ 不多渲染一行
+// （基础 content 已说明"等待确认"），未知码一律不猜文案。
+function riskReasonText(reason: unknown, t: TFunction<'projectAgentPanel'>): string | undefined {
+  const texts: Record<string, string> = {
+    overwrite_existing_analysis: t('riskReason.overwrite_existing_analysis'),
+    chapter_unresolvable: t('riskReason.chapter_unresolvable'),
+    analysis_probe_failed: t('riskReason.analysis_probe_failed'),
+  };
+  return typeof reason === 'string' ? texts[reason] : undefined;
+}
+
+function riskReasonOf(detail: Record<string, unknown> | undefined): unknown {
+  const risk = detail?.risk;
+  if (!risk || typeof risk !== 'object') return undefined;
+  return (risk as Record<string, unknown>).reason;
+}
+
+// I2：「查看参数与结果」的 <pre> 是调试出口，不得把 risk 的原始审计 JSON
+// （{"action":..., "risk_level":2, ...}）dump 给用户 —— 人类可读版本已经在上面的
+// content 与 riskReason 文案里。tool_call 同理（另有专门渲染出口）。
+// 隐藏键只有这一个来源：过滤条件与"要不要展开 <details>"必须同一个谓词，
+// 否则两处条件各写各的，迟早出现"点开来是个空块"或漏过滤。
+const DEBUG_DETAIL_HIDDEN_KEYS = new Set(['tool_call', 'risk']);
+
+function detailForDebugDump(detail: Record<string, unknown> | undefined): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(detail || {}).filter(([key]) => !DEBUG_DETAIL_HIDDEN_KEYS.has(key))
+  );
+}
+
 function timestampMs(value?: string): number | undefined {
   if (!value) return undefined;
   const parsed = Date.parse(value);
@@ -692,7 +726,8 @@ export default function ProjectAgentPanel({
                   const toolCall = step.tool_call_id
                     ? toolCalls.find(item => item.id === step.tool_call_id)
                     : undefined;
-                  const hasDetail = Boolean(step.detail && Object.keys(step.detail).some(key => key !== 'tool_call'));
+                  const debugDetail = detailForDebugDump(step.detail);
+                  const riskReason = riskReasonText(riskReasonOf(step.detail), t);
                   return (
                     <div key={step.id} style={{
                       borderLeft: `2px solid ${step.status === 'failed' ? token.colorError : step.status === 'waiting_confirmation' ? token.colorWarning : token.colorBorder}`,
@@ -711,16 +746,19 @@ export default function ProjectAgentPanel({
                           {step.content}
                         </Text>
                       )}
-                      {hasDetail && (
+                      {riskReason && (
+                        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 5 }} data-testid="risk-reason">
+                          {riskReason}
+                        </Text>
+                      )}
+                      {Object.keys(debugDetail).length > 0 && (
                         <details style={{ marginTop: 7, fontSize: 12 }}>
                           <summary style={{ cursor: 'pointer', color: token.colorTextSecondary }}>{t('viewParams')}</summary>
                           <pre style={{
                             margin: '6px 0 0', padding: 8, borderRadius: 6,
                             background: token.colorFillQuaternary, whiteSpace: 'pre-wrap',
                             wordBreak: 'break-word', maxHeight: 220, overflow: 'auto',
-                          }}>{formatValue(Object.fromEntries(
-                            Object.entries(step.detail || {}).filter(([key]) => key !== 'tool_call')
-                          ), t)}</pre>
+                          }}>{formatValue(debugDetail, t)}</pre>
                         </details>
                       )}
                       {renderChangePreview(toolCall)}

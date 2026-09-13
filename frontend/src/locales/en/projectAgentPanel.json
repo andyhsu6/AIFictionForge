@@ -64,6 +64,11 @@
   "processChangeFailed": "Failed to process the change",
   "processLabel": "Thinking and calling process",
   "requestFailed": "Request failed: {{message}}",
+  "riskReason": {
+    "analysis_probe_failed": "Existing analysis results for this chapter could not be verified, so confirmation is required.",
+    "chapter_unresolvable": "This request could not be matched to a specific chapter of the project, so confirmation is required.",
+    "overwrite_existing_analysis": "This chapter already has analysis results or story memory. Continuing would overwrite the existing analysis, story memories and foreshadow links."
+  },
   "send": "Send",
   "status": {
     "cancelled": "Stopped",

@@ -1244,8 +1244,12 @@ export interface ProjectAgentStreamCallbacks {
     // PR-1：BackgroundTask / BatchGenerationTask / AnalysisTask 的 id 无跨表唯一性，
     // 必须同时带 task_type 才能反查表（消费点在 PR-3）。
     task_type?: AgentTaskType;
-    // 'inline' = 免确认工具在助手回合内直接执行（既非自动批准也非人工确认）。
-    approval_mode: 'automatic' | 'manual' | 'inline';
+    // 值域 = 后端 project_agent_service.py 里 tool_executed 实际下发的字面量：
+    // 'automatic'（auto_approve 或需确认工具被批准）与 'inline'（免确认工具在助手
+    // 回合内直接执行）。曾经的第三值 'manual' 已删：后端从不发它（手动确认走 REST
+    // /tool-calls/{id}/confirm，结果不经过本回调），留着只会让消费方写出一个永不可达、
+    // 永不可测的 case 'manual'。新增取值请先改后端再改这里。
+    approval_mode: 'automatic' | 'inline';
   }) => void;
   onStepStart?: (step: AgentExecutionStep) => void;
   onStepUpdate?: (step: AgentExecutionStep) => void;
