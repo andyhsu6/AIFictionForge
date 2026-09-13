@@ -902,3 +902,15 @@ async def test_second_cancel_request_does_not_abort_cleanup(env, monkeypatch):
     assert plan_row.progress_details["cancel"]["cancelled_sub_tasks"] == launched
     sub_row = await load_row(env.factory, BackgroundTask, launched[0])
     assert sub_row.status == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_runner_is_registered_at_startup(env):
+    """回滚判据的物理形态：注册只存在于 main.py，删掉那一段即回到 PR-2a 的 501。"""
+    import inspect
+
+    from app import main as app_main
+
+    source = inspect.getsource(app_main)
+    assert "register_plan_runner" in source
+    assert "from app.services.agent_plan_runner import run_plan" in source
