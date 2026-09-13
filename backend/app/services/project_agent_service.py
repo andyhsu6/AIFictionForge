@@ -18,7 +18,10 @@ from app.models.project_agent import (
 )
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
+    PlanValidationError,
+    plannable_tool_names,
     provider_supports_required_tool_choice,
+    validate_plan,
 )
 from app.services.ai_service import AIService
 from app.services.language_resolver import (
@@ -554,6 +557,56 @@ class ProjectAgentService:
                 sequence += 1
                 yield {"type": "step_start", "data": self._step_data(tool_step)}
                 call_id = raw_call.get("id") or record.id
+
+                if name == PROPOSE_PLAN_TOOL_NAME:
+                    # 终止型规划工具：只落计划，不 preview、不 execute（架构计划 §1 定案）。
+                    # 必须前置到 requires_confirmation 判定之前：它 risk_level=0，落到
+                    # 下面任何一条既有分支都会被 registry 以「只读工具」路径拒收
+                    # （registry 的两条安全网就是为了让这种绕过显式失败，而不是静默执行）。
+                    # 也不进 MCP 分支——它是项目注册表里的工具。
+                    # 白名单取 available_tools（本回合注册表+MCP 的完整工具集）而不是
+                    # round_tools：收口轮只留 propose_plan，拿它当白名单会拒掉每一份计划。
+                    allowed = plannable_tool_names(available_tools)
+                    try:
+                        plan = validate_plan(arguments, allowed_tools=allowed)
+                    except PlanValidationError as exc:
+                        # plan_attempts / plan_correction 由 Task 4 的有界重试消费。
+                        plan_attempts += 1
+                        plan_correction = str(exc)
+                        record.status = "failed"
+                        record.error_message = str(exc)
+                        await self._save_tool_response(
+                            conversation, call_id, name, None, error=str(exc)
+                        )
+                        await self._update_step(
+                            tool_step,
+                            content=f"计划格式需要修正：{exc}",
+                            status="failed",
+                            detail={"arguments": self._display_value(arguments)},
+                        )
+                        yield {"type": "step_update", "data": self._step_data(tool_step)}
+                        continue
+
+                    record.arguments = plan
+                    plan_produced = True
+                    record.status = "waiting_confirmation"
+                    proposed.append(record)
+                    await self._save_tool_response(
+                        conversation, call_id, name,
+                        {"status": "waiting_confirmation", "plan": plan},
+                    )
+                    await self._update_step(
+                        tool_step,
+                        content="已生成执行计划，等待你确认后开始逐步执行。",
+                        status="waiting_confirmation",
+                        detail={
+                            "plan": plan,
+                            "arguments": self._display_value(plan),
+                            "tool_call": self._tool_call_data(record),
+                        },
+                    )
+                    yield {"type": "step_update", "data": self._step_data(tool_step)}
+                    continue
 
                 if tool is None:
                     if record.requires_confirmation:

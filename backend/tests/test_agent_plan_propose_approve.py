@@ -3,11 +3,18 @@
 只读工具/中性夹具：禁止出现任何真实书名、人名、正文片段（AGENTS.md 脱敏硬约束）。
 """
 from __future__ import annotations
-
+import json
+import os
+import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.database import Base
+from app.models.project import Project
+from app.models.project_agent import AgentConversation, AgentToolCall
 from app.services.agent_plan_schema import (
     EXCLUDED_PLAN_TOOLS,
     PROPOSE_PLAN_TOOL_NAME,
@@ -15,6 +22,7 @@ from app.services.agent_plan_schema import (
     plannable_tool_names,
     validate_plan,
 )
+from app.services.project_agent_service import ProjectAgentService
 
 
 ALLOWED = {"get_project_overview", "list_outlines", "start_project_task"}
@@ -194,3 +202,279 @@ async def test_call_round_forwards_tool_choice_and_keeps_agent_side_routing():
     assert recorded["tool_choice"] == "required"
     assert recorded["auto_mcp"] is False          # shared-terms 硬约束
     assert recorded["handle_tool_calls"] is False  # 工具只能由 agent 自己的 registry 路由
+
+
+# --------------------------------------------------------------------------- #
+# Task 3：propose_plan 前置特判分支
+# --------------------------------------------------------------------------- #
+
+PROJECT_ID = "proj-plan-a"
+USER_ID = "u-plan-a"
+
+
+@pytest.fixture
+async def db_engine():
+    """临时文件 SQLite（与 tests/test_project_agent_inline_task.py 同习惯）。
+
+    engine 单独成一个 fixture：核对「回合真的提交了」必须**另开一条连接**读库，
+    沿用 service 的 session 会走 identity map 看到未提交的行。
+    """
+    db_path = f"/tmp/test_plan_pr2a_{uuid.uuid4().hex}.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+
+@pytest.fixture
+async def db_session(db_engine):
+    Session = async_sessionmaker(bind=db_engine, expire_on_commit=False)
+    async with Session() as session:
+        yield session
+
+
+@pytest.fixture
+async def env(db_engine, db_session):
+    """种子数据 + 可直接驱动 stream_chat 的 service（api_provider 必须是真字符串）。"""
+    db_session.add(Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"))
+    conversation = AgentConversation(
+        user_id=USER_ID, project_id=PROJECT_ID, title="planning turn"
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=SimpleNamespace(default_model="mock-model", api_provider="openai"),
+        project=Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"),
+        user_id=USER_ID,
+    )
+    yield SimpleNamespace(
+        service=service,
+        project_id=PROJECT_ID,
+        user_id=USER_ID,
+        conversation_id=conversation.id,
+        engine=db_engine,
+    )
+
+
+async def read_tool_calls(env) -> list[AgentToolCall]:
+    """另开一条连接读库：只 flush 未提交的行在这里读不到。"""
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        return list((await session.execute(
+            select(AgentToolCall).where(AgentToolCall.project_id == env.project_id)
+        )).scalars().all())
+
+
+async def run_turn(env, responses, *, plan_mode: bool, calls: list) -> list[dict]:
+    """两个出口都要 patch：generate_text（工具决策轮）与 generate_text_stream_full（末轮）。"""
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return responses[min(len(calls) - 1, len(responses) - 1)]
+
+    async def fake_stream_full(**kwargs):
+        calls.append(kwargs)
+        return responses[min(len(calls) - 1, len(responses) - 1)]
+
+    env.service.ai_service.generate_text = fake_generate_text
+    env.service.ai_service.generate_text_stream_full = fake_stream_full
+    return [
+        e async for e in env.service.stream_chat(
+            conversation_id=env.conversation_id,
+            message="plan my book",
+            page_context={"route": "/project/1"},
+            auto_approve=False,
+            plan_mode=plan_mode,
+        )
+    ]
+
+
+def tool_call(name: str, arguments: dict, call_id: str = "call-pr2a-1") -> dict:
+    return {
+        "content": "我先调用工具。",
+        "tool_calls": [{"id": call_id, "function": {"name": name, "arguments": arguments}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+
+def answer(content: str) -> dict:
+    return {"content": content, "tool_calls": [], "usage": {}}
+
+
+VALID_PLAN = {
+    "objective": "build three chapters",
+    "steps": [
+        {"id": "s1", "tool": "list_outlines", "arguments": {}},
+        {"id": "s2", "tool": "list_outlines", "arguments": {"limit": 3}},
+        {"id": "s3", "tool": "list_outlines", "arguments": {}},
+    ],
+}
+
+
+def _plan_response(**extra):
+    return tool_call(
+        PROPOSE_PLAN_TOOL_NAME, json.loads(json.dumps(VALID_PLAN)), **extra
+    )
+
+
+@pytest.mark.anyio
+async def test_propose_plan_creates_waiting_confirmation_without_executing(env):
+    calls: list[dict] = []
+
+    async def boom_execute(*a, **k):  # registry.execute 被调用即失败
+        raise AssertionError("propose_plan must never reach registry.execute")
+
+    async def boom_preview(*a, **k):
+        raise AssertionError("propose_plan must never reach registry.preview")
+
+    env.service.registry.execute = boom_execute
+    env.service.registry.preview = boom_preview
+
+    events = await run_turn(env, [_plan_response()], plan_mode=True, calls=calls)
+
+    assert calls[0]["tool_choice"] in ("auto", "required")
+    final = events[-1]
+    assert final["type"] == "result" and final["data"]["status"] == "waiting_confirmation"
+
+    rows = await read_tool_calls(env)
+    assert len(rows) == 1
+    assert rows[0].tool_name == PROPOSE_PLAN_TOOL_NAME
+    assert rows[0].status == "waiting_confirmation"
+    assert rows[0].requires_confirmation is False   # 特判接管，不是靠 risk_level
+    assert [s["id"] for s in rows[0].arguments["steps"]] == ["s1", "s2", "s3"]
+    assert rows[0].result is None and rows[0].executed_at is None
+    # 复用既有 `if proposed:` 收口块：它负责把 message_id 挂到 assistant 并提交。
+    assert rows[0].message_id == final["data"]["message_id"]
+    # 计划必须原样进 arguments（PR-2b 的执行器只读这一列）
+    assert rows[0].arguments["objective"] == "build three chapters"
+
+
+@pytest.mark.anyio
+async def test_propose_plan_step_card_is_the_confirmation_surface(env):
+    """确认卡的可见面：step 状态 + detail.plan（PR-3 的 PlanApprovalCard 只读这里）。"""
+    events = await run_turn(env, [_plan_response()], plan_mode=True, calls=[])
+
+    updates = [e for e in events if e["type"] == "step_update"]
+    plan_steps = [
+        e["data"] for e in updates
+        if e["data"]["step_type"] == "tool" and e["data"]["status"] == "waiting_confirmation"
+    ]
+    assert len(plan_steps) == 1
+    detail = plan_steps[0]["detail"]
+    assert [s["id"] for s in detail["plan"]["steps"]] == ["s1", "s2", "s3"]
+    assert detail["tool_call"]["status"] == "waiting_confirmation"
+    assert detail["tool_call"]["tool_name"] == PROPOSE_PLAN_TOOL_NAME
+
+
+@pytest.mark.anyio
+async def test_non_planning_round_never_offers_propose_plan(env):
+    """第二道保险落在**回合级**：默认 plan_mode=False 时模型不得看到 propose_plan。
+
+    只有 helper 的单元测试挡不住"循环里忘了调用 helper"——那时 propose_plan
+    会出现在每一轮工具集里，模型可以在任意一轮结束规划回合。
+    """
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [answer("普通回合。")],
+        plan_mode=False,
+        calls=calls,
+    )
+
+    assert calls, "没有捕获到任何模型调用"
+    for call in calls:
+        names = {item["function"]["name"] for item in (call["tools"] or [])}
+        assert names, "非规划回合也必须带项目工具"
+        assert PROPOSE_PLAN_TOOL_NAME not in names
+
+
+@pytest.mark.anyio
+async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
+    """手段 ①+② 的回合级落地：预算耗尽那一轮只给 propose_plan 且 tool_choice=required。"""
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            answer("收口轮直接回答了（缺陷形态）。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 3
+    ordered = [
+        [item["function"]["name"] for item in (call["tools"] or [])] for call in calls[:2]
+    ]
+    assert all(names and names[-1] == PROPOSE_PLAN_TOOL_NAME for names in ordered)
+    assert all(len(names) > 1 for names in ordered)   # 普通规划轮仍然保留只读工具
+    assert [call["tool_choice"] for call in calls[:2]] == ["auto", "auto"]
+    assert [item["function"]["name"] for item in calls[2]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert calls[2]["tool_choice"] == "required"
+
+
+@pytest.mark.anyio
+async def test_closing_round_plan_validated_against_turn_whitelist_not_round_tools(env):
+    """收口轮交出的合法计划必须被接受。
+
+    收口轮只给模型 propose_plan ⇒ 若白名单取"该轮工具集"，它恒为空，**每一份**计划
+    都会被判「未启用的工具」。白名单必须取本回合注册表+MCP 的完整工具集。
+    """
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            _plan_response(call_id="call-plan-1"),
+        ],
+        plan_mode=True,
+        calls=[],
+    )
+
+    final = [e for e in events if e["type"] == "result"][-1]
+    assert final["data"]["status"] == "waiting_confirmation"
+    # 前两轮只读调用也各有一行 ⇒ 只挑 propose_plan 那一行
+    plan_rows = [row for row in await read_tool_calls(env) if row.tool_name == PROPOSE_PLAN_TOOL_NAME]
+    assert len(plan_rows) == 1
+    assert plan_rows[0].status == "waiting_confirmation"
+    assert [s["id"] for s in plan_rows[0].arguments["steps"]] == ["s1", "s2", "s3"]
+
+
+@pytest.mark.anyio
+async def test_propose_plan_rejects_a_tool_the_round_never_offered(env):
+    """白名单来自**本回合的工具集**：计划里引用没注册的工具必须被拒。"""
+    bad_plan = {
+        "objective": "sneak a write in",
+        "steps": [{"id": "s1", "tool": "drop_database", "arguments": {"title": "x"}}],
+    }
+    # 第二份响应是普通回答：Task 4 之前的有界重试还不存在，
+    # 若让假模型反复交同一份坏计划，回合会撞到轮数上限而抛错（那是 Task 4 的收口职责）。
+    events = await run_turn(
+        env,
+        [
+            tool_call(PROPOSE_PLAN_TOOL_NAME, bad_plan, call_id="call-bad"),
+            answer("那我先只说明思路。"),
+        ],
+        plan_mode=True,
+        calls=[],
+    )
+
+    rows = await read_tool_calls(env)
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert "未启用的工具" in (rows[0].error_message or "")
+    assert [e for e in events if e["type"] == "result"][-1]["data"]["status"] == "completed"
+    failed = [
+        e["data"] for e in events
+        if e["type"] == "step_update" and e["data"]["status"] == "failed"
+    ]
+    assert len(failed) == 1
+    assert "计划格式需要修正" in failed[0]["content"]
