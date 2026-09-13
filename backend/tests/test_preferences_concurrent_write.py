@@ -321,15 +321,13 @@ def _preset_config() -> APIKeyPresetConfig:
 
 
 def _qualified_context_verdict() -> dict:
-    """步骤 3 的上下文窗口门禁在「首次见到三元组」时会同步探测 ①②。
+    """预置一条**已定论**的合格结论，让门禁走「命中缓存 ⇒ 零网络」分支。
 
-    本文件测的是写锁串行化，不是探测，所以给 save_settings 用例用的那个三元组
-    预置一条**当天**的合格结论：门禁走「已有结论 ⇒ 零网络」分支，
-    `acquisitions == 1` 的断言才仍然有意义（门禁判定必须发生在临界区之外）。
+    本文件测的是写锁串行化，不是探测：只有门禁判定发生在临界区之外，
+    `acquisitions == 1` 的断言才仍然有意义。承重的是三元组键本身，不是结论时间
+    （C2 起已定论永不自动复测，`checked_at` 不再参与任何派发决策）。
     `activate_preset` 自 C1 起同样过闸，因此共用这份预置结论。
     """
-    from datetime import datetime, timezone
-
     from app.services.model_capability_probe import (
         MIN_CONTEXT_WINDOW_TOKENS,
         PREFERENCES_KEY,
@@ -345,7 +343,6 @@ def _qualified_context_verdict() -> dict:
                 "context_window_tokens": 1_048_576,
                 "tier": "metadata",
                 "detail": "seeded for the locking test",
-                "checked_at": datetime.now(timezone.utc).isoformat(),
             }
         }
     }

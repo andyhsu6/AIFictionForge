@@ -5,7 +5,7 @@
 2. 探测路径的重试实际生效 **1 次**（`_request_with_retry` 默认 max_retries=3 且只排除
    401/403/404 ⇒ ② 档预期拿到的 400 会被原样重发 3 次，3 倍计费）。
 3. ③ needle 档**未接线**：调用即 inconclusive 且一次请求都不发。
-4. `daily` 触发点选 needle 档必须抛断言错误（架构层禁止误挂，否则每天 ≈1M token）。
+4. `dispatch` 触发点选 needle 档必须抛断言错误（架构层禁止误挂，否则每次实发都可能 ≈1M token）。
 5. 真实 128K 级模型（gpt-4o-mini）保存 ⇒ **被拒**。
 6. 未登记/探测不出 ⇒ 要求显式声明 context_window_tokens；声明 ≥1M 可保存、
    声明 <1M 仍被拒；实测 <1M 的模型即使声明 ≥1M 也**不放行**（无勾选放行通道）。
@@ -48,14 +48,14 @@ from app.services.ai_service import (
     detect_context_window,
 )
 from app.services.model_capability_probe import (
+    DISPATCH_REPROBE_COOLDOWN_SECONDS,
     MIN_CONTEXT_WINDOW_TOKENS,
     PREFERENCES_KEY,
-    PROBE_MAX_ATTEMPTS,
     ProbeOutcome,
     SOURCE_PROBE,
     SOURCE_USER_DECLARED,
     TRIGGER_ALLOWED_TIERS,
-    TRIGGER_DAILY,
+    TRIGGER_DISPATCH,
     TRIGGER_MANUAL,
     TRIGGER_SAVE,
     TIER_MAX_TOKENS_BOUND,
@@ -388,7 +388,6 @@ def test_fix_is_not_a_lower_threshold_or_a_declaration_override():
 @pytest.mark.anyio
 async def test_probe_issues_exactly_one_attempt_per_tier(gateway):
     """探测路径 max_retries 实际生效 1 次：预期内的 400 不得被重发（否则 3 倍计费）。"""
-    assert PROBE_MAX_ATTEMPTS == 1
     assert probe_module.PROBE_TRANSPORT_RETRIES == 0
 
     await probe_model_context_window(
@@ -444,20 +443,20 @@ async def test_needle_tier_requested_explicitly_still_sends_nothing(gateway):
 
 
 def test_trigger_allowed_tiers_shape():
-    assert TRIGGER_ALLOWED_TIERS[TRIGGER_DAILY] == (TIER_METADATA, TIER_MAX_TOKENS_BOUND)
+    assert TRIGGER_ALLOWED_TIERS[TRIGGER_DISPATCH] == (TIER_METADATA, TIER_MAX_TOKENS_BOUND)
     for trigger in (TRIGGER_SAVE, TRIGGER_MANUAL):
         assert TIER_NEEDLE in TRIGGER_ALLOWED_TIERS[trigger]
 
 
-def test_daily_trigger_with_needle_tier_raises_assertion_error():
-    """日频挂 needle = 每个用户每天 ≈1M token，必须抛断言错误而不是静默降级。"""
+def test_dispatch_trigger_with_needle_tier_raises_assertion_error():
+    """派发挂 needle = 每次实发都可能 ≈1M token，必须抛断言错误而不是静默降级。"""
     with pytest.raises(AssertionError) as exc_info:
-        assert_tier_allowed(TRIGGER_DAILY, TIER_NEEDLE)
+        assert_tier_allowed(TRIGGER_DISPATCH, TIER_NEEDLE)
     assert "needle" in str(exc_info.value)
 
 
 @pytest.mark.anyio
-async def test_daily_probe_with_needle_tier_raises_before_any_request(gateway):
+async def test_dispatch_probe_with_needle_tier_raises_before_any_request(gateway):
     """真入口同样拦：抛断言错误时一个请求都没发出。"""
     with pytest.raises(AssertionError):
         await probe_model_context_window(
@@ -465,7 +464,7 @@ async def test_daily_probe_with_needle_tier_raises_before_any_request(gateway):
             base_url=GATEWAY,
             api_key=API_KEY,
             model=QUALIFIED_MODEL,
-            trigger=TRIGGER_DAILY,
+            trigger=TRIGGER_DISPATCH,
             tiers=(TIER_NEEDLE,),
         )
     assert gateway.total_calls == 0
@@ -781,64 +780,91 @@ async def test_legacy_user_without_any_verdict_is_probed_then_rejected(db_factor
 
 
 @pytest.mark.anyio
-async def test_stale_verdict_uses_existing_conclusion_and_rechecks_in_background(
-    db_factory, service_factory, monkeypatch
+async def test_inconclusive_verdict_is_reprobed_on_dispatch_and_can_recover(
+    db_factory, service_factory, gateway
 ):
-    """已有结论只是今天没复测 ⇒ 本次直接按现有结论执行，复测 fire-and-forget（绝不 await）。
+    """Rule R1：缓存的 `inconclusive` 不是结论 ⇒ 派发时同步复探 ①②，且新结论能覆盖它。
 
-    证伪方式：让后台复测返回「不合格」。若派发路径 await 了复测，本次请求就会被拦；
-    断言它照常成功，才真正钉住「不 await」。复测落地后下一次派发才按新结论拒。
+    自动复测已删除，若不复探，一次网关不可达留下的 inconclusive 会永久粘住，网关恢复后
+    仍每次拒绝。这里让网关恢复并如实报 1,048,576 ⇒ 本次请求必须成功，新实测结论落库。
     """
-    user_id = "u-stale"
+    user_id = "u-inconclusive-recover"
     key = triple_key("openai", GATEWAY, QUALIFIED_MODEL)
     await seed_settings(db_factory, user_id, preferences={PREFERENCES_KEY: {
-        key: _qualified_entry(checked_at=_days_ago_iso(3))
+        key: {
+            "result": VERDICT_INCONCLUSIVE,
+            "source": SOURCE_PROBE,
+            "context_window_tokens": None,
+            "tier": TIER_METADATA,
+            "detail": "gateway was unreachable when this was cached",
+            "checked_at": _days_ago_iso(1),
+        }
     }})
-    probes = []
-    opened_sessions = []
-
-    async def fake_probe(**kwargs):
-        probes.append(kwargs)
-        return ProbeOutcome(
-            verdict=VERDICT_UNQUALIFIED,
-            source=SOURCE_PROBE,
-            tier=TIER_MAX_TOKENS_BOUND,
-            detail="gateway downgraded to a small window",
-        )
-
-    async def fake_session(user):
-        session = db_factory()
-        opened_sessions.append(session)
-        return session
+    gateway.metadata_status = 200
+    gateway.metadata_body = {"id": QUALIFIED_MODEL, "context_length": 1_048_576}
 
     probe_module.memo_clear()
-    monkeypatch.setattr(probe_module, "probe_model_context_window", fake_probe)
-    monkeypatch.setattr(probe_module, "_open_user_session", fake_session)
-
     async with db_factory() as session:
         svc, provider = service_factory(user_id, session)
         await svc.generate_text(prompt=NEUTRAL_PROMPT)
 
-    assert provider.calls and provider.calls[0]["model"] == QUALIFIED_MODEL, "过期结论不该拦本次请求"
-    assert len(probes) <= 1, "派发路径不得同步等复测（只有首次定论才 await）"
-    pending = probe_module.pending_recheck_tasks()
-    assert pending, "过期结论必须排队 fire-and-forget 后台复测"
-    await asyncio.gather(*pending)
-    assert probes[0]["trigger"] == TRIGGER_DAILY, "后台复测只能以 daily 触发点跑（只允许 ①②）"
-
-    # 复测把新结论落了缓存 ⇒ 下一次派发按新结论拒绝（抓网关侧降配）
-    probe_module.memo_clear()
-    async with db_factory() as session:
-        svc, provider = service_factory(user_id, session)
-        with pytest.raises(ApiError) as exc_info:
-            await svc.generate_text(prompt=NEUTRAL_PROMPT)
-    assert exc_info.value.code == BELOW_MINIMUM
+    assert provider.calls and provider.calls[0]["model"] == QUALIFIED_MODEL, "判不出的缓存不该永久拦人"
+    assert gateway.metadata_calls == 1 and gateway.bound_calls == 0, "inconclusive 必须复探 ①②"
 
     async with db_factory() as check:
         row = (await check.execute(select(Settings).where(Settings.user_id == user_id))).scalar_one()
-        assert json.loads(row.preferences)[PREFERENCES_KEY][key]["result"] == VERDICT_UNQUALIFIED
-    for session in opened_sessions:
-        await session.close()
+        stored = json.loads(row.preferences)[PREFERENCES_KEY][key]
+    assert stored["result"] == VERDICT_QUALIFIED
+    assert stored["context_window_tokens"] == 1_048_576
+
+
+@pytest.mark.anyio
+async def test_settled_qualified_verdict_is_never_reprobed(db_factory, service_factory, gateway):
+    """Rule R 的反面：已定论（qualified）即使很旧也直接复用 —— 零网络、永不自动复测。"""
+    user_id = "u-settled-qualified"
+    key = triple_key("openai", GATEWAY, QUALIFIED_MODEL)
+    await seed_settings(db_factory, user_id, preferences={PREFERENCES_KEY: {
+        key: _qualified_entry(checked_at=_days_ago_iso(45))
+    }})
+
+    probe_module.memo_clear()
+    async with db_factory() as session:
+        svc, provider = service_factory(user_id, session)
+        await svc.generate_text(prompt=NEUTRAL_PROMPT)
+
+    assert provider.calls and provider.calls[0]["model"] == QUALIFIED_MODEL
+    assert gateway.total_calls == 0, "已定论永不复测：派发路径必须零网络"
+
+
+@pytest.mark.anyio
+async def test_concurrent_dispatch_reprobes_are_deduplicated(db_factory, service_factory, gateway):
+    """R3：同一三元组 8 个并发派发，对外请求 <= 2（占坑先于 await；串行用例证不了）。
+
+    网关 ① 档不可用 + ② 档 401 ⇒ 每个派发都「判不出」。没有占坑，8 个请求各自打 ①②
+    （=16 次出网）；冷却把同一 tick 的并发收敛成一次探测。把冷却的写入挪到探测返回
+    **之后**，同一条断言就会红（这正是 issue #62 的突发形态）。
+    """
+    assert DISPATCH_REPROBE_COOLDOWN_SECONDS > 0, "冷却窗必须为正，否则 R3 无意义"
+    user_id = "u-burst"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    gateway.bound_status = 401
+    gateway.bound_body = b'{"error":{"message":"invalid api key"}}'
+
+    probe_module.memo_clear()
+
+    async def one_dispatch():
+        async with db_factory() as session:
+            svc, _ = service_factory(user_id, session)
+            with pytest.raises(ApiError) as exc_info:
+                await svc.generate_text(prompt=NEUTRAL_PROMPT)
+            return exc_info.value
+
+    errors = await asyncio.gather(*[one_dispatch() for _ in range(8)])
+
+    assert all(error.code == BELOW_MINIMUM for error in errors)
+    assert gateway.total_calls <= 2, (
+        f"并发派发重测没去重：出网 {gateway.total_calls} 次（占坑必须发生在 await 之前）"
+    )
 
 
 @pytest.mark.anyio
@@ -893,10 +919,10 @@ async def test_probe_inside_a_held_write_lock_times_out_instead_of_deadlocking(
     assert exc_info.value.code == BELOW_MINIMUM, "判定本身仍要成立（只是没缓存）"
 
 
-def test_dispatch_path_can_only_use_the_daily_trigger():
-    """派发路径的触发点必须是 daily：结构上禁止把 needle 档挂到每次实发上。"""
+def test_dispatch_path_can_only_use_the_dispatch_trigger():
+    """派发路径的触发点必须是 dispatch：结构上禁止把 needle 档挂到每次实发上。"""
     source = inspect.getsource(AIService._require_model)
-    assert "TRIGGER_DAILY" in source
+    assert "TRIGGER_DISPATCH" in source
     assert "TRIGGER_SAVE" not in source
     assert "TRIGGER_MANUAL" not in source
 

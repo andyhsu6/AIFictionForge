@@ -22,7 +22,7 @@ from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
 from app.services.model_capability_probe import (
-    TRIGGER_DAILY,
+    TRIGGER_DISPATCH,
     ensure_model_allowed,
     get_effective_context_window,
 )
@@ -448,10 +448,10 @@ class AIService:
         同一三元组去查/写结论（需求 #55 审核项：门禁绑定的是**实发**三元组，
         漏掉 provider 等于给一个没量过的 host 开合格证）。
 
-        异步是因为「从未有过结论」的三元组要同步补测 ①② 再定论（成本是一次 GET +
-        一次极小请求）；已有结论只是过期时走 fire-and-forget 后台复测，不 await。
-        触发点固定用 `daily`：它的档白名单只有 ①②，结构上就把 ≈1M token 的 needle
-        档挡在派发路径之外（`TRIGGER_ALLOWED_TIERS` + `assert_tier_allowed`）。
+        异步是因为「结论缺失或仍是 inconclusive」的三元组要同步补测 ①② 再定论
+        （成本是一次 GET + 一次极小请求）。触发点固定用 `dispatch`：它的档白名单只有
+        ①②，结构上就把 ≈1M token 的 needle 档挡在派发路径之外
+        （`TRIGGER_ALLOWED_TIERS` + `assert_tier_allowed`）。
         """
         resolved = self._resolve_model_or_raise(model, self.default_model)
         gate_provider, gate_base_url, gate_api_key = self._dispatch_endpoint(provider)
@@ -462,7 +462,7 @@ class AIService:
             base_url=gate_base_url,
             api_key=gate_api_key,
             model=resolved,
-            trigger=TRIGGER_DAILY,
+            trigger=TRIGGER_DISPATCH,
             hint_window_tokens=detect_context_window(resolved),
         )
         return resolved

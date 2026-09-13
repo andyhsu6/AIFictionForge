@@ -327,7 +327,6 @@ export interface CachedGateState {
   measured_context_window_tokens?: number | null;
   requires_explicit_declaration?: boolean;
   checked_at?: string;
-  due_for_recheck?: boolean;
 }
 
 /**

@@ -38,9 +38,10 @@
 --------------------------------------------
 1. **静默截断型网关可以通过 ①②**：许多兼容网关不报错而直接把输入截断，
    「接受 max_tokens=1M」不等于「真读进去 1M」。③ 的 needle 回读是唯一解，
-   本期未接线，故该误判可能如实发生，只能靠每日复测与表单三段数缓解。
-2. **两次探测之间网关换模型/降配**：日频复测的粒度是一个自然日，当天首个请求
-   按旧结论放行。README 只承诺「要求 ≥1M、保存时实测、低于此不受支持」，
+   本期未接线，故该误判可能如实发生，只能靠用户显式重测与表单三段数缓解。
+2. **网关换模型/降配不会被自动发现**：定论一旦落库就长期沿用，本实现不再有周期性
+   复测（原日频复测已删除）。只有改动三元组（provider/base URL/模型名）或用户显式
+   重新检测才会重新探测。README 只承诺「要求 ≥1M、保存时实测、低于此不受支持」，
    **不得**外推成「任何时刻都不会被绕过」。
 3. **② 档的判据只是「网关自己报数」这一条**：它不报数（或报的数不贴着上下文措辞）
    时一律判不出，此时门禁退回「未知即不合格 + 需显式声明」，不会自动放行。
@@ -81,18 +82,19 @@ TIER_NEEDLE = "needle"
 
 TRIGGER_SAVE = "save"
 TRIGGER_MANUAL = "manual"
-TRIGGER_DAILY = "daily"
+TRIGGER_DISPATCH = "dispatch"
 
-# 触发点 => 允许挂的档。日频**只能**跑 ①②：把 needle 挂到日频等于每天烧 ≈1M token。
+# 触发点 => 允许挂的档。派发**只能**跑 ①②：把 needle 挂到派发等于每次实发都可能
+# 烧 ≈1M token（架构层禁止，见 `assert_tier_allowed`）。
 TRIGGER_ALLOWED_TIERS: Dict[str, Tuple[str, ...]] = {
     TRIGGER_SAVE: (TIER_METADATA, TIER_MAX_TOKENS_BOUND, TIER_NEEDLE),
     TRIGGER_MANUAL: (TIER_METADATA, TIER_MAX_TOKENS_BOUND, TIER_NEEDLE),
-    TRIGGER_DAILY: (TIER_METADATA, TIER_MAX_TOKENS_BOUND),
+    TRIGGER_DISPATCH: (TIER_METADATA, TIER_MAX_TOKENS_BOUND),
 }
 
 
 class ProbeTierNotAllowed(AssertionError):
-    """误接线守卫：把某档挂到它不被允许的触发点（典型＝日频挂 needle）。
+    """误接线守卫：把某档挂到它不被允许的触发点（典型＝派发挂 needle）。
 
     继承 `AssertionError` 而不用裸 `assert`：`python -O` 会剥掉裸 assert，
     而这条守卫必须在生产模式下同样生效。
@@ -109,7 +111,7 @@ def assert_tier_allowed(trigger: str, tier: str) -> None:
     if tier not in allowed:
         raise ProbeTierNotAllowed(
             f"触发点 {trigger!r} 不允许 {tier!r} 档（允许 {allowed}）。"
-            "日频挂 needle = 每个用户每天 ≈1M token 计费，架构层禁止。"
+            "派发挂 needle = 每次实发都可能 ≈1M token 计费，架构层禁止。"
         )
 
 
@@ -141,10 +143,6 @@ class ProbeOutcome:
     # 本次实际跑过哪几档（诊断/表单展示用；不落进缓存）
     tiers_run: Tuple[str, ...] = ()
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    # 「最近一次尝试复测」的时间，仅在尝试被判不出、因而没能更新结论时写入。
-    # 它只服务复测节流（`is_due_for_daily_recheck`），**不是**结论的一部分：
-    # `checked_at` 永远是这条结论实测/声明的时刻。
-    attempted_at: Optional[str] = None
 
     @property
     def is_qualified(self) -> bool:
@@ -202,7 +200,6 @@ def verdict_may_overwrite(existing: ProbeOutcome, incoming: ProbeOutcome) -> boo
 # non_retryable_status_codes 只排除 401/403/404 ⇒ ② 档预期拿到的 400 会被原样
 # 重发 3 次（3 倍计费、3 倍延迟）。全局 semaphore 还会把探测排在日常生成队列后面。
 # 所以这里直连 httpx，既不走 _request_with_retry 也不取信号量。
-PROBE_MAX_ATTEMPTS = 1
 PROBE_TRANSPORT_RETRIES = 0
 PROBE_CONNECT_TIMEOUT_SECONDS = 10.0
 PROBE_READ_TIMEOUT_SECONDS = 25.0
@@ -739,6 +736,34 @@ MEMO_TTL_SECONDS = 30.0
 
 _memo: Dict[Tuple[str, str], Tuple[float, ProbeOutcome]] = {}
 
+# 派发重测节流（issue #62）：结论缺失或仍是 inconclusive 时，同一 tick 内的并发派发
+# 会同时通过「需要探测」的检查、一起打网关（② 档带着 max_tokens=下限）。占坑必须发生
+# 在 await **之前**，否则检查与写入之间的窗口足以让整批并发全部通过。
+# 存储形状对齐 `_memo`（存 `expires_at`、读时弹出）：条目随冷却过期自动清掉，不留下
+# 无界 per-user 注册表（`core/db_write_lock.py` 的 `db_write_locks` 不设 TTL，刻意不同）。
+DISPATCH_REPROBE_COOLDOWN_SECONDS = 60.0
+_reprobe_deadlines: Dict[Tuple[str, str], float] = {}
+
+
+def _claim_reprobe_slot(user_id: str, key: str) -> bool:
+    """占用一次派发重测名额：True = 本次可以探，False = 冷却中必须跳过。**无 await**。"""
+    now = time.monotonic()
+    deadline = _reprobe_deadlines.get((user_id, key))
+    if deadline is not None and deadline > now:
+        return False
+    _reprobe_deadlines[(user_id, key)] = now + DISPATCH_REPROBE_COOLDOWN_SECONDS
+    return True
+
+
+def _clear_reprobe_cooldown(user_id: str, key: str) -> None:
+    """任何一次 `write_verdict` 作出决定后清掉冷却，让手动「重新检测」永远立刻生效。"""
+    _reprobe_deadlines.pop((user_id, key), None)
+
+
+def _verdict_needs_probe(existing: Optional[ProbeOutcome]) -> bool:
+    """Rule R1：结论缺失、或结论不是结论（inconclusive）⇒ 走同一条冷探测路径。"""
+    return existing is None or existing.verdict == VERDICT_INCONCLUSIVE
+
 
 def triple_key(provider: Optional[str], base_url: Optional[str], model: Optional[str]) -> str:
     """缓存主键 = (api_provider, api_base_url, llm_model) 三元组。任一要素变更即 miss。"""
@@ -767,8 +792,9 @@ def _memo_put(user_id: str, key: str, outcome: ProbeOutcome) -> None:
 
 
 def memo_clear() -> None:
-    """测试/运维用：清空进程内 memo（缓存语义上是 per-user 的，但 memo 跨请求）。"""
+    """测试/运维用：清空进程内 memo 与重测冷却（两者都是跨请求的进程内状态）。"""
     _memo.clear()
+    _reprobe_deadlines.clear()
 
 
 def _load_blob(raw: Optional[str]) -> Dict[str, Any]:
@@ -780,7 +806,7 @@ def _load_blob(raw: Optional[str]) -> Dict[str, Any]:
 
 
 def _outcome_to_dict(outcome: ProbeOutcome) -> Dict[str, Any]:
-    data: Dict[str, Any] = {
+    return {
         "result": outcome.verdict,
         "source": outcome.source,
         "context_window_tokens": outcome.context_window_tokens,
@@ -788,10 +814,6 @@ def _outcome_to_dict(outcome: ProbeOutcome) -> Dict[str, Any]:
         "detail": outcome.detail,
         "checked_at": outcome.checked_at,
     }
-    # 只在真的有「今天试过」这一笔时才落键：结论本体的缓存形状保持不变
-    if outcome.attempted_at:
-        data["last_attempt_at"] = outcome.attempted_at
-    return data
 
 
 def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
@@ -801,7 +823,6 @@ def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
     if verdict not in (VERDICT_QUALIFIED, VERDICT_UNQUALIFIED, VERDICT_INCONCLUSIVE):
         return None
     tokens = entry.get("context_window_tokens")
-    attempted_at = entry.get("last_attempt_at")
     return ProbeOutcome(
         verdict=verdict,
         context_window_tokens=int(tokens) if isinstance(tokens, int) and tokens > 0 else None,
@@ -809,43 +830,7 @@ def _dict_to_outcome(entry: Any) -> Optional[ProbeOutcome]:
         tier=entry.get("tier"),
         detail=entry.get("detail"),
         checked_at=str(entry.get("checked_at") or ""),
-        attempted_at=attempted_at if isinstance(attempted_at, str) and attempted_at else None,
     )
-
-
-def _parsed_checked_at(value: str) -> Optional[datetime]:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def is_due_for_daily_recheck(outcome: ProbeOutcome) -> bool:
-    """结论是否已过「本自然日」（日频复测的计数口径：按自然日，不按 24h 滑动）。
-
-    计时基准取「定论时间」与「最近一次尝试复测时间」里**较新**的那个。一次判不出的
-    尝试没有更新结论（#59 的强度守卫不许它更新），但它必须算作「今天试过」——否则
-    被抹掉的那次复测会在**每次派发**重排一遍，而 ② 档带着 `max_tokens=1M`，
-    对着一个可达却判不出的网关反复重探是真金白银的计费。
-    """
-    stamps = [
-        parsed
-        for parsed in (
-            _parsed_checked_at(outcome.checked_at),
-            _parsed_checked_at(outcome.attempted_at or ""),
-        )
-        if parsed is not None
-    ]
-    if not stamps:
-        return True
-    return max(stamps).astimezone(timezone.utc).date() < datetime.now(timezone.utc).date()
 
 
 async def read_verdict(
@@ -943,17 +928,9 @@ async def write_verdict(
                 outcome.source,
                 evidence_strength(outcome),
             )
-            if evidence_strength(outcome) == EVIDENCE_NON_MEASUREMENT:
-                # 结论本体一个字不改，只在旁边记一笔「今天试过、没试出来」：
-                # 它是复测节流的依据（`is_due_for_daily_recheck`），不是结论。
-                stamped = replace(existing, attempted_at=outcome.checked_at or _utc_now_iso())
-                entries[key] = _outcome_to_dict(stamped)
-                blob[PREFERENCES_KEY] = entries
-                row.preferences = json.dumps(blob, ensure_ascii=False)
-                await db.commit()
-                _memo_put(user_id, key, stamped)
-            else:
-                _memo_put(user_id, key, existing)
+            # 结论本体一个字不改：弱证据既不写盘，也不刷新 `checked_at`。
+            _memo_put(user_id, key, existing)
+            _clear_reprobe_cooldown(user_id, key)
             return False
 
         entries[key] = _outcome_to_dict(outcome)
@@ -961,6 +938,7 @@ async def write_verdict(
         row.preferences = json.dumps(blob, ensure_ascii=False)
         await db.commit()
         _memo_put(user_id, key, outcome)
+        _clear_reprobe_cooldown(user_id, key)
         return True
     except Exception as exc:
         logger.warning("写入上下文窗口结论失败（不影响本次判定）: %s", exc)
@@ -1010,7 +988,6 @@ def gate_state_payload(model: str, outcome: ProbeOutcome) -> Dict[str, Any]:
         "requires_explicit_declaration": outcome.verdict == VERDICT_INCONCLUSIVE,
         "detail": outcome.detail,
         "checked_at": outcome.checked_at,
-        "due_for_recheck": is_due_for_daily_recheck(outcome),
     }
 
 
@@ -1063,89 +1040,6 @@ def _below_minimum_error(model: str, outcome: ProbeOutcome) -> ApiError:
     return ApiError(code=BELOW_MINIMUM_CODE, detail=detail, params=params)
 
 
-# ========== 日频复测（fire-and-forget） ==========
-# 照 api/chapters.py 的后台任务范式：create_task + 强引用集合，否则 task 会被 GC。
-_BACKGROUND_RECHECKS: set[asyncio.Task] = set()
-
-
-async def _open_user_session(user_id: str):
-    """后台复测必须自带会话：请求会话在响应返回后就关闭了。"""
-    from app.database import get_engine  # 局部导入避免导入环
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-    engine = await get_engine(user_id)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    return factory()
-
-
-async def _run_daily_recheck(
-    *,
-    user_id: str,
-    provider: str,
-    base_url: str,
-    api_key: Optional[str],
-    model: str,
-    hint_window_tokens: Optional[int],
-) -> None:
-    """后台跑一次 ①② 并落缓存；任何异常只记日志，绝不影响已放行的本次请求。"""
-    session = None
-    try:
-        outcome = await probe_model_context_window(
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            trigger=TRIGGER_DAILY,
-            hint_window_tokens=hint_window_tokens,
-        )
-        session = await _open_user_session(user_id)
-        await write_verdict(
-            session, user_id, provider=provider, base_url=base_url, model=model, outcome=outcome
-        )
-    except Exception as exc:
-        logger.warning("日频上下文窗口复测失败（沿用既有结论）: user=%s model=%s err=%s", user_id, model, exc)
-    finally:
-        if session is not None:
-            try:
-                await session.close()
-            except Exception:  # pragma: no cover
-                pass
-
-
-def _schedule_daily_recheck(
-    *,
-    user_id: str,
-    provider: str,
-    base_url: str,
-    api_key: Optional[str],
-    model: str,
-    hint_window_tokens: Optional[int],
-) -> Optional[asyncio.Task]:
-    """已有结论、只是今天没复测 ⇒ 本次按现有结论执行，复测扔后台（绝不 await）。"""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:  # pragma: no cover - 无事件循环时不复测
-        return None
-    task = loop.create_task(
-        _run_daily_recheck(
-            user_id=user_id,
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            hint_window_tokens=hint_window_tokens,
-        )
-    )
-    _BACKGROUND_RECHECKS.add(task)
-    task.add_done_callback(_BACKGROUND_RECHECKS.discard)
-    return task
-
-
-def pending_recheck_tasks() -> List[asyncio.Task]:
-    """暴露给测试：当前在飞的后台复测任务。"""
-    return list(_BACKGROUND_RECHECKS)
-
-
 async def resolve_verdict(
     *,
     user_id: str,
@@ -1154,56 +1048,63 @@ async def resolve_verdict(
     base_url: str,
     api_key: Optional[str],
     model: str,
-    trigger: str = TRIGGER_DAILY,
+    trigger: str = TRIGGER_DISPATCH,
     hint_window_tokens: Optional[int] = None,
 ) -> ProbeOutcome:
-    """拿到「本次判定要用」的结论，区分两种缺结论。
+    """拿到「本次判定要用」的结论。Rule R：`inconclusive` 不是结论，是「没有结论」。
 
-    - **从未有过结论**（新三元组 / 老用户升级后首次遇到）⇒ **同步 await ①②** 再定论。
-      成本是一次 GET + 一次极小请求，同步做完全可接受；反过来「先拒绝、探测还在后台跑」
-      会让用户看到「AI 坏了，重试就好」这种非确定性故障。
-    - **已有结论、只是今天没复测** ⇒ 立刻按现有结论执行 + fire-and-forget 后台复测。
-      也就是说「日频非阻塞」只适用于复测，不适用于首次定论。
+    - **结论缺失 / 结论是 inconclusive**（R1，save 与 dispatch 共用同一谓词）⇒
+      **同步 await ①②** 再定论。成本是一次 GET + 一次极小请求，同步做完全可接受；
+      「先拒绝、探测还在后台跑」会让用户看到「AI 坏了，重试就好」这种非确定性故障，
+      而自动复测已删除，inconclusive 若不复探就会永久粘住。
+    - **已有定论（qualified/unqualified）** ⇒ 直接返回，**零网络、永不自动复测**
+      （网关侧换模型/降配只在改三元组或用户显式重测时被发现）。
+    - **R2**：`dispatch` 触发的探测若仍判不出，结论**不落库**（save/manual 仍落，
+      表单要渲染）。落库会让宕机期间每个 AI 请求都抢不可重入写锁、整读整写 blob。
+    - **R3**：重测先占坑再 await；冷却窗口内的并发派发不再打网关（issue #62）。
     """
+    key = triple_key(provider, base_url, model)
     existing = await read_verdict(db, user_id, provider=provider, base_url=base_url, model=model)
-    if existing is None:
-        outcome = await probe_model_context_window(
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            trigger=trigger,
-            hint_window_tokens=hint_window_tokens,
+    if not _verdict_needs_probe(existing):
+        return existing
+
+    if not _claim_reprobe_slot(user_id, key):
+        if existing is not None:
+            return existing  # 缓存的 inconclusive 自带真实 checked_at，直接沿用
+        # 从未测过 + 正在冷却：没有结论可回退，也**不得**伪造一个 checked_at。
+        return _inconclusive(
+            "dispatch re-probe is cooling down and no verdict is on file yet"
         )
-        await write_verdict(
-            db, user_id, provider=provider, base_url=base_url, model=model, outcome=outcome
-        )
+
+    outcome = await probe_model_context_window(
+        provider=provider,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        trigger=trigger,
+        hint_window_tokens=hint_window_tokens,
+    )
+    if outcome.verdict == VERDICT_INCONCLUSIVE and trigger == TRIGGER_DISPATCH:
         logger.info(
-            "上下文窗口首次定论: user=%s model=%s verdict=%s tier=%s tokens=%s",
+            "派发期上下文窗口仍判不出，按「未知即不合格」处理且不落库: user=%s model=%s",
             user_id,
             model,
-            outcome.verdict,
-            outcome.tier,
-            outcome.context_window_tokens,
         )
         return outcome
 
-    if is_due_for_daily_recheck(existing):
-        _schedule_daily_recheck(
-            user_id=user_id,
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            hint_window_tokens=hint_window_tokens,
-        )
-        logger.info(
-            "上下文窗口结论已过本自然日，按现有结论放行并排队后台复测: user=%s model=%s verdict=%s",
-            user_id,
-            model,
-            existing.verdict,
-        )
-    return existing
+    await write_verdict(
+        db, user_id, provider=provider, base_url=base_url, model=model, outcome=outcome
+    )
+    logger.info(
+        "上下文窗口定论: user=%s model=%s trigger=%s verdict=%s tier=%s tokens=%s",
+        user_id,
+        model,
+        trigger,
+        outcome.verdict,
+        outcome.tier,
+        outcome.context_window_tokens,
+    )
+    return outcome
 
 
 async def ensure_model_allowed(
@@ -1214,7 +1115,7 @@ async def ensure_model_allowed(
     base_url: str,
     api_key: Optional[str],
     model: str,
-    trigger: str = TRIGGER_DAILY,
+    trigger: str = TRIGGER_DISPATCH,
     hint_window_tokens: Optional[int] = None,
     declared_tokens: Optional[int] = None,
 ) -> ProbeOutcome:

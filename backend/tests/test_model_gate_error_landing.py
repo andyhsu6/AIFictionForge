@@ -53,7 +53,6 @@ from app.services.model_capability_probe import (
     PREFERENCES_KEY,
     SOURCE_PROBE,
     VERDICT_UNQUALIFIED,
-    is_due_for_daily_recheck,
     triple_key,
 )
 from app.services.skill_loader import get_all_skills_cached
@@ -91,7 +90,7 @@ def _now_iso() -> str:
 
 
 def _unqualified_entry(tokens: int = 128_000) -> Dict[str, Any]:
-    """一条**今天刚测过**的「实测不合格」缓存结论：派发时零网络即可拒，也不触发复测。"""
+    """一条已定论的「实测不合格」缓存结论：派发时零网络即可拒（定论永不自动复测）。"""
     return {
         "result": VERDICT_UNQUALIFIED,
         "source": SOURCE_PROBE,
@@ -277,18 +276,6 @@ async def test_sse_stream_surfaces_below_minimum_code_with_model_name(
     assert event["error_params"]["measured_context_window_tokens"] == 128_000
     assert event["code"] == 400
     assert offline_probe_gateway == [], "缓存已有结论却仍去探测：热路径应当零网络"
-
-
-@pytest.mark.anyio
-async def test_seeded_verdict_is_not_due_for_recheck():
-    """夹具自检：上面那条结论必须「今天已测」，否则用例会悄悄冒出后台复测任务。"""
-    from app.services.model_capability_probe import ProbeOutcome
-
-    fresh = ProbeOutcome(
-        verdict=VERDICT_UNQUALIFIED, context_window_tokens=128_000, source=SOURCE_PROBE,
-        tier="metadata", detail="x", checked_at=_unqualified_entry()["checked_at"],
-    )
-    assert not is_due_for_daily_recheck(fresh)
 
 
 # ========== 1b. 创作助手 /chat-stream：评审第 2 项遗留的吞码汇流口 ==========

@@ -98,7 +98,6 @@ const CACHED_BELOW_MINIMUM = {
   requires_explicit_declaration: false,
   detail: 'probed before the upgrade',
   checked_at: '2026-01-01T00:00:00+00:00',
-  due_for_recheck: false,
 };
 
 /**
@@ -170,7 +169,6 @@ const DECLARED_CONFIG = {
     requires_explicit_declaration: false,
     detail: 'user declared 1000000 tokens',
     checked_at: '2026-01-01T00:00:00+00:00',
-    due_for_recheck: false,
   },
 };
 
