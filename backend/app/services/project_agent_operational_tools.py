@@ -208,7 +208,11 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "start_project_task",
-        "description": "启动大纲生成/展开、章节生成/批量生成或章节分析后台任务；执行前必须确认。",
+        "description": (
+            "启动大纲生成/展开、章节生成/批量生成、章节分析或角色/组织/职业生成后台任务。"
+            "覆盖已有正文、重写、生成大纲与展开大纲需要用户确认；"
+            "分析尚无结果的章节、新增角色/组织/职业会直接启动，无需确认。"
+        ),
         "parameters": _schema({
             "action": {"type": "string", "enum": [
                 "generate_outlines", "expand_outline", "batch_expand_outlines",
@@ -221,7 +225,22 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
             "chapter_number": {"type": "integer", "minimum": 1},
             "data": DATA,
         }, ["action"]),
+        # 顶层必须是 2：OPERATIONAL_WRITE_TOOL_NAMES 依赖 spec["risk_level"] 真值。
+        # action 级降级见 action_risk。
         "risk_level": 2,
+        "action_risk": {
+            "generate_outlines": 2,
+            "expand_outline": 2,
+            "batch_expand_outlines": 2,
+            "generate_chapter": 2,
+            "batch_generate_chapters": 2,
+            "analyze_chapter": 2,
+            "regenerate_chapter": 2,
+            "partial_regenerate_chapter": 2,
+            "generate_character": 1,
+            "generate_organization": 1,
+            "generate_careers": 1,
+        },
         "resources": ("tasks", "outlines", "chapters", "projects"),
     },
 ]

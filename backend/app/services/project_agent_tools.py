@@ -1,5 +1,5 @@
 """项目智能体内部工具注册表与执行器。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import json
 from typing import Any, Awaitable, Callable
@@ -45,6 +45,9 @@ class ProjectAgentTool:
     parameters: dict[str, Any]
     risk_level: int = 0
     resources: tuple[str, ...] = ()
+    # PR-1：同一工具内不同 action 的风险不同（start_project_task 的分析/新增 vs 覆盖/重写）。
+    # 只影响运行期判定，不进 as_model_tool()，因此不会改变发给模型的工具 schema。
+    action_risk: dict[str, int] = field(default_factory=dict)
 
     @property
     def requires_confirmation(self) -> bool:
@@ -59,6 +62,16 @@ class ProjectAgentTool:
                 "parameters": self.parameters,
             },
         }
+
+
+def action_risk_level(tool: ProjectAgentTool, arguments: dict[str, Any]) -> int:
+    """action 级 risk：命中 action_risk 用之，否则回退工具级 risk_level。"""
+    action = arguments.get("action")
+    if tool.action_risk and isinstance(action, str):
+        mapped = tool.action_risk.get(action)
+        if mapped is not None:
+            return int(mapped)
+    return tool.risk_level
 
 
 def _object_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
