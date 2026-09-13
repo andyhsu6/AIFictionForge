@@ -268,6 +268,7 @@ async def chat_stream(
                 message=payload.message,
                 page_context=payload.page_context,
                 auto_approve=payload.auto_approve,
+                plan_mode=payload.plan_mode,
             ):
                 yield SSEResponse.format_sse(event)
             yield await SSEResponse.send_done()

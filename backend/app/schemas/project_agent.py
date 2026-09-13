@@ -83,6 +83,9 @@ class AgentChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=20000)
     page_context: dict[str, Any] = Field(default_factory=dict)
     auto_approve: bool = False
+    # PR-2a：规划回合开关。默认 False ⇒ 发给模型的工具集与逐轮行为与 PR-1 逐字一致；
+    # True 时收口轮只提供终止型工具 propose_plan（只产计划、不执行）。
+    plan_mode: bool = False
 
 
 class AgentToolDecisionResponse(BaseModel):

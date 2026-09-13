@@ -61,6 +61,24 @@ class PlanValidationError(ValueError):
     """产出不是合法计划。消息面向模型可读，会作为服务端纠正消息回喂。"""
 
 
+# 只有「把 tool_choice 真的写进请求 payload」的 provider 才进这个白名单。
+# 逐个客户端实测（2026-09-13 对码）：
+#   openai_client._build_payload: payload["tool_choice"] = tool_choice  ⇒ 进 payload
+#   anthropic_client.chat_completion: required ⇒ kwargs["tool_choice"] = {"type": "any"}
+#   gemini_client: 收下 tool_choice 形参，构造 payload 时**从不使用** ⇒ 静默空转
+# （normalize_provider 把 mumu/commandcode 等渠道别名归一到 "openai"，所以
+#   AIService.api_provider 实际只有 openai / anthropic / gemini 三种取值。）
+# Gemini 故意排除：它靠 ① 收窄工具 + ③ 产出校验有界重试兜住强制产出（架构计划 §1 定案）。
+REQUIRED_TOOL_CHOICE_PROVIDERS: frozenset[str] = frozenset({"openai", "anthropic"})
+
+
+def provider_supports_required_tool_choice(api_provider: str | None) -> bool:
+    """未知/未列 provider 一律 False（fail-closed），由 ①+③ 兜住强制产出。"""
+    if not isinstance(api_provider, str):
+        return False
+    return api_provider.strip().lower() in REQUIRED_TOOL_CHOICE_PROVIDERS
+
+
 def plannable_tool_names(definitions: list[dict[str, Any]]) -> set[str]:
     """从本轮 available_tools（模型工具定义）挑出可进计划的工具名。"""
     names: set[str] = set()

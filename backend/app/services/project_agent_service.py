@@ -8,12 +8,17 @@ from typing import Any, AsyncGenerator, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.project import Project
 from app.models.project_agent import (
     AgentConversation,
     AgentExecutionStep,
     AgentMessage,
     AgentToolCall,
+)
+from app.services.agent_plan_schema import (
+    PROPOSE_PLAN_TOOL_NAME,
+    provider_supports_required_tool_choice,
 )
 from app.services.ai_service import AIService
 from app.services.language_resolver import (
@@ -126,6 +131,12 @@ class ProjectAgentService:
     # TOOL_RESULT_MAX_CHARS 的 tool 行只能带进 7 条，首条用户诉求仍被挤掉。40 只解决
     # "整回合被行数舍掉"这一层，字节层面的取舍归 PR-0c 的预算分层。
     HISTORY_LIMIT = 40
+    # 规划回合可用的工具轮数上限。**类常量 = 默认值 + monkeypatch 目标**，
+    # 真正取值一律走 `self._plan_round_budget()`。
+    # 配置键 `agent_plan_round_budget` 由 PR-2c 注册；PR-2a 单独合入时该键还不存在
+    # ⇒ `getattr(settings, ..., 默认值)` 兜回本常量，行为逐字不变。
+    PLAN_ROUND_BUDGET = 3
+    _PLAN_ROUND_BUDGET_DEFAULT = 3
 
     def __init__(
         self,
@@ -180,6 +191,7 @@ class ProjectAgentService:
         system_prompt: str,
         force_answer: bool,
         available_tools: list[dict[str, Any]],
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         """单轮 AI 调用：最终回答轮走流式，工具决策轮走非流式。
 
@@ -198,10 +210,63 @@ class ProjectAgentService:
             prompt=prompt,
             system_prompt=system_prompt,
             tools=available_tools,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             auto_mcp=False,
             handle_tool_calls=False,
         )
+
+    @staticmethod
+    def _tool_name(definition: dict[str, Any]) -> str:
+        return str((definition.get("function") or {}).get("name") or "")
+
+    def _tools_for_round(
+        self,
+        base_tools: list[dict[str, Any]],
+        *,
+        plan_mode: bool,
+        closing: bool,
+    ) -> list[dict[str, Any]]:
+        """普通回合不暴露 propose_plan；规划回合带上它；收口轮只留它。
+
+        非规划回合逐字等于 PR-1 行为 —— 这是「不注册即回滚」之外的第二道保险。
+        """
+        others = [
+            item for item in base_tools
+            if self._tool_name(item) != PROPOSE_PLAN_TOOL_NAME
+        ]
+        if not plan_mode:
+            return others
+        propose = [
+            item for item in base_tools
+            if self._tool_name(item) == PROPOSE_PLAN_TOOL_NAME
+        ]
+        if closing:
+            return propose or others
+        return others + propose
+
+    def _plan_closing_round(self, *, round_index: int, plan_attempts: int) -> bool:
+        """规划收口轮：独立预算耗尽、被要求重试、或已到最后一个带工具的轮。
+
+        刻意不复用 force_answer 轮（那轮不带工具且 prompt 里被注入「不要再调用工具」，
+        与 tool_choice="required" 互斥）。
+        """
+        return (
+            round_index >= self.MAX_TOOL_ROUNDS - 1
+            or round_index >= self._plan_round_budget() - 1
+            or plan_attempts > 0
+        )
+
+    def _plan_round_budget(self) -> int:
+        """回合预算的唯一读取口（与 PR-2c runner 的 `_limit()` 同规则）。
+
+        类常量被 monkeypatch 成非默认值 ⇒ 以类常量为准（本 PR 的用例靠
+        `monkeypatch.setattr(service, "PLAN_ROUND_BUDGET", n)` 驱动）；
+        否则取 `settings.agent_plan_round_budget`（PR-2c 落地的键）；
+        读不到 ⇒ 兜回类常量默认值。绝不抛错，规划回合不得因配置面失败。
+        """
+        if self.PLAN_ROUND_BUDGET != self._PLAN_ROUND_BUDGET_DEFAULT:
+            return self.PLAN_ROUND_BUDGET
+        return int(getattr(settings, "agent_plan_round_budget", self.PLAN_ROUND_BUDGET))
 
     async def stream_chat(
         self,
@@ -210,8 +275,14 @@ class ProjectAgentService:
         message: str,
         page_context: dict[str, Any],
         auto_approve: bool = False,
+        plan_mode: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """工具决策循环：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。"""
+        """工具决策循环：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。
+
+        `plan_mode=True` 时本回合是规划回合：普通轮额外提供终止型工具
+        `propose_plan`，收口轮只留它（并按 provider 能力置 tool_choice="required"）。
+        默认 False ⇒ 发给模型的工具集与逐轮行为与 PR-1 逐字一致。
+        """
         conversation = await self.get_or_create_conversation(conversation_id, message)
         user_message = AgentMessage(
             conversation_id=conversation.id,
@@ -308,6 +379,9 @@ class ProjectAgentService:
             if tool.get("function", {}).get("name") not in project_names
         ]
 
+        plan_attempts = 0
+        plan_produced = False
+        plan_correction = ""
         for round_index in range(self.MAX_TOOL_ROUNDS + 1):
             force_answer = round_index == self.MAX_TOOL_ROUNDS
             thought = await self._create_step(
@@ -323,11 +397,30 @@ class ProjectAgentService:
             sequence += 1
             yield {"type": "step_start", "data": self._step_data(thought)}
             prompt = self._build_prompt(history, page_context, force_answer=force_answer)
+            closing = plan_mode and not plan_produced and self._plan_closing_round(
+                round_index=round_index, plan_attempts=plan_attempts
+            )
+            round_tools = self._tools_for_round(
+                available_tools, plan_mode=plan_mode, closing=closing
+            )
+            round_tool_choice = (
+                "required"
+                # provider 取值来自 AIService 实例：api_provider 经 normalize_provider
+                # 归一后正是"选哪个 client"的那个值，也是 tool_choice 能否进 payload 的
+                # 唯一依据。全局 settings 里没有 api_provider 这一项（只有
+                # default_ai_provider，且被每用户设置覆盖），拿它会判错。
+                # 短路求值 ⇒ 非规划回合完全不读该属性，PR-1 的假 AI 夹具照旧可用。
+                if closing and provider_supports_required_tool_choice(
+                    self.ai_service.api_provider
+                )
+                else "auto"
+            )
             response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
                 force_answer=force_answer,
-                available_tools=available_tools,
+                available_tools=round_tools,
+                tool_choice=round_tool_choice,
             )
             usage = response.get("usage") or {}
             prompt_tokens += int(usage.get("prompt_tokens") or 0)

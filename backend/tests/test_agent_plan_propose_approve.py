@@ -100,3 +100,97 @@ async def test_registry_rejects_preview_and_execute_for_propose_plan():
         await registry.preview(PROPOSE_PLAN_TOOL_NAME, {})
     with pytest.raises(ValueError, match="终止型规划工具"):
         await registry.execute(PROPOSE_PLAN_TOOL_NAME, {})
+
+
+# --------------------------------------------------------------------------- #
+# Task 2：规划收口轮的工具收窄与 tool_choice 能力门
+# --------------------------------------------------------------------------- #
+
+
+def test_provider_capability_gate_is_fail_closed():
+    from app.services import agent_plan_schema as schema
+    from app.services.agent_plan_schema import provider_supports_required_tool_choice
+
+    assert provider_supports_required_tool_choice("gemini") is False
+    assert provider_supports_required_tool_choice(None) is False
+    assert provider_supports_required_tool_choice("totally-unknown-provider") is False
+    # 白名单里至少有一个 provider 判 True，否则这道门是死的
+    assert schema.REQUIRED_TOOL_CHOICE_PROVIDERS
+    assert any(
+        provider_supports_required_tool_choice(name)
+        for name in sorted(schema.REQUIRED_TOOL_CHOICE_PROVIDERS)
+    )
+
+
+def test_required_tool_choice_whitelist_matches_clients_that_send_it():
+    """白名单必须逐个对钉到**真的把 tool_choice 写进 payload** 的客户端。
+
+    凭印象填的白名单是最危险的失效模式：Gemini 客户端收下 tool_choice 形参却从不
+    进 payload（gemini_client 只把它写进函数签名），置 required 会静默空转，
+    模型照样可以不调工具 ⇒ 规划回合失去 ② 这道手段而测试全绿。
+    """
+    from app.services import agent_plan_schema as schema
+    from app.services.ai_service import normalize_provider
+
+    assert schema.REQUIRED_TOOL_CHOICE_PROVIDERS == frozenset({"openai", "anthropic"})
+    # 别名必须归一化到白名单里的字符串，否则真实部署（commandcode）会判 False。
+    assert normalize_provider("commandcode") == "openai"
+    assert normalize_provider("CommandCode") == "openai"
+
+
+def _bare_service():
+    from app.services.project_agent_service import ProjectAgentService
+
+    return object.__new__(ProjectAgentService)  # helper 不使用实例状态，避开 __init__ 的 DB/AI 依赖
+
+
+def test_tools_for_round_hides_propose_plan_when_not_planning():
+    from app.services.project_agent_service import ProjectAgentService
+
+    svc = _bare_service()
+    base = [
+        {"type": "function", "function": {"name": "list_outlines"}},
+        {"type": "function", "function": {"name": PROPOSE_PLAN_TOOL_NAME}},
+    ]
+    assert ProjectAgentService._tools_for_round(
+        svc, base, plan_mode=False, closing=False
+    ) == [{"type": "function", "function": {"name": "list_outlines"}}]
+
+
+def test_tools_for_round_narrows_to_propose_plan_when_closing():
+    from app.services.project_agent_service import ProjectAgentService
+
+    svc = _bare_service()
+    base = [
+        {"type": "function", "function": {"name": "list_outlines"}},
+        {"type": "function", "function": {"name": PROPOSE_PLAN_TOOL_NAME}},
+    ]
+    got = ProjectAgentService._tools_for_round(svc, base, plan_mode=True, closing=True)
+    assert got == [{"type": "function", "function": {"name": PROPOSE_PLAN_TOOL_NAME}}]
+    both = ProjectAgentService._tools_for_round(svc, base, plan_mode=True, closing=False)
+    assert [t["function"]["name"] for t in both] == ["list_outlines", PROPOSE_PLAN_TOOL_NAME]
+
+
+@pytest.mark.anyio
+async def test_call_round_forwards_tool_choice_and_keeps_agent_side_routing():
+    from app.services.project_agent_service import ProjectAgentService
+
+    recorded: dict = {}
+
+    async def fake_generate_text(**kwargs):
+        recorded.update(kwargs)
+        return {"content": "", "tool_calls": [], "usage": {}}
+
+    svc = _bare_service()
+    svc.ai_service = SimpleNamespace(generate_text=fake_generate_text)
+    await ProjectAgentService._call_round(
+        svc,
+        prompt="p",
+        system_prompt="s",
+        force_answer=False,
+        available_tools=[{"type": "function", "function": {"name": "propose_plan"}}],
+        tool_choice="required",
+    )
+    assert recorded["tool_choice"] == "required"
+    assert recorded["auto_mcp"] is False          # shared-terms 硬约束
+    assert recorded["handle_tool_calls"] is False  # 工具只能由 agent 自己的 registry 路由
