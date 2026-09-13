@@ -18,7 +18,7 @@
  * Neutral placeholder values only — no imported book text, names or excerpts.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import Settings from '../pages/Settings';
 import i18n from '../i18n';
@@ -184,6 +184,65 @@ const recheckButton = (): HTMLElement => {
   const button = label.closest('button');
   if (!button) throw new Error('Re-check label rendered outside a button element');
   return button;
+};
+
+const GATE_PRESET = {
+  id: 'preset-1',
+  name: 'Small-window preset',
+  description: 'a preset that cannot pass the floor',
+  is_active: false,
+  created_at: '2026-01-01T00:00:00',
+  config: {
+    api_provider: 'openai',
+    api_key: 'sk-stub-not-a-real-key',
+    api_base_url: 'https://gw.test/v1',
+    llm_model: 'gpt-4o-mini',
+    temperature: 0.7,
+    max_tokens: 2000,
+  },
+};
+
+/** The `GET /settings/presets` shape `loadPresets` reads. */
+const PRESETS_RESPONSE = {
+  presets: [GATE_PRESET],
+  total: 1,
+  active_preset_id: undefined,
+  chapter_analysis_preset_id: undefined,
+};
+
+/**
+ * The rejection an activate request really produces: the same
+ * `validation.ai_model_below_minimum` envelope the save path throws, carried on an
+ * axios-shaped error so `captureGateRejection` reads `error.response.data.params`.
+ */
+const gateRejectionError = () =>
+  Object.assign(new Error('ai_model_below_minimum'), {
+    response: {
+      status: 400,
+      data: {
+        code: 'validation.ai_model_below_minimum',
+        params: {
+          verdict: 'unqualified',
+          min_window: 900_000,
+          measured_context_window_tokens: 128_000,
+          declared_context_window_tokens: null,
+          requires_explicit_declaration: false,
+          checked_at: '2026-01-01T00:00:00+00:00',
+          model: GATE_PRESET.config.llm_model,
+        },
+      },
+    },
+  });
+
+const clickTab = (name: string) => {
+  fireEvent.click(screen.getByRole('tab', { name: new RegExp(name) }));
+};
+
+/** The inline block's `Alert` root, located by its unique title copy. */
+const inlineGateAlert = (): HTMLElement => {
+  const alert = screen.getByText(enSettings.gate.presetRejectedTitle).closest('.ant-alert');
+  if (!alert) throw new Error('Rejected-preset title rendered outside an Alert');
+  return alert as HTMLElement;
 };
 
 describe('legacy cached verdict reaches the settings gate form (issue #55 step 5)', () => {
@@ -373,5 +432,82 @@ describe('legacy cached verdict reaches the settings gate form (issue #55 step 5
     const expected = enSettings.gate.measuredAt.replace('{{date}}', '2026-01-01 00:00 UTC');
     expect(screen.getByText(expected)).toBeTruthy();
     expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
+});
+
+/**
+ * A rejected *preset activation* happens on the Config Presets tab, while the gate
+ * card lives on the Text Model Config tab. Before this fix the captured numbers only
+ * reached `gateEvidence` — and `loadSettings(false)` re-seeds that from the server cache
+ * the moment the user switches tabs — so the rejection was unreachable in practice.
+ * These tests pin the numbers inline on the tab where the activation happened.
+ */
+describe('a rejected preset activation shows its gate numbers inline on the presets tab', () => {
+  const renderOnPresetsTab = async () => {
+    for (const [re, payload] of ROUTES_OK) mockRoute(re, payload);
+    mockRoute(/^get \/settings\/presets$/, PRESETS_RESPONSE);
+    mockRoute(/^post \/settings\/presets\/[^/]+\/activate$/, gateRejectionError());
+
+    render(
+      <AntApp>
+        <Settings />
+      </AntApp>
+    );
+
+    await screen.findByText('128,000');
+    clickTab(enSettings.tabs.presets);
+    const activate = await screen.findByText(enSettings.presets.activate);
+    fireEvent.click(activate);
+    await waitFor(() => expect(screen.queryByText(enSettings.gate.presetRejectedTitle)).not.toBeNull());
+  };
+
+  it('renders the rejected model, probed window, minimum and status next to the preset list', async () => {
+    await renderOnPresetsTab();
+
+    const alert = inlineGateAlert();
+    expect(within(alert).getByText(GATE_PRESET.config.llm_model)).toBeTruthy();
+    expect(within(alert).getByText('128,000')).toBeTruthy();
+    expect(
+      within(alert).getByText(enSettings.gate.minimumRequired.replace('{{min}}', '900,000')),
+    ).toBeTruthy();
+    expect(within(alert).getByText(enSettings.gate.status['below-minimum'])).toBeTruthy();
+    expect(within(alert).getByText(enSettings.gate.noBypass)).toBeTruthy();
+    // The declared window is absent from the envelope, so its line must not render.
+    expect(within(alert).queryByText(new RegExp(enSettings.gate.declaredLabel))).toBeNull();
+  });
+
+  it('survives the tab-switch refresh that re-seeds the shared gate evidence', async () => {
+    await renderOnPresetsTab();
+
+    // Visiting the current tab runs loadSettings(false), the exact path that re-seeds
+    // the shared gate evidence. The inline block must still name the 900,000 minimum
+    // from the activation envelope — the server cache carries a different one
+    // (1,000,000), so a block sourced from that cache would fail this assertion.
+    clickTab(enSettings.tabs.current);
+    await waitFor(() =>
+      expect(document.querySelector('.ant-tabs-tab-active')?.textContent).toContain(enSettings.tabs.current),
+    );
+
+    clickTab(enSettings.tabs.presets);
+    const alert = await waitFor(() => inlineGateAlert());
+    expect(within(alert).getByText('128,000')).toBeTruthy();
+    expect(
+      within(alert).getByText(enSettings.gate.minimumRequired.replace('{{min}}', '900,000')),
+    ).toBeTruthy();
+    expect(within(alert).getByText(GATE_PRESET.config.llm_model)).toBeTruthy();
+  });
+
+  it('clears the stale rejection after a successful activation', async () => {
+    await renderOnPresetsTab();
+
+    mockRoute(/^post \/settings\/presets\/[^/]+\/activate$/, {
+      message: 'activated',
+      preset_id: GATE_PRESET.id,
+      preset_name: GATE_PRESET.name,
+    });
+    mockRoute(/^get \/mcp\/plugins$/, []);
+    fireEvent.click(screen.getByText(enSettings.presets.activate));
+
+    await waitFor(() => expect(screen.queryByText(enSettings.gate.presetRejectedTitle)).toBeNull());
   });
 });

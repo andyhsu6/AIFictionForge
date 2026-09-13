@@ -3240,6 +3240,7 @@ export default interface Resources {
       "minimumRequired": "最低要求：{{min}} tokens",
       "needModel": "请先填写模型名称，再检测上下文窗口",
       "noBypass": "低于下限将拒绝保存，没有勾选放行的通道",
+      "presetRejectedTitle": "该预设激活被上下文窗口门禁拒绝",
       "probeFailed": "上下文窗口检测失败，请检查配置后重试",
       "probeInconclusive": "检测无法判定：本次没有测出上下文窗口，其大小仍是未知。请在下方显式声明一个不低于下限的窗口，或检查 API 地址与密钥后重试",
       "probeQualified": "检测通过：该模型满足上下文窗口要求",

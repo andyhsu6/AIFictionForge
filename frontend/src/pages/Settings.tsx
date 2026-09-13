@@ -535,6 +535,11 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   // 是因为探测回调要拿「本次探的是哪台」去判断能否替换，读另一个 state 会拿到
   // 渲染前的旧值。
   const [gateEvidence, setGateEvidence] = useState<GateEvidence>(NO_GATE_EVIDENCE);
+  // #55 follow-up：被拒的**预设激活**发生在「配置预设」Tab，而门禁卡片只在「当前配置」Tab。
+  // 用户留在预设 Tab，切走时 `loadSettings(false)` 又会用服务器缓存覆盖共享的
+  // `gateEvidence`，于是刚捕获的三段数永远见不到。这份专用 state 把被拒证据留在预设 Tab
+  // 自己身上：它不被 `loadSettings` 触碰，天然扛得住 Tab 切换。
+  const [presetGateRejection, setPresetGateRejection] = useState<GateEvidence | null>(null);
   const watchedLlmModel = Form.useWatch('llm_model', form);
   const watchedDeclaredWindow = Form.useWatch('context_window_tokens', form);
 
@@ -547,6 +552,14 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   // left. It comes from the server's own `checked_at`, never from a client clock.
   const measuredAtLabel = formatCheckedAt(gate.checkedAt);
 
+  // 被拒预设的三段数走同一条派生逻辑（探测结果传 null，这次拒绝本身就是证据），
+  // 保证预设 Tab 的内联区块与「当前配置」Tab 的门禁卡片数字/状态口径一致。
+  const presetGate = useMemo(() => {
+    const evidence = presetGateRejection?.evidence;
+    return evidence ? deriveGateNumbers(null, null, evidence) : null;
+  }, [presetGateRejection]);
+  const presetGateMeasuredAtLabel = presetGate ? formatCheckedAt(presetGate.checkedAt) : null;
+
   // `deriveGateNumbers` 看不到模型字段，给不出「没有模型」这一态。而自步骤 2 起
   // `llm_model` 不再预填，空模型正是全新安装打开设置页看到的第一屏：那时该说的是
   // 「先填模型」，不是「点重新检测」（检测按钮此时也只会回一句 needModel）。
@@ -556,11 +569,11 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
 
   /** 从错误信封里取门禁三段数（探测端点与保存路径抛的是同一个码、同一组 params）。 */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const captureGateRejection = (error: any): boolean => {
+  const captureGateRejection = (error: any): GateEvidence | null => {
     const body = error?.response?.data;
-    if (!isModelGateError(body?.code)) return false;
+    if (!isModelGateError(body?.code)) return null;
     const params = (body?.params || {}) as Record<string, unknown>;
-    setGateEvidence({
+    const captured: GateEvidence = {
       evidence: {
         verdict: typeof params.verdict === 'string' ? params.verdict : null,
         min_window: typeof params.min_window === 'number' ? params.min_window : null,
@@ -575,8 +588,9 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
       model: typeof params.model === 'string'
         ? params.model
         : ((form.getFieldValue('llm_model') as string) || ''),
-    });
-    return true;
+    };
+    setGateEvidence(captured);
+    return captured;
   };
 
   /** 手动/自动触发「重新检测」：只测不拦，拦人是保存路径门禁的活。 */
@@ -1002,6 +1016,9 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
   };
 
   const handlePresetActivate = async (presetId: string, presetName: string) => {
+    // 新的激活尝试先清掉上一轮的被拒区块：成功时它必须消失，
+    // 失败时由 catch 重新写入本次的证据。
+    setPresetGateRejection(null);
     try {
       // 获取预设配置用于比较
       const preset = presets.find(p => p.id === presetId);
@@ -1105,8 +1122,12 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
     } catch (error) {
       // 激活也会被同一道门禁拒绝（预设的模型低于下限 / 判不出）。经既有 normalizer
       // 解出 error.response.data.params 并交给门禁卡片，内联显示三段数；只有非门禁
-      // 错误才回落到不透明的通用 toast。
-      if (!captureGateRejection(error)) {
+      // 错误才回落到不透明的通用 toast。被拒证据同时存进预设 Tab 自己的 state，
+      // 因为用户此刻就停在这个 Tab 上，切到门禁卡片并不现实。
+      const rejected = captureGateRejection(error);
+      if (rejected) {
+        setPresetGateRejection(rejected);
+      } else {
         message.error(t('toast.activateFailed'));
       }
       console.error(error);
@@ -1296,6 +1317,42 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
             />
           </Space>
         </Card>
+
+        {/* 被拒预设激活的三段数就地显示：#55 的硬拦发生在激活预设时，用户此刻就在这个
+            Tab 上，门禁卡片不该要求他先切到「当前配置」再回来。 */}
+        {presetGate && presetGateRejection && (
+          <Alert
+            type="error"
+            showIcon
+            closable
+            onClose={() => setPresetGateRejection(null)}
+            message={t('gate.presetRejectedTitle')}
+            description={
+              <Space direction="vertical" size={4}>
+                <span>
+                  {t('presets.modelLabel')} <Text strong>{presetGateRejection.model}</Text>
+                </span>
+                <Space wrap size={16}>
+                  <span>
+                    {t('gate.probedLabel')}: <Text strong>{formatWindowTokens(presetGate.probed)}</Text>
+                  </span>
+                  <span>{t('gate.minimumRequired', { min: formatWindowTokens(presetGate.minimum) })}</span>
+                  {presetGate.declared !== null && (
+                    <span>
+                      {t('gate.declaredLabel')}: <Text strong>{formatWindowTokens(presetGate.declared)}</Text>
+                    </span>
+                  )}
+                </Space>
+                <span>{t(`gate.status.${presetGate.status}`)}</span>
+                <span>{t('gate.noBypass')}</span>
+                {presetGateMeasuredAtLabel && (
+                  <span>{t('gate.measuredAt', { date: presetGateMeasuredAtLabel })}</span>
+                )}
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
         {presets.length === 0 ? (
           <Empty
