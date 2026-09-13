@@ -7,7 +7,14 @@
    与计划 B 的"未知即不合格"同向）。
 
 判定结果写进 AgentToolCall.risk_level / requires_confirmation 与
-AgentExecutionStep.detail["risk"] 以便审计。
+AgentExecutionStep.detail["risk"] 以便审计。detail.risk.reason 是**审计码**
+（前端按码取本地化文案，见 frontend/src/locales/*/projectAgentPanel.json 的
+riskReason.*），本模块只产出这几个码：
+  action_policy / overwrite_existing_analysis /
+  chapter_unresolvable（模型给的章节号在本项目里对不上）/
+  analysis_probe_failed（探测本身的异常，含 DB 故障）。
+后两个成因不同，必须分开：前者是提示词/参数问题，后者是数据层问题，
+混成一个码就没法从日志里分辨。两者都记 warning 并都 fail-closed 到 risk 2。
 """
 from __future__ import annotations
 
@@ -17,12 +24,25 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logger import get_logger
+from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.project import Project
 from app.services.project_agent_selectors import find_chapter
 from app.services.project_agent_tools import ProjectAgentTool, action_risk_level
 
+logger = get_logger(__name__)
+
 CONFIRMATION_RISK = 2
+
+
+class _ChapterUnresolvable(Exception):
+    """章节选择器解析不出目标章（模型给了项目里不存在的章节号/ID）。
+
+    私有包装：find_chapter 用 ValueError 表达"参数对不上"，而 ValueError 也可能
+    来自探测里的其他代码。只有这个类能保证 reason 分流按**结构**而不是按
+    "异常类型猜成因"来判——except 顺序因此不可调换。
+    """
 
 
 @dataclass(frozen=True)
@@ -38,6 +58,16 @@ def _action(arguments: dict[str, Any]) -> str | None:
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+async def _resolve_chapter(
+    db: AsyncSession, project_id: str, arguments: dict[str, Any]
+) -> Chapter:
+    """find_chapter 的 ValueError 翻译成 _ChapterUnresolvable（成因分类用）。"""
+    try:
+        return await find_chapter(db, project_id, arguments)
+    except ValueError as exc:
+        raise _ChapterUnresolvable(str(exc)) from exc
 
 
 async def _chapter_has_analysis_results(
@@ -91,17 +121,34 @@ async def resolve_tool_risk(
         # 能清掉中止状态，但会把本轮已写的行一起丢掉，是更糟的修法。
         try:
             async with db.begin_nested():
-                chapter = await find_chapter(db, project.id, arguments)
+                chapter = await _resolve_chapter(db, project.id, arguments)
                 has_results = await _chapter_has_analysis_results(
                     db, project_id=project.id, chapter_id=chapter.id
                 )
             if has_results:
                 risk = CONFIRMATION_RISK
                 reason = "overwrite_existing_analysis"
-        except Exception:
-            # 探测不出结论时不得放行覆盖：重新分析会替换该章既有的 PlotAnalysis
+        except _ChapterUnresolvable as exc:
+            # 成因一：模型给的章节号/ID 在本项目里对不上（提示词/参数问题）。
+            # 与探测故障同样不得放行覆盖，但审计码必须分开，否则日志里
+            # "模型在瞎报章节" 和 "数据库读不出来" 长得一模一样。
+            logger.warning(
+                "灵创助手 analyze_chapter 风险探测无法解析章节，fail-closed 到需要确认："
+                "project=%s action=%s error=%s",
+                project.id, action, exc, exc_info=True,
+            )
+            risk = CONFIRMATION_RISK
+            reason = "chapter_unresolvable"
+        except Exception as exc:
+            # 成因二：探测本身出错（含真实 SQL 异常）。探测不出结论时不得放行覆盖：
+            # 重新分析会替换该章既有的 PlotAnalysis
             # （chapter_id 唯一，见 app/models/memory.py:86），并清理由分析产生的
             # 旧伏笔（foreshadow_service.py:1074/1195），属于破坏性写入。
+            logger.warning(
+                "灵创助手 analyze_chapter 风险探测失败，fail-closed 到需要确认："
+                "project=%s action=%s error=%s",
+                project.id, action, exc, exc_info=True,
+            )
             risk = CONFIRMATION_RISK
             reason = "analysis_probe_failed"
 

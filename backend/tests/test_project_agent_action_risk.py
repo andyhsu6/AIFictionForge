@@ -4,6 +4,7 @@
 回合内的事件与持久化在 test_project_agent_inline_task.py 测。
 """
 import dataclasses
+import logging
 import os
 import uuid
 
@@ -326,15 +327,85 @@ async def test_probe_runs_inside_a_savepoint_so_its_own_writes_are_undone(db_ses
 
 
 @pytest.mark.anyio
-async def test_unresolvable_chapter_fails_closed_to_confirmation(db_session):
+async def test_unresolvable_chapter_fails_closed_to_confirmation(db_session, caplog):
+    """I4：模型给了项目里不存在的章节 ⇒ 独立的 chapter_unresolvable，不再与
+    "数据库读不出来"共用一个码；两者都仍然 fail-closed 到 risk 2。"""
     db_session.add(Project(id="proj-1", user_id="test", title="测试项目"))
     await db_session.flush()
-    decision = await resolve_tool_risk(
-        db_session, project=_detached_project(), tool=_start_task_tool(),
-        arguments={"action": "analyze_chapter", "chapter_id": "no-such-chapter"},
-    )
+    with caplog.at_level(logging.WARNING, logger=risk_module.logger.name):
+        decision = await resolve_tool_risk(
+            db_session, project=_detached_project(), tool=_start_task_tool(),
+            arguments={"action": "analyze_chapter", "chapter_id": "no-such-chapter"},
+        )
     assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "chapter_unresolvable"
+
+    # I4 的另一半：这条分支以前完全静默，线上只能看到"用户莫名被弹确认卡"。
+    warnings = [
+        record for record in caplog.records
+        if record.name == risk_module.logger.name and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, f"未解析章节应恰好记一条 warning，实际 {[r.getMessage() for r in warnings]}"
+    assert "proj-1" in warnings[0].getMessage()
+    assert "analyze_chapter" in warnings[0].getMessage()
+    assert "未找到指定章节" in warnings[0].getMessage(), (
+        "日志要能查出是哪个章节对不上（find_chapter 的原文必须进消息）"
+    )
+    logged = warnings[0].exc_info[1] if warnings[0].exc_info else None
+    assert isinstance(logged, risk_module._ChapterUnresolvable), (
+        "warning 必须带成因分支自己的异常，否则无法证明走的是解析失败而不是探测故障"
+    )
+    assert isinstance(logged.__cause__, ValueError), (
+        "必须保留 find_chapter 抛出的原始 ValueError（raise ... from exc）"
+    )
+
+
+@pytest.mark.anyio
+async def test_probe_exception_logs_a_warning_with_traceback(db_session, monkeypatch, caplog):
+    """I4：探测本身的异常必须留下日志（以前 `except Exception: pass` 式吞掉）。"""
+    chapter = await _seed_chapter(db_session)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("database is unavailable")
+
+    monkeypatch.setattr(risk_module, "_chapter_has_analysis_results", boom)
+    with caplog.at_level(logging.WARNING, logger=risk_module.logger.name):
+        decision = await resolve_tool_risk(
+            db_session, project=_detached_project(), tool=_start_task_tool(),
+            arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+        )
+
     assert decision.reason == "analysis_probe_failed"
+    warnings = [
+        record for record in caplog.records
+        if record.name == risk_module.logger.name and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "database is unavailable" in warnings[0].getMessage()
+    assert warnings[0].exc_info and isinstance(warnings[0].exc_info[1], RuntimeError)
+    # 两种成因必须是两个码：混成一个，日志里就分不出"模型瞎报章节"与"数据层故障"。
+    assert decision.reason != "chapter_unresolvable"
+
+
+@pytest.mark.anyio
+async def test_exempt_probe_logs_nothing(db_session, caplog):
+    """I4 的反向半边：日志不得在正常路径上刷。
+
+    没有异常就不该有 warning —— 否则"出了事"这件事本身被噪声埋掉，
+    caplog 上一条也证明不了什么。
+    """
+    chapter = await _seed_chapter(db_session)
+    with caplog.at_level(logging.WARNING, logger=risk_module.logger.name):
+        decision = await resolve_tool_risk(
+            db_session, project=_detached_project(), tool=_start_task_tool(),
+            arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+        )
+
+    assert (decision.risk_level, decision.requires_confirmation) == (1, False)
+    assert [
+        record for record in caplog.records
+        if record.name == risk_module.logger.name and record.levelno >= logging.WARNING
+    ] == []
 
 
 @pytest.mark.anyio
