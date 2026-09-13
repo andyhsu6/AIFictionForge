@@ -126,13 +126,15 @@ class ProjectAgentService:
     # 供测试与 TOOL_RESULT_MAX_CHARS 配对断言。
     TOOL_RESULT_PERSIST_MAX_CHARS = 50000
     # 单条工具结果进 prompt 的上限：落库侧允许到 TOOL_RESULT_PERSIST_MAX_CHARS，
-    # 若不在此收口，一条即可吃光 _build_prompt 的 60000 历史预算并挤掉首条用户诉求。
+    # 若不在此收口，一条即可吃光 _build_prompt 的历史字符预算并挤掉首条用户诉求。
     TOOL_RESULT_MAX_CHARS = 8000
     # 有界窗口，不是容量保证：一回合落库的行数没有固定上界——单工具调用/轮实测 10 行
     # （1 user + 5 assistant + 4 tool），一轮多并行调用按调用数线性增长（实测 4 轮 ×
-    # 3 并行 = 18 行）。真正的约束在 _build_prompt 的 60000 字符预算：实测 8 条打满
-    # TOOL_RESULT_MAX_CHARS 的 tool 行只能带进 7 条，首条用户诉求仍被挤掉。40 只解决
-    # "整回合被行数舍掉"这一层，字节层面的取舍归 PR-0c 的预算分层。
+    # 3 并行 = 18 行）。真正的约束在 _build_prompt 的历史字符预算（PR-0c 起按实测窗口
+    # 换算，默认下界 60000）：实测在下界上 8 条打满 TOOL_RESULT_MAX_CHARS 的 tool 行
+    # 只能带进 7 条，首条用户诉求仍被挤掉
+    # （tests/test_agent_prompt_budget.py::test_budget_binds_characters_not_row_count）。
+    # 40 只解决"整回合被行数舍掉"这一层，字节层面的取舍归预算分层。
     HISTORY_LIMIT = 40
 
     def __init__(
