@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
 from sqlalchemy import select
@@ -661,11 +661,15 @@ async def _execute_step(
 async def _cancel_in_flight(handle: _PlanHandle, factory: async_sessionmaker) -> None:
     """取消当前在途子任务并记账（Task 5 的 _supervise 取消分支复用同一个函数）。
 
-    必须在 ``handle.in_flight`` 被清掉之前调用——轮询的 finally 会清它。
+    级联只有两条真实入口：轮询自查（handle.cancel_requested / 计划行已被取消）先级联
+    再抛；外部 ``task.cancel()`` 由 ``_await_sub_task`` 的 except-CancelledError 级联——
+    finally 执行时 in_flight 已空，看不见它。级联后立即置空 in_flight 让重复调用成为
+    空操作，_supervise 的 Task 5 分支因此只是无害兜底。
     """
     if handle.in_flight is None:
         return
     task_type, task_id = handle.in_flight
+    handle.in_flight = None          # 幂等：级联只发生一次（轮询自查路径 + 上面的 except 都调它）
     cancelled = await _cancel_sub_task(
         factory, user_id=handle.user_id, task_type=task_type, task_id=task_id
     )
@@ -677,8 +681,9 @@ async def _await_sub_task(
 ) -> TaskSnapshot:
     """轮询子任务直到终态；单步有超时上限，超时就把子任务取消掉再失败。
 
-    每次轮询都开一个短命会话：runner 那个长会话带 expire_on_commit=False，靠它轮询会
-    读到陈旧身份映射（见 resolve_task_snapshot 的注释）。
+    每轮流询都开短命会话（先查计划行取消位、再读子任务快照，各一个）：runner 那个长会话
+    带 expire_on_commit=False，靠它轮询会读到陈旧身份映射（见 resolve_task_snapshot 的
+    注释）。
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + STEP_POLL_TIMEOUT_SECONDS
@@ -708,6 +713,11 @@ async def _await_sub_task(
                     f"步骤轮询超过 {int(STEP_POLL_TIMEOUT_SECONDS)} 秒"
                 )
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        # 外部 task.cancel()：异常穿过 finally 前 in_flight 还在，这里级联；轮询自查路径
+        # 已经级联过（_cancel_in_flight 已把 in_flight 置空）⇒ 这里是空操作。
+        await _cancel_in_flight(handle, factory)
+        raise
     finally:
         handle.in_flight = None
 
@@ -729,7 +739,7 @@ async def _cancel_sub_task(
 ) -> bool:
     """取消在途子任务；返回是否真的取消掉。
 
-    字段写入与 _manage_background_task_cancel（operational_tools:714-723）保持一致，
+    字段写入与 ProjectAgentOperationalTools._manage_background_task_cancel 保持一致，
     但不复用那个方法：它要经 _find_task -> _all_tasks 把项目里四张任务表全捞一遍，
     而 runner 已经确切知道 (task_type, task_id)。AnalysisTask 没有可取消状态
     （api/tasks.py:128 的 can_cancel=False），只能停止轮询，调用方按 False 记账。
@@ -748,7 +758,12 @@ async def _cancel_sub_task(
                     BatchGenerationTask.id == task_id,
                     BatchGenerationTask.status.in_(("pending", "running")),
                 )
-                .values(status="cancelled", completed_at=datetime.now())
+                # 列是 naive-UTC（models/project_agent.py 约定 + Postgres TimeZone=UTC）；
+                # 用本地墙钟会写出 +8h 的偏差。
+                .values(
+                    status="cancelled",
+                    completed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
             )
             await session.commit()
             return (res.rowcount or 0) == 1
