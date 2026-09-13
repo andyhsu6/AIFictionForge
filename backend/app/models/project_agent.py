@@ -1,5 +1,6 @@
 """项目智能体会话、消息与工具调用模型。"""
 import uuid
+from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.sql import func
@@ -48,7 +49,9 @@ class AgentMessage(Base):
     completion_tokens = Column(Integer)
     tool_calls = Column(Text)
     tool_call_id = Column(String(36), index=True)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime, default=datetime.now, server_default=func.now(), nullable=False
+    )
 
 
 class AgentToolCall(Base):
