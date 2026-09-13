@@ -466,52 +466,75 @@ class AIService:
         )
         return resolved
 
-    async def resolve_full_book_budget_chars(
+    async def resolve_effective_window_tokens(
         self, model: Optional[str] = None, provider: Optional[str] = None
     ) -> int:
-        """全书注入字符预算的**唯一来源**：本次实发模型实测/声明的上下文窗口。
+        """本次**实发**模型「当前生效」的上下文窗口 token 数（唯一读取入口）。
 
-        需求 #55 步骤 4（取代按模型名分三档的 `resolve_context_budget_chars`）：
-        窗口来自 `get_effective_context_window`（计划 §4a 定死的对外访问器），
-        不再查静态登记表、不再有 128K/小窗口降级档。
+        顺序是「先过门禁，再按门禁那把键读缓存」，两步都不可省（需求 #55 步骤 3/5，
+        PR-0c 评审 D1/D2 把它变成了两个预算消费方共用的唯一实现）：
 
-        先过 `_require_model` 而不是裸读缓存，是为了保持与派发**同一套**缺结论语义：
-        「从未有过结论」必须同步补测 ①② 再定论（计划 §5），绝不能因为预算换算
-        抢在门禁之前而把一个合格模型直接拒掉。缓存命中时这两次读取都是内存字典
-        （`read_verdict` 的 memo），热路径不额外花网络。
+        - **必须 await `_require_model`**：`get_effective_context_window` 是**只读缓存**，
+          「从未探测过的三元组」在它那里等于「没有合格结论」⇒ 直接抛
+          `validation.ai_model_below_minimum`。真正的「缺结论 ⇒ 同步补测 ①② 再定论」
+          长在 `ensure_model_allowed` 里。任何**抢在派发门禁之前**要窗口的代码
+          （prompt 预算就是这种）若绕过这里，就会把一个健康模型的第一句助手回合
+          变成「AI 坏了」——用户看到的那个错误码本来应该是补测之后才产生的。
+        - **必须按 `_dispatch_endpoint(provider)` 读**：门禁刚写/刚判的就是这把键，
+          换成实例自己的 `api_provider` / `base_url` 是**第二处各自计算规范化**的
+          失效形态（两边今天凑巧相等，明天构造参数一改就分叉 ⇒ 缓存必然 miss）。
 
-        失败契约：未配置 → `validation.ai_model_not_configured`；窗口不合格/无合格
-        结论 → `validation.ai_model_below_minimum`。返回值恒 > 0 ⇒「没有预算」不再是
-        一个可表示的状态（计划 §4b：`0 = 禁用` 就是静默失效）。
+        失败契约：未配置 → `validation.ai_model_not_configured`；补测后仍无合格结论
+        → `validation.ai_model_below_minimum`。未绑定用户/会话的服务拿不到结论 ⇒
+        明确报错，绝不返回 0 或猜测值（计划 §4b：`0 = 禁用` 就是静默失效）。
 
         `provider` 与派发路径同源（需求 #55 审核项）：调用方如果允许请求体里的
-        per-call `provider` 覆盖走到派发，就必须把同一个值传进来，否则预算会按
-        **另一个 host** 的结论换算。默认 None ⇒ 用实例自己的网关。
+        per-call `provider` 覆盖走到派发，就必须把同一个值传进来，否则窗口会按
+        **另一个 host** 的结论取。默认 None ⇒ 用实例自己的网关。
         """
         resolved = await self._require_model(model, provider)
         if not self.user_id or self.db_session is None:
             # 未绑定用户的诊断实例在门禁里允许直通（它不发产品 AI 请求），但结论缓存
             # 按 (user, provider, base_url, model) 存 ⇒ 这里必然拿不到窗口。
-            # 「拿不到预算」必须是错误，不能退回 0 或某个猜测值（计划 §4b）。
+            # 「拿不到窗口」必须是错误，不能退回 0 或某个猜测值（计划 §4b）。
             raise ApiError(
                 code="validation.ai_model_below_minimum",
                 detail="该 AI 服务未绑定用户与会话，无法取得上下文窗口结论",
                 params={"model": resolved},
-                raw="resolve_full_book_budget_chars called on an unbound AIService",
+                raw="resolve_effective_window_tokens called on an unbound AIService",
             )
         # 窗口必须按**实发三元组**读：`_require_model` 刚刚判定的就是这把键，
         # 这里换成实例自己的网关会读到另一条结论（甚至读不到）。
         gate_provider, gate_base_url, _ = self._dispatch_endpoint(provider)
-        window = await get_effective_context_window(
+        return await get_effective_context_window(
             self.user_id,
             resolved,
             self.db_session,
             provider=gate_provider,
             base_url=gate_base_url,
         )
+
+    async def resolve_full_book_budget_chars(
+        self, model: Optional[str] = None, provider: Optional[str] = None
+    ) -> int:
+        """全书注入字符预算的**唯一来源**：本次实发模型实测/声明的上下文窗口。
+
+        需求 #55 步骤 4（取代按模型名分三档的 `resolve_context_budget_chars`）：
+        窗口一律经 `resolve_effective_window_tokens`（计划 §4a 定死的对外访问器 +
+        门禁补测顺序），不再查静态登记表、不再有 128K/小窗口降级档。
+        「先补测再定论」「三元组与派发同源」这两条硬约束的论证写在那个方法上，
+        本方法与助手历史预算共用它，不再各留一套。
+
+        失败契约同 `resolve_effective_window_tokens`。返回值恒 > 0 ⇒「没有预算」不再是
+        一个可表示的状态（计划 §4b：`0 = 禁用` 就是静默失效）。
+        """
+        window = await self.resolve_effective_window_tokens(model, provider)
         budget = int(window * _FULL_BOOK_BUDGET_RATIO)
-        if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 下限
-            raise ApiError(code="validation.ai_model_below_minimum", params={"model": resolved})
+        if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 1M
+            raise ApiError(
+                code="validation.ai_model_below_minimum",
+                params={"model": (model or self.default_model or "")},
+            )
         return budget
 
     def _build_call_metrics(

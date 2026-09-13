@@ -19,12 +19,13 @@ MCP 工具与 `as_model_tool()` 包裹层）+ 每轮输出余量。剩下的才�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import TYPE_CHECKING
 
 from app.config import settings
 from app.logger import get_logger
-from app.services.model_capability_probe import get_effective_context_window
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不引入 ai_service
+    from app.services.ai_service import AIService
 
 logger = get_logger(__name__)
 
@@ -92,7 +93,8 @@ def compute_history_budget_chars(
 ) -> int:
     """唯一换算式：clamp(tokens x CHARS_PER_TOKEN x ratio, min, max)。
 
-    输入单位是 **token**（`get_effective_context_window()` 的返回值），输出单位是
+    输入单位是 **token**（`AIService.resolve_effective_window_tokens()` 的返回值，
+    其内部才是 `get_effective_context_window`），输出单位是
     **字符**（`_build_prompt` 的裁剪口径）。除此函数外，任何地方都不得做
     token→字符 换算或 clamp。
 
@@ -117,25 +119,34 @@ def compute_history_budget_chars(
 
 async def resolve_history_budget_chars(
     *,
-    user_id: str,
-    model: str,
-    db: AsyncSession,
-    provider: str,
-    base_url: str,
+    ai_service: "AIService",
+    model: str | None = None,
+    provider: str | None = None,
     trace: PromptBudgetTrace | None = None,
 ) -> int:
     """取「本次实发模型当前生效」的窗口，换算成历史预算字符数。
 
-    `provider` / `base_url` **刻意不给默认值**：B 的访问器省略它们时按模型名在
-    缓存三元组里找，命中 0 个或多于 1 个都抛错（同一模型挂两个网关是合法配置）。
-    只传 model 会让这类用户每次发 prompt 都吃一个 `validation.ai_model_below_minimum`。
+    窗口一律向 `ai_service.resolve_effective_window_tokens()` 要，本模块**不**自己
+    读结论缓存。两条理由都是 PR-0c 评审查出的真缺陷：
 
-    失败契约：`get_effective_context_window` 抛的 `ApiError`（
-    `validation.ai_model_below_minimum`）**原样冒泡** —— 不 try/except、不设兜底预算。
+    - **D1 顺序**：`get_effective_context_window` 是只读访问器，而「完全没有结论 ⇒
+      同步补测 ①② 再定论」长在门禁里。裸读缓存会让一个从未探测过的三元组把
+      **助手回合本身**变成第一件失败的事（用户看到的是"助手坏了"）。
+    - **D2 键的口径**：门禁写结论用的 (provider, base_url) 出自
+        `AIService._dispatch_endpoint()`。本模块若自己从实例字段拼这两个值，就是
+        在**第二处**做规范化 ⇒ 今天凑巧相等、明天分叉，分叉那一刻缓存必然 miss。
+        两路共用同一个函数后，等式由构造成立，不再依赖巧合。
+
+    `model` / `provider` 默认 None ⇒ 与派发时刻 `generate_text(...)` 不带这两个
+    kwargs 时的解析结果逐字相同（同一个 `default_model`、同一个实例网关槽位）。
+
+    失败契约：`resolve_effective_window_tokens` 抛的 `ApiError`
+    （`validation.ai_model_not_configured` / `validation.ai_model_below_minimum`）
+    **原样冒泡** —— 不 try/except、不设兜底预算。
     "预算算不出来 ⇒ 明确报错"是本 PR 的验收项之一，静默退回 60000 即失败。
     """
-    effective_tokens = await get_effective_context_window(
-        user_id, model, db, provider=provider, base_url=base_url
+    effective_tokens = await ai_service.resolve_effective_window_tokens(
+        model=model, provider=provider
     )
     budget_chars = compute_history_budget_chars(
         effective_tokens,

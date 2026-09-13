@@ -1,22 +1,25 @@
 """PR-0c：助手 prompt 预算按实测窗口分层。
 
 单位链（务必读完整再改数字）：
-    get_effective_context_window() -> token
+    AIService.resolve_effective_window_tokens()   # 先过门禁（缺结论⇒同步补测①②）
+      -> get_effective_context_window() -> token
       -> x CHARS_PER_TOKEN -> 字符
       -> x ratio -> clamp(min, max) -> history_budget_chars
-任何一环都不允许出现第二套系数或第二处 clamp。
+任何一环都不允许出现第二套系数或第二处 clamp；窗口也不允许从门禁之外裸读缓存。
 """
 import ast
 import inspect
+import json
 import os
 import pathlib
 import textwrap
 import types
 import uuid
+from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import event, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.errors import ApiError
 from app.database import Base
@@ -26,6 +29,7 @@ from app.models.project_agent import (
     AgentExecutionStep,
     AgentMessage,
 )
+from app.models.settings import Settings
 from app.schemas.project_agent import AgentExecutionStepResponse
 from app.services import agent_prompt_budget as apb
 from app.services.agent_prompt_budget import (
@@ -33,6 +37,18 @@ from app.services.agent_prompt_budget import (
     HISTORY_BUDGET_ANCHOR_CAP_CHARS,
     compute_history_budget_chars,
     resolve_history_budget_chars,
+)
+from app.services import model_capability_probe as probe_module
+from app.services.ai_service import AIService, detect_context_window
+from app.services.model_capability_probe import (
+    PREFERENCES_KEY,
+    TRIGGER_DAILY,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_QUALIFIED,
+    ProbeOutcome,
+    SOURCE_PROBE,
+    TIER_METADATA,
+    triple_key,
 )
 from app.services.project_agent_service import ProjectAgentService
 from app.services.project_agent_tools import ProjectAgentTool
@@ -73,71 +89,97 @@ def test_anchor_cap_matches_per_message_truncation_cap():
     assert HISTORY_BUDGET_ANCHOR_CAP_CHARS == 6_000
 
 
+class _WindowStub:
+    """只实现预算路径用到的那一个 AIService 方法，并把每次调用的实参记下来。"""
+
+    def __init__(self, tokens: int = 1_000_000, error: ApiError | None = None):
+        self.tokens = tokens
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def resolve_effective_window_tokens(self, model=None, provider=None) -> int:
+        self.calls.append({"model": model, "provider": provider})
+        if self.error is not None:
+            raise self.error
+        return self.tokens
+
+
 @pytest.mark.anyio
-async def test_resolver_passes_the_probed_window_through_the_single_formula(monkeypatch):
-    seen = {}
-
-    async def fake_probe(user_id, model, db, *, provider=None, base_url=None):
-        seen.update(
-            user_id=user_id, model=model, db=db, provider=provider, base_url=base_url
-        )
-        return 1_000_000
-
-    monkeypatch.setattr(apb, "get_effective_context_window", fake_probe)
-    budget = await resolve_history_budget_chars(
-        user_id="u1", model="m1", db=object(), provider="openai",
-        base_url="https://gw.example/v1",
-    )
+async def test_resolver_passes_the_window_through_the_single_formula():
+    ai = _WindowStub(tokens=1_000_000)
+    budget = await resolve_history_budget_chars(ai_service=ai)
     assert budget == 300_000
-    # 三元组必须原样送达：省略 provider/base_url 会让"同名模型挂两个网关"的用户
-    # 每次发 prompt 都吃一个 validation.ai_model_below_minimum（契约见锚点复核）
-    assert seen == {
-        "user_id": "u1",
-        "model": "m1",
-        "db": seen["db"],
-        "provider": "openai",
-        "base_url": "https://gw.example/v1",
-    }
-
-
-def test_provider_and_base_url_are_mandatory_keywords():
-    # 不给默认值 ⇒ 漏传就是 TypeError，而不是悄悄走"按模型名查缓存"的歧义路径
-    with pytest.raises(TypeError):
-        resolve_history_budget_chars(user_id="u", model="m", db=None)  # type: ignore[call-arg]
+    # model/provider 默认 None ⇒ 与派发时刻 `generate_text(...)`（同样不带这两个
+    # kwargs）解析出的那把键逐字相同，两边不会各自算一次规范化
+    assert ai.calls == [{"model": None, "provider": None}]
 
 
 @pytest.mark.anyio
-async def test_probe_failure_bubbles_up_untouched(monkeypatch):
+async def test_resolver_forwards_a_per_call_model_and_provider():
+    """允许 per-call 覆盖的调用方必须能把同一个值送到窗口读取那一步。
+
+    与 B 的 `resolve_full_book_budget_chars(model, provider)` 保持同形：调用点若
+    允许请求体覆盖 provider 走到派发，预算就必须按**实发 host** 的结论换算，
+    否则读的是另一条缓存（评审 D2 的可达形态）。
+    """
+    ai = _WindowStub(tokens=2_000_000)
+    budget = await resolve_history_budget_chars(
+        ai_service=ai, model="m2", provider="anthropic"
+    )
+    assert ai.calls == [{"model": "m2", "provider": "anthropic"}]
+    assert budget == 400_000     # 2M x 0.3 = 600000 -> 上限 400000
+
+
+def test_the_ai_service_is_mandatory_and_the_old_triple_params_are_gone():
+    """接缝只剩 `ai_service` 一个入口：旧形态那五个"自己拼三元组"的参数必须消失。
+
+    留着它们就等于留着第二条 provider/base_url 计算路径 —— 评审 D2 的根因正是
+    「门禁算一次、预算再算一次」，而不是某一次算错了哪个常量。
+    """
+    with pytest.raises(TypeError):
+        resolve_history_budget_chars()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        resolve_history_budget_chars(  # type: ignore[call-arg]
+            ai_service=_WindowStub(), user_id="u", db=None, base_url="https://gw.test"
+        )
+
+
+def test_budget_module_no_longer_reads_the_verdict_cache_itself():
+    """D1 的结构面：预算模块不得再直连**只读**访问器 `get_effective_context_window`。
+
+    只读访问器把「没有结论」直接判成 `validation.ai_model_below_minimum`，而
+    「缺结论 ⇒ 同步补测 ①②」长在门禁里 ⇒ 预算模块一旦自己读缓存，未探测过的
+    三元组就会抢先把助手回合判死。判定走 AST（注释里提这个名字是允许的）。
+    """
+    assert "get_effective_context_window" not in _code_symbols(BUDGET_PY), (
+        "预算模块重新直连只读缓存 ⇒ D1 那类「助手坏了」回归"
+    )
+    assert "resolve_effective_window_tokens" in _code_symbols(BUDGET_PY)
+
+
+@pytest.mark.anyio
+async def test_window_failure_bubbles_up_untouched():
     """预算算不出来时必须**明确报错**，禁止静默退回 60000。
 
     也不要 except Exception 再包一层 —— 那会把门禁的错误码文案吃掉。
+    两个错误码（未配置模型 / 补测后仍不合格）都必须在链路上原样成立。
     """
-
-    async def boom(user_id, model, db, *, provider=None, base_url=None):
-        raise ApiError(
-            code="validation.ai_model_below_minimum",
-            params={"model": model, "min_window": 1_000_000},
-        )
-
-    monkeypatch.setattr(apb, "get_effective_context_window", boom)
-    with pytest.raises(ApiError) as exc:
-        await resolve_history_budget_chars(
-            user_id="u1", model="gpt-4", db=object(), provider="openai", base_url=""
-        )
-    assert exc.value.code == "validation.ai_model_below_minimum"
-    assert exc.value.code != "internal.error"  # 没被泛化成通用失败
+    for code in (
+        "validation.ai_model_below_minimum",
+        "validation.ai_model_not_configured",
+    ):
+        ai = _WindowStub(error=ApiError(code=code, params={"model": "m"}))
+        with pytest.raises(ApiError) as exc:
+            await resolve_history_budget_chars(ai_service=ai)
+        assert exc.value.code == code
+        assert exc.value.code != "internal.error"  # 没被泛化成通用失败
 
 
 @pytest.mark.anyio
-async def test_trace_is_filled_with_tokens_and_budget(monkeypatch):
-    async def fake_probe(user_id, model, db, *, provider=None, base_url=None):
-        return 2_000_000
-
-    monkeypatch.setattr(apb, "get_effective_context_window", fake_probe)
+async def test_trace_is_filled_with_tokens_and_budget():
     trace = apb.PromptBudgetTrace(budget_chars=0)
     budget = await resolve_history_budget_chars(
-        user_id="u", model="m", db=object(), provider="openai", base_url="b",
-        trace=trace,
+        ai_service=_WindowStub(tokens=2_000_000), trace=trace
     )
     assert budget == 400_000  # 2M x 0.3 = 600000 -> 上限 400000
     assert (trace.effective_tokens, trace.budget_chars) == (2_000_000, 400_000)
@@ -170,14 +212,29 @@ def make_msg(role, content, tool_calls=None, tool_call_id=None):
     )
 
 
-def bare_service():
-    """绕开 DB：`_build_prompt` 与 `_history_budget_chars` 都不需要真实会话。"""
+def bare_service(tokens: int = 1_000_000):
+    """绕开 DB：`_build_prompt` 与 `_history_budget_chars` 都不需要真实会话。
+
+    `ai_service` 桩只提供 `default_model` 与预算路径唯一会用的
+    `resolve_effective_window_tokens`（PR-0c 评审 D1/D2 后的形状）。刻意**不给**
+    `api_provider` / `base_url` 两个字段：实现若退回"从实例字段自己拼三元组"，
+    这里会直接 AttributeError，而不是读到一个今天凑巧相等的值 —— D2 的失效形态
+    正是那种巧合，所以桩必须让它无法悄悄成立。
+    """
     svc = ProjectAgentService.__new__(ProjectAgentService)
     svc.project = types.SimpleNamespace(id="p1", title="project one")
     svc.user_id = "u1"
     svc.db = None
+    window_calls: list[dict] = []
+
+    async def resolve_effective_window_tokens(model=None, provider=None):
+        window_calls.append({"model": model, "provider": provider})
+        return tokens
+
     svc.ai_service = types.SimpleNamespace(
-        default_model="m1", api_provider="openai", base_url="https://gw.example/v1"
+        default_model="m1",
+        resolve_effective_window_tokens=resolve_effective_window_tokens,
+        window_calls=window_calls,
     )
     return svc
 
@@ -288,7 +345,12 @@ def test_budget_binds_characters_not_row_count():
 
 
 @pytest.mark.anyio
-async def test_history_budget_helper_uses_the_real_provider_triple(monkeypatch):
+async def test_history_budget_helper_hands_the_service_to_the_resolver(monkeypatch):
+    """接线形状：service 只交出 `ai_service`，绝不自己拼三元组（评审 D2）。
+
+    旧形态把 `ai_service.api_provider` / `.base_url` 当结论缓存的键用 —— 那是门禁
+    `_dispatch_endpoint()` 之外的**第二处**规范化。本用例的反向断言就是钉住它不许回来。
+    """
     seen = {}
 
     async def fake_resolve(**kwargs):
@@ -300,11 +362,14 @@ async def test_history_budget_helper_uses_the_real_provider_triple(monkeypatch):
     trace = apb.PromptBudgetTrace(budget_chars=0)
     budget = await svc._history_budget_chars(trace)
     assert budget == 300_000
-    assert seen["provider"] == "openai"
-    assert seen["base_url"] == "https://gw.example/v1"
-    assert seen["model"] == "m1"
-    assert seen["user_id"] == "u1"
-    assert seen["db"] is None
+    assert seen["ai_service"] is svc.ai_service, (
+        "解析器没有拿到服务本身 ⇒ 键又是在调用方那边拼出来的"
+    )
+    assert seen["trace"] is trace
+    leaked = {"provider", "base_url", "user_id", "db", "model"} & set(seen)
+    assert not leaked, f"service 侧重新出现自拼的三元组参数：{sorted(leaked)}"
+    # 接缝已被桩替换 ⇒ 真正的窗口读取（会打门禁）不该在这条用例里发生
+    assert svc.ai_service.window_calls == []
 
 
 @pytest.mark.anyio
@@ -366,11 +431,7 @@ async def test_stream_chat_resolves_the_budget_once_per_turn(db_session, monkeyp
     assert seeded_chars > 60_000, "前置失效：种子历史必须大于旧硬编码预算"
 
     prompts: list[str] = []
-    ai_service = types.SimpleNamespace(
-        default_model="m1",
-        api_provider="openai",
-        base_url="https://gw.example/v1",
-    )
+    ai_service = types.SimpleNamespace(default_model="m1")
 
     async def fake_generate_text(**kwargs):
         prompts.append(kwargs["prompt"])
@@ -769,27 +830,18 @@ def test_budget_path_never_falls_back_to_a_silent_number():
         ), "预算路径里出现了 try ⇒ 一定有静默兜底分支"
 
 
-@pytest.mark.anyio
-async def test_budget_path_never_falls_back_to_a_silent_fallback(monkeypatch):
-    """行为面（与上一条互补）：真探测失败 ⇒ service 助手必须把 ApiError 冒到回合外。
+def test_the_service_stops_reading_instance_copies_for_the_key():
+    """D2 的结构面：service 里不许再出现 `api_provider` / `base_url` 这两个抄件字段。
 
-    这里**只**桩掉最底层的 B 访问器，`resolve_history_budget_chars` 与
-    `_history_budget_chars` 都走真实代码 ⇒ 链路上任何一处 try/except 或"回退 60000"
-    都会让它变成"不抛错"，本用例即红。
+    结论缓存的键只能由 `AIService._dispatch_endpoint()` 算一处；调用方读实例字段
+    就是第二处（今天凑巧相等，构造参数一改就分叉 ⇒ 缓存必然 miss ⇒ 误拒）。
+    判定走 AST ⇒ 本函数上方那段解释"为什么不读实例字段"的注释不会被自己打红。
     """
-    async def boom(user_id, model, db, *, provider=None, base_url=None):
-        raise ApiError(
-            code="validation.ai_model_below_minimum",
-            params={"model": model, "min_window": 1_000_000},
-        )
-
-    monkeypatch.setattr(apb, "get_effective_context_window", boom)
-    svc = bare_service()
-    with pytest.raises(ApiError) as exc:
-        await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
-    assert exc.value.code == "validation.ai_model_below_minimum"
-    # 静默兜底的具体形态：拿到任何一个数字（尤其是历史硬编码的 60000）
-    assert exc.value.code != "internal.error"
+    borrowed = {"api_provider", "base_url"} & _code_symbols(SERVICE_PY)
+    assert not borrowed, (
+        f"service 又直接从 `ai_service` 字段拼结论键：{sorted(borrowed)}"
+        " ⇒ 窗口口径出现第二处计算，与门禁不同源"
+    )
 
 
 def test_chars_per_token_is_defined_exactly_once_repo_wide():
@@ -898,11 +950,17 @@ async def _seed_over_budget_history(db_session, tool_rows: int = 8):
     return project, conversation
 
 
-def _answer_only_ai_service(prompts):
-    """单轮就给出最终回答的 AI 桩 ⇒ 轮循环只跑一次，裁剪数字不存在跨轮漂移。"""
-    ai_service = types.SimpleNamespace(
-        default_model="m1", api_provider="openai", base_url="https://gw.example/v1"
-    )
+def _answer_only_ai_service(prompts, tokens: int = 1_000_000):
+    """单轮就给出最终回答的 AI 桩 ⇒ 轮循环只跑一次，裁剪数字不存在跨轮漂移。
+
+    只提供 `default_model` 与预算路径唯一会用的 `resolve_effective_window_tokens`：
+    曾经挂在桩上的 `api_provider` / `base_url` 是评审 D2 里那两份「实例字段抄件」，
+    现在删掉它们 —— 实现若回去读这两个字段会直接 AttributeError。
+    """
+    ai_service = types.SimpleNamespace(default_model="m1")
+
+    async def fake_window(model=None, provider=None):
+        return tokens
 
     async def fake_generate_text(**kwargs):
         prompts.append(kwargs["prompt"])
@@ -914,21 +972,17 @@ def _answer_only_ai_service(prompts):
 
     ai_service.generate_text = fake_generate_text
     ai_service.generate_text_stream_full = fake_stream_full
+    ai_service.resolve_effective_window_tokens = fake_window
     return ai_service
 
 
 async def _run_turn(db_session, monkeypatch, project, conversation, effective_tokens):
     """跑一次真实 `stream_chat`，返回 (事件, prompt 列表, 观测到的 trace, 落库步骤)。"""
-
-    async def fake_window(user_id, model, db, *, provider=None, base_url=None):
-        return effective_tokens
-
-    monkeypatch.setattr(apb, "get_effective_context_window", fake_window)
     prompts: list[str] = []
     seen_traces: list[apb.PromptBudgetTrace] = []
     svc = ProjectAgentService(
         db=db_session,
-        ai_service=_answer_only_ai_service(prompts),
+        ai_service=_answer_only_ai_service(prompts, tokens=effective_tokens),
         project=project,
         user_id="u1",
     )
@@ -1052,13 +1106,10 @@ async def test_two_trimming_rounds_share_one_trace_step(db_session, monkeypatch)
     """
     project, conversation = await _seed_over_budget_history(db_session)
 
-    async def fake_window(user_id, model, db, *, provider=None, base_url=None):
-        return 200_000
-
-    monkeypatch.setattr(apb, "get_effective_context_window", fake_window)
     prompts: list[str] = []
     seen_traces: list[apb.PromptBudgetTrace] = []
-    ai_service = _answer_only_ai_service(prompts)
+    # 200000 tok x 1.0 x 0.3 = 60000 字符 ⇒ 每一轮都会舍掉东西
+    ai_service = _answer_only_ai_service(prompts, tokens=200_000)
 
     async def tool_then_answer(**kwargs):
         prompts.append(kwargs["prompt"])
@@ -1135,3 +1186,335 @@ async def test_two_trimming_rounds_share_one_trace_step(db_session, monkeypatch)
     ]
     assert len(starts) == 1, f"留痕行的 step_start 应恰好一次，实际 {len(starts)}"
     assert len(updates) == 1, f"第二轮应更新同一行（step_update），实际 {len(updates)}"
+
+
+# --------------------------------------------------------------------------
+# 评审 D1/D2：预算必须「先补测、再按门禁那把键读」，两路共用同一个三元组函数
+# --------------------------------------------------------------------------
+#
+# 这两节用例刻意全部走**真实** AIService + 真实门禁（`_require_model` →
+# `ensure_model_allowed` → `resolve_verdict` → `read_verdict`/`write_verdict`），
+# 只把最外层的 `probe_model_context_window` 换成可计数的桩。桩再往上装
+# （`resolve_verdict` / `ensure_model_allowed`）就等于把「补测」这件事本身桩没，
+# D1 的失效形态恰好长在那两层之间。
+GATEWAY = "https://gw.test/v1"
+OTHER_GATEWAY = "https://other-gw.test"
+API_KEY = "sk-stub-not-a-real-key"
+BIG_MODEL = "big-model"           # 未登记在 `_KNOWN_CONTEXT_WINDOWS` ⇒ 窗口提示为 None
+SMALL_REGISTRY_MODEL = "gpt-4o-mini"   # 登记表里有（128000）⇒ 提示非 None，可比对
+PROBED_WINDOW_TOKENS = 1_000_000
+
+
+@pytest.fixture
+async def db_factory():
+    """真实 Settings 表 + 可多会话读写（`write_verdict` 自己提交，回读要新会话）。"""
+    db_path = f"/tmp/test_agent_budget_gate_{uuid.uuid4().hex}.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30.0},
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _pragmas(dbapi_conn, _record):  # pragma: no cover - 对齐 app.database.get_engine
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    probe_module.memo_clear()
+    yield factory
+    await engine.dispose()
+    probe_module.memo_clear()
+    for suffix in ("", "-wal", "-shm"):
+        path = db_path + suffix
+        if os.path.exists(path):
+            os.remove(path)
+
+
+@pytest.fixture
+def probe_spy(monkeypatch):
+    """计数 B 的**首次同步补测**入口被以什么参数调用。"""
+    calls: list[dict] = []
+    outcome = {"value": ProbeOutcome(
+        verdict=VERDICT_QUALIFIED,
+        context_window_tokens=PROBED_WINDOW_TOKENS,
+        tier=TIER_METADATA,
+        detail="stubbed probe",
+    )}
+
+    async def spy(**kwargs):
+        calls.append(kwargs)
+        return outcome["value"]
+
+    monkeypatch.setattr(probe_module, "probe_model_context_window", spy)
+    return types.SimpleNamespace(calls=calls, outcome=outcome)
+
+
+async def seed_settings(factory, user_id, *, preferences=None, llm_model=BIG_MODEL):
+    async with factory() as session:
+        session.add(Settings(
+            user_id=user_id,
+            api_provider="openai",
+            api_key=API_KEY,
+            api_base_url=GATEWAY,
+            llm_model=llm_model,
+            temperature=0.7,
+            max_tokens=2000,
+            preferences=json.dumps(preferences or {}, ensure_ascii=False),
+        ))
+        await session.commit()
+
+
+async def stored_verdicts(factory, user_id) -> dict:
+    """绕开进程内 memo，直接看结论缓存 blob 里落了哪几把键。"""
+    async with factory() as session:
+        row = (
+            await session.execute(select(Settings).where(Settings.user_id == user_id))
+        ).scalar_one()
+        return json.loads(row.preferences or "{}").get(PREFERENCES_KEY) or {}
+
+
+def bound_ai_service(
+    session, user_id, monkeypatch, *, api_provider="openai",
+    api_base_url=GATEWAY, default_model=BIG_MODEL,
+):
+    """绑定 user + session 的真实 AIService（未绑定 ⇒ 门禁直通，测不到 D1/D2）。"""
+    for attr in ("openai_api_key", "anthropic_api_key", "gemini_api_key"):
+        monkeypatch.setattr(
+            "app.services.ai_service.app_settings." + attr, None, raising=False
+        )
+    return AIService(
+        api_provider=api_provider,
+        api_key=API_KEY,
+        api_base_url=api_base_url,
+        default_model=default_model,
+        user_id=user_id,
+        db_session=session,
+        enable_mcp=False,
+    )
+
+
+def agent_with(ai_service, session, user_id) -> ProjectAgentService:
+    """真实构造的 ProjectAgentService —— `_history_budget_chars` 只用到 `ai_service`。"""
+    return ProjectAgentService(
+        db=session,
+        ai_service=ai_service,
+        project=Project(id="p1", user_id=user_id, title="project one"),
+        user_id=user_id,
+    )
+
+
+@pytest.mark.anyio
+async def test_unprobed_triple_gets_the_first_probe_before_the_budget_is_decided(
+    db_factory, probe_spy, monkeypatch
+):
+    """D1：从未探测过的三元组 ⇒ 预算解析先把 ①② 补测跑完，而不是先报错。
+
+    修复前预算走的是只读访问器 `get_effective_context_window`：没有结论就等于
+    「不合格」⇒ 助手回合本身成为第一件失败的事（用户看到"助手坏了"），而计划 B
+    的定案是「完全没有结论 ⇒ 同步补测一次 ①② 再定论」。
+    """
+    user_id = f"u-unprobed-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    async with db_factory() as session:
+        ai = bound_ai_service(session, user_id, monkeypatch)
+        svc = agent_with(ai, session, user_id)
+        trace = apb.PromptBudgetTrace(budget_chars=0)
+        budget = await svc._history_budget_chars(trace)
+
+    assert budget == int(PROBED_WINDOW_TOKENS * apb.HISTORY_BUDGET_RATIO)
+    assert trace.effective_tokens == PROBED_WINDOW_TOKENS
+    assert len(probe_spy.calls) == 1, (
+        f"完全没有结论时补测了 {len(probe_spy.calls)} 次 ⇒ 要么裸读缓存直接报错，"
+        "要么把补测做成了重复劳动"
+    )
+    assert probe_spy.calls[0]["model"] == BIG_MODEL
+    # 触发点必须是 daily：它的档白名单只有 ①②，结构上挡掉 ≈1M token 的 needle 档
+    assert probe_spy.calls[0]["trigger"] == TRIGGER_DAILY
+    assert (await stored_verdicts(db_factory, user_id))[
+        triple_key("openai", GATEWAY, BIG_MODEL)
+    ]["result"] == VERDICT_QUALIFIED, "补测结论没落库 ⇒ 下一回合还要再打一次"
+
+
+@pytest.mark.anyio
+async def test_qualified_verdict_is_not_probed_again_by_the_budget(
+    db_factory, probe_spy, monkeypatch
+):
+    """D1 的另一半：已有合格结论 ⇒ 热路径零网络，探测调用次数必须是 0。"""
+    user_id = f"u-cached-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, preferences={PREFERENCES_KEY: {
+        triple_key("openai", GATEWAY, BIG_MODEL): {
+            "result": VERDICT_QUALIFIED,
+            "source": SOURCE_PROBE,
+            "context_window_tokens": PROBED_WINDOW_TOKENS,
+            "tier": TIER_METADATA,
+            "detail": "seeded",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    }})
+    async with db_factory() as session:
+        ai = bound_ai_service(session, user_id, monkeypatch)
+        svc = agent_with(ai, session, user_id)
+        budget = await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+
+    assert budget == 300_000
+    assert probe_spy.calls == [], "已有结论还去补测 ⇒ 每个回合多一次对外请求与潜在计费"
+
+
+@pytest.mark.anyio
+async def test_inconclusive_probe_still_fails_loudly_at_the_budget_step(
+    db_factory, probe_spy, monkeypatch
+):
+    """D1 修的是**顺序**，不是失败契约：补测判不出仍然必须明确报错。
+
+    链路全程真实（门禁 + 补测桩），所以链路上任何一处 try/except 或"回退 60000"
+    都会让它变绿 —— 反向钉子就是"拿不到预算不许有一个数字"。
+    """
+    probe_spy.outcome["value"] = ProbeOutcome(
+        verdict=VERDICT_INCONCLUSIVE, detail="网关什么都没报"
+    )
+    user_id = f"u-inconclusive-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    async with db_factory() as session:
+        ai = bound_ai_service(session, user_id, monkeypatch)
+        svc = agent_with(ai, session, user_id)
+        with pytest.raises(ApiError) as exc:
+            await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+
+    assert exc.value.code == "validation.ai_model_below_minimum"
+    assert exc.value.code != "internal.error"      # 没被泛化成通用失败
+    assert len(probe_spy.calls) == 1               # 确实是"补测过、判不出"
+    assert PROBED_WINDOW_TOKENS != 60_000          # 静默兜底的形态是"拿到一个数字"
+
+
+@pytest.mark.anyio
+async def test_missing_default_model_fails_loudly_at_the_budget_step(
+    db_factory, probe_spy, monkeypatch
+):
+    """未配置模型：预算这一步报 `ai_model_not_configured`（与派发同一套语义），仍非兜底。"""
+    user_id = f"u-nomodel-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, llm_model=None)
+    async with db_factory() as session:
+        ai = bound_ai_service(session, user_id, monkeypatch, default_model=None)
+        svc = agent_with(ai, session, user_id)
+        with pytest.raises(ApiError) as exc:
+            await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+
+    assert exc.value.code == "validation.ai_model_not_configured"
+    assert probe_spy.calls == [], "没有模型可比对任何三元组 ⇒ 不该打探测"
+
+
+@pytest.mark.anyio
+async def test_budget_reads_the_same_triple_the_gate_writes(
+    db_factory, probe_spy, monkeypatch
+):
+    """D2：`api_base_url` 为空 + provider=anthropic 时，两路实际取值逐字相等。
+
+    判据刻意是"比较两路各自真正用到的值"，不是各自断言一个常量：
+      路 A = 预算解析触发补测时 B 收到的 (provider, base_url, api_key, model)
+      路 B = 门禁写/判结论用的那把键（`_dispatch_endpoint()`，B 的缓存键就出自它）
+    并且**清掉进程内 memo** 再跑一次门禁：两把键一旦分叉，门禁就只能重新探测一次
+    （`len(calls)` 变 2），且 blob 里会出现第二把键 —— 那正是"缓存必然 miss ⇒ 误拒"。
+    """
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.openai_base_url", GATEWAY, raising=False
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.anthropic_base_url",
+        OTHER_GATEWAY, raising=False,
+    )
+    user_id = f"u-same-key-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    async with db_factory() as session:
+        ai = bound_ai_service(
+            session, user_id, monkeypatch, api_provider="anthropic", api_base_url=None
+        )
+        svc = agent_with(ai, session, user_id)
+        budget = await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+        assert len(probe_spy.calls) == 1
+
+        probed = probe_spy.calls[0]
+        gate_provider, gate_base_url, gate_key = ai._dispatch_endpoint()
+        assert (probed["provider"], probed["base_url"], probed["api_key"],
+                probed["model"]) == (gate_provider, gate_base_url, gate_key, BIG_MODEL), (
+            "预算解析与门禁量的不是同一个三元组 ⇒ 结论写在一把键、读在另一把键"
+        )
+
+        probe_module.memo_clear()      # 只许靠**落库的那把键**命中，不许靠进程内 memo
+        await ai._require_model()
+        assert len(probe_spy.calls) == 1, (
+            "门禁没命中预算解析写入的结论 ⇒ 两把键分叉（误拒/重复探测）"
+        )
+
+    stored = await stored_verdicts(db_factory, user_id)
+    assert list(stored) == [triple_key(gate_provider, gate_base_url, BIG_MODEL)], (
+        f"结论缓存里出现了别的键：{sorted(stored)}"
+    )
+    assert budget == 300_000
+
+
+@pytest.mark.anyio
+async def test_budget_follows_a_per_call_provider_override(
+    db_factory, probe_spy, monkeypatch
+):
+    """D2 今天唯一**可复现**的分叉形态：实发网关 ≠ 实例默认网关。
+
+    实例走 openai/GATEWAY，本次 per-call `provider="anthropic"` ⇒ 门禁量的是
+    anthropic 槽位（`app_settings.anthropic_base_url`）。旧口径从实例字段拼，
+    会拿到 ("openai", GATEWAY) 并在那里落结论 —— 于是派发那一刻仍然没有结论。
+    """
+    monkeypatch.setattr(
+        "app.services.ai_service.app_settings.anthropic_base_url",
+        OTHER_GATEWAY, raising=False,
+    )
+    user_id = f"u-percall-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
+    async with db_factory() as session:
+        ai = bound_ai_service(session, user_id, monkeypatch)   # openai + GATEWAY
+        budget = await resolve_history_budget_chars(ai_service=ai, provider="anthropic")
+        gate_provider, gate_base_url, gate_key = ai._dispatch_endpoint("anthropic")
+
+        assert (gate_provider, gate_base_url) == ("anthropic", OTHER_GATEWAY), (
+            "前置失效：派发槽位本身没算成别家 host ⇒ 本用例什么都没测"
+        )
+        probed = probe_spy.calls[0]
+        assert (probed["provider"], probed["base_url"], probed["api_key"]) == (
+            gate_provider, gate_base_url, gate_key
+        ), "预算按实例默认网关取窗口 ⇒ 给一个它没量过的 host 换算预算"
+        assert len(probe_spy.calls) == 1
+        probe_module.memo_clear()
+        await ai._require_model(provider="anthropic")
+        assert len(probe_spy.calls) == 1, "门禁与预算落在两把键上（误拒/重复探测）"
+        assert triple_key("openai", GATEWAY, BIG_MODEL) not in await stored_verdicts(
+            db_factory, user_id
+        ), "窗口结论被写到了没派发的默认网关上"
+
+    assert budget == 300_000
+
+
+@pytest.mark.anyio
+async def test_first_probe_carries_the_same_hint_as_the_gate(
+    db_factory, probe_spy, monkeypatch
+):
+    """补测的**入参**也必须与门禁逐字相同：提示不同 ⇒ 首次定论可能与派发时的判定漂移。
+
+    `hint_window_tokens` 只决定从哪个刻度开始探（不参与接受/拒绝判定），但它是
+    `resolve_verdict` 的写键入参之一 ⇒ 预算这一步若少传，同一个模型可能第一次
+    判不出、第二次靠提示判出，用户看到的就是"上一秒坏下一秒好"。
+    """
+    user_id = f"u-hint-{uuid.uuid4().hex[:8]}"
+    await seed_settings(db_factory, user_id, llm_model=SMALL_REGISTRY_MODEL)
+    async with db_factory() as session:
+        ai = bound_ai_service(
+            session, user_id, monkeypatch, default_model=SMALL_REGISTRY_MODEL
+        )
+        svc = agent_with(ai, session, user_id)
+        await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+
+    hint = detect_context_window(SMALL_REGISTRY_MODEL)
+    assert hint, "前置失效：登记表里查不到这个模型 ⇒ 比对的是 None == None"
+    assert probe_spy.calls[0]["hint_window_tokens"] == hint

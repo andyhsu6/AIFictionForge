@@ -43,9 +43,10 @@ USER_DEFAULT_MODEL_SITES = {
     "app/api/outlines.py": 1,
     # 计划原文未列出、但与之完全同语义（本次请求未指定则用用户配置的默认模型）
     "app/services/book_import_service.py": 3,
-    # PR-0c 增 1 处：`_history_budget_chars` 读的是「本次实发模型」——预算换算必须
-    # 跟着用户配置的模型走，否则按另一个模型的窗口裁剪历史。同样是消费者，非兜底。
-    "app/services/project_agent_service.py": 3,
+    # PR-0c 一度在此加过第 3 处（`_history_budget_chars` 自己读 `ai_service.default_model`
+    # 去拼结论键）；评审 D1/D2 判定那是「实例字段抄件」⇒ 已删除，窗口与模型改由
+    # `AIService.resolve_effective_window_tokens` 内部按「本次实发」解析，回到 2 处。
+    "app/services/project_agent_service.py": 2,
 }
 
 _USER_DEFAULT_PATTERNS = [
@@ -250,7 +251,7 @@ def test_user_default_model_call_sites_are_preserved():
             "——这些不是兜底，不得删除"
         )
         total += expected
-    assert total == 20, "读取点总数与实测不符，说明有站点被增删"  # PR-0c +1
+    assert total == 19, "读取点总数与实测不符，说明有站点被增删"  # PR-0c 曾抬到 20，评审后回到基线 19
 
 
 # ========== i18n：错误码必须有 zh/en 文案 ==========

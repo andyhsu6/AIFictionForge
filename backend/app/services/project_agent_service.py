@@ -333,8 +333,11 @@ class ProjectAgentService:
 
         # 预算每回合算一次：它只取决于「本次实发模型的实测窗口」与四个配置键，
         # 与 history 内容无关 ⇒ 挪进轮循环只是每轮多一次 await。
-        # 若 B 的门禁不给合格结论，这里直接抛 validation.ai_model_below_minimum
-        # —— 宁可这一回合失败，也不拿一个静默兜底值去发 prompt。
+        # 这条 await 走的是「先过门禁、再读缓存」的同一个入口（评审 D1）：三元组
+        # 从未探测过时它自己会把 ①② 补测跑完再定论，而不是先抛一个错误码把这一
+        # 回合判死。补测的延迟本来就落在同一回合的派发门禁里，不是新增开销。
+        # 补测后仍无合格结论 ⇒ 照旧抛 validation.ai_model_below_minimum：
+        # 宁可这一回合失败，也不拿一个静默兜底值去发 prompt。
         budget_trace = PromptBudgetTrace(budget_chars=0)
         budget_chars = await self._history_budget_chars(budget_trace)
         # §5 ④：裁剪留痕**每回合一条**（多轮时更新同一行，不让一次裁剪刷出 N 行）。
@@ -803,25 +806,25 @@ class ProjectAgentService:
     async def _history_budget_chars(
         self, trace: PromptBudgetTrace | None = None
     ) -> int:
-        """本轮历史预算（字符）。三元组一律取「本次实发」口径。
+        """本轮历史预算（字符）。窗口一律取「本次实发」口径。
 
-        `provider`/`base_url` 必须是 `ai_service` 实例上的**已标准化**值
-        （`api_provider` 走 `normalize_provider`，`base_url` 走 `effective_base_url`），
-        与 B 写结论缓存时用同一口径，否则命中不到自己那条结论。
-        `default_model` 为空时传空串：B 的访问器会因「三元组命中 0 个」而抛
-        `validation.ai_model_below_minimum` ⇒ 这是刻意的「明确报错」，
-        本 PR 不自造错误码、也不兜底成 60000。
+        只把 `ai_service` 交给解析器，本函数**不**再自己拼
+        (user_id, model, db, provider, base_url)：那两个字段是实例侧的抄件，
+        门禁写结论用的键出自 `AIService._dispatch_endpoint()`，各算一次就是两处
+        规范化（PR-0c 评审 D2）。把服务本身交出去 ⇒ 两路同源，且窗口读取落在
+        `resolve_effective_window_tokens` 里，先过门禁（缺结论时同步补测 ①②）
+        再读缓存 ⇒ 一个从未探测过的三元组不会把助手回合本身判死（评审 D1）。
+
+        未配置默认模型 → `validation.ai_model_not_configured`；补测后仍无合格结论
+        → `validation.ai_model_below_minimum`。两者都**继续抛**：本 PR 不自造错误码、
+        也不兜底成 60000。
 
         刻意经由模块属性调用：`agent_prompt_budget.resolve_history_budget_chars`
         是本函数唯一的注入接缝（测试 monkeypatch 的是源模块的那个名字，
         改成 `from ... import` 会把接缝挪到本模块、让补丁打空）。
         """
         return await agent_prompt_budget.resolve_history_budget_chars(
-            user_id=self.user_id,
-            model=self.ai_service.default_model or "",
-            db=self.db,
-            provider=self.ai_service.api_provider or "unknown",
-            base_url=self.ai_service.base_url or "",
+            ai_service=self.ai_service,
             trace=trace,
         )
 
