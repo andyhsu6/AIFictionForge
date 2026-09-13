@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config import settings
 from app.database import Base
 from app.models.character import Character
 from app.models.project import Project
@@ -79,7 +78,7 @@ async def test_agent_message_tool_serialization(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"}, None, False)
+    prompt = svc._build_prompt(history, {"route": "/project/1"})
 
     # assistant(tool_calls) 格式：<assistant>\n{content}\n<tool_calls>\n{json}\n</tool_calls>\n</assistant>
     assert "<assistant>\n我来查询角色信息。\n<tool_calls>\n" in prompt
@@ -97,7 +96,7 @@ async def test_build_prompt_with_tool_history(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"}, None, False)
+    prompt = svc._build_prompt(history, {"route": "/project/1"})
 
     assert "查询角色列表" in prompt  # 用户消息保留
     assert "我来查询角色信息。" in prompt  # assistant 内容保留
@@ -141,12 +140,10 @@ async def test_save_and_load_tool_roundtrip(db_session):
 
 
 @pytest.mark.anyio
-async def test_agent_reuses_tool_result(db_session, monkeypatch):
+async def test_agent_reuses_tool_result(db_session):
     """两轮对话（两条用户消息）：第一轮 LLM 调用 list_characters 查询角色，
     结果持久化为 role=tool 消息；第二轮 prompt 包含第一轮的工具结果，
     LLM 直接回答，不再重复查询（Todo #6 集成测试）。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
-
     db_session.add(Project(id="proj-1", user_id="test", title="测试项目"))
     db_session.add(Character(project_id="proj-1", name="张三"))
     await db_session.flush()
