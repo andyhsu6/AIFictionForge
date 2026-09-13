@@ -49,8 +49,9 @@ class AgentMessage(Base):
     completion_tokens = Column(Integer)
     tool_calls = Column(Text)
     tool_call_id = Column(String(36), index=True)
-    # naive UTC：必须与 server_default=func.now()（SQLite 侧为 UTC）同基准，否则同一列
-    # 混两种基准会让 ORDER BY created_at 对不同写入路径的行颠倒排序。
+    # naive UTC：必须与 server_default=func.now() 同基准，否则同一列混两种基准会让
+    # ORDER BY created_at 对不同写入路径的行颠倒排序。两侧均为 UTC：SQLite 恒 UTC；
+    # PG 由 database.py 钉定 session TimeZone。
     # Python 侧默认值只为打破 SQLite CURRENT_TIMESTAMP 的秒级并列。
     created_at = Column(
         DateTime,

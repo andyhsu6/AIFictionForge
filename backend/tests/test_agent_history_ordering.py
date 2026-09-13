@@ -1,7 +1,7 @@
 """护栏 1：SQLite 的 created_at 是秒级（server_default=CURRENT_TIMESTAMP），
 同一秒写入的 assistant(tool_calls) / tool 行会在 ORDER BY created_at DESC 上并列，
 _load_history 的 reversed() 因此无法还原插入序 ⇒ provider 的 tool_call 配对被打乱。
-Postgres 侧 now() 是微秒级，不会复现 ⇒ 本测试必须建在 SQLite 上。
+Postgres 侧 now() 是微秒级，不会复现**并列**（但"基准"问题另见护栏 3）⇒ 并列用例必须建在 SQLite 上。
 
 护栏 1b（基准）：SQLite 的 CURRENT_TIMESTAMP 是 **UTC**，本机 CST 下与 datetime.now()
 实测相差整 8 小时。因此任何补上来的 Python 侧 default 都必须与 server_default 同基准
@@ -9,6 +9,15 @@ Postgres 侧 now() 是微秒级，不会复现 ⇒ 本测试必须建在 SQLite 
 排序按 UTC/本地混排直接颠倒（正时区下"后写的 ORM 行看起来更早"，负时区下反向），
 且 API/前端把 naive 时间戳按本地解释时整体偏移。跨基准用例见
 test_orm_default_and_server_default_share_one_time_basis。
+
+护栏 3（PG 侧基准）：app/config.py:19 的 DATABASE_URL 默认值是 postgres，而 PG 迁移
+（alembic/postgres/versions/20260817_1700_7c1a9e4b2d10:29,46）在
+`timestamp without time zone` 列上写 now() ⇒ 落值随 **session TimeZone** 漂移
+（now() 是 timestamptz，投给无时区列时按会话时区本地化）。Python 侧 default 加入之前
+两条写路径都走 now() ⇒ 恒单基准；加入之后 ORM 写 = naive UTC、server_default 写 =
+会话时区 ⇒ 非 UTC 会话下正好复现护栏 1b 描述的"颠倒排序"。因此 PG 引擎构造时必须把
+session TimeZone 钉成 UTC（app/database.py 的 connect_args.server_settings），用例见
+test_postgres_engine_pins_session_timezone_to_utc（不连真库，断言构造参数）。
 """
 import asyncio
 import uuid
@@ -19,6 +28,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app import database as app_database
 from app.database import Base
 from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
@@ -196,4 +206,43 @@ async def test_tool_call_orm_default_matches_server_default_basis(db_session):
     delta = abs((rows[1].created_at - rows[0].created_at).total_seconds())
     assert delta <= BASIS_TOLERANCE_SECONDS, (
         f"ORM 默认值与 server_default 相差 {delta}s ⇒ 未走 naive UTC"
+    )
+
+
+# app/database.py 的 PG 分支是仓库里**唯一**带 server_settings 的引擎构造点；
+# scripts/cleanup_book_import_data.py:267 也构造引擎，但走的是另一份参数（无
+# server_settings，且该脚本只做 UPDATE/DELETE、不写入任何 created_at 列）。
+PG_DATABASE_URL = "postgresql+asyncpg://user:pass@localhost:5432/aistoryforge"
+
+
+@pytest.mark.anyio
+async def test_postgres_engine_pins_session_timezone_to_utc(monkeypatch):
+    """护栏 3：PG 引擎构造路径必须把 session TimeZone 钉成 UTC。
+
+    不连真库：直接捕获 create_async_engine 的入参。改前 server_settings 只有
+    application_name/jit/search_path ⇒ 本用例红；钉上 TimeZone=UTC 后绿。
+    去掉该键 ⇒ 本用例必须重新变红（这是它的可证伪性）。
+    """
+    captured: dict = {}
+
+    def fake_create_async_engine(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return SimpleNamespace(url=url)
+
+    monkeypatch.setattr(app_database, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setattr(app_database.settings, "database_url", PG_DATABASE_URL)
+    # 引擎缓存置空，确保真的走到构造分支（monkeypatch 结束后自动还原）。
+    monkeypatch.setattr(app_database, "_engine_cache", {})
+
+    await app_database.get_engine("tz-guard-user")
+
+    assert captured.get("url") == PG_DATABASE_URL, (
+        "PG 分支根本没有构造引擎 ⇒ 本用例为空断言"
+    )
+    server_settings = captured["connect_args"]["server_settings"]
+    assert server_settings.get("TimeZone") == "UTC", (
+        f"PG session TimeZone 未钉定（server_settings={sorted(server_settings)}）"
+        " ⇒ now() 按会话时区落值，与 ORM 侧 naive UTC 默认值构成双基准，"
+        "ORDER BY created_at 在非 UTC 会话下颠倒排序（护栏 3 失效）"
     )
