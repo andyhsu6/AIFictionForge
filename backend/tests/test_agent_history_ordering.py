@@ -163,6 +163,8 @@ async def test_tool_call_burst_has_no_created_at_tie(db_session):
         .where(AgentToolCall.conversation_id == conv.id)
         .order_by(AgentToolCall.created_at)
     )).scalars().all())
+    # 必须有这一条：rows 为空时下面两个断言（集合无重复 / 已排序）**双双恒真** ⇒ 空覆盖。
+    assert len(rows) == 3, f"只读回 {len(rows)} 行 ⇒ 未落到被测数据，本用例退化为空断言"
 
     stamps = [r.created_at for r in rows]
     assert len(set(stamps)) == len(stamps), (
