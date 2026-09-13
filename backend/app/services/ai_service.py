@@ -216,7 +216,6 @@ def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = Non
 # 800K 字符 prompt 的 prefill TTFB 未实测，且 1M 窗口需容纳基础上下文栈
 # + 输出预算；或acle 评审 F1 指出单位错配风险，保守化先行）
 _FULL_BOOK_BUDGET_RATIO = 0.6
-_1M_THRESHOLD = 800000  # 达到此上下文窗口才启用全书全量注入（#57 范围外，本步不动）
 
 # 需求 #55 步骤 4：原先的 `resolve_context_budget_chars(model)` 已删除。它按模型名
 # 查静态登记表再分三档（1M→0.6 / 128K–1M→0.3 / 小窗口→0.1），后两档是「小模型半支持」

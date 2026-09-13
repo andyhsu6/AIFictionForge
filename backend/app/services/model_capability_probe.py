@@ -72,8 +72,8 @@ from app.models.settings import Settings
 logger = get_logger(__name__)
 
 # ========== 产品下限 ==========
-# ⚠️ 刻意不复用 ai_service._1M_THRESHOLD：那是「全书注入启用线」，语义不同
-# （实测它还是死代码，见 issue #57）。这里是「产品最低要求」。
+# MIN_CONTEXT_WINDOW_TOKENS 是「支持下限」（这个模型到底能不能用），
+# 不是「全书注入启用线」；两者语义不同，不得混为一谈。
 MIN_CONTEXT_WINDOW_TOKENS = 900_000
 
 # ========== 探测档与触发点 ==========

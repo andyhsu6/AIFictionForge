@@ -1434,12 +1434,12 @@ async def test_hint_above_minimum_probes_higher_then_falls_back_once(gateway):
     assert gateway.bound_calls == 2, "上界被拒后只应退回下限刻度再探一次"
 
 
-def test_min_window_constant_is_not_the_book_injection_line():
-    """MIN_CONTEXT_WINDOW_TOKENS 是新常量；_1M_THRESHOLD 是「全书注入启用线」，语义不同。"""
+def test_the_book_injection_enable_line_is_no_longer_a_constant():
+    """MIN_CONTEXT_WINDOW_TOKENS 是支持下限；全书注入启用线已不再是一个常量。"""
     from app.services import ai_service
 
     assert MIN_CONTEXT_WINDOW_TOKENS == 900_000
-    assert ai_service._1M_THRESHOLD < MIN_CONTEXT_WINDOW_TOKENS
+    assert not hasattr(ai_service, "_1M_THRESHOLD")
 
 
 def test_blind_spots_are_documented_in_source():
