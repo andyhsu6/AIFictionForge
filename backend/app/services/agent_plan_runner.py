@@ -15,6 +15,7 @@ LLM 只出现在两个端点：规划（PR-2a 的 propose_plan）与收尾（PR-
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
@@ -32,7 +33,8 @@ from app.logger import get_logger
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
-from app.models.project_agent import AgentExecutionStep, AgentToolCall
+from app.models.project_agent import AgentExecutionStep, AgentMessage, AgentToolCall
+from app.services.agent_plan_schema import PROPOSE_PLAN_TOOL_NAME
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
@@ -371,6 +373,50 @@ async def _resolve_tool_call_id(
             .order_by(AgentToolCall.created_at.desc())
             .limit(1)
         )).scalar_one_or_none()
+
+
+async def resolve_provider_call_id(
+    session_factory: async_sessionmaker,
+    *,
+    tool_call_id: str | None,
+    conversation_id: str,
+    plan_task_input: dict[str, Any] | None = None,
+) -> str:
+    """聚合收尾消息该挂哪个 tool_call_id（架构 §0）。
+
+    顺序：① task_input 里显式写的 provider_call_id（前瞻：PR-2a 若补写则无缝生效）
+    ② 该 AgentToolCall 关联的 assistant 消息里 propose_plan 那条原始 id
+    ③ 兜底 = AgentToolCall.id。
+    ⚠️ :906 的回退分支意味着 provider 未回传 id 时 ② 与 ③ **同值**，
+    这是合法状态，下游一律不得写成 "if provider_id != record_id" 的分支。
+    """
+    if not tool_call_id:
+        return ""
+    async with session_factory() as session:
+        record = await session.get(AgentToolCall, tool_call_id)
+        if record is None:
+            return ""
+        if plan_task_input:
+            explicit = plan_task_input.get("provider_call_id")
+            if explicit:
+                return str(explicit)
+        message_id = getattr(record, "message_id", None)
+        if not message_id:
+            return record.id
+        message = await session.get(AgentMessage, message_id)
+        raw_entries = getattr(message, "tool_calls", None) if message else None
+        if not raw_entries:
+            return record.id
+        try:
+            entries = json.loads(raw_entries)
+        except (TypeError, ValueError):
+            return record.id
+        for entry in entries if isinstance(entries, list) else []:
+            function = (entry or {}).get("function") or {}
+            if function.get("name") != PROPOSE_PLAN_TOOL_NAME:
+                continue
+            return str(entry.get("id") or "") or record.id
+        return record.id
 
 
 class PlanStepError(RuntimeError):
