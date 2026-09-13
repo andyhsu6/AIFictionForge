@@ -10,8 +10,12 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import app.services.project_agent_risk as risk_module
 from app.database import Base
+from app.models.chapter import Chapter
+from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.project import Project
+from app.services.project_agent_risk import resolve_tool_risk
 from app.services.project_agent_tools import (
     ProjectAgentTool,
     ProjectAgentToolRegistry,
@@ -152,3 +156,158 @@ async def test_update_project_still_goes_through_resolve_update(db_session):
     assert result["entity_id"] == "proj-1"
     assert result["after"]["title"] == "新标题"
     assert result["resources"] == ["projects"]
+
+
+def _detached_project() -> Project:
+    return Project(id="proj-1", user_id="test", title="测试项目")
+
+
+async def _seed_chapter(db, *, content="alpha beta gamma delta"):
+    db.add(Project(id="proj-1", user_id="test", title="测试项目"))
+    chapter = Chapter(
+        project_id="proj-1", chapter_number=1, title="Chapter 1",
+        content=content, word_count=len(content),
+    )
+    db.add(chapter)
+    await db.flush()
+    return chapter
+
+
+def _start_task_tool():
+    registry = ProjectAgentToolRegistry(_detached_project(), None)
+    return registry.get("start_project_task")
+
+
+@pytest.mark.anyio
+async def test_analyze_chapter_exempt_when_no_existing_results(db_session):
+    chapter = await _seed_chapter(db_session)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (1, False)
+    assert decision.reason == "action_policy"
+    assert decision.action == "analyze_chapter"
+
+
+@pytest.mark.anyio
+async def test_analyze_chapter_needs_confirmation_when_plot_analysis_exists(db_session):
+    chapter = await _seed_chapter(db_session)
+    db_session.add(PlotAnalysis(project_id="proj-1", chapter_id=chapter.id, plot_stage="发展"))
+    await db_session.flush()
+
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "overwrite_existing_analysis"
+
+
+@pytest.mark.anyio
+async def test_analyze_chapter_needs_confirmation_when_only_memories_exist(db_session):
+    chapter = await _seed_chapter(db_session)
+    db_session.add(StoryMemory(
+        project_id="proj-1", chapter_id=chapter.id,
+        memory_type="plot_point", content="synthetic memory text",
+        # story_timeline 是 NOT NULL 列（app/models/memory.py:42），缺了会在
+        # flush 阶段就 IntegrityError，探测分支根本没跑到。
+        story_timeline=1,
+    ))
+    await db_session.flush()
+
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_number": 1},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "overwrite_existing_analysis"
+
+
+@pytest.mark.anyio
+async def test_probe_failure_fails_closed_to_confirmation(db_session, monkeypatch):
+    chapter = await _seed_chapter(db_session)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("database is unavailable")
+
+    monkeypatch.setattr(risk_module, "_chapter_has_analysis_results", boom)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "analysis_probe_failed"
+
+
+@pytest.mark.anyio
+async def test_unresolvable_chapter_fails_closed_to_confirmation(db_session):
+    db_session.add(Project(id="proj-1", user_id="test", title="测试项目"))
+    await db_session.flush()
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "analyze_chapter", "chapter_id": "no-such-chapter"},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "analysis_probe_failed"
+
+
+@pytest.mark.anyio
+async def test_regenerate_chapter_is_never_exempt(db_session):
+    chapter = await _seed_chapter(db_session)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(), tool=_start_task_tool(),
+        arguments={"action": "regenerate_chapter", "chapter_id": chapter.id},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (2, True)
+    assert decision.reason == "action_policy"
+
+
+@pytest.mark.anyio
+async def test_read_only_tool_risk_untouched_by_probe(db_session):
+    registry = ProjectAgentToolRegistry(_detached_project(), db_session)
+    decision = await resolve_tool_risk(
+        db_session, project=_detached_project(),
+        tool=registry.get("get_chapter_analysis"),
+        arguments={"chapter_number": 1},
+    )
+    assert (decision.risk_level, decision.requires_confirmation) == (0, False)
+
+
+@pytest.mark.anyio
+async def test_top_level_risk_two_and_action_level_exempt_coexist(db_session):
+    """本 PR 的命门：顶层 risk 保持 2 与 action 免确认必须同时成立。
+
+    只测"降级后仍能执行"（上面的路由用例）不够——还要证明 spec 顶层 risk
+    没有被动过，OPERATIONAL_WRITE_TOOL_NAMES 才继续收养它。
+    """
+    from app.services.project_agent_operational_tools import (
+        OPERATIONAL_READ_TOOL_NAMES,
+        OPERATIONAL_WRITE_TOOL_NAMES,
+    )
+
+    tool = _start_task_tool()
+    assert tool.risk_level == 2 and tool.requires_confirmation
+    assert "start_project_task" in OPERATIONAL_WRITE_TOOL_NAMES
+    assert "start_project_task" not in OPERATIONAL_READ_TOOL_NAMES
+
+    exempt = {}
+    for action, risk in tool.action_risk.items():
+        if risk < 2:
+            arguments = {"action": action, "data": {}}
+            if action == "analyze_chapter":
+                # analyze_chapter 免确认要靠运行期探测，先造一个无结果的章节
+                chapter = await _seed_chapter(db_session)
+                arguments["chapter_id"] = chapter.id
+            decision = await resolve_tool_risk(
+                db_session, project=_detached_project(),
+                tool=tool, arguments=arguments,
+            )
+            assert decision.requires_confirmation is False, action
+            exempt[action] = decision.risk_level
+    assert exempt == {
+        "analyze_chapter": 1,
+        "generate_character": 1,
+        "generate_organization": 1,
+        "generate_careers": 1,
+    }
