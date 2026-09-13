@@ -9,6 +9,7 @@ import { parseServerLanguage, parseServerContentLanguage } from '../utils/langua
 import { Trans, useTranslation } from 'react-i18next';
 import {
   deriveGateNumbers,
+  formatCheckedAt,
   formatWindowTokens,
   gateEvidenceAfterProbe,
   gateRejectionFromCachedState,
@@ -542,6 +543,10 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
     [windowProbe, watchedDeclaredWindow, gateEvidence],
   );
 
+  // Once periodic re-checks are gone, the age of a conclusion is the only honest signal
+  // left. It comes from the server's own `checked_at`, never from a client clock.
+  const measuredAtLabel = formatCheckedAt(gate.checkedAt);
+
   // `deriveGateNumbers` 看不到模型字段，给不出「没有模型」这一态。而自步骤 2 起
   // `llm_model` 不再预填，空模型正是全新安装打开设置页看到的第一屏：那时该说的是
   // 「先填模型」，不是「点重新检测」（检测按钮此时也只会回一句 needModel）。
@@ -565,6 +570,7 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
           typeof params.declared_context_window_tokens === 'number' ? params.declared_context_window_tokens : null,
         requires_explicit_declaration:
           typeof params.requires_explicit_declaration === 'boolean' ? params.requires_explicit_declaration : null,
+        checked_at: typeof params.checked_at === 'string' ? params.checked_at : null,
       },
       model: typeof params.model === 'string'
         ? params.model
@@ -1813,6 +1819,12 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
                                 </Space>
                               }
                             />
+
+                            {measuredAtLabel && (
+                              <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+                                {t('gate.measuredAt', { date: measuredAtLabel })}
+                              </Text>
+                            )}
 
                             {(staleProbe || staleEvidence) && (
                               <Text type="warning" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>

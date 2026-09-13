@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   deriveGateNumbers,
+  formatCheckedAt,
   formatWindowTokens,
   gateEvidenceAfterProbe,
   gateRejectionFromCachedState,
@@ -243,6 +244,23 @@ describe('formatWindowTokens', () => {
   });
 });
 
+describe('formatCheckedAt', () => {
+  it('renders the server instant as a stable UTC stamp', () => {
+    // Once re-checks stop, this stamp is the only record of when the verdict was measured.
+    expect(formatCheckedAt('2026-01-01T00:00:00+00:00')).toBe('2026-01-01 00:00 UTC');
+    // Offsets are normalized to UTC, so the viewer's timezone cannot move the number.
+    expect(formatCheckedAt('2026-01-01T08:30:00+08:00')).toBe('2026-01-01 00:30 UTC');
+  });
+
+  it('renders nothing for an absent or unparseable time, never Invalid Date', () => {
+    expect(formatCheckedAt(null)).toBeNull();
+    expect(formatCheckedAt(undefined)).toBeNull();
+    expect(formatCheckedAt('')).toBeNull();
+    expect(formatCheckedAt('   ')).toBeNull();
+    expect(formatCheckedAt('not-a-timestamp')).toBeNull();
+  });
+});
+
 describe('settings page wiring (issue #55 step 3b)', () => {
   const source = readFileSync(
     join(FRONTEND_ROOT, 'src', 'pages', 'Settings.tsx'),
@@ -269,6 +287,11 @@ describe('settings page wiring (issue #55 step 3b)', () => {
     // Hard gate: nothing in the gate card may acknowledge-and-continue.
     const gateCard = source.slice(source.indexOf('gate.title'), source.indexOf('gate.stale'));
     expect(gateCard).not.toMatch(/Checkbox|allowBelow|override/i);
+  });
+
+  it('renders when the cached verdict was measured, from the server timestamp', () => {
+    expect(source).toContain('gate.measuredAt');
+    expect(source).toContain('formatCheckedAt');
   });
 });
 
@@ -396,6 +419,35 @@ describe('evidence ordering: a probe that could not decide is not new evidence (
     expect(gateEvidenceAfterProbe(carried, probe('inconclusive', null, false), 'other-model'))
       .toEqual(NO_GATE_EVIDENCE);
     expect(gateEvidenceAfterProbe(NO_GATE_EVIDENCE, null, 'other-model')).toEqual(NO_GATE_EVIDENCE);
+  });
+
+  it('reports the timestamp of the verdict it actually displays', () => {
+    const timedProbe: ContextWindowProbe = {
+      supported: true,
+      details: {
+        verdict: 'qualified',
+        min_window: MIN,
+        context_window_tokens: MIN,
+        checked_at: '2026-02-03T04:05:06+00:00',
+        window_display: {
+          probed_context_window_tokens: MIN,
+          declared_context_window_tokens: null,
+          minimum_required_context_window_tokens: MIN,
+          adopted_context_window_tokens: MIN,
+        },
+      },
+    };
+    expect(deriveGateNumbers(timedProbe, null, null).checkedAt).toBe('2026-02-03T04:05:06+00:00');
+
+    // A weaker probe must not relabel the cached conclusion with a fresher time.
+    const carried = gateRejectionFromCachedState({
+      verdict: 'unqualified',
+      min_window: MIN,
+      measured_context_window_tokens: 128_000,
+      checked_at: '2025-12-31T23:59:00+00:00',
+    });
+    const gate = deriveGateNumbers(probe('inconclusive', null, false), null, carried);
+    expect(gate.checkedAt).toBe('2025-12-31T23:59:00+00:00');
   });
 });
 

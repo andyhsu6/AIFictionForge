@@ -72,6 +72,7 @@
     "declaredHelp": "Only needed when the probe cannot decide, and never below the minimum. A model measured under the minimum is not unlocked by a declaration.",
     "declaredInput": "Your declared context window (tokens)",
     "declaredLabel": "Window you entered",
+    "measuredAt": "Measured {{date}}",
     "minimumRequired": "Minimum required: {{min}} tokens",
     "needModel": "Enter a model name first, then probe its context window",
     "noBypass": "Saving is rejected below the minimum; there is no override checkbox.",

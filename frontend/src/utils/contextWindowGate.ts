@@ -48,6 +48,8 @@ export interface ContextWindowProbe {
     source?: string;
     min_window?: number;
     context_window_tokens?: number | null;
+    /** Server clock reading for this measurement (ISO 8601, `ProbeOutcome.checked_at`). */
+    checked_at?: string;
     window_display?: {
       probed_context_window_tokens?: number | null;
       declared_context_window_tokens?: number | null;
@@ -64,6 +66,7 @@ export interface GateRejection {
   measured_context_window_tokens?: number | null;
   declared_context_window_tokens?: number | null;
   requires_explicit_declaration?: boolean | null;
+  checked_at?: string | null;
 }
 
 export interface GateNumbers {
@@ -79,6 +82,12 @@ export interface GateNumbers {
   status: GateStatus;
   /** True when the form must demand an explicit declaration before saving. */
   requiresDeclaration: boolean;
+  /**
+   * ISO timestamp of the measurement the displayed verdict came from, as the server
+   * stated it (`checked_at`). `null` when the displayed verdict's source stated none —
+   * the age of a conclusion is the only honest signal once re-checks stop.
+   */
+  checkedAt: string | null;
 }
 
 const VERDICT_BY_STATUS: Record<GateVerdict, GateStatus | null> = {
@@ -191,6 +200,10 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
 /**
  * Derive the three numbers plus the status the form renders.
  *
@@ -258,6 +271,12 @@ export function deriveGateNumbers(
     verdictFromProbe = probeVerdict !== null;
   }
 
+  // The timestamp must describe the verdict actually displayed: a probe that lost the
+  // strength comparison must not relabel the cached conclusion with a fresher time.
+  const checkedAt = verdictFromProbe
+    ? asString(probe?.details?.checked_at)
+    : asString(rejection?.checked_at);
+
   const qualified = VERDICT_BY_STATUS[verdict] === 'qualified';
   // 第三个数：服务器说出来的那个（见函数注释）。`in` 而不是 `??`，因为
   // 「服务器回答『什么都不采纳』」本身就是一条信息，和本地算出来的 null 不同源。
@@ -301,6 +320,7 @@ export function deriveGateNumbers(
     verdict,
     status,
     requiresDeclaration: status === 'needs-declaration',
+    checkedAt,
   };
 }
 
@@ -311,6 +331,24 @@ export function deriveGateNumbers(
  */
 export function formatWindowTokens(value: number | null): string {
   return value === null ? '—' : value.toLocaleString('en-US');
+}
+
+/**
+ * Render the server's `checked_at` as a fixed UTC stamp (`2026-01-01 00:00 UTC`), or
+ * `null` when the server stated no time or the value does not parse. UTC keeps the
+ * result independent of the viewer's timezone and of the locale the page is in, and a
+ * bad value must render nothing rather than the literal `Invalid Date`.
+ */
+export function formatCheckedAt(value: string | null | undefined): string | null {
+  const raw = asString(value);
+  if (raw === null) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}` +
+    ` ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`
+  );
 }
 
 /**
@@ -366,5 +404,6 @@ export function gateRejectionFromCachedState(
       typeof state.requires_explicit_declaration === 'boolean'
         ? state.requires_explicit_declaration
         : null,
+    checked_at: asString(state.checked_at),
   };
 }

@@ -3236,6 +3236,7 @@ export default interface Resources {
       "declaredHelp": "仅当探测判不出时需要填写，且不得低于下限；实测低于下限的模型，即使声明也不会放行",
       "declaredInput": "你声明的上下文窗口（tokens）",
       "declaredLabel": "你填写的窗口",
+      "measuredAt": "结论测于 {{date}}",
       "minimumRequired": "最低要求：{{min}} tokens",
       "needModel": "请先填写模型名称，再检测上下文窗口",
       "noBypass": "低于下限将拒绝保存，没有勾选放行的通道",

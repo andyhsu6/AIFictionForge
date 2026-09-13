@@ -355,4 +355,23 @@ describe('legacy cached verdict reaches the settings gate form (issue #55 step 5
     await waitFor(() => expect(PROBE_CALLS.length).toBeGreaterThan(0));
     expect(await screen.findByText(enSettings.gate.status['below-minimum'])).toBeTruthy();
   });
+
+  it('shows when the cached verdict was measured, from the server timestamp', async () => {
+    // The cached payload carries `checked_at`; the card must render that instant (never a
+    // placeholder, never `Invalid Date`) — after periodic re-checks are gone, the age of
+    // the conclusion is the only honest signal left.
+    for (const [re, payload] of ROUTES_OK) mockRoute(re, payload);
+    mockRoute(/^post \/settings\/check-context-window$/, new Error('gateway unreachable'));
+
+    render(
+      <AntApp>
+        <Settings />
+      </AntApp>
+    );
+
+    expect(await screen.findByText('128,000')).toBeTruthy();
+    const expected = enSettings.gate.measuredAt.replace('{{date}}', '2026-01-01 00:00 UTC');
+    expect(screen.getByText(expected)).toBeTruthy();
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
 });
