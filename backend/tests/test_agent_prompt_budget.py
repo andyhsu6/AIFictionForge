@@ -42,7 +42,7 @@ from app.services import model_capability_probe as probe_module
 from app.services.ai_service import AIService, detect_context_window
 from app.services.model_capability_probe import (
     PREFERENCES_KEY,
-    TRIGGER_DAILY,
+    TRIGGER_DISPATCH,
     VERDICT_INCONCLUSIVE,
     VERDICT_QUALIFIED,
     ProbeOutcome,
@@ -1577,8 +1577,8 @@ async def test_unprobed_triple_gets_the_first_probe_before_the_budget_is_decided
         "要么把补测做成了重复劳动"
     )
     assert probe_spy.calls[0]["model"] == BIG_MODEL
-    # 触发点必须是 daily：它的档白名单只有 ①②，结构上挡掉 ≈1M token 的 needle 档
-    assert probe_spy.calls[0]["trigger"] == TRIGGER_DAILY
+    # 触发点必须是 dispatch：它的档白名单只有 ①②，结构上挡掉 ≈1M token 的 needle 档
+    assert probe_spy.calls[0]["trigger"] == TRIGGER_DISPATCH
     assert (await stored_verdicts(db_factory, user_id))[
         triple_key("openai", GATEWAY, BIG_MODEL)
     ]["result"] == VERDICT_QUALIFIED, "补测结论没落库 ⇒ 下一回合还要再打一次"
