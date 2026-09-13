@@ -344,3 +344,16 @@ def test_no_spec_has_top_level_risk_below_confirmation_threshold():
         if spec.get("risk_level") and spec["risk_level"] < 2
     ]
     assert spec_offenders == []
+
+
+def test_system_prompt_forbids_polling_after_start_project_task():
+    """PR-1：任务只是入队，助手不得轮询、不得声称完成、不得预告结果。"""
+    from app.services.project_agent_service import SYSTEM_PROMPT
+
+    rule = next(
+        line for line in SYSTEM_PROMPT.splitlines() if line.startswith("7.")
+    )
+    assert "start_project_task 返回后任务只是进入后台队列" in rule
+    assert "不得再调用任务查询工具轮询其状态" in rule
+    assert "不得声称任务已完成" in rule
+    assert "不得预告" in rule
