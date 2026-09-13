@@ -723,3 +723,106 @@ async def test_spawn_queue_is_never_used_by_the_runner(env):
                 imported.add(alias.asname or short)
     assert not (referenced & forbidden), f"runner 引用了禁用的队列入口：{referenced & forbidden}"
     assert not (imported & forbidden), f"runner 导入了禁用的队列入口：{imported & forbidden}"
+
+
+@pytest.mark.anyio
+async def test_cancel_mid_plan_stops_remaining_steps_and_cascades(env, monkeypatch):
+    """验收②：中途取消 ⇒ 剩余步不执行 + 子任务被级联取消 + 步数仍写入 progress_details。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    launched: list[str] = []
+
+    async def launcher(db, sub):
+        launched.append(sub.id)               # 子任务保持 pending，制造"正在等待"
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    task = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=[
+            plan_step(1, tool="start_project_task", action="generate_chapter",
+                      arguments={"chapter_number": 1}),
+            plan_step(2, tool="start_project_task", action="generate_chapter",
+                      arguments={"chapter_number": 1}),
+            plan_step(3, tool="start_project_task", action="generate_chapter",
+                      arguments={"chapter_number": 1}),
+        ],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.sleep(0.08)                 # 已进入第 1 步的轮询
+    assert runner.request_plan_cancellation(env.plan_task_id, reason="用户已停止计划") is True
+    outcome = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(outcome[0], asyncio.CancelledError)     # 取消语义原样冒泡给调用方
+    assert len(launched) == 1                                 # 第 2/3 步没跑
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert plan_row.status == "cancelled"
+    assert plan_row.progress_details["steps_total"] == 3      # 步数仍然写进去
+    assert plan_row.progress_details["steps_done"] == 0
+    assert plan_row.progress_details["cancel"]["reason"] == "用户已停止计划"
+    assert plan_row.progress_details["cancel"]["cancelled_sub_tasks"] == launched
+    assert plan_row.status_code == "task.cancelled"
+    cancelled_ids = plan_row.progress_details["cancel"]["cancelled_sub_tasks"]
+    assert cancelled_ids == launched
+    sub_row = await load_row(env.factory, BackgroundTask, cancelled_ids[0])
+    assert sub_row.status == "cancelled"
+    assert sub_row.cancel_requested is True
+    tool_call = await load_row(env.factory, AgentToolCall, env.tool_call_id)
+    assert tool_call.status == "failed"
+
+
+@pytest.mark.anyio
+async def test_uncancellable_analysis_sub_task_is_recorded(env, monkeypatch):
+    """AnalysisTask 没有可取消状态：诚实记账，不谎称已取消。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+
+    async def launcher(db, sub):
+        task = AnalysisTask(
+            user_id=env.user_id, project_id=env.project_id,
+            chapter_id=env.chapter_id, status="running", progress=10,
+        )
+        db.add(task)
+        await db.commit()
+        env.analysis_id = task.id
+        return task.id                      # 让替身把该步骤的 entity_id 指向 AnalysisTask
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    task = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=[plan_step(1, tool="start_project_task", action="analyze_chapter",
+                         arguments={"chapter_number": 1})],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.sleep(0.08)
+    runner.request_plan_cancellation(env.plan_task_id, reason="停止")
+    await asyncio.gather(task, return_exceptions=True)
+
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    cancel = plan_row.progress_details["cancel"]
+    assert cancel["uncancellable_sub_tasks"] == [env.analysis_id]
+    assert cancel["cancelled_sub_tasks"] == []
+    assert (await load_row(env.factory, AnalysisTask, env.analysis_id)).status == "running"
+
+
+@pytest.mark.anyio
+async def test_cancel_plan_returns_false_for_unknown_plan(env):
+    assert runner.request_plan_cancellation("nope") is False
+
+
+@pytest.mark.anyio
+async def test_cancel_plan_awaits_terminal_state(env, monkeypatch):
+    """PR-3 的端点要用 async cancel_plan：它必须等到终态行写完才返回。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    install_fake_launcher(monkeypatch, env, on_launch=lambda db, sub: asyncio.sleep(0))
+    await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=[plan_step(1, tool="start_project_task", action="generate_chapter",
+                         arguments={"chapter_number": 1})],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.sleep(0.08)
+    assert await runner.cancel_plan(env.plan_task_id, reason="端点停止") is True
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert plan_row.status == "cancelled"
+    assert plan_row.progress_details["cancel"]["reason"] == "端点停止"

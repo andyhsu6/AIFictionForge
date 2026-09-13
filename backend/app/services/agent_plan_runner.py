@@ -50,6 +50,7 @@ STEP_POLL_TIMEOUT_SECONDS = 900.0
 POLL_INTERVAL_SECONDS = 2.0
 STEP_GRACE_SECONDS = 0.0            # PR-4 调成 3.0（SQLite WAL 可见性）
 STATUS_MESSAGE_MAX_CHARS = 120      # status_message 是 String(500)，PG 超长直接报错
+CANCEL_SETTLE_TIMEOUT_SECONDS = 10.0
 
 
 class TaskSnapshot(NamedTuple):
@@ -475,6 +476,7 @@ async def _supervise(handle: _PlanHandle, factory: async_sessionmaker) -> None:
             outcome, summary = await _run_plan_steps(handle, factory)
     except asyncio.CancelledError:
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
+        await _cancel_in_flight(handle, factory)
         await _write_final_state(handle, factory, outcome, summary)
         raise
     except Exception as exc:                  # noqa: BLE001 —— 含权限校验失败
@@ -768,3 +770,36 @@ async def _cancel_sub_task(
             await session.commit()
             return (res.rowcount or 0) == 1
     return False
+
+
+def request_plan_cancellation(plan_task_id: str, *, reason: str = "计划已取消") -> bool:
+    """同步请求取消：置标记 + 取消 runner 自己的 asyncio.Task。
+
+    架构计划 §3 取消坑②：只把计划行置 cancelled 不会打断正在等待的 600s 子任务，
+    所以必须握有 Task 句柄、由 CancelledError 触发的收尾路径去级联取消在途子任务。
+    取消原因写 progress_details，不写 status_message——那一列已经被 cancel_task 冻结。
+    """
+    handle = _PLAN_HANDLES.get(plan_task_id)
+    if handle is None:
+        return False
+    handle.cancel_requested = True
+    handle.cancel_reason = reason
+    if handle.task is not None and not handle.task.done():
+        handle.task.cancel()
+    return True
+
+
+async def cancel_plan(
+    plan_task_id: str, *, reason: str = "计划已取消", timeout: float = CANCEL_SETTLE_TIMEOUT_SECONDS
+) -> bool:
+    """给 HTTP 端点用：请求取消并等 runner 把终态行写完（PR-3 的「停止计划」）。
+
+    handle 必须在 request_plan_cancellation 之前取：runner 一结束，done 回调就把
+    handle 从 _PLAN_HANDLES 弹出，那时再查已经查不到 Task 句柄了。
+    """
+    handle = _PLAN_HANDLES.get(plan_task_id)
+    if handle is None or not request_plan_cancellation(plan_task_id, reason=reason):
+        return False
+    if handle.task is not None:
+        await asyncio.wait({handle.task}, timeout=timeout)
+    return True
