@@ -1152,6 +1152,11 @@ export default interface Resources {
         "plotPoint": "情节点"
       }
     },
+    "modelGate": {
+      "goToSettings": "前往设置",
+      "guidanceBody": "当前模型未配置，或其上下文窗口不足要求，AI 功能已停止。请前往设置页改选满足要求的模型。",
+      "guidanceTitle": "需要配置 AI 模型"
+    },
     "partialToolbar": {
       "aiContinue": "AI续写",
       "aiRewrite": "AI重写",
@@ -1460,6 +1465,8 @@ export default interface Resources {
     "unknown": "未知错误",
     "validation": {
       "ai_config_missing": "请先在「设置 → 文本模型配置」中配置模型",
+      "ai_model_below_minimum": "模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型",
+      "ai_model_not_configured": "尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称",
       "book_import_extract_mode": "extract_mode 仅支持 tail 或 full",
       "book_import_mode": "import_mode 仅支持 append 或 overwrite",
       "book_import_new_project": "当前仅支持新建项目导入，不支持指定 project_id",
@@ -1590,6 +1597,7 @@ export default interface Resources {
     "deleteTaskConfirm": "确认删除任务记录？",
     "empty": "暂无任务",
     "errorMessage": "错误: {{message}}",
+    "gateGoToSettings": "前往设置修改模型",
     "refresh": "刷新",
     "statusCancelled": "已取消",
     "statusCompleted": "已完成",
@@ -3214,13 +3222,37 @@ export default interface Resources {
       "disableThinking": "关闭模型思考",
       "disableThinkingTooltip": "适用于思考型模型：开启后模型跳过思考阶段直接输出正文，可显著减少等待时间与token消耗；对不支持此选项的服务无影响",
       "llmModel": "模型名称",
-      "llmModelTooltip": "AI模型的名称，如 gpt-4, gpt-3.5-turbo",
+      "llmModelTooltip": "你要使用的模型名称。保存时系统会实测该模型的上下文窗口，达不到要求的模型不受支持；具体下限见下方「上下文窗口门禁」，此处不推荐特定模型名",
       "maxTokens": "最大 Token 数",
       "maxTokensTooltip": "单次请求的最大token数量",
       "systemPrompt": "系统提示词",
       "systemPromptTooltip": "设置全局系统提示词，每次AI调用时都会自动使用。可用于设定AI的角色、语言风格等",
       "temperature": "温度参数",
       "temperatureTooltip": "控制输出的随机性，值越高越随机（0.0-2.0）"
+    },
+    "gate": {
+      "adoptedLabel": "系统实际采用的预算",
+      "declaredHelp": "仅当探测判不出时需要填写，且不得低于下限；实测低于下限的模型，即使声明也不会放行",
+      "declaredInput": "你声明的上下文窗口（tokens）",
+      "declaredLabel": "你填写的窗口",
+      "minimumRequired": "最低要求：{{min}} tokens",
+      "needModel": "请先填写模型名称，再检测上下文窗口",
+      "noBypass": "低于下限将拒绝保存，没有勾选放行的通道",
+      "probeFailed": "上下文窗口检测失败，请检查配置后重试",
+      "probeInconclusive": "检测无法判定：本次没有测出上下文窗口，其大小仍是未知。请在下方显式声明一个不低于下限的窗口，或检查 API 地址与密钥后重试",
+      "probeQualified": "检测通过：该模型满足上下文窗口要求",
+      "probeUnqualified": "检测不通过：该模型上下文窗口低于要求",
+      "probedLabel": "探测到的窗口",
+      "recheck": "重新检测",
+      "stale": "模型已更换，请先重新检测再保存",
+      "status": {
+        "below-minimum": "探测到的上下文窗口低于要求，保存会被拒绝",
+        "model-missing": "尚未填写模型，请先在上方填写模型名称",
+        "needs-declaration": "探测无法判定，请在下方显式填写并确认不低于下限的上下文窗口",
+        "qualified": "上下文窗口满足要求，可以保存",
+        "unprobed": "尚未检测，请点击「重新检测」确认该模型的上下文窗口"
+      },
+      "title": "上下文窗口门禁"
     },
     "language": {
       "description": "切换后立即生效并保存；登录后以账号偏好为准",

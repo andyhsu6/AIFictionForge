@@ -1,6 +1,6 @@
 """设置相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Annotated, Literal
+from typing import Any, Dict, Optional, List, Annotated, Literal
 from datetime import datetime
 
 from app.schemas.common import ContentLanguageLiteral
@@ -25,7 +25,9 @@ class SettingsBase(BaseModel):
     api_provider: Optional[str] = Field(default="openai", description="API提供商")
     api_key: Optional[str] = Field(default=None, description="API密钥")
     api_base_url: Optional[str] = Field(default=None, description="自定义API地址")
-    llm_model: Optional[str] = Field(default="gpt-4", description="模型名称")
+    # 需求 #55 步骤 2：不给默认模型。schema 默认值等于替用户猜一个模型；
+    # 未配置保持 None，AI 调用会报 validation.ai_model_not_configured。
+    llm_model: Optional[str] = Field(default=None, description="模型名称")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="温度参数")
     max_tokens: Optional[int] = Field(default=2000, ge=1, description="最大token数")
     system_prompt: Optional[str] = Field(default=None, description="系统级别提示词，每次AI调用都会使用")
@@ -40,12 +42,25 @@ class SettingsBase(BaseModel):
 
 class SettingsCreate(SettingsBase):
     """创建设置请求模型"""
-    pass
+
+    # 需求 #55 步骤 3：探测不出/未登记模型时的**显式窗口声明**（tokens）。
+    # 只有 >= MIN_CONTEXT_WINDOW_TOKENS 才允许保存；实测 <1M 的模型即使声明也不放行。
+    # 非数据库列：该值只落进 preferences 的结论缓存（source=user_declared）。
+    # 刻意不加 pydantic ge 约束——太小要走 validation.ai_model_below_minimum 错误码，
+    # 而不是 422 的 pydantic 文案（后端用户可见文案只能用错误码）。
+    context_window_tokens: Optional[int] = Field(
+        default=None,
+        description="显式声明的上下文窗口 token 数（探测判不出时的保存出口）",
+    )
 
 
 class SettingsUpdate(SettingsBase):
     """更新设置请求模型"""
-    pass
+
+    context_window_tokens: Optional[int] = Field(
+        default=None,
+        description="显式声明的上下文窗口 token 数（探测判不出时的保存出口）",
+    )
 
 
 class SettingsResponse(SettingsBase):
@@ -56,6 +71,16 @@ class SettingsResponse(SettingsBase):
     user_id: str
     created_at: datetime
     updated_at: datetime
+
+    # 需求 #55 步骤 5（存量用户收口）：当前配置模型三元组**已缓存**的上下文窗口结论，
+    # 形态与 `validation.ai_model_below_minimum` 的 params 同一来源
+    # （`model_capability_probe.gate_state_payload`），设置页的门禁表单可直接渲染三段数。
+    # 非数据库列：只有 GET /settings 会计算填充（只读缓存，零探测请求）。
+    # None = 「从未定论」，**不是**「不合格」——那种用户的首次补测发生在派发路径。
+    context_window_gate: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="已缓存的上下文窗口门禁结论（只读，不触发探测）；None 表示从未定论",
+    )
 
 
 class PreferencesUpdate(BaseModel):

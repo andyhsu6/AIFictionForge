@@ -12,6 +12,7 @@
   "deleteTaskConfirm": "Confirm deleting this task record?",
   "empty": "No tasks",
   "errorMessage": "Error: {{message}}",
+  "gateGoToSettings": "Change the model in Settings",
   "refresh": "Refresh",
   "statusCancelled": "Cancelled",
   "statusCompleted": "Completed",

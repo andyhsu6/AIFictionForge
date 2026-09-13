@@ -72,6 +72,17 @@ class _RecordingAIService:
         self.user_id = None
         self.db_session = None
 
+    async def resolve_full_book_budget_chars(self, model=None) -> int:
+        """全书注入预算接缝（需求 #55 步骤 4 起由 AIService 提供）。
+
+        本文件测的是生成语言解析，假服务也没绑定 user_id/db_session，
+        所以这里直接给一个 ≥1M 窗口对应的正数预算（1M × 0.6），
+        保证全书注入照常走全量路径。窗口门禁与预算来源本身由
+        `test_context_window_probe_gate.py` / `test_no_fallback_degradation.py`
+        用真实 AIService 覆盖。
+        """
+        return 600000
+
     async def generate_text_stream(self, *, prompt, **kwargs):
         self.prompts.append(prompt)
         self.stream_kwargs.append(kwargs)

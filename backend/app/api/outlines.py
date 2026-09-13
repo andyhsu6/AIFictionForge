@@ -1382,7 +1382,7 @@ async def new_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 
 async def continue_outline_generator(
@@ -1790,14 +1790,17 @@ async def continue_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲续写事务已回滚（异常）")
-        yield await tracker.error(f"续写失败: {str(e)}", error_code="internal.outline_continue_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"续写失败: {str(e)}", fallback_code="internal.outline_continue_failed")
 
 
 def _resolve_outline_generation_model(data: Dict[str, Any], ai_service: AIService) -> str:
     """解析大纲生成模型：空/缺失的 model 归一化为该用户的默认模型。
 
-    ai_service.generate_text_stream 内部本有 `model or default_model` 兜底，
-    这里把归一化提前到任务层，保证 task_input 记录与实际执行模型一致。
+    这里只做「task_input 记录与实际执行模型对齐」的提前归一化，**不是兜底**：
+    `ai_service.generate_text_stream` 自 #55 步骤 2 起不再有 `model or default_model`
+    回退，它经 `_resolve_model_or_raise` 取值，请求模型与用户默认模型都为空即抛
+    `validation.ai_model_not_configured`（步骤 3 再对实发模型做 >=1M 窗口硬拦）。
+    系统不替用户猜模型，所以本函数返回空串时由派发点报错，而不是在这里回填常量。
     """
     raw = data.get("model") if hasattr(data, "get") else getattr(data, "model", None)
     return (raw or "").strip() or (getattr(ai_service, "default_model", None) or "")
@@ -1877,7 +1880,7 @@ async def generate_outline_task(
                     
             except Exception as e:
                 logger.error(f"❌ 后台大纲生成失败: {e}", exc_info=True)
-                await tracker.error(str(e))
+                await tracker.error_from_exception(e)
 
     await background_task_service.spawn_background_task(
         task.id, user_id, _run_outline_generation
@@ -2498,7 +2501,7 @@ async def expand_outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲展开事务已回滚（异常）")
-        yield await tracker.error(f"展开失败: {str(e)}", error_code="internal.outline_expand_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"展开失败: {str(e)}", fallback_code="internal.outline_expand_failed")
 
 
 async def _save_background_task_result(db: AsyncSession, task_id: str, result_data: Dict[str, Any]) -> None:
@@ -2632,7 +2635,7 @@ async def _run_outline_expansion_background(
                     await bg_db.rollback()
             except Exception:
                 pass
-            await tracker.error(str(e))
+            await tracker.error_from_exception(e)
 
 
 async def _run_batch_outline_expansion_background(
@@ -2788,7 +2791,7 @@ async def _run_batch_outline_expansion_background(
                     await bg_db.rollback()
             except Exception:
                 pass
-            await tracker.error(str(e))
+            await tracker.error_from_exception(e)
 
 
 @router.post("/{outline_id}/create-single-chapter", summary="一对一创建章节(传统模式)")

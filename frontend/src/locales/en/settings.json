@@ -59,13 +59,37 @@
     "disableThinking": "Disable Model Thinking",
     "disableThinkingTooltip": "For reasoning models: when enabled, the model skips the thinking phase and outputs directly, greatly reducing wait time and token usage; no effect on services that do not support this option",
     "llmModel": "Model Name",
-    "llmModelTooltip": "AI model name, e.g. gpt-4, gpt-3.5-turbo",
+    "llmModelTooltip": "The name of the model you want to use. On save the app measures its context window, and models that do not meet the requirement are not supported; see the context window gate below for the current floor. No specific model name is recommended here.",
     "maxTokens": "Max Tokens",
     "maxTokensTooltip": "Maximum token count per request",
     "systemPrompt": "System Prompt",
     "systemPromptTooltip": "Global system prompt automatically used in every AI call. Can define the AI's role, writing style, etc.",
     "temperature": "Temperature",
     "temperatureTooltip": "Controls output randomness; higher is more random (0.0-2.0)"
+  },
+  "gate": {
+    "adoptedLabel": "Budget actually adopted",
+    "declaredHelp": "Only needed when the probe cannot decide, and never below the minimum. A model measured under the minimum is not unlocked by a declaration.",
+    "declaredInput": "Your declared context window (tokens)",
+    "declaredLabel": "Window you entered",
+    "minimumRequired": "Minimum required: {{min}} tokens",
+    "needModel": "Enter a model name first, then probe its context window",
+    "noBypass": "Saving is rejected below the minimum; there is no override checkbox.",
+    "probedLabel": "Probed window",
+    "probeFailed": "Context window probe failed, check the config and retry",
+    "probeInconclusive": "Probe could not decide: no context window was measured this time, so its size is still unknown. Declare one at or above the minimum below, or check the API base URL and key and retry",
+    "probeQualified": "Probe passed: this model meets the context window requirement",
+    "probeUnqualified": "Probe failed: this model's context window is below the requirement",
+    "recheck": "Re-check",
+    "stale": "The model changed, run the probe again before saving",
+    "status": {
+      "below-minimum": "The probed context window is below the requirement; saving will be rejected",
+      "model-missing": "No model entered yet, fill in the model name above first",
+      "needs-declaration": "The probe could not decide, declare a context window at or above the minimum below",
+      "qualified": "Context window meets the requirement, saving is allowed",
+      "unprobed": "Not probed yet, click \"Re-check\" to measure this model's context window"
+    },
+    "title": "Context window gate"
   },
   "language": {
     "description": "Takes effect immediately and is saved; after login, account preference wins",

@@ -104,7 +104,10 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
       - DEFAULT_AI_PROVIDER=${DEFAULT_AI_PROVIDER:-openai}
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
+      # DEFAULT_MODEL 已废弃（需求 #55）：后端配置项已删除，该变量即使传入也会被忽略，
+      # 系统不再提供任何隐式默认模型。模型请在应用内「设置 → 文本模型配置」按账户填写，
+      # 且上下文窗口必须 >= 1M tokens（保存/派发时实测你的端点）。
+      # 详见 README「模型要求 / Model Requirements」。
       - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE:-0.7}
       - DEFAULT_MAX_TOKENS=${DEFAULT_MAX_TOKENS:-32000}
       - ALLOW_PRIVATE_AI_ENDPOINTS=${ALLOW_PRIVATE_AI_ENDPOINTS:-false}

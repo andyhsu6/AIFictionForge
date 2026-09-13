@@ -3,6 +3,7 @@ import { antdMessage } from '../utils/antdApp';
 import i18n from '../i18n';
 import { ssePost } from '../utils/sseClient';
 import { mapErrorPayload, mapSSEError, getErrorDiagnostic, isUnauthenticatedError } from './errorMapper';
+import { maybeShowModelGateGuidance } from './modelGateGuidance';
 import type { SSEClientOptions } from '../utils/sseClient';
 import type {
   User,
@@ -120,6 +121,10 @@ api.interceptors.response.use(
       if (isUnauthenticatedError(data?.code, status) && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
+
+      // #55 3b: a model-config failure is fixable on the settings page; the toast
+      // naming it expires, the link should not.
+      maybeShowModelGateGuidance(data?.code);
 
       if (status === 422 && data?.errors) {
         console.error('validation error details:', data.errors);
@@ -279,6 +284,49 @@ export const settingsApi = {
       error_type?: string;
       suggestions?: string[];
     }>('/settings/check-function-calling', params),
+
+  /**
+   * Issue #55 step 3b: probe whether a model's context window meets the >=1M floor.
+   * Same result envelope as `checkFunctionCalling` (the backend deliberately mirrors
+   * it), plus `details.window_display` — the three numbers the settings form shows
+   * live. This endpoint only measures; rejecting the save is `save_settings`'s gate.
+   */
+  checkContextWindow: (params: {
+    api_key?: string;
+    api_base_url?: string;
+    provider: string;
+    llm_model: string;
+    context_window_tokens?: number;
+  }) =>
+    api.post<unknown, {
+      success: boolean;
+      supported: boolean;
+      message: string;
+      response_time_ms?: number;
+      provider?: string;
+      model?: string;
+      details?: {
+        verdict?: string;
+        source?: string;
+        tier?: number | string | null;
+        min_window?: number;
+        context_window_tokens?: number | null;
+        detail?: string;
+        checked_at?: string;
+        tiers_run?: Array<number | string>;
+        needle_tier_wired?: boolean;
+        blind_spot?: string;
+        window_display?: {
+          probed_context_window_tokens?: number | null;
+          declared_context_window_tokens?: number | null;
+          minimum_required_context_window_tokens?: number;
+          adopted_context_window_tokens?: number | null;
+        };
+      };
+      error?: string;
+      error_type?: string;
+      suggestions?: string[];
+    }>('/settings/check-context-window', params),
 
   // API配置预设管理
   getPresets: () =>

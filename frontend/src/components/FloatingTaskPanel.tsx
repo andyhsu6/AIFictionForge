@@ -13,7 +13,7 @@ import {
   ClearOutlined,
 } from '@ant-design/icons';
 import { getProjectTasks, getTaskStatus, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
-import { mapTaskStatusMessage, getErrorDiagnostic } from '../services/errorMapper';
+import { mapTaskStatusMessage, getErrorDiagnostic, isModelGateError } from '../services/errorMapper';
 import { eventBus, EventNames } from '../store/eventBus';
 
 interface FloatingTaskPanelProps {
@@ -377,6 +377,22 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
                           status={task.status === 'running' ? 'active' : 'normal'}
                           style={{ marginBottom: 4 }}
                         />
+                      )}
+
+                      {task.status === 'failed' && isModelGateError(task.status_code) && (
+                        // #55 3b: a background task cannot pop the gate form, so the
+                        // row carries the route to where the model is fixed. The
+                        // localized status text above comes from status_code alone.
+                        <div style={{ marginBottom: 4 }}>
+                          <Button
+                            type="link"
+                            size="small"
+                            style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                            href="/settings"
+                          >
+                            {t('gateGoToSettings')}
+                          </Button>
+                        </div>
                       )}
 
                       {task.error_message && import.meta.env.DEV && (

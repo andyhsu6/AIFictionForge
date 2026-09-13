@@ -262,6 +262,8 @@
   "unknown": "Unknown error",
   "validation": {
     "ai_config_missing": "Configure a model first in Settings → Text Model Config",
+    "ai_model_below_minimum": "The context window of model {{model}} is below the required {{min_window}} tokens. Pick a compliant model in Settings → Text Model Config",
+    "ai_model_not_configured": "No AI model is configured yet. Enter a model name in Settings → Text Model Config",
     "book_import_extract_mode": "extract_mode only supports tail or full",
     "book_import_mode": "import_mode only supports append or overwrite",
     "book_import_new_project": "Only importing into a new project is currently supported; project_id cannot be specified",
