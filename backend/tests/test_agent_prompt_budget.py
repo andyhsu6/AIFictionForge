@@ -6,7 +6,11 @@
       -> x ratio -> clamp(min, max) -> history_budget_chars
 任何一环都不允许出现第二套系数或第二处 clamp。
 """
+import ast
+import inspect
 import os
+import pathlib
+import textwrap
 import types
 import uuid
 
@@ -613,3 +617,220 @@ def test_1m_window_budget_accommodates_more_tool_results_than_the_legacy_60000()
     assert kept(60_000) == 8, "旧预算下的装载数变了 ⇒ 分桶前提失效，先查 part 大小"
     assert kept(300_000) == 40, "1M 窗口预算下应装下全部 40 条"
     assert kept(300_000) > kept(60_000)
+
+
+# --------------------------------------------------------------------------
+# Task 6：禁止项的可执行化（§5 的三条"禁止"若只是文档，一定会被"顺手优化"破掉）
+# --------------------------------------------------------------------------
+
+#: `.../backend/app/services/project_agent_service.py` ⇒ parents[2] 才是 backend 根。
+BACKEND_ROOT = pathlib.Path(inspect.getfile(ProjectAgentService)).parents[2]
+BUDGET_PY = pathlib.Path(inspect.getfile(apb))
+SERVICE_PY = BUDGET_PY.with_name("project_agent_service.py")
+AI_SERVICE_PY = BUDGET_PY.with_name("ai_service.py")
+
+#: 预算路径禁止在**代码**里出现的符号（`ai_service.py:151 detect_context_window` /
+#: `:131 _KNOWN_CONTEXT_WINDOWS` 今天仍在仓库、可直接 import ⇒ 必须是断言不是文档）。
+FORBIDDEN_BUDGET_SYMBOLS = frozenset({
+    "MIN_CONTEXT_WINDOW_TOKENS",
+    "detect_context_window",
+    "resolve_context_budget_chars",
+    "_KNOWN_CONTEXT_WINDOWS",
+    "_FULL_BOOK_BUDGET_RATIO",
+})
+
+
+def _read(path: pathlib.Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _code_symbols(path: pathlib.Path) -> set[str]:
+    """AST 层面的"代码里用到的名字"：import / def / class / 调用 / 属性 / 赋值目标。
+
+    刻意**不用** `name in source` 子串匹配：`agent_prompt_budget.py` 的 docstring 里
+    抄着禁令原文（"禁止复用 model_capability_probe.MIN_CONTEXT_WINDOW_TOKENS"），
+    naive 子串守卫会被自己的注释打红（上一轮实施留下的坑）。AST 只认节点，
+    注释与 docstring 不是 `ast.Name` ⇒ 禁令可以留在文档里，代码里不能出现。
+    子串形态与 AST 形态的分工由 `test_the_symbol_predicate_is_not_substring_based` 钉。
+    """
+    tree = ast.parse(_read(path), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.alias):
+            names.add(node.name)
+            if node.asname:
+                names.add(node.asname)
+    return names
+
+
+def _module_level_targets(path: pathlib.Path) -> set[str]:
+    """模块级赋值目标名（含 `X: float = 1.0` 这种带注解的写法）。"""
+    tree = ast.parse(_read(path), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _app_files():
+    """`app/` 下全部 .py。路径算错 ⇒ 空列表 ⇒ 全仓库扫描会**真空通过** ⇒ 必须当场判。"""
+    files = sorted((BACKEND_ROOT / "app").rglob("*.py"))
+    assert len(files) > 50, (
+        f"扫描目标只有 {len(files)} 个文件，BACKEND_ROOT={BACKEND_ROOT} 指错了目录"
+        " ⇒ 下面的全仓库断言全部无效"
+    )
+    return files
+
+
+def test_no_hardcoded_history_total_budget_left():
+    """裁剪总预算的字面量只能存在于 budget 模块与 config 默认值里。
+
+    刻意只钉「比较表达式」：`_build_prompt` 的 docstring 允许以散文提到历史数字
+    （那是给人看的来历说明），但绝不允许它重新变成判定条件。
+    本守卫的可失败性由变异自证提供（把 `> budget_chars` 改回 `> 60000` ⇒ 红），
+    见 PR 正文 RED/MUTATION 段。
+    """
+    prompt_src = inspect.getsource(ProjectAgentService._build_prompt)
+    assert "> 60000" not in prompt_src
+    assert "> 60_000" not in prompt_src
+    assert "history_length + len(part) > 60000" not in prompt_src
+    assert "> budget_chars" in prompt_src
+
+
+def test_prompt_budget_module_does_not_borrow_the_admission_threshold():
+    borrowed = _code_symbols(BUDGET_PY) & FORBIDDEN_BUDGET_SYMBOLS
+    assert not borrowed, (
+        f"预算模块在代码路径里引用了禁用符号：{sorted(borrowed)} —— 准入门禁阈值与"
+        "成本换算必须解耦，否则改门禁会顺带改掉助手的成本结构"
+    )
+
+
+def test_the_forbidden_symbol_guard_can_actually_fail():
+    """守卫必须可失败：对**今天仍然写着这些符号**的 `ai_service.py` 跑同一谓词。
+
+    `detect_context_window`（def + 调用）与 `_KNOWN_CONTEXT_WINDOWS`（赋值 + 使用）
+    是活代码 ⇒ 谓词必须判"存在"。这条断言一旦变红，说明谓词本身失效了
+    （而不是预算模块变干净了）—— 那才是真正需要惊慌的时刻。
+    """
+    live = FORBIDDEN_BUDGET_SYMBOLS & _code_symbols(AI_SERVICE_PY)
+    assert live == {
+        "detect_context_window",
+        "_KNOWN_CONTEXT_WINDOWS",
+        "_FULL_BOOK_BUDGET_RATIO",
+    }, (
+        f"谓词在 ai_service.py 上判出 {sorted(live)} ⇒ 它已经不是'符号是否在代码里'"
+        "这个语义，禁止项守卫全部失去意义，先修守卫"
+    )
+
+
+def test_the_symbol_predicate_is_not_substring_based():
+    """谓词必须区分"代码里用了"与"文档里提到了"，两个方向都要成立。
+
+    正向（子串假阳）：`agent_prompt_budget.py` 的注释里写着禁令原文 ⇒ 子串匹配判"存在"、
+    AST 判"不存在"。反向（子串假阳于死名）：`resolve_context_budget_chars` 已在
+    需求 #55 步骤 4 删除，`ai_service.py` 只剩两处注释提到它 ⇒ 子串匹配会把已删的
+    死名当成活代码，而 AST 必须判"不存在"。
+    """
+    assert "MIN_CONTEXT_WINDOW_TOKENS" in _read(BUDGET_PY)      # 禁令原文就在注释里
+    assert "MIN_CONTEXT_WINDOW_TOKENS" not in _code_symbols(BUDGET_PY)
+    assert "resolve_context_budget_chars" in _read(AI_SERVICE_PY)   # 只在注释里
+    assert "resolve_context_budget_chars" not in _code_symbols(AI_SERVICE_PY)
+
+
+def test_budget_path_never_falls_back_to_a_silent_number():
+    """换算失败 ⇒ 冒泡；`try/except` + 兜底预算就是本 PR 要根除的失效形态。"""
+    src = _read(BUDGET_PY)
+    assert "except Exception" not in src
+    assert "except ApiError" not in src
+    # 更强的形态：预算路径的三个函数（换算 / 解析 / service 助手）里连 `try` 都不许有
+    for source in (
+        inspect.getsource(apb.compute_history_budget_chars),
+        inspect.getsource(apb.resolve_history_budget_chars),
+        inspect.getsource(ProjectAgentService._history_budget_chars),
+    ):
+        tree = ast.parse(textwrap.dedent(source))
+        assert not any(
+            isinstance(n, (ast.Try, ast.TryStar)) for n in ast.walk(tree)
+        ), "预算路径里出现了 try ⇒ 一定有静默兜底分支"
+
+
+@pytest.mark.anyio
+async def test_budget_path_never_falls_back_to_a_silent_fallback(monkeypatch):
+    """行为面（与上一条互补）：真探测失败 ⇒ service 助手必须把 ApiError 冒到回合外。
+
+    这里**只**桩掉最底层的 B 访问器，`resolve_history_budget_chars` 与
+    `_history_budget_chars` 都走真实代码 ⇒ 链路上任何一处 try/except 或"回退 60000"
+    都会让它变成"不抛错"，本用例即红。
+    """
+    async def boom(user_id, model, db, *, provider=None, base_url=None):
+        raise ApiError(
+            code="validation.ai_model_below_minimum",
+            params={"model": model, "min_window": 1_000_000},
+        )
+
+    monkeypatch.setattr(apb, "get_effective_context_window", boom)
+    svc = bare_service()
+    with pytest.raises(ApiError) as exc:
+        await svc._history_budget_chars(apb.PromptBudgetTrace(budget_chars=0))
+    assert exc.value.code == "validation.ai_model_below_minimum"
+    # 静默兜底的具体形态：拿到任何一个数字（尤其是历史硬编码的 60000）
+    assert exc.value.code != "internal.error"
+
+
+def test_chars_per_token_is_defined_exactly_once_repo_wide():
+    """两种探测形态都必须只命中一个文件：字面量形态（计划文本）+ AST 形态（更宽）。"""
+    rel = lambda p: p.relative_to(BACKEND_ROOT).as_posix()  # noqa: E731
+    annotated = [
+        rel(p) for p in _app_files()
+        if "CHARS_PER_TOKEN: float" in _read(p) or "CHARS_PER_TOKEN: Final" in _read(p)
+    ]
+    assigned = [
+        rel(p) for p in _app_files()
+        if any("CHARS_PER_TOKEN" in n for n in _module_level_targets(p))
+    ]
+    assert annotated == ["app/services/agent_prompt_budget.py"]
+    assert assigned == ["app/services/agent_prompt_budget.py"], (
+        f"token→字符系数出现了第二个定义处：{assigned}（AST 形态连无注解写法也抓）"
+    )
+
+
+def test_service_uses_the_shared_resolver_and_not_a_local_copy():
+    """service 只能经 `resolve_history_budget_chars` 拿预算，不得直连 B 的访问器。
+
+    缺席检查走 AST 而非子串：本文件允许在注释/文档字符串里解释"为什么不直连
+    `get_effective_context_window`"，子串匹配会把这种解释打红（同一失效形态见
+    `test_the_symbol_predicate_is_not_substring_based`）。
+    """
+    symbols = _code_symbols(SERVICE_PY)
+    assert "resolve_history_budget_chars" in symbols
+    assert "get_effective_context_window" not in symbols, (
+        "service 直连 B 的访问器 ⇒ 预算换算出现第二个入口"
+    )
+
+
+def test_budget_math_is_not_duplicated_outside_the_budget_module():
+    """`app/` 里只有 budget 模块定义换算、只有 service 调它；service 不自己 clamp。"""
+    rel = lambda p: p.relative_to(BACKEND_ROOT).as_posix()  # noqa: E731
+    callers = sorted(
+        rel(p) for p in _app_files()
+        if "resolve_history_budget_chars" in _code_symbols(p)
+    )
+    assert callers == [
+        "app/services/agent_prompt_budget.py",
+        "app/services/project_agent_service.py",
+    ], f"预算解析器的引用面扩大到了 {callers}"
+    local_clamps = {
+        n for n in _code_symbols(SERVICE_PY) if n.startswith("HISTORY_BUDGET_")
+    }
+    assert not local_clamps, (
+        f"service 里直接引用了预算上下界常量：{sorted(local_clamps)} ⇒ 本地又 clamp 了一遍"
+    )
