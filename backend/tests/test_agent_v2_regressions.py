@@ -3,7 +3,7 @@
 覆盖 7 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
 MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
 超大工具结果不挤掉首条诉求（护栏 2，锁 _serialize_tool_response 的长度上限）、
-历史窗口容量与有界性（HISTORY_LIMIT）。
+历史窗口的有界性（HISTORY_LIMIT 只是有界尾部窗口，不是容量保证）。
 
 每条都断言持久化路径独有的可观察量（工具轮落成 agent_messages 行、工具结果以
 <tool> 段进入**下一轮 prompt 的历史区块**）——否则只要「本轮能答出来」就算过，
@@ -19,6 +19,15 @@ MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
 2. 把 `_save_assistant_with_tool_calls` 的 `self.db.add(assistant)` 同样短路 ⇒
    实测 4 条变红：test_risk2_tool_stops_at_waiting_confirmation、
    test_mcp_write_tool_requires_confirmation 以及上面带 tool_calls 行的后两条。
+3. 关掉护栏 2 的截断分支（把 `_serialize_tool_response` 的 `if len(content) > TOOL_RESULT_MAX_CHARS`
+   短路）⇒ 实测 1 条变红：test_huge_tool_result_does_not_evict_earliest_request 撞
+   `first_request in prompt`（超大行原样进 prompt 后首条诉求被挤掉）。直接抬
+   `TOOL_RESULT_MAX_CHARS`（实测 10 ** 9）同样变红，且更早撞行大小前提自证
+   （50059 > 10**9 不成立 ⇒ 本用例是空场景）。该用例另有 eviction 前提自证段：把
+   `_build_prompt` 的 60000 预算抬到 500000（PR-0c 的可能改写）时它在自证段变红，
+   不会静默退化成"没有东西可舍"的空场景。反向不锁：上限调小（实测 200）仍为绿，可接受 ——
+   本用例锁的是"超大行不得挤掉首条诉求"，任何更严的上限都满足它，"截断分支成死路"这个
+   方向由 test_history_limit_keeps_bounded_recent_tail 的配对断言守。
 改回后必须重新全绿。
 """
 import json
@@ -369,7 +378,7 @@ async def test_round_budget_exhaustion_raises_and_finalize_marks_cancelled(db_se
 
 
 def tool_payload(size: int) -> str:
-    """_save_tool_response 的落库形态：JSON 字符串（上限 [:50000]）.
+    """_save_tool_response 的落库形态：JSON 字符串（上限 TOOL_RESULT_PERSIST_MAX_CHARS）.
 
     size 只算 result.text 的字符数，整行再加约 40 字符的 JSON 骨架。
     """
@@ -380,17 +389,23 @@ def tool_payload(size: int) -> str:
 
 
 @pytest.mark.anyio
-async def test_huge_tool_result_does_not_evict_earliest_request(db_session):
+async def test_huge_tool_result_does_not_evict_earliest_request(db_session, monkeypatch):
     """护栏 2：_serialize_tool_response 无截断 ⇒ 一条超大工具结果吃掉绝大部分
     _build_prompt 的 60000 总预算，触发 break 把首条用户诉求整条挤掉。
 
-    行大小全部取生产可达值（落库上限 [:50000]，另两条是章节详情级别的 7000），
-    一条超大 + 两条中等即越过 break 阈值 —— 这正是 v2 工具多回合的正常形态。
-    护栏 2（TOOL_RESULT_MAX_CHARS=8000 + 截断标记）后三条 tool 段必须全部保留。
+    行大小全部取生产可达值（落库上限 TOOL_RESULT_PERSIST_MAX_CHARS，另两条是章节详情
+    级别的 7000），一条超大 + 两条中等即越过 break 阈值 —— 这正是 v2 工具多回合的正常
+    形态。护栏 2（TOOL_RESULT_MAX_CHARS=8000 + 截断标记）后三条 tool 段必须全部保留。
+
+    本用例自带前提自证：先算受护栏保护的 prompt，再把 TOOL_RESULT_MAX_CHARS 抬到
+    10**9（等价于关掉护栏 2）重算同一份历史，**必须**看到首条诉求被挤掉。这样一旦
+    PR-0c 改写 60000 预算、让这份历史再也舍不掉任何东西，本用例立刻在自证段变红，
+    而不是静默退化成"没有东西可舍"的空场景。
     """
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
     first_request = "第一章的伏笔还没收，请先分析第 1 章"
+    huge = tool_payload(ProjectAgentService.TOOL_RESULT_PERSIST_MAX_CHARS)
     db_session.add(AgentMessage(
         conversation_id=conversation.id, role="user", content=first_request))
     db_session.add(AgentMessage(
@@ -403,7 +418,7 @@ async def test_huge_tool_result_does_not_evict_earliest_request(db_session):
         content=tool_payload(7000), tool_call_id="call_mid"))
     db_session.add(AgentMessage(
         conversation_id=conversation.id, role="tool",
-        content=tool_payload(50000), tool_call_id="call_big"))
+        content=huge, tool_call_id="call_big"))
     db_session.add(AgentMessage(
         conversation_id=conversation.id, role="user", content="继续"))
     await db_session.commit()
@@ -413,26 +428,43 @@ async def test_huge_tool_result_does_not_evict_earliest_request(db_session):
         "user", "assistant", "tool", "tool", "tool", "user"], (
         f"前置历史形态不对：{[(m.role, len(m.content or '')) for m in history]}"
     )
-    prompt = svc._build_prompt(history, {"route": "/project/1"})
+    # 前提自证（行大小侧）：这条 tool 行必须真的越过护栏 2 的截断阈值，
+    # 否则本用例测的只是"没有超长行"，护栏 2 的分支根本没被走到。
+    assert len(huge) > ProjectAgentService.TOOL_RESULT_MAX_CHARS, (
+        f"超大工具结果行只有 {len(huge)} 字符，未越过 TOOL_RESULT_MAX_CHARS"
+        " ⇒ 截断分支未被触发，本用例是空场景"
+    )
+
+    guarded = svc._build_prompt(history, {"route": "/project/1"})
+    # 前提自证：关掉护栏 2，同一份历史必须真的发生 eviction，否则本用例没在测预算
+    monkeypatch.setattr(ProjectAgentService, "TOOL_RESULT_MAX_CHARS", 10 ** 9)
+    unguarded = svc._build_prompt(history, {"route": "/project/1"})
+    assert first_request not in unguarded, (
+        "关掉护栏 2 后首条诉求仍在 ⇒ 行大小已越过 eviction 区间，需重新放大或改测预算本身")
+    prompt = guarded
 
     assert first_request in prompt, (
         "首条用户诉求被超大工具结果挤掉 ⇒ _serialize_tool_response 未限长"
     )
     assert "已截断" in prompt, "超大工具结果未带截断标记"
-    assert "结" * 50000 not in prompt, "50000 字符工具结果原样进 prompt"
+    assert "结" * ProjectAgentService.TOOL_RESULT_PERSIST_MAX_CHARS not in prompt, (
+        "落库上限的工具结果原样进 prompt"
+    )
     assert prompt.count("<tool>") == 3, (
         f"三条 tool 结果段未全部进入 prompt：{prompt.count('<tool>')} ⇒ 仍有历史被舍"
     )
 
 
 @pytest.mark.anyio
-async def test_history_limit_covers_multi_round_v2_tool_turns(db_session):
-    """HISTORY_LIMIT 语义：够装下完整的 v2 工具回合，且仍然是**有界**窗口。
+async def test_history_limit_keeps_bounded_recent_tail(db_session):
+    """HISTORY_LIMIT 语义：只锁「窗口大小 + 最新的有序尾部 + 有界」，**不是**容量证明。
 
-    v2 一个最坏回合（4 个工具轮 + 第 5 轮 force_answer）落 1 user + 6 assistant +
-    5 tool = 12 行 ⇒ 旧的 20 只够 1.7 个回合，第二个回合就会把第一个回合的原始
-    诉求挤出窗口（护栏 2 只解决了单行吃预算，没解决行数）。40 ⇒ 至少 3 个完整回合。
-    同时必须仍有界：45 行里最早的 5 行不得被读出来。
+    本用例插的是 45 条同质 user 行（每行 2 字符），因此它证明不了"装得下一个多轮工具
+    回合"：一回合落库的行数没有固定上界（实测单工具调用/轮 10 行 = 1 user + 5 assistant
+    + 4 tool；一轮多并行调用按调用数线性增长，实测 4 轮 × 3 并行 = 18 行），行大小也
+    远不止 2 字符。真正的容量约束在 _build_prompt 的 60000 字符预算——实测 8 条打满
+    TOOL_RESULT_MAX_CHARS 的 tool 行只能带进 7 条，首条用户诉求仍会被挤掉；字节层面的
+    取舍归 PR-0c 的预算分层。这里只锁行数窗口本身：45 行里最早的 5 行不得被读出来。
     """
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
@@ -442,10 +474,16 @@ async def test_history_limit_covers_multi_round_v2_tool_turns(db_session):
     await db_session.commit()
 
     assert ProjectAgentService.HISTORY_LIMIT == 40, (
-        "HISTORY_LIMIT 被改小 ⇒ v2 工具回合的历史会被整回合舍掉"
+        "HISTORY_LIMIT 被改小 ⇒ 更早的工具回合会被整回合按行数舍掉"
     )
     history = await svc._load_history(conversation.id)
     assert len(history) == 40, f"历史窗口大小 {len(history)} ≠ HISTORY_LIMIT"
     assert [m.content for m in history] == [f"h{i}" for i in range(5, 45)], (
         "取到的不是最新的 40 条有序行 ⇒ 窗口或排序基准失效（护栏 1）"
+    )
+    # 配对断言：进 prompt 的上限必须严格小于落库上限，否则 _serialize_tool_response
+    # 的截断分支永不触发 ⇒ 护栏 2 形同不存在（本文件的超大结果用例也会静默空转）。
+    assert ProjectAgentService.TOOL_RESULT_MAX_CHARS < ProjectAgentService.TOOL_RESULT_PERSIST_MAX_CHARS, (
+        "TOOL_RESULT_MAX_CHARS 不再小于落库侧 TOOL_RESULT_PERSIST_MAX_CHARS"
+        " ⇒ 截断分支成为死路，单条工具结果仍可吃光 60000 历史预算"
     )
