@@ -92,10 +92,9 @@ def install_fake_model(svc: ProjectAgentService, responses: list[dict], calls: l
 
 
 async def persisted_messages(db, conversation_id: str) -> list[AgentMessage]:
+    """All agent_messages rows for a conversation; callers assert order-independently."""
     return list((await db.execute(
-        select(AgentMessage)
-        .where(AgentMessage.conversation_id == conversation_id)
-        .order_by(AgentMessage.id)
+        select(AgentMessage).where(AgentMessage.conversation_id == conversation_id)
     )).scalars().all())
 
 
