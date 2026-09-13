@@ -234,7 +234,7 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
             "batch_expand_outlines": 2,
             "generate_chapter": 2,
             "batch_generate_chapters": 2,
-            "analyze_chapter": 2,
+            "analyze_chapter": 1,
             "regenerate_chapter": 2,
             "partial_regenerate_chapter": 2,
             "generate_character": 1,
