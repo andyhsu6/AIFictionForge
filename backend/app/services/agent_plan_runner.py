@@ -490,6 +490,9 @@ def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str,
         code = "task.cancelled"
     elif handle.propagated_code:
         code = handle.propagated_code         # 计划 B 契约：原样上送子任务的码
+    elif outcome == "failed" and handle.failed_at_step is not None:
+        # §3 失败即停：有明确失败步时用可读码 + 步数参数，取代笼统 task.failed
+        code = "internal.agent_plan_step_failed"
     elif outcome == "failed":
         code = "task.failed"
     else:
@@ -504,7 +507,11 @@ def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str,
         "status_params": (
             handle.propagated_params
             if code == handle.propagated_code and handle.propagated_params
-            else {}
+            else (
+                {"step": handle.failed_at_step, "total": max(len(handle.steps), 1)}
+                if code == "internal.agent_plan_step_failed"
+                else {}
+            )
         ),
         "progress_details": _details(handle, outcome, summary),
         "task_result": {

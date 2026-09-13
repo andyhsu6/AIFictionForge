@@ -370,7 +370,8 @@ async def test_second_step_failure_stops_plan(env, monkeypatch):
     assert result.plan.status == "failed"
     assert result.plan.progress_details["failed_at_step"] == 2
     assert result.plan.progress_details["steps_done"] == 1
-    assert result.plan.status_code == "task.failed"
+    assert result.plan.status_code == "internal.agent_plan_step_failed"
+    assert result.plan.status_params == {"step": 2, "total": 3}
     assert result.tool_call.status == "failed"
     assert "目标实体不存在" in (result.tool_call.error_message or "")
 
