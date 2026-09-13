@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
 from app.models.project import Project
-from app.models.project_agent import AgentConversation, AgentToolCall
+from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.agent_plan_schema import (
     EXCLUDED_PLAN_TOOLS,
     PROPOSE_PLAN_TOOL_NAME,
@@ -408,7 +408,9 @@ async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
         calls=calls,
     )
 
-    assert len(calls) == 3
+    # Task 4 之后收口轮没产出计划会继续重问，所以总轮数不再恒为 3；
+    # 本用例钉的是**前三轮的工具集与 tool_choice 形状**，不是总轮数。
+    assert len(calls) >= 3
     ordered = [
         [item["function"]["name"] for item in (call["tools"] or [])] for call in calls[:2]
     ]
@@ -478,3 +480,125 @@ async def test_propose_plan_rejects_a_tool_the_round_never_offered(env):
     ]
     assert len(failed) == 1
     assert "计划格式需要修正" in failed[0]["content"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 4：产出校验的有界重试（≤2 次）与可读收口
+# --------------------------------------------------------------------------- #
+
+BAD_PLAN = {"objective": "x", "steps": []}
+BAD_PLAN_REASON = "steps 必须是非空数组"
+
+
+def _bad_plan_response(call_id: str = "call-bad") -> dict:
+    return tool_call(PROPOSE_PLAN_TOOL_NAME, BAD_PLAN, call_id=call_id)
+
+
+def _plan_response_without_text() -> dict:
+    response = _plan_response()
+    response["content"] = ""      # 模型只调工具、不说话 ⇒ 走服务端兜底文案
+    return response
+
+
+async def read_messages(env, role: str) -> list:
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        return list((await session.execute(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == env.conversation_id,
+                AgentMessage.role == role,
+            )
+        )).scalars().all())
+
+
+@pytest.mark.anyio
+async def test_closing_round_without_tool_call_retries_exactly_twice(env):
+    """形态 (a)：收口轮没有 tool_calls ⇒ 计数重问，最多 2 次后以可读文案收口。
+
+    总轮数 5 = 2 轮只读 + 2 次重问 + 第 3 次失败即收口；把 PLAN_MAX_RETRIES 调大
+    会撞到 MAX_TOOL_ROUNDS 而抛裸 RuntimeError（本用例变红），调小则轮数与纠正
+    消息数同时变红——两个方向都钉住「≤2」。
+    """
+    calls: list[dict] = []
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            answer("我再想想。"),
+            answer("还是先讲道理。"),
+            answer("最后仍然不讲道理。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 5, f"实际发生 {len(calls)} 次模型调用，重试上界失控"
+    # 定案的数字，不是从被测常量推出来的：改 PLAN_MAX_RETRIES 就必须同时改这里。
+    assert ProjectAgentService.PLAN_MAX_RETRIES == 2
+    assert len(await read_messages(env, "system")) == 2
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals, "必须以可读文案收口"
+    assert "计划" in finals[-1]["content"]
+    final = events[-1]
+    assert final["type"] == "result" and final["data"]["status"] == "completed"
+    # 计划一步都没产出 ⇒ 不得留下 waiting_confirmation 的假卡片
+    rows = await read_tool_calls(env)
+    assert [row.tool_name for row in rows] == ["list_outlines", "list_outlines"]
+    assert all(row.status == "executed" for row in rows)
+
+
+@pytest.mark.anyio
+async def test_invalid_plan_budget_is_consumed_and_reason_reaches_user(env):
+    """形态 (b)：Task 3 写下的 plan_attempts / plan_correction **必须被消费**。
+
+    未消费 ⇒ 这里既不会有第 3 次尝试（无界），收口文案也不会带出 schema 的原始
+    失败原因，卡片更不会被置 failed。三条断言各自钉住一个消费点。
+    """
+    calls: list[dict] = []
+    events = await run_turn(env, [_bad_plan_response()], plan_mode=True, calls=calls)
+
+    rows = await read_tool_calls(env)
+    assert len(rows) == 3           # 1 次初始 + 2 次重问；写死，不随常量漂移
+    assert all(row.tool_name == PROPOSE_PLAN_TOOL_NAME for row in rows)
+    assert all(row.status == "failed" for row in rows)
+    assert all(BAD_PLAN_REASON in (row.error_message or "") for row in rows)
+
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals and BAD_PLAN_REASON in finals[-1]["content"], "plan_correction 无人消费"
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+    assert len(calls) == 3          # 第 4 次请求就是成本失控
+
+
+@pytest.mark.anyio
+async def test_closing_round_wrong_tool_counts_against_retry_budget(env):
+    """形态 (c)：收口轮调了不是 propose_plan 的工具，同样计数并最终以可读文案收口。"""
+    events = await run_turn(
+        env,
+        [
+            _bad_plan_response(),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+        ],
+        plan_mode=True,
+        calls=[],
+    )
+
+    rows = await read_tool_calls(env)
+    assert [row.tool_name for row in rows] == [
+        PROPOSE_PLAN_TOOL_NAME, "list_outlines", "list_outlines",
+    ]
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals and "计划" in finals[-1]["content"]
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_plan_close_text_never_promises_a_diff_row(env):
+    """计划卡的 `preview is None` ⇒ 兜底文案不得说「请核对下方差异」（空标签错报）。"""
+    events = await run_turn(env, [_plan_response_without_text()], plan_mode=True, calls=[])
+
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals
+    assert "计划" in finals[0]["content"]
+    assert "请核对下方差异" not in finals[0]["content"]
