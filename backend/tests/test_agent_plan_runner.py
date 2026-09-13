@@ -24,6 +24,7 @@ from app.models.project_agent import (
     AgentToolCall,
 )
 from app.services import agent_plan_runner as runner
+from app.services.project_agent_tools import ProjectAgentToolRegistry
 
 
 @pytest.fixture
@@ -269,3 +270,141 @@ async def test_resolve_tool_call_id_prefers_task_input_anchor(env):
         project_id=env.project_id, user_id=env.user_id,
     )
     assert fallback == env.tool_call_id
+
+
+class CountingAIService:
+    """LLM 出口计数器。执行阶段必须一次都不碰到它。"""
+
+    default_model = "test-model"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def generate_text(self, *args, **kwargs):
+        self.calls.append("generate_text")
+        raise AssertionError("execution phase must not call the model")
+
+    async def call_with_json_retry(self, *args, **kwargs):
+        self.calls.append("call_with_json_retry")
+        raise AssertionError("execution phase must not call the model")
+
+    async def generate_text_stream(self, *args, **kwargs):
+        self.calls.append("generate_text_stream")
+        yield ""
+
+    async def generate_text_stream_full(self, *args, **kwargs):
+        self.calls.append("generate_text_stream_full")
+        yield ""
+
+
+async def start_plan(env, steps, *, ai_service=None):
+    """跑一份计划并返回 (outcome, plan_row, tool_call_row)。"""
+    ai = ai_service or CountingAIService()
+    task = await runner.run_plan(
+        plan_task_id=env.plan_task_id,
+        user_id=env.user_id,
+        project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=steps,
+        ai_service=ai,
+        session_factory=env.factory,
+    )
+    outcome = await asyncio.gather(task, return_exceptions=True)
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    tool_call_row = await load_row(env.factory, AgentToolCall, env.tool_call_id)
+    return SimpleNamespace(
+        task=task, ai=ai, outcome=outcome[0], plan=plan_row, tool_call=tool_call_row
+    )
+
+
+@pytest.mark.anyio
+async def test_run_plan_returns_an_awaitable_task(env):
+    """签名必须返回 asyncio.Task：detached 任务拦不到请求态 monkeypatch，
+    不给句柄就没法证伪「执行阶段零 LLM」。"""
+    task = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id,
+        project_id=env.project_id, conversation_id=env.conversation_id,
+        steps=[], ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    assert isinstance(task, asyncio.Task)
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_inline_steps_complete_and_finalize_tool_call(env):
+    result = await start_plan(env, [plan_step(1), plan_step(2)])
+    assert result.outcome is None                       # 正常收口，不抛
+    assert result.plan.status == "completed"
+    assert result.plan.progress == 100
+    assert result.plan.progress_details["steps_total"] == 2
+    assert result.plan.progress_details["steps_done"] == 2
+    assert result.plan.progress_details["failed_at_step"] is None
+    assert result.ai.calls == []                        # 零 LLM
+    assert result.tool_call.status == "executed"
+    assert result.tool_call.result["steps_done"] == 2
+    async with env.factory() as db:
+        steps = (await db.execute(
+            select(AgentExecutionStep).where(
+                AgentExecutionStep.tool_call_id == env.tool_call_id
+            ).order_by(AgentExecutionStep.sequence)
+        )).scalars().all()
+    assert [s.status for s in steps] == ["completed", "completed"]
+
+
+@pytest.mark.anyio
+async def test_second_step_failure_stops_plan(env, monkeypatch):
+    """验收③：第 2 步失败 ⇒ 第 3 步不跑且 failed_at_step=2。"""
+    launched: list[str] = []
+    real_execute = ProjectAgentToolRegistry.execute
+
+    async def fake_execute(self, name, arguments):
+        launched.append(name)
+        if len(launched) == 2:
+            raise ValueError("目标实体不存在")
+        return await real_execute(self, name, arguments)
+
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", fake_execute)
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+
+    assert len(launched) == 2                           # 第 3 步根本没发起
+    assert result.plan.status == "failed"
+    assert result.plan.progress_details["failed_at_step"] == 2
+    assert result.plan.progress_details["steps_done"] == 1
+    assert result.plan.status_code == "task.failed"
+    assert result.tool_call.status == "failed"
+    assert "目标实体不存在" in (result.tool_call.error_message or "")
+
+
+@pytest.mark.anyio
+async def test_same_user_plans_run_one_at_a_time(env, monkeypatch):
+    """per-user 信号量=1：同一用户同时只跑一个计划（架构计划 §3）。"""
+    events: list[str] = []
+    real_execute = ProjectAgentToolRegistry.execute
+
+    async def slow_execute(self, name, arguments):
+        events.append("enter")
+        await asyncio.sleep(0.05)
+        events.append("exit")
+        return await real_execute(self, name, arguments)
+
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", slow_execute)
+    first = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id, steps=[plan_step(1)],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    second_id = f"plan-{uuid.uuid4().hex[:8]}"
+    async with env.factory() as db:
+        db.add(BackgroundTask(
+            id=second_id, user_id=env.user_id, project_id=env.project_id,
+            task_type="agent_plan", status="pending", progress=0,
+            task_input={"tool_call_id": env.tool_call_id},
+        ))
+        await db.commit()
+    second = await runner.run_plan(
+        plan_task_id=second_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id, steps=[plan_step(1)],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.gather(first, second, return_exceptions=True)
+    assert events == ["enter", "exit", "enter", "exit"]        # 绝不交错

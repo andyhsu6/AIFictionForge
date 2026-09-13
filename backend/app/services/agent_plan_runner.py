@@ -15,6 +15,7 @@ LLM 只出现在两个端点：规划（PR-2a 的 propose_plan）与收尾（PR-
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, NamedTuple
 
@@ -23,11 +24,15 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.api.common import verify_project_access
+from app.core.errors import ApiError
+from app.database import get_engine
 from app.logger import get_logger
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
 from app.models.project_agent import AgentExecutionStep, AgentToolCall
+from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
 logger = get_logger(__name__)
@@ -333,3 +338,293 @@ async def _resolve_tool_call_id(
             .order_by(AgentToolCall.created_at.desc())
             .limit(1)
         )).scalar_one_or_none()
+
+
+class PlanStepError(RuntimeError):
+    """步骤级失败（发起报错、子任务失败/超时、子任务不存在）。一律导致失败即停。"""
+
+
+@dataclass
+class _PlanHandle:
+    """一次计划运行的可变状态。
+
+    它同时是三样东西：asyncio.Task 的强引用（防 GC）、取消路由表的一元、
+    以及最终步数的唯一真相源（计划行只能由它写，才能在被取消后仍写进步数）。
+    """
+
+    plan_task_id: str
+    user_id: str
+    project_id: str
+    conversation_id: str
+    steps: list[dict[str, Any]]
+    ai_service: Any = None          # PR-2c 收尾消费；PR-2b 一次都不调用
+    tool_call_id: str | None = None  # propose_plan 锚点，run_plan 里查一次就缓存
+    task: "asyncio.Task | None" = None
+    cancel_requested: bool = False
+    cancel_reason: str | None = None
+    steps_done: int = 0
+    failed_at_step: int | None = None
+    in_flight: "tuple[str, str] | None" = None      # (task_type, task_id)
+    propagated_code: str | None = None
+    propagated_params: dict[str, Any] | None = None
+    cancelled_sub_tasks: list[str] = field(default_factory=list)
+    uncancellable_sub_tasks: list[str] = field(default_factory=list)
+    step_results: list[dict[str, Any]] = field(default_factory=list)
+
+
+# plan_task_id -> handle：模块级强引用（范式同 api/chapters.py:77 + :116-121 的
+# analysis_background_tasks），并兼作取消路由表。架构计划原文写的是"强引用集合"，
+# 这里用 dict 是因为它必须同时承担 task_id -> Task 的查找，两份状态会漂移。
+_PLAN_HANDLES: dict[str, _PlanHandle] = {}
+
+# 信号量按 loop 分组：asyncio.Semaphore 会记住首次 acquire 的 loop，之后换 loop 使用
+# 直接抛错，而 anyio 每个用例一个新 loop。留住 loop 的强引用是为了让 id() 不被复用。
+_LOOP_SEMAPHORES: dict[int, "tuple[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]]"] = {}
+
+
+async def _per_user_semaphore(user_id: str) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    entry = next((item for item in _LOOP_SEMAPHORES.values() if item[0] is loop), None)
+    if entry is None:
+        entry = (loop, {})
+        _LOOP_SEMAPHORES[id(loop)] = entry
+    table = entry[1]
+    semaphore = table.get(user_id)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(1)
+        table[user_id] = semaphore
+    return semaphore
+
+
+async def _default_session_factory(user_id: str) -> async_sessionmaker:
+    """生产路径自造依赖，范式照 background_task_service.py:27-31。"""
+    engine = await get_engine(user_id)
+    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+def _details(handle: _PlanHandle, stage: str, summary: str) -> dict[str, Any]:
+    """progress_details 的固定形状；步数/取消原因/失败位置只能放这里。"""
+    return {
+        "stage": stage,
+        "message": _clip(summary, 200),
+        "outcome": stage,
+        "steps_total": len(handle.steps),
+        "steps_done": handle.steps_done,
+        "failed_at_step": handle.failed_at_step,
+        "cancel": {
+            "requested": handle.cancel_requested,
+            "reason": handle.cancel_reason,
+            "cancelled_sub_tasks": list(handle.cancelled_sub_tasks),
+            "uncancellable_sub_tasks": list(handle.uncancellable_sub_tasks),
+        },
+        "step_results": list(handle.step_results),
+    }
+
+
+async def run_plan(
+    *,
+    plan_task_id: str,
+    user_id: str,
+    project_id: str,
+    conversation_id: str,
+    steps: list[dict[str, Any]],
+    ai_service: Any = None,
+    session_factory: async_sessionmaker | None = None,
+) -> "asyncio.Task":
+    """调度一次计划执行，返回 runner 自持的 asyncio.Task。
+
+    ⚠️ 返回 Task + 暴露 ai_service/session_factory 注入点是硬性要求（架构计划 §3 修 H3）：
+    detached 任务拦不到请求态 monkeypatch（tests/test_agent_tool_persistence.py:159-188
+    的 prompt 采集法只 patch 得到请求内的 service 实例），若不给句柄与注入点，
+    「执行阶段零 LLM 调用」与「中途取消」两条验收根本不可证伪。
+    """
+    factory = session_factory or await _default_session_factory(user_id)
+    tool_call_id = await _resolve_tool_call_id(
+        factory, plan_task_id=plan_task_id, project_id=project_id, user_id=user_id
+    )
+    handle = _PlanHandle(
+        plan_task_id=plan_task_id,
+        user_id=user_id,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        steps=[dict(step) for step in (steps or []) if isinstance(step, dict)],
+        ai_service=ai_service,
+        tool_call_id=tool_call_id,
+    )
+    task = asyncio.create_task(_supervise(handle, factory))
+    handle.task = task
+    _PLAN_HANDLES[plan_task_id] = handle
+    task.add_done_callback(lambda _completed: _PLAN_HANDLES.pop(plan_task_id, None))
+    return task
+
+
+async def _supervise(handle: _PlanHandle, factory: async_sessionmaker) -> None:
+    """唯一顶层协程：任何异常都在此收口成计划行终态，绝不冒泡成未取回的 Task 异常。"""
+    semaphore = await _per_user_semaphore(handle.user_id)
+    outcome = "failed"
+    summary = "计划执行失败"
+    try:
+        async with semaphore:                 # per-user 并发=1
+            outcome, summary = await _run_plan_steps(handle, factory)
+    except asyncio.CancelledError:
+        outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
+        await _write_final_state(handle, factory, outcome, summary)
+        raise
+    except Exception as exc:                  # noqa: BLE001 —— 含权限校验失败
+        outcome, summary = "failed", str(exc)
+        logger.error(f"❌ 计划执行异常 {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+    await _write_final_state(handle, factory, outcome, summary)
+
+
+def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str, Any]:
+    if outcome == "cancelled":
+        code = "task.cancelled"
+    elif handle.propagated_code:
+        code = handle.propagated_code         # 计划 B 契约：原样上送子任务的码
+    elif outcome == "failed":
+        code = "task.failed"
+    else:
+        code = "progress.done"
+    total = max(len(handle.steps), 1)
+    progress = 100 if outcome == "completed" else int(handle.steps_done / total * 100)
+    return {
+        "status": outcome,
+        "progress": progress,
+        "status_message": _clip(summary),
+        "status_code": code,
+        "status_params": (
+            handle.propagated_params
+            if code == handle.propagated_code and handle.propagated_params
+            else {}
+        ),
+        "progress_details": _details(handle, outcome, summary),
+        "task_result": {
+            "outcome": outcome,
+            "steps_total": len(handle.steps),
+            "steps_done": handle.steps_done,
+            "failed_at_step": handle.failed_at_step,
+            "step_results": list(handle.step_results),
+        },
+        "completed": True,
+    }
+
+
+async def _write_final_state(
+    handle: _PlanHandle, factory: async_sessionmaker, outcome: str, summary: str
+) -> None:
+    fields = _status_fields(handle, outcome, summary)
+    error_message = summary if outcome == "failed" else None
+    await _write_plan_row(
+        factory, handle.plan_task_id, error_message=error_message, **fields
+    )
+    tool_call_id = handle.tool_call_id or await _resolve_tool_call_id(
+        factory, plan_task_id=handle.plan_task_id,
+        project_id=handle.project_id, user_id=handle.user_id,
+    )
+    if tool_call_id:
+        await _finalize_tool_call(
+            factory, tool_call_id,
+            status="executed" if outcome == "completed" else "failed",
+            result=fields["task_result"],
+            error_message=None if outcome == "completed" else _clip(summary, 200),
+        )
+
+
+async def _run_plan_steps(
+    handle: _PlanHandle, factory: async_sessionmaker
+) -> "tuple[str, str]":
+    """预检 + 打开 runner 自己的会话与权限校验，然后把主循环交给 _run_step_loop。"""
+    total = len(handle.steps)
+    await _write_plan_row(
+        factory, handle.plan_task_id, status="running", progress=0, started=True,
+        status_message=_clip(f"计划开始执行（{total} 步）"),
+        progress_details=_details(handle, "running", f"计划开始执行（{total} 步）"),
+    )
+    if not total:
+        return "completed", "计划没有需要执行的步骤"
+    try:
+        # 会话必须在整个循环期间持有：registry 与它绑定的 db 就是步骤的执行通道。
+        # 反过来，循环里每次 _write_plan_row/_insert_step 用的是**另开**的短命会话，
+        # 两者互不干扰（长会话每步 commit 后立即结束事务）。
+        async with factory() as db:
+            project = await verify_project_access(handle.project_id, handle.user_id, db)
+            registry = ProjectAgentToolRegistry(project, db)
+            return await _run_step_loop(handle, factory, db, registry)
+    except ApiError as exc:
+        return "failed", _clip(f"项目权限校验失败：{exc}", 200)
+
+
+async def _run_step_loop(
+    handle: _PlanHandle,
+    factory: async_sessionmaker,
+    db: AsyncSession,
+    registry: ProjectAgentToolRegistry,
+) -> "tuple[str, str]":
+    """顺序执行每一步，失败即停。返回 (outcome, summary)。"""
+    total = len(handle.steps)
+    for index, step in enumerate(handle.steps, start=1):
+        if handle.cancel_requested:
+            return "cancelled", _clip(handle.cancel_reason or "计划已取消", 200)
+        label = str(step.get("action") or step.get("tool") or f"step {index}")
+        step_id = await _insert_step(
+            factory,
+            conversation_id=handle.conversation_id,
+            tool_call_id=handle.tool_call_id,
+            sequence=index,
+            title=f"计划第 {index}/{total} 步：{label}",
+            content="正在执行",
+            detail={"index": index, "tool": step.get("tool"), "action": step.get("action"),
+                    "arguments": step.get("arguments") or {}, "note": step.get("note")},
+        )
+        try:
+            recorded = await _execute_step(handle, factory, db, registry, step)
+        except Exception as exc:              # noqa: BLE001 —— 失败即停
+            handle.failed_at_step = index
+            handle.step_results.append(
+                {"index": index, "action": label, "status": "failed", "error": _clip(exc, 200)}
+            )
+            await _patch_step(
+                factory, step_id, status="failed",
+                content=_clip(f"失败：{exc}", 500),
+            )
+            return "failed", _clip(f"第 {index} 步失败：{exc}", 200)
+        handle.steps_done = index
+        handle.step_results.append({"index": index, "action": label, "status": "completed", **recorded})
+        await _patch_step(factory, step_id, status="completed", content="完成")
+        await _write_plan_row(
+            factory, handle.plan_task_id,
+            progress=int(index / total * 100),
+            status_message=_clip(f"已完成 {index}/{total} 步"),
+            progress_details=_details(handle, "running", f"已完成 {index}/{total} 步"),
+        )
+        if STEP_GRACE_SECONDS:
+            await asyncio.sleep(STEP_GRACE_SECONDS)   # PR-4：步间 grace
+    return "completed", f"计划执行完成（{total}/{total} 步）"
+
+
+async def _execute_step(
+    handle: _PlanHandle,
+    factory: async_sessionmaker,
+    db: AsyncSession,
+    registry: ProjectAgentToolRegistry,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    """执行一步。只读/即时写工具内联完成；后台任务型步骤交给轮询（Task 4）。"""
+    tool = str(step.get("tool") or "")
+    arguments = dict(step.get("arguments") or {})
+    action = str(step.get("action") or arguments.get("action") or "")
+    if action and "action" not in arguments:
+        arguments["action"] = action
+    result = await registry.execute(tool, arguments)
+    # 前序落库后序可见：跨步引用（chapter_number / outline.order_index）在执行期由
+    # find_chapter 解析，所以每步都必须先提交、再让身份映射作废。
+    await db.commit()
+    db.expire_all()
+    await db.refresh(registry.project)   # expire_all 会让绑定会话的 project 变成惰性刷新，
+    # 下一步的同步属性访问会在非 greenlet 上下文触发 IO（MissingGreenlet）；显式刷新一次。
+    if tool == BACKGROUND_LAUNCH_TOOL:
+        raise PlanStepError(f"PR-2b Task 3 尚未支持后台任务步骤：{action}")
+    return {
+        "inline": True,
+        "entity_id": str(result.get("entity_id") or "") if isinstance(result, dict) else "",
+    }
