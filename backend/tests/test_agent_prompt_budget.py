@@ -15,12 +15,18 @@ import types
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.errors import ApiError
 from app.database import Base
 from app.models.project import Project
-from app.models.project_agent import AgentConversation, AgentMessage
+from app.models.project_agent import (
+    AgentConversation,
+    AgentExecutionStep,
+    AgentMessage,
+)
+from app.schemas.project_agent import AgentExecutionStepResponse
 from app.services import agent_prompt_budget as apb
 from app.services.agent_prompt_budget import (
     CHARS_PER_TOKEN,
@@ -834,3 +840,298 @@ def test_budget_math_is_not_duplicated_outside_the_budget_module():
     assert not local_clamps, (
         f"service 里直接引用了预算上下界常量：{sorted(local_clamps)} ⇒ 本地又 clamp 了一遍"
     )
+
+
+# --------------------------------------------------------------------------
+# §5 ④ 判据补口：触发裁剪时除了日志，还必须在 `AgentExecutionStep` 留可见痕迹
+# --------------------------------------------------------------------------
+
+#: 留痕行的 `step_type` 取值。`agent_execution_steps.step_type` 是自由 `String(30)`
+#: （无 Enum / Literal，扩它不是 schema 改动），仓库里既有的取值是
+#: thought / tool / skill ⇒ 这里新增一个与工具调用不会混淆的取值。
+#: 判据的选取谓词刻意**不只看这个字面量**（见 `_trim_steps`），否则"实现换个字面量"
+#: 会让正反两面用例同时假绿。
+BUDGET_TRIM_STEP_TYPE = "budget"
+
+
+def _trim_steps(steps):
+    """从一轮回合产出的步骤里挑出「记录裁剪事实」的那些。
+
+    两条通道任一成立即算：①`step_type` 是留痕专用值；②`detail` 里带着
+    `dropped_messages` 字段。**必须**接受第二条：留痕的契约是"数字可见"，
+    不是"我选了某个字面量"。而第一条又是反向用例的判据 —— 无条件写入的实现
+    哪怕数字为 0，`detail` 里也一定有 `dropped_messages` ⇒ 反向用例照样红。
+    """
+    return [
+        step
+        for step in steps
+        if step.step_type == BUDGET_TRIM_STEP_TYPE
+        or "dropped_messages" in (step.detail or {})
+    ]
+
+
+async def _seed_over_budget_history(db_session, tool_rows: int = 8):
+    """种一条必然裁剪的历史：1 条最早诉求 + `tool_rows` 条打满 8000 的 tool 行。
+
+    实测形状（`_serialize_tool_response` 每条 part = 8073 字符）：60000 预算下
+    只装得进 7 条 ⇒ 恰好舍 1 条、舍 8000 字符，两个数字都可精确断言。
+    """
+    project = Project(id="p1", user_id="u1", title="project one")
+    conversation = AgentConversation(user_id="u1", project_id="p1", title="t")
+    db_session.add(project)
+    db_session.add(conversation)
+    await db_session.flush()
+    fill = "结" * ProjectAgentService.TOOL_RESULT_MAX_CHARS
+    db_session.add(
+        AgentMessage(conversation_id=conversation.id, role="user", content="first request")
+    )
+    for i in range(tool_rows):
+        db_session.add(
+            AgentMessage(
+                conversation_id=conversation.id,
+                role="tool",
+                content=fill,
+                tool_call_id=f"call_seed_{i}",
+            )
+        )
+    await db_session.commit()
+    return project, conversation
+
+
+def _answer_only_ai_service(prompts):
+    """单轮就给出最终回答的 AI 桩 ⇒ 轮循环只跑一次，裁剪数字不存在跨轮漂移。"""
+    ai_service = types.SimpleNamespace(
+        default_model="m1", api_provider="openai", base_url="https://gw.example/v1"
+    )
+
+    async def fake_generate_text(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return {"content": "收到", "tool_calls": [], "usage": {}}
+
+    async def fake_stream_full(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return {"content": "收到", "tool_calls": [], "usage": {}}
+
+    ai_service.generate_text = fake_generate_text
+    ai_service.generate_text_stream_full = fake_stream_full
+    return ai_service
+
+
+async def _run_turn(db_session, monkeypatch, project, conversation, effective_tokens):
+    """跑一次真实 `stream_chat`，返回 (事件, prompt 列表, 观测到的 trace, 落库步骤)。"""
+
+    async def fake_window(user_id, model, db, *, provider=None, base_url=None):
+        return effective_tokens
+
+    monkeypatch.setattr(apb, "get_effective_context_window", fake_window)
+    prompts: list[str] = []
+    seen_traces: list[apb.PromptBudgetTrace] = []
+    svc = ProjectAgentService(
+        db=db_session,
+        ai_service=_answer_only_ai_service(prompts),
+        project=project,
+        user_id="u1",
+    )
+    original_build_prompt = svc._build_prompt
+
+    def spy_build_prompt(*args, **kwargs):
+        trace = kwargs.get("trace")
+        if trace is not None:
+            seen_traces.append(trace)
+        return original_build_prompt(*args, **kwargs)
+
+    svc._build_prompt = spy_build_prompt  # type: ignore[method-assign]
+    events = [
+        event
+        async for event in svc.stream_chat(
+            conversation_id=conversation.id,
+            message="继续",
+            page_context={"route": "/project/1"},
+            auto_approve=False,
+        )
+    ]
+    steps = list(
+        (
+            await db_session.execute(
+                select(AgentExecutionStep)
+                .where(AgentExecutionStep.conversation_id == conversation.id)
+                .order_by(AgentExecutionStep.sequence)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return events, prompts, seen_traces, steps
+
+
+@pytest.mark.anyio
+async def test_trim_records_a_visible_agent_execution_step(db_session, monkeypatch):
+    """§5 ④：裁剪发生时该回合必须产出一条留痕步骤，且带着 trace 里的两个数字。
+
+    这是"日志之外还要有可见痕迹"那条判据的唯一可执行形态 —— `logger.warning`
+    在测试里没人读得到，用户界面上也看不到。
+    """
+    project, conversation = await _seed_over_budget_history(db_session)
+    # 200000 tok x CHARS_PER_TOKEN x ratio = 60000 字符（正好是历史硬编码值/下限）
+    events, prompts, seen_traces, steps = await _run_turn(
+        db_session, monkeypatch, project, conversation, 200_000
+    )
+
+    assert len(prompts) == 1, f"本用例要求单轮收口，实际 {len(prompts)} 轮"
+    assert len(seen_traces) == 1
+    trace = seen_traces[0]
+    # 前置事实：裁剪**确实**发生了（否则下面的留痕断言是空场景假绿）
+    assert trace.budget_chars == 60_000
+    assert prompts[0].count("<tool>") == 7, (
+        f"60000 预算下应带进 7 条 tool 行，实际 {prompts[0].count('<tool>')}"
+    )
+    assert trace.dropped_messages == 1
+    assert trace.dropped_chars == 8_000
+
+    trim_steps = _trim_steps(steps)
+    assert len(trim_steps) == 1, (
+        f"裁剪发生了却只有 {len(trim_steps)} 条留痕步骤（全部步骤："
+        f"{[(s.step_type, s.title, s.detail) for s in steps]}）"
+        " ⇒ §5 ④ 仍停留在只有 logger.warning 的形态"
+    )
+    step = trim_steps[0]
+
+    # 数字必须**取自同一个 budget_trace**，不是留痕处再数一遍
+    detail = step.detail or {}
+    assert detail["dropped_messages"] == trace.dropped_messages == 1
+    assert detail["dropped_chars"] == trace.dropped_chars == 8_000
+    assert detail["budget_chars"] == trace.budget_chars
+    assert str(detail["dropped_messages"]) in (step.content or "")
+    assert str(detail["dropped_chars"]) in (step.content or "")
+    assert step.title
+
+    # 前端可见性两条通道都要成立：SSE 直播 + 会话详情 REST 回读
+    assert any(
+        e["type"] == "step_start" and e["data"]["id"] == step.id for e in events
+    ), "留痕步骤没有走 step_start ⇒ 正在跑的界面看不到它"
+    payload = AgentExecutionStepResponse.model_validate(step).model_dump()
+    assert payload["detail"]["dropped_messages"] == 1
+    assert payload["detail"]["dropped_chars"] == 8_000
+    assert payload["step_type"] == BUDGET_TRIM_STEP_TYPE
+    assert payload["assistant_message_id"], "未挂到 assistant 消息 ⇒ 回读时不落在任何回合下"
+
+
+@pytest.mark.anyio
+async def test_no_trim_records_no_agent_execution_step(db_session, monkeypatch):
+    """反向：没裁剪就不许出现留痕行。
+
+    与正向用例配对才成立 —— 若实现无条件写入（哪怕数字是 0），本用例会拿到一条
+    `detail` 含 `dropped_messages` 的步骤而变红；`other_steps` 断言则保证"查不到"
+    不是因为查询本身失效或回合根本没落步骤。
+    """
+    project, conversation = await _seed_over_budget_history(db_session)
+    # 2M tok x 1.0 x 0.3 = 600000 ⇒ clamp 到上限 400000 ⇒ 8 条全装得下
+    events, prompts, seen_traces, steps = await _run_turn(
+        db_session, monkeypatch, project, conversation, 2_000_000
+    )
+
+    assert len(prompts) == 1
+    trace = seen_traces[0]
+    assert trace.budget_chars == 400_000
+    assert trace.dropped_messages == 0
+    assert prompts[0].count("<tool>") == 8, "前置失效：这个预算下什么都没被舍才对"
+    assert _trim_steps(steps) == [], (
+        f"未裁剪却出现了留痕步骤：{[(s.step_type, s.detail) for s in _trim_steps(steps)]}"
+    )
+    other_steps = [s for s in steps if s not in _trim_steps(steps)]
+    assert other_steps, f"回合一个步骤都没落（{[(s.step_type, s.title) for s in steps]}）"
+    assert any(e["type"] == "final_done" for e in events)
+
+
+@pytest.mark.anyio
+async def test_two_trimming_rounds_share_one_trace_step(db_session, monkeypatch):
+    """多轮裁剪只留**一条**痕迹：第二轮更新同一行，而不是再插一行。
+
+    没有这条断言，"每轮各写一行"的实现也能让上面两条用例全绿 —— 而一次裁剪在
+    界面上刷出 5 行噪声恰恰是留痕最容易走偏的形态。
+    """
+    project, conversation = await _seed_over_budget_history(db_session)
+
+    async def fake_window(user_id, model, db, *, provider=None, base_url=None):
+        return 200_000
+
+    monkeypatch.setattr(apb, "get_effective_context_window", fake_window)
+    prompts: list[str] = []
+    seen_traces: list[apb.PromptBudgetTrace] = []
+    ai_service = _answer_only_ai_service(prompts)
+
+    async def tool_then_answer(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) > 1:
+            return {"content": "收到", "tool_calls": [], "usage": {}}
+        return {
+            "content": "我查一下。",
+            "tool_calls": [{
+                "id": "call_live_1",
+                "function": {"name": "budget_read", "arguments": {}},
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    ai_service.generate_text = tool_then_answer
+    svc = ProjectAgentService(
+        db=db_session, ai_service=ai_service, project=project, user_id="u1"
+    )
+    svc.registry._tools["budget_read"] = ProjectAgentTool(
+        "budget_read", "多轮留痕用例用", {"type": "object", "properties": {}},
+        risk_level=0,
+    )
+
+    async def fake_execute(name, arguments):
+        return {"data": {"ok": True}, "resources": [], "message": "已执行"}
+
+    monkeypatch.setattr(svc.registry, "execute", fake_execute)
+    original_build_prompt = svc._build_prompt
+
+    def spy_build_prompt(*args, **kwargs):
+        seen_traces.append(kwargs["trace"])
+        return original_build_prompt(*args, **kwargs)
+
+    svc._build_prompt = spy_build_prompt  # type: ignore[method-assign]
+    events = [
+        event
+        async for event in svc.stream_chat(
+            conversation_id=conversation.id,
+            message="继续",
+            page_context={"route": "/project/1"},
+            auto_approve=False,
+        )
+    ]
+    steps = list(
+        (
+            await db_session.execute(
+                select(AgentExecutionStep)
+                .where(AgentExecutionStep.conversation_id == conversation.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    assert len(prompts) == 2, "本用例必须走到第二轮，否则测的是单轮路径"
+    assert len(seen_traces) == 2
+    trim_steps = _trim_steps(steps)
+    assert len(trim_steps) == 1, (
+        f"两轮都裁剪 ⇒ 应只有一条留痕行，实际 {len(trim_steps)} 条："
+        f"{[(s.step_type, s.detail) for s in trim_steps]}"
+    )
+    step = trim_steps[0]
+    trace = seen_traces[-1]
+    assert trace.dropped_messages >= 1
+    assert (step.detail or {})["dropped_messages"] == trace.dropped_messages
+    assert (step.detail or {})["dropped_chars"] == trace.dropped_chars
+    starts = [
+        e for e in events
+        if e["type"] == "step_start" and e["data"]["id"] == step.id
+    ]
+    updates = [
+        e for e in events
+        if e["type"] == "step_update" and e["data"]["id"] == step.id
+    ]
+    assert len(starts) == 1, f"留痕行的 step_start 应恰好一次，实际 {len(starts)}"
+    assert len(updates) == 1, f"第二轮应更新同一行（step_update），实际 {len(updates)}"
