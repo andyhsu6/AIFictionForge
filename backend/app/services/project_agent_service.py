@@ -165,23 +165,6 @@ class ProjectAgentService:
         await self.db.flush()
         return conversation
 
-    async def stream_chat(
-        self,
-        *,
-        conversation_id: str | None,
-        message: str,
-        page_context: dict[str, Any],
-        auto_approve: bool = False,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """工具决策循环：工具结果持久化为 role=tool 消息，跨回合对模型可见。"""
-        async for event in self._stream_chat(
-            conversation_id=conversation_id,
-            message=message,
-            page_context=page_context,
-            auto_approve=auto_approve,
-        ):
-            yield event
-
     async def _call_round(
         self,
         *,
@@ -212,7 +195,7 @@ class ProjectAgentService:
             handle_tool_calls=False,
         )
 
-    async def _stream_chat(
+    async def stream_chat(
         self,
         *,
         conversation_id: str | None,
