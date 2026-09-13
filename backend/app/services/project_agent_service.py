@@ -108,6 +108,9 @@ async def execute_mcp_tool_call(
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
     HISTORY_LIMIT = 20
+    # 单条工具结果进 prompt 的上限：落库侧 _save_tool_response 允许到 50000 字符，
+    # 若不在此收口，一条即可吃光 _build_prompt 的 60000 历史预算并挤掉首条用户诉求。
+    TOOL_RESULT_MAX_CHARS = 8000
 
     def __init__(
         self,
@@ -1339,10 +1342,16 @@ class ProjectAgentService:
 
     @staticmethod
     def _serialize_tool_response(item: AgentMessage) -> str:
-        """role=tool 消息序列化：tool_call_id + 结果内容。"""
+        """role=tool 消息序列化：tool_call_id + 结果内容（带上限，防挤掉历史）。"""
+        content = item.content or ""
+        if len(content) > ProjectAgentService.TOOL_RESULT_MAX_CHARS:
+            content = (
+                content[: ProjectAgentService.TOOL_RESULT_MAX_CHARS]
+                + "\n……（工具结果过长，已截断）"
+            )
         return (
             f"<tool>\n<tool_call_id>{item.tool_call_id}</tool_call_id>\n"
-            f"<result>{item.content}</result>\n</tool>"
+            f"<result>{content}</result>\n</tool>"
         )
 
     async def _save_assistant(
