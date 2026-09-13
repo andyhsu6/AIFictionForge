@@ -792,6 +792,10 @@ def request_plan_cancellation(plan_task_id: str, *, reason: str = "计划已取�
     handle = _PLAN_HANDLES.get(plan_task_id)
     if handle is None:
         return False
+    if handle.cancel_requested:
+        # 幂等：标记已置起说明 runner 正在收尾（外部首请求或轮询读到已取消的计划行），
+        # 再发一次 task.cancel() 会打断 _supervise 的终态写入；首个 reason 也不该被覆盖。
+        return True
     handle.cancel_requested = True
     handle.cancel_reason = reason
     if handle.task is not None and not handle.task.done():

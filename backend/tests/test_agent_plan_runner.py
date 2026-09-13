@@ -861,3 +861,44 @@ async def test_plan_wall_clock_limit_aborts_remaining_steps(env, monkeypatch):
     assert "总时长" in result.plan.status_message
     assert len(launched) < 5
     assert result.plan.progress_details["steps_total"] == 5
+
+
+@pytest.mark.anyio
+async def test_second_cancel_request_does_not_abort_cleanup(env, monkeypatch):
+    """取消请求必须幂等：收尾写终态期间再来一次 cancel 不得打断写入、不得覆盖首个原因。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    real_write_final_state = runner._write_final_state
+
+    async def slow_write_final_state(handle, factory, outcome, summary):
+        await asyncio.sleep(0.2)                  # 拉长收尾窗口，让第二次 cancel 落在写入中
+        await real_write_final_state(handle, factory, outcome, summary)
+
+    monkeypatch.setattr(runner, "_write_final_state", slow_write_final_state)
+    launched: list[str] = []
+
+    async def launcher(db, sub):
+        launched.append(sub.id)                   # 子任务保持 pending，制造"正在等待"
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    task = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=[
+            plan_step(i, tool="start_project_task", action="generate_chapter",
+                      arguments={"chapter_number": 1})
+            for i in range(1, 4)
+        ],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.sleep(0.08)                     # 已进入第 1 步轮询
+    assert runner.request_plan_cancellation(env.plan_task_id, reason="首次取消") is True
+    await asyncio.sleep(0.05)                     # 收尾（含 0.2s 慢写）仍在进行
+    assert runner.request_plan_cancellation(env.plan_task_id, reason="二次取消") is True
+    await asyncio.gather(task, return_exceptions=True)
+
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert plan_row.status == "cancelled"         # 终态写不能被第二次 cancel 打断
+    assert plan_row.progress_details["cancel"]["reason"] == "首次取消"
+    assert plan_row.progress_details["cancel"]["cancelled_sub_tasks"] == launched
+    sub_row = await load_row(env.factory, BackgroundTask, launched[0])
+    assert sub_row.status == "cancelled"
