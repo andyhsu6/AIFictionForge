@@ -405,6 +405,28 @@ def _entry_arguments_dict(entry: dict) -> dict | None:
     return arguments if isinstance(arguments, dict) else None
 
 
+def _plan_match_key(args: Any) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+    """Raw 与 validate_plan 后的计划 dict 配对的稳定键。
+
+    validate_plan 会给每一步补 action/note 等归一化字段（raw 侧没有），全量 dict
+    相等在生产恒不成立；但 objective 与各步 (id, tool) 两侧都保留且被 strip，
+    所以只比这三样就能跨 raw/validated 形状配对。
+    """
+    if not isinstance(args, dict):
+        return None
+    steps = args.get("steps")
+    if not isinstance(steps, list):
+        return None
+    return (
+        str(args.get("objective") or "").strip(),
+        tuple(
+            (str(step.get("id") or "").strip(), str(step.get("tool") or "").strip())
+            for step in steps
+            if isinstance(step, dict)
+        ),
+    )
+
+
 def _propose_plan_entry_id(entry: dict) -> str:
     if _entry_function(entry).get("name") != PROPOSE_PLAN_TOOL_NAME:
         return ""
@@ -460,12 +482,12 @@ async def resolve_provider_call_id(
             _tool_call_entries(getattr(message, "tool_calls", None))
             for message in messages
         ]
-        wanted = record.arguments if isinstance(record.arguments, dict) else None
+        wanted = _plan_match_key(record.arguments)
         if wanted is not None:
             for entries in parsed:
                 for entry in entries:
                     entry_id = _propose_plan_entry_id(entry)
-                    if entry_id and _entry_arguments_dict(entry) == wanted:
+                    if entry_id and _plan_match_key(_entry_arguments_dict(entry)) == wanted:
                         return entry_id
         for entries in parsed:
             for entry in reversed(entries):
