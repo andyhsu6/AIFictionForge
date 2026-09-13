@@ -1096,7 +1096,12 @@ export default function SettingsPage({ embedded = false }: SettingsPageProps) {
         }
       }
     } catch (error) {
-      message.error(t('toast.activateFailed'));
+      // 激活也会被同一道门禁拒绝（预设的模型低于下限 / 判不出）。经既有 normalizer
+      // 解出 error.response.data.params 并交给门禁卡片，内联显示三段数；只有非门禁
+      // 错误才回落到不透明的通用 toast。
+      if (!captureGateRejection(error)) {
+        message.error(t('toast.activateFailed'));
+      }
       console.error(error);
     }
   };

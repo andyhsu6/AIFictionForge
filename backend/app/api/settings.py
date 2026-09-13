@@ -577,6 +577,39 @@ async def test_system_smtp_settings(
     }
 
 
+async def _gate_model_triple(
+    *,
+    user_id: str,
+    db: AsyncSession,
+    provider: str,
+    api_key: Optional[str],
+    base_url: str,
+    model: str,
+    declared: Optional[int] = None,
+    trigger: str,
+) -> None:
+    """某个**实发三元组**的上下文窗口硬拦（需求 #55 步骤 3）。
+
+    ⚠️ 必须在 `db_write_lock` **之外**调用：探测结论的缓存写入自己会取同一把
+    per-user 锁，而那把锁**不可重入** ⇒ 临界区内调用即自死锁（#56 评审已确认
+    既有 8 个 preferences 临界区内只有 DB 操作）。两个调用方（保存路径、预设激活）
+    都保持本判定在锁外、只把写入放进锁内。
+
+    `declared` 只在探测判不出时被采纳；实测 <1M 时声明无效（无勾选放行通道）。
+    """
+    await ensure_model_allowed(
+        user_id=user_id,
+        db=db,
+        provider=provider,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        trigger=trigger,
+        hint_window_tokens=detect_context_window(model),
+        declared_tokens=declared,
+    )
+
+
 async def _gate_saved_model_context_window(
     *,
     user_id: str,
@@ -587,9 +620,8 @@ async def _gate_saved_model_context_window(
 ) -> None:
     """保存路径的上下文窗口硬拦（需求 #55 步骤 3，交付物 9）。
 
-    ⚠️ 必须在 `db_write_lock` **之外**调用：探测结论的缓存写入自己会取同一把
-    per-user 锁，而那把锁**不可重入** ⇒ 临界区内调用即自死锁（#56 评审已确认
-    既有 8 个 preferences 临界区内只有 DB 操作，本函数正是为此保持在锁外）。
+    只负责把请求体/存量行解析成实发三元组，判定交给 `_gate_model_triple`
+    （锁外调用约束随迁，两个调用方共用同一条判定路径）。
 
     Args:
         require_model_in_payload_only: PUT 的部分更新形态只在请求显式带模型时判定，
@@ -619,20 +651,16 @@ async def _gate_saved_model_context_window(
         fallback_row.api_base_url if fallback_row is not None else None
     )
     resolved = resolve_runtime_ai_config(raw_provider, api_key, api_base_url)
-    provider = resolved["api_provider"]
-    base_url = effective_base_url(resolved["api_base_url"]) or ""
 
-    # 声明只在探测判不出时被采纳（实测 <1M 时声明无效，无勾选放行通道）
-    await ensure_model_allowed(
+    await _gate_model_triple(
         user_id=user_id,
         db=db,
-        provider=provider,
-        base_url=base_url,
+        provider=resolved["api_provider"],
         api_key=resolved["api_key"],
+        base_url=effective_base_url(resolved["api_base_url"]) or "",
         model=effective_model,
+        declared=declared,
         trigger=TRIGGER_SAVE,
-        hint_window_tokens=detect_context_window(effective_model),
-        declared_tokens=declared,
     )
 
 
@@ -1837,6 +1865,32 @@ async def delete_preset(
         return {"message": "预设已删除", "preset_id": preset_id}
 
 
+def _preset_gate_fingerprint(preset: Dict[str, Any]) -> str:
+    """激活会写入 Settings 主字段的那组值的快照（锁内 CAS 比对用）。
+
+    探测在锁外进行，期间预设可能被另一个请求改写；比对快照保证「闸门判定的三元组」
+    与「锁内实际写入的配置」是同一份，否则拒绝（`validation.preset_changed`）。
+    """
+    config = preset.get('config') or {}
+    resolved = _apply_provider_defaults(
+        config.get('api_provider'), config.get('api_key'), config.get('api_base_url')
+    )
+    return json.dumps(
+        {
+            "api_provider": _normalize_raw_provider(config.get('api_provider')),
+            "api_key": config.get('api_key') or "",
+            "api_base_url": resolved["api_base_url"] or "",
+            "llm_model": config.get('llm_model'),
+            "temperature": config.get('temperature'),
+            "max_tokens": config.get('max_tokens'),
+            "system_prompt": config.get('system_prompt'),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
 @router.post("/presets/{preset_id}/activate")
 async def activate_preset(
     preset_id: str,
@@ -1849,9 +1903,50 @@ async def activate_preset(
     将预设的配置应用到Settings主字段
 
     读改写（Settings 主字段 + preferences 激活标记）在 per-user 写锁内执行（#56）。
+
+    需求 #55：激活会把预设的模型设成**实发默认模型**，所以必须和保存路径过同一道
+    上下文窗口硬拦，否则预设激活是本分支唯一能静默换掉实发模型的绕闸后门。判定在
+    **锁外**做（`_gate_model_triple` 不可在写锁内调用，探测缓存写入要取同一把锁），
+    锁内只做 CAS 比对与写入。
     """
+    # ① 锁外取预设：判定可能同步补测 ①②，最坏 = PROBE_TOTAL_DEADLINE_SECONDS
+    pre_row = await get_user_settings(user.user_id, db, refresh=True)
+    try:
+        pre_prefs = json.loads(pre_row.preferences or '{}')
+    except json.JSONDecodeError:
+        raise ApiError(code="validation.config")
+    target_preset = next(
+        (p for p in pre_prefs.get('api_presets', {}).get('presets', []) if p['id'] == preset_id),
+        None,
+    )
+    if not target_preset:
+        raise ApiError(code="not_found.preset")
+    fingerprint = _preset_gate_fingerprint(target_preset)
+
+    # ② 锁外过闸：三元组表达式与保存路径逐字相同（否则重演 wrong-host admit）
+    preset_config = target_preset['config']
+    resolved = resolve_runtime_ai_config(
+        preset_config.get('api_provider'),
+        preset_config.get('api_key'),
+        preset_config.get('api_base_url'),
+    )
+    gate_model = (preset_config.get('llm_model') or "").strip()
+    if gate_model:
+        await _gate_model_triple(
+            user_id=user.user_id,
+            db=db,
+            provider=resolved["api_provider"],
+            api_key=resolved["api_key"],
+            base_url=effective_base_url(resolved["api_base_url"]) or "",
+            model=gate_model,
+            trigger=TRIGGER_SAVE,
+        )
+
+    # ③ 锁内 CAS：探测期间预设被改/被删 ⇒ 判定已描述不了将要写入的配置
     async with db_write_lock(user.user_id):
-        settings = await get_user_settings(user.user_id, db, refresh=True)
+        settings = await load_settings_row_fresh(db, user.user_id)
+        if settings is None:
+            raise ApiError(code="not_found.setting")
 
         # 解析preferences
         try:
@@ -1862,10 +1957,10 @@ async def activate_preset(
         api_presets = prefs.get('api_presets', {'presets': [], 'version': '1.0'})
         presets = api_presets.get('presets', [])
 
-        # 找到目标预设
+        # 找到目标预设，并确认它自判定以来没有被改过
         target_preset = next((p for p in presets if p['id'] == preset_id), None)
-        if not target_preset:
-            raise ApiError(code="not_found.preset")
+        if not target_preset or _preset_gate_fingerprint(target_preset) != fingerprint:
+            raise ApiError(code="validation.preset_changed")
 
         # 应用配置到Settings主字段
         config = target_preset['config']

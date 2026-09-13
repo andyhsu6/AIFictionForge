@@ -326,6 +326,7 @@ def _qualified_context_verdict() -> dict:
     本文件测的是写锁串行化，不是探测，所以给 save_settings 用例用的那个三元组
     预置一条**当天**的合格结论：门禁走「已有结论 ⇒ 零网络」分支，
     `acquisitions == 1` 的断言才仍然有意义（门禁判定必须发生在临界区之外）。
+    `activate_preset` 自 C1 起同样过闸，因此共用这份预置结论。
     """
     from datetime import datetime, timezone
 
@@ -365,7 +366,7 @@ def _seed_blob(case: str) -> dict:
                 "config": _preset_config().model_dump(),
             }],
         }
-    if case == "save_settings":
+    if case in {"save_settings", "activate_preset"}:
         blob.update(_qualified_context_verdict())
     return blob
 

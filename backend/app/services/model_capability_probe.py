@@ -206,6 +206,12 @@ PROBE_MAX_ATTEMPTS = 1
 PROBE_TRANSPORT_RETRIES = 0
 PROBE_CONNECT_TIMEOUT_SECONDS = 10.0
 PROBE_READ_TIMEOUT_SECONDS = 25.0
+# 一次探测的**总**时限。逐请求超时管不住叠加：① 档超时 + ② 档有提示时最多两次尝试，
+# 黑洞/挂起网关下最坏可达 ~75s。把整段探测包进 `asyncio.timeout`，最坏窗口变成可陈述
+# 的常数，也让所有冷探测路径（首次定论、保存闸门、预设激活、手动重测）的尾延迟有界。
+# 超时按 inconclusive 处理：判定语义不变（未知即不合格，仍走拒绝/显式声明出口），
+# 只是不再无限等一个不会答的网关。
+PROBE_TOTAL_DEADLINE_SECONDS = 60.0
 # ② 档默认刻度：恰为产品下限。**接受** ⇒ 窗口 >= 1M（成立证据）；**被拒** 单独不构成
 # 「< 1M」的证据——校验 `prompt + max_tokens <= window` 的网关会拒掉一个恰好等于窗口
 # 的请求，而 prompt 非空，故被拒只证明 `window < 刻度 + prompt`。登记表提示可以把刻度
@@ -681,37 +687,42 @@ async def probe_model_context_window(
     probe_client = client or create_probe_client()
     ran: List[str] = []
     try:
-        if TIER_METADATA in selected:
-            ran.append(TIER_METADATA)
-            outcome = await probe_metadata_tier(
-                provider=provider, base_url=base_url, api_key=api_key, model=model, client=probe_client
-            )
-            if outcome.verdict != VERDICT_INCONCLUSIVE:
+        async with asyncio.timeout(PROBE_TOTAL_DEADLINE_SECONDS):
+            if TIER_METADATA in selected:
+                ran.append(TIER_METADATA)
+                outcome = await probe_metadata_tier(
+                    provider=provider, base_url=base_url, api_key=api_key, model=model, client=probe_client
+                )
+                if outcome.verdict != VERDICT_INCONCLUSIVE:
+                    return replace(outcome, tiers_run=tuple(ran))
+
+            if TIER_MAX_TOKENS_BOUND in selected:
+                ran.append(TIER_MAX_TOKENS_BOUND)
+                hint = hint_window_tokens if isinstance(hint_window_tokens, int) and hint_window_tokens > 0 else 0
+                probe_value = max(MAX_TOKENS_PROBE_VALUE, hint)
+                outcome = await probe_max_tokens_bound_tier(
+                    provider=provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    client=probe_client,
+                    probe_value=probe_value,
+                )
                 return replace(outcome, tiers_run=tuple(ran))
 
-        if TIER_MAX_TOKENS_BOUND in selected:
-            ran.append(TIER_MAX_TOKENS_BOUND)
-            hint = hint_window_tokens if isinstance(hint_window_tokens, int) and hint_window_tokens > 0 else 0
-            probe_value = max(MAX_TOKENS_PROBE_VALUE, hint)
-            outcome = await probe_max_tokens_bound_tier(
-                provider=provider,
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                client=probe_client,
-                probe_value=probe_value,
-            )
-            return replace(outcome, tiers_run=tuple(ran))
+            if TIER_NEEDLE in selected:
+                ran.append(TIER_NEEDLE)
+                # 接口形状保留：接线时这里就是唯一有判据力的档
+                outcome = await probe_needle_tier(
+                    provider=provider, base_url=base_url, api_key=api_key, model=model, client=probe_client
+                )
+                return replace(outcome, tiers_run=tuple(ran))
 
-        if TIER_NEEDLE in selected:
-            ran.append(TIER_NEEDLE)
-            # 接口形状保留：接线时这里就是唯一有判据力的档
-            outcome = await probe_needle_tier(
-                provider=provider, base_url=base_url, api_key=api_key, model=model, client=probe_client
-            )
-            return replace(outcome, tiers_run=tuple(ran))
-
-        return _inconclusive("no probe tier selected")
+            return _inconclusive("no probe tier selected")
+    except TimeoutError:
+        return _inconclusive(
+            f"probe exceeded the {PROBE_TOTAL_DEADLINE_SECONDS}s total deadline"
+        )
     finally:
         if owned_client:
             await probe_client.aclose()
