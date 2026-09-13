@@ -405,12 +405,13 @@ def _entry_arguments_dict(entry: dict) -> dict | None:
     return arguments if isinstance(arguments, dict) else None
 
 
-def _plan_match_key(args: Any) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+def _plan_match_key(args: Any) -> tuple[str, tuple[tuple[str, str, str], ...]] | None:
     """Raw 与 validate_plan 后的计划 dict 配对的稳定键。
 
     validate_plan 会给每一步补 action/note 等归一化字段（raw 侧没有），全量 dict
-    相等在生产恒不成立；但 objective 与各步 (id, tool) 两侧都保留且被 strip，
-    所以只比这三样就能跨 raw/validated 形状配对。
+    相等在生产恒不成立；但 objective、各步 (id, tool) 与步 arguments 两侧都保留，
+    前两者 strip、arguments 用 sort_keys 规范化，所以这几样能跨 raw/validated 形状
+    配对（validate_plan 原样透传 raw arguments，见 agent_plan_schema.py:157）。
     """
     if not isinstance(args, dict):
         return None
@@ -420,7 +421,11 @@ def _plan_match_key(args: Any) -> tuple[str, tuple[tuple[str, str], ...]] | None
     return (
         str(args.get("objective") or "").strip(),
         tuple(
-            (str(step.get("id") or "").strip(), str(step.get("tool") or "").strip())
+            (
+                str(step.get("id") or "").strip(),
+                str(step.get("tool") or "").strip(),
+                json.dumps(step.get("arguments") or {}, sort_keys=True),
+            )
             for step in steps
             if isinstance(step, dict)
         ),

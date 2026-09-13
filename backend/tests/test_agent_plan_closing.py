@@ -185,6 +185,46 @@ async def test_two_proposals_older_record_resolves_its_own_id(session_factory):
 
 
 @pytest.mark.anyio
+async def test_two_proposals_same_steps_different_arguments_resolve_own_id(session_factory):
+    """同 objective、同 (id, tool) 序列、仅步 arguments 不同的两份计划：
+    旧计划获批时必须命中旧 entry，不得被新 entry 的 arguments 冒领。"""
+    raw_old = {"objective": "shared objective",
+               "steps": [{"id": "s1", "tool": "list_background_tasks", "arguments": {"limit": 3}}]}
+    raw_new = {"objective": "shared objective",
+               "steps": [{"id": "s1", "tool": "list_background_tasks", "arguments": {"limit": 5}}]}
+    validated_old = validate_plan(raw_old, allowed_tools={"list_background_tasks"})
+    async with session_factory() as db:
+        db.add(AgentMessage(
+            conversation_id="conv-args", role="assistant", content="",
+            tool_calls=json.dumps([{
+                "id": "call-a",
+                "function": {"name": "propose_plan", "arguments": json.dumps(raw_old)},
+            }]),
+        ))
+        await db.flush()
+        db.add(AgentMessage(
+            conversation_id="conv-args", role="assistant", content="",
+            tool_calls=json.dumps([{
+                "id": "call-b",
+                "function": {"name": "propose_plan", "arguments": json.dumps(raw_new)},
+            }]),
+        ))
+        await db.flush()
+        card = AgentMessage(
+            conversation_id="conv-args", role="assistant", content="plan card",
+        )
+        db.add(card)
+        await db.flush()
+        record = _tool_call_row(message_id=card.id, arguments=validated_old)
+        db.add(record)
+        await db.commit()
+        provider_call_id = await runner.resolve_provider_call_id(
+            session_factory, tool_call_id=record.id, conversation_id="conv-args",
+        )
+    assert provider_call_id == "call-a"
+
+
+@pytest.mark.anyio
 async def test_conversation_scan_without_propose_plan_entry_falls_back(session_factory):
     async with session_factory() as db:
         other = AgentMessage(
