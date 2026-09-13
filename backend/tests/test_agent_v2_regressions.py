@@ -1,9 +1,10 @@
 """PR-0a 回归网：锁住 v2（持久化工具历史）在 v1 删除前的可观察行为。
 
-覆盖 5 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
-MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限。
+覆盖 6 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
+MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
+超大工具结果不挤掉首条诉求（护栏 2，锁 _serialize_tool_response 的长度上限）。
 
-每条都额外断言 v2 独有的可观察行为（工具轮持久化为 agent_messages 行、
+前 5 条都额外断言 v2 独有的可观察行为（工具轮持久化为 agent_messages 行、
 prompt 走持久化历史而非 v1 的内存 tool_context 段）——否则该条在 v1 下
 同样通过，删 v1 时就失去保护。
 
@@ -11,6 +12,7 @@ prompt 走持久化历史而非 v1 的内存 tool_context 段）——否则该�
 v1 腿（把 `if settings.agent_tool_persistence_enabled:` 临时改成 `if False:`，
 即让 v2 永不进入）再跑本文件 ⇒ 5 条必须**全红**；改回后必须重新全绿。
 """
+import json
 import uuid
 from collections import Counter
 from types import SimpleNamespace
@@ -50,7 +52,7 @@ async def db_session():
 
 @pytest.fixture(autouse=True)
 def force_v2_persistence(monkeypatch):
-    """本文件 5 条全部只测 v2（持久化工具历史）。
+    """锁 v2 行为的 5 条用例全部只测 v2（持久化工具历史）。
 
     刻意收敛成一个 autouse fixture：Task 7 删 flag 时测试侧只需删这一个定义，
     而不是 5 处 monkeypatch。也刻意**不加 hasattr 守护**——flag 被删掉后这里
@@ -367,3 +369,60 @@ async def test_round_budget_exhaustion_raises_and_finalize_marks_cancelled(db_se
         "仍处于 running 的步骤没被 finalize 收口"
     )
     assert all(s.content == "本次执行已由用户停止。" for s in cancelled_steps)
+
+
+def tool_payload(size: int) -> str:
+    """_save_tool_response 的落库形态：JSON 字符串（上限 [:50000]）.
+
+    size 只算 result.text 的字符数，整行再加约 40 字符的 JSON 骨架。
+    """
+    return json.dumps(
+        {"tool": "reg_read", "error": None, "result": {"text": "结" * size}},
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.anyio
+async def test_huge_tool_result_does_not_evict_earliest_request(db_session):
+    """护栏 2：_serialize_tool_response 无截断 ⇒ 一条超大工具结果吃掉绝大部分
+    _build_prompt 的 60000 总预算，触发 break 把首条用户诉求整条挤掉。
+
+    行大小全部取生产可达值（落库上限 [:50000]，另两条是章节详情级别的 7000），
+    一条超大 + 两条中等即越过 break 阈值 —— 这正是 v2 工具多回合的正常形态。
+    护栏 2（TOOL_RESULT_MAX_CHARS=8000 + 截断标记）后三条 tool 段必须全部保留。
+    """
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    first_request = "第一章的伏笔还没收，请先分析第 1 章"
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="user", content=first_request))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="assistant", content="我查一下。"))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="tool",
+        content=tool_payload(7000), tool_call_id="call_old"))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="tool",
+        content=tool_payload(7000), tool_call_id="call_mid"))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="tool",
+        content=tool_payload(50000), tool_call_id="call_big"))
+    db_session.add(AgentMessage(
+        conversation_id=conversation.id, role="user", content="继续"))
+    await db_session.commit()
+
+    history = await svc._load_history(conversation.id)
+    assert [m.role for m in history] == [
+        "user", "assistant", "tool", "tool", "tool", "user"], (
+        f"前置历史形态不对：{[(m.role, len(m.content or '')) for m in history]}"
+    )
+    prompt = svc._build_prompt(history, {"route": "/project/1"})
+
+    assert first_request in prompt, (
+        "首条用户诉求被超大工具结果挤掉 ⇒ _serialize_tool_response 未限长"
+    )
+    assert "已截断" in prompt, "超大工具结果未带截断标记"
+    assert "结" * 50000 not in prompt, "50000 字符工具结果原样进 prompt"
+    assert prompt.count("<tool>") == 3, (
+        f"三条 tool 结果段未全部进入 prompt：{prompt.count('<tool>')} ⇒ 仍有历史被舍"
+    )
