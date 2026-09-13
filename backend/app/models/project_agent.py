@@ -1,6 +1,6 @@
 """项目智能体会话、消息与工具调用模型。"""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.sql import func
@@ -49,8 +49,14 @@ class AgentMessage(Base):
     completion_tokens = Column(Integer)
     tool_calls = Column(Text)
     tool_call_id = Column(String(36), index=True)
+    # naive UTC：必须与 server_default=func.now()（SQLite 侧为 UTC）同基准，否则同一列
+    # 混两种基准会让 ORDER BY created_at 对不同写入路径的行颠倒排序。
+    # Python 侧默认值只为打破 SQLite CURRENT_TIMESTAMP 的秒级并列。
     created_at = Column(
-        DateTime, default=datetime.now, server_default=func.now(), nullable=False
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        server_default=func.now(),
+        nullable=False,
     )
 
 
@@ -83,7 +89,14 @@ class AgentToolCall(Base):
     error_message = Column(Text)
     confirmed_at = Column(DateTime)
     executed_at = Column(DateTime)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    # 同 AgentMessage.created_at：naive UTC 与 server_default 同基准，
+    # Python 侧默认值只为打破 api 侧 ORDER BY created_at 的秒级并列。
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class AgentExecutionStep(Base):
