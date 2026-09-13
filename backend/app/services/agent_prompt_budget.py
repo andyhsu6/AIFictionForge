@@ -20,6 +20,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.logger import get_logger
+from app.services.model_capability_probe import get_effective_context_window
+
+logger = get_logger(__name__)
+
 #: 字符↔token 换算的**全仓库唯一定义处**。取值 1.0 是"中文≈1 字符/token"的保守
 #: 近似，依据是 `ai_service.py` 里既有同类注释及其记录的"单位错配"历史（B 需求 #55
 #: 步骤 2/3 就是为根除单位错配而生）。禁止在第二个文件里再出现这个系数。
@@ -93,3 +101,38 @@ def compute_history_budget_chars(
     if budget > max_chars:
         return int(max_chars)
     return budget
+
+
+async def resolve_history_budget_chars(
+    *,
+    user_id: str,
+    model: str,
+    db: AsyncSession,
+    provider: str,
+    base_url: str,
+    trace: PromptBudgetTrace | None = None,
+) -> int:
+    """取「本次实发模型当前生效」的窗口，换算成历史预算字符数。
+
+    `provider` / `base_url` **刻意不给默认值**：B 的访问器省略它们时按模型名在
+    缓存三元组里找，命中 0 个或多于 1 个都抛错（同一模型挂两个网关是合法配置）。
+    只传 model 会让这类用户每次发 prompt 都吃一个 `validation.ai_model_below_minimum`。
+
+    失败契约：`get_effective_context_window` 抛的 `ApiError`（
+    `validation.ai_model_below_minimum`）**原样冒泡** —— 不 try/except、不设兜底预算。
+    "预算算不出来 ⇒ 明确报错"是本 PR 的验收项之一，静默退回 60000 即失败。
+    """
+    effective_tokens = await get_effective_context_window(
+        user_id, model, db, provider=provider, base_url=base_url
+    )
+    budget_chars = compute_history_budget_chars(
+        effective_tokens,
+        ratio=settings.agent_history_budget_ratio,
+        min_chars=settings.agent_history_budget_min_chars,
+        max_chars=settings.agent_history_budget_max_chars,
+        chars_per_token=settings.agent_chars_per_token,
+    )
+    if trace is not None:
+        trace.effective_tokens = effective_tokens
+        trace.budget_chars = budget_chars
+    return budget_chars
