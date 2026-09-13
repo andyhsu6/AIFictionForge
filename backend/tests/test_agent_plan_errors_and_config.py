@@ -1,13 +1,6 @@
 """PR-2c：错误码收口与预算配置面（架构计划 A §3/§4/§7）。"""
-import pytest
-
 from app.core.errors import ERROR_REGISTRY as ERROR_MESSAGES
 from app.services import agent_plan_runner as runner
-
-
-@pytest.fixture
-def env_factory():
-    return None
 
 
 def test_pr2c_error_codes_are_registered_with_final_names():
@@ -21,7 +14,7 @@ def test_pr2c_error_codes_are_registered_with_final_names():
     assert ERROR_MESSAGES["internal.agent_plan_not_available"][1] == 501
 
 
-def test_step_failure_status_code_switches_to_internal_code(env_factory):
+def test_step_failure_status_code_switches_to_internal_code():
     handle = runner._PlanHandle(
         plan_task_id="plan-1", user_id="u-1", project_id="p-1",
         conversation_id="c-1", steps=[{"id": "s1", "tool": "get_project_stats"}],
@@ -32,7 +25,7 @@ def test_step_failure_status_code_switches_to_internal_code(env_factory):
     assert fields["status_params"] == {"step": 1, "total": 1}
 
 
-def test_cancelled_plan_keeps_task_cancelled_code(env_factory):
+def test_cancelled_plan_keeps_task_cancelled_code():
     handle = runner._PlanHandle(
         plan_task_id="plan-2", user_id="u-1", project_id="p-1",
         conversation_id="c-1", steps=[],

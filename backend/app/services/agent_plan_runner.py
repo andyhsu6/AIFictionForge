@@ -80,6 +80,8 @@ def _limit(key: str, module_value: Any) -> Any:
     if default is not None and module_value != default:
         return module_value
     value = getattr(settings, key, default)
+    if value is None:
+        return default
     if isinstance(default, bool) or isinstance(module_value, bool):
         return bool(value)
     if isinstance(default, int) and not isinstance(module_value, float):
@@ -375,6 +377,40 @@ async def _resolve_tool_call_id(
         )).scalar_one_or_none()
 
 
+def _tool_call_entries(raw: Any) -> list[dict]:
+    """provider 原始 tool_calls 载荷 -> 良构 entry 列表；畸形输入返回空表，绝不抛错。"""
+    entries = raw
+    if isinstance(entries, str):
+        try:
+            entries = json.loads(entries)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _entry_function(entry: dict) -> dict:
+    function = entry.get("function")
+    return function if isinstance(function, dict) else {}
+
+
+def _entry_arguments_dict(entry: dict) -> dict | None:
+    arguments = _entry_function(entry).get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return None
+    return arguments if isinstance(arguments, dict) else None
+
+
+def _propose_plan_entry_id(entry: dict) -> str:
+    if _entry_function(entry).get("name") != PROPOSE_PLAN_TOOL_NAME:
+        return ""
+    return str(entry.get("id") or "").strip()
+
+
 async def resolve_provider_call_id(
     session_factory: async_sessionmaker,
     *,
@@ -386,8 +422,12 @@ async def resolve_provider_call_id(
 
     顺序：① task_input 里显式写的 provider_call_id（前瞻：PR-2a 若补写则无缝生效）
     ② 该 AgentToolCall 关联的 assistant 消息里 propose_plan 那条原始 id
-    ③ 兜底 = AgentToolCall.id。
-    ⚠️ :906 的回退分支意味着 provider 未回传 id 时 ② 与 ③ **同值**，
+    ③ 会话内扫描：真实 propose-plan 流把 record.message_id 指向 tool_calls=NULL
+       的计划卡（project_agent_service.py:950-958），provider id 只存在于更早那条
+       带 tool_calls 的 assistant 消息里 ⇒ 按会话从新到旧扫，先按 arguments 配对，
+       配不上再取最新一条同名 entry
+    ④ 兜底 = AgentToolCall.id。
+    ⚠️ :906 的回退分支意味着 provider 未回传 id 时 ②/③ 与 ④ **同值**，
     这是合法状态，下游一律不得写成 "if provider_id != record_id" 的分支。
     """
     if not tool_call_id:
@@ -397,25 +437,41 @@ async def resolve_provider_call_id(
         if record is None:
             return ""
         if plan_task_input:
-            explicit = plan_task_input.get("provider_call_id")
+            explicit = str(plan_task_input.get("provider_call_id") or "").strip()
             if explicit:
-                return str(explicit)
+                return explicit
         message_id = getattr(record, "message_id", None)
-        if not message_id:
-            return record.id
-        message = await session.get(AgentMessage, message_id)
-        raw_entries = getattr(message, "tool_calls", None) if message else None
-        if not raw_entries:
-            return record.id
-        try:
-            entries = json.loads(raw_entries)
-        except (TypeError, ValueError):
-            return record.id
-        for entry in entries if isinstance(entries, list) else []:
-            function = (entry or {}).get("function") or {}
-            if function.get("name") != PROPOSE_PLAN_TOOL_NAME:
-                continue
-            return str(entry.get("id") or "") or record.id
+        if message_id:
+            message = await session.get(AgentMessage, message_id)
+            raw_entries = getattr(message, "tool_calls", None) if message else None
+            for entry in _tool_call_entries(raw_entries):
+                entry_id = _propose_plan_entry_id(entry)
+                if entry_id:
+                    return entry_id
+        messages = (await session.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.conversation_id == conversation_id,
+                AgentMessage.role == "assistant",
+            )
+            .order_by(AgentMessage.created_at.desc())
+        )).scalars().all()
+        parsed = [
+            _tool_call_entries(getattr(message, "tool_calls", None))
+            for message in messages
+        ]
+        wanted = record.arguments if isinstance(record.arguments, dict) else None
+        if wanted is not None:
+            for entries in parsed:
+                for entry in entries:
+                    entry_id = _propose_plan_entry_id(entry)
+                    if entry_id and _entry_arguments_dict(entry) == wanted:
+                        return entry_id
+        for entries in parsed:
+            for entry in reversed(entries):
+                entry_id = _propose_plan_entry_id(entry)
+                if entry_id:
+                    return entry_id
         return record.id
 
 
