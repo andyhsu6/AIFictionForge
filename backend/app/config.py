@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     anthropic_base_url: Optional[str] = None
     default_ai_provider: str = "openai"
-    default_model: str = "gpt-4"
+    # 需求 #55 步骤 4：系统兜底模型常量（字段名 default_model，值是一个仅 8K 窗口的
+    # 模型名）已删除。系统绝不替用户猜模型；未配置即抛 validation.ai_model_not_configured。
     default_temperature: float = 0.7
     default_max_tokens: int = 32000
     # Allow Ollama / local Llama / Docker host.docker.internal as AI base URLs.

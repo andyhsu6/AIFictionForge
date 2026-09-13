@@ -1311,7 +1311,7 @@ class ProjectAgentOperationalTools:
                 # 取消接口已将任务置为 cancelled；不要再用 failed 覆盖终态。
                 if await tracker.check_cancelled():
                     return
-                await tracker.error(str(exc))
+                await tracker.error_from_exception(exc)
                 raise
 
         await background_task_service.spawn_background_task(
