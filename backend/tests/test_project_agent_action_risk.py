@@ -3,14 +3,35 @@
 本文件只测"策略层"（risk 表、纯函数解析、条件判定），
 回合内的事件与持久化在 test_project_agent_inline_task.py 测。
 """
-import pytest
+import dataclasses
+import os
+import uuid
 
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.database import Base
 from app.models.project import Project
 from app.services.project_agent_tools import (
     ProjectAgentTool,
     ProjectAgentToolRegistry,
     action_risk_level,
 )
+
+
+@pytest.fixture
+async def db_session():
+    db_path = f"/tmp/test_agent_risk_{uuid.uuid4().hex}.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with Session() as session:
+        yield session
+    await engine.dispose()
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
 
 # 11 个 action 必须与 start_project_task 的 enum 一一对应（见 Step 3 的断言）
 EXPECTED_ACTION_RISK = {
@@ -61,3 +82,73 @@ def test_action_risk_level_prefers_action_and_falls_back():
     assert action_risk_level(tool, {"action": 3}) == 2
     plain = ProjectAgentTool("list_chapters", "d", {})
     assert action_risk_level(plain, {"action": "analyze_chapter"}) == 0
+
+
+@pytest.mark.anyio
+async def test_exempt_operational_write_tool_still_routes_to_operational(db_session):
+    """免确认（risk<2）的运维写入工具必须仍走 operational.execute()。
+
+    现状回归点：ProjectAgentToolRegistry.execute() 用 if tool.requires_confirmation
+    包住名单路由，一旦 action 级降级把 start_project_task 变成免确认，
+    它会掉进 _resolve_update() 并抛 "不支持的写入工具"。
+    """
+    registry = ProjectAgentToolRegistry(
+        Project(id="proj-1", user_id="test", title="测试项目"), db_session
+    )
+    registry._tools["start_project_task"] = dataclasses.replace(
+        registry.get("start_project_task"), risk_level=1
+    )
+    seen: list[tuple[str, dict]] = []
+
+    async def fake_execute(name, arguments):
+        seen.append((name, arguments))
+        return {"entity_id": "task-1", "resources": ["tasks"]}
+
+    registry.operational.execute = fake_execute
+
+    result = await registry.execute(
+        "start_project_task", {"action": "generate_character", "data": {}}
+    )
+
+    assert seen == [("start_project_task", {"action": "generate_character", "data": {}})]
+    assert result["entity_id"] == "task-1"
+
+
+@pytest.mark.anyio
+async def test_confirmation_operational_write_tool_routing_unchanged(db_session):
+    """risk_level=2 的运维写入工具路由不变（名单分派与旧判定等价）。"""
+    registry = ProjectAgentToolRegistry(
+        Project(id="proj-1", user_id="test", title="测试项目"), db_session
+    )
+    seen: list[str] = []
+
+    async def fake_execute(name, arguments):
+        seen.append(name)
+        return {"entity_id": "task-2"}
+
+    registry.operational.execute = fake_execute
+
+    result = await registry.execute(
+        "start_project_task", {"action": "regenerate_chapter", "data": {}}
+    )
+
+    assert seen == ["start_project_task"]
+    assert result["entity_id"] == "task-2"
+
+
+@pytest.mark.anyio
+async def test_update_project_still_goes_through_resolve_update(db_session):
+    """基础字段更新工具仍走 _resolve_update（免被名单分派误伤）。"""
+    from app.models.project import Project as ProjectModel
+
+    db_session.add(ProjectModel(id="proj-1", user_id="test", title="旧标题"))
+    await db_session.flush()
+    registry = ProjectAgentToolRegistry(
+        ProjectModel(id="proj-1", user_id="test", title="旧标题"), db_session
+    )
+
+    result = await registry.execute("update_project", {"title": "新标题"})
+
+    assert result["entity_id"] == "proj-1"
+    assert result["after"]["title"] == "新标题"
+    assert result["resources"] == ["projects"]

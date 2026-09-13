@@ -312,11 +312,16 @@ class ProjectAgentToolRegistry:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         arguments = normalize_tool_arguments(arguments)
         tool = self.get(name)
+        # 扩展/运维写入工具按"名单"分派而不是按 requires_confirmation 分派：
+        # PR-1 后 start_project_task 的低风险 action 免确认，但它仍是运维写入工具，
+        # 若仍用 requires_confirmation 守卫，它会掉出写入分派、落到只读兜底并抛
+        # "工具尚未实现"（名单外的写入工具则掉进 _resolve_update 抛"不支持的写入工具"）。
+        # requires_confirmation 只保留"是否需要用户批准"这一语义。
+        if name in WRITE_TOOL_NAMES:
+            return await self.extended.execute(name, arguments)
+        if name in OPERATIONAL_WRITE_TOOL_NAMES:
+            return await self.operational.execute(name, arguments)
         if tool.requires_confirmation:
-            if name in WRITE_TOOL_NAMES:
-                return await self.extended.execute(name, arguments)
-            if name in OPERATIONAL_WRITE_TOOL_NAMES:
-                return await self.operational.execute(name, arguments)
             entity, fields, label = await self._resolve_update(name, arguments)
             before = {field: _json_value(getattr(entity, field)) for field in fields}
             for field, value in fields.items():
