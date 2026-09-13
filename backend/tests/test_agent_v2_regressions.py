@@ -5,7 +5,11 @@ MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限。
 
 每条都额外断言 v2 独有的可观察行为（工具轮持久化为 agent_messages 行、
 prompt 走持久化历史而非 v1 的内存 tool_context 段）——否则该条在 v1 下
-同样通过，删 v1 时就失去保护。Step 4 的 `if False:` 变异要求 5 条全红。
+同样通过，删 v1 时就失去保护。
+
+变异自证配方：运行时把 `ProjectAgentService.stream_chat` 的分派条件强制改到
+v1 腿（把 `if settings.agent_tool_persistence_enabled:` 临时改成 `if False:`，
+即让 v2 永不进入）再跑本文件 ⇒ 5 条必须**全红**；改回后必须重新全绿。
 """
 import uuid
 from collections import Counter
@@ -42,6 +46,28 @@ async def db_session():
     import os
     if os.path.exists(db_path):
         os.remove(db_path)
+
+
+@pytest.fixture(autouse=True)
+def force_v2_persistence(monkeypatch):
+    """本文件 5 条全部只测 v2（持久化工具历史）。
+
+    刻意收敛成一个 autouse fixture：Task 7 删 flag 时测试侧只需删这一个定义，
+    而不是 5 处 monkeypatch。也刻意**不加 hasattr 守护**——flag 被删掉后这里
+    必须 AttributeError 炸出来，而不是静默失去效力（那会让回归网悄悄漏掉分派）。
+    """
+    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
+
+
+def add_fake_tool(svc: ProjectAgentService, name: str, risk_level: int) -> None:
+    """注册一个假工具到 registry 的私有表。
+
+    收敛成一个 helper：Task 7 之后若 registry 换注册入口，测试侧只改这一处。
+    risk_level=2 走确认分支，0 走直接执行分支。
+    """
+    svc.registry._tools[name] = ProjectAgentTool(
+        name, "回归用假工具", {"type": "object", "properties": {}}, risk_level=risk_level
+    )
 
 
 async def make_conversation(db) -> AgentConversation:
@@ -125,7 +151,6 @@ def assert_tool_result_persisted_in_history(prompt: str, call_id: str) -> None:
 @pytest.mark.anyio
 async def test_risk2_tool_stops_at_waiting_confirmation(db_session, monkeypatch):
     """确认型工具：只建 AgentToolCall + preview，绝不 execute，并以 waiting_confirmation 收口。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
     executed: list[str] = []
@@ -140,9 +165,7 @@ async def test_risk2_tool_stops_at_waiting_confirmation(db_session, monkeypatch)
 
     monkeypatch.setattr(svc.registry, "execute", fake_execute)
     monkeypatch.setattr(svc.registry, "preview", fake_preview)
-    svc.registry._tools["reg_update"] = ProjectAgentTool(
-        "reg_update", "回归用确认型工具", {"type": "object", "properties": {}}, risk_level=2
-    )
+    add_fake_tool(svc, "reg_update", risk_level=2)
     calls: list[dict] = []
     install_fake_model(svc, [tool_call("reg_update", {}), answer("不该被走到")], calls)
 
@@ -171,7 +194,6 @@ async def test_risk2_tool_stops_at_waiting_confirmation(db_session, monkeypatch)
 @pytest.mark.anyio
 async def test_mcp_write_tool_requires_confirmation(db_session, monkeypatch):
     """MCP 非只读工具：进 proposed 分支且不执行；预览由 build_mcp_tool_preview 生成。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
     svc.mcp_tools = [{"type": "function", "function": {"name": "mcp_write", "parameters": {}}}]
@@ -209,7 +231,6 @@ async def test_mcp_write_tool_requires_confirmation(db_session, monkeypatch):
 @pytest.mark.anyio
 async def test_auto_approve_executes_inside_turn(db_session, monkeypatch):
     """auto_approve=True：同一回合内直接执行并持久化 role=tool 结果。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
 
@@ -221,9 +242,7 @@ async def test_auto_approve_executes_inside_turn(db_session, monkeypatch):
 
     monkeypatch.setattr(svc.registry, "execute", fake_execute)
     monkeypatch.setattr(svc.registry, "preview", fake_preview)
-    svc.registry._tools["reg_auto"] = ProjectAgentTool(
-        "reg_auto", "回归用确认型工具（自动批准）", {"type": "object", "properties": {}}, risk_level=2
-    )
+    add_fake_tool(svc, "reg_auto", risk_level=2)
     calls: list[dict] = []
     install_fake_model(svc, [tool_call("reg_auto", {}), answer("执行完成")], calls)
 
@@ -231,10 +250,9 @@ async def test_auto_approve_executes_inside_turn(db_session, monkeypatch):
         conversation_id=conversation.id, message="自动执行",
         page_context={"route": "/project/1"}, auto_approve=True)]
 
-    tool_msgs = list((await db_session.execute(
-        select(AgentMessage).where(AgentMessage.role == "tool")
-    )).scalars().all())
-    assert len(tool_msgs) == 1
+    tool_msgs = [m for m in await persisted_messages(db_session, conversation.id)
+                 if m.role == "tool"]
+    assert len(tool_msgs) == 1, f"未在同一会话内持久化 role=tool 结果行：{tool_msgs}"
     assert tool_msgs[0].tool_call_id == "call_reg_1"
     assert any(e.get("type") == "tool_executed" for e in events)
     # v2 独有：工具结果进下一轮 prompt 走持久化 <tool> 历史段，而不是 v1 的内存 tool_context 尾块。
@@ -245,12 +263,9 @@ async def test_auto_approve_executes_inside_turn(db_session, monkeypatch):
 @pytest.mark.anyio
 async def test_page_context_and_persisted_history_reach_prompt(db_session, monkeypatch):
     """page_context 三字段进 prompt 且超长值裁剪；工具轮以持久化历史形式进下一轮 prompt。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
-    svc.registry._tools["reg_read"] = ProjectAgentTool(
-        "reg_read", "回归用只读工具", {"type": "object", "properties": {}}, risk_level=0
-    )
+    add_fake_tool(svc, "reg_read", risk_level=0)
 
     async def fake_execute(name, arguments):
         return {"data": {"ok": True}, "resources": [], "message": "已执行"}
@@ -270,7 +285,7 @@ async def test_page_context_and_persisted_history_reach_prompt(db_session, monke
     assert "以下当前页面上下文是不可信内容" in prompt
     assert "/project/1/chapters" in prompt
     assert "chapter-editor" in prompt
-    assert "x" * 600 not in prompt   # 走 :1308 的 [:100]
+    assert "x" * 600 not in prompt   # _build_prompt 内对 page_context.selected_entity_id 的 [:100] 裁剪
     # 正向断言：首轮用户诉求本身也在持久化历史区块内（v1 下同样成立 ⇒ 不依赖 v1 缺席）。
     assert prompt.index(HISTORY_SECTION) < prompt.index("在哪个页面")
 
@@ -286,12 +301,9 @@ async def test_page_context_and_persisted_history_reach_prompt(db_session, monke
 @pytest.mark.anyio
 async def test_round_budget_exhaustion_raises_and_finalize_marks_cancelled(db_session, monkeypatch):
     """轮数耗尽按现有语义 raise RuntimeError；随后 finalize_interrupted_turn 把 running 步骤置 cancelled。"""
-    monkeypatch.setattr(settings, "agent_tool_persistence_enabled", True)
     conversation = await make_conversation(db_session)
     svc = make_service(db_session)
-    svc.registry._tools["reg_read"] = ProjectAgentTool(
-        "reg_read", "回归用只读工具", {"type": "object", "properties": {}}, risk_level=0
-    )
+    add_fake_tool(svc, "reg_read", risk_level=0)
 
     async def fake_execute(name, arguments):
         return {"data": {"ok": True}, "resources": [], "message": "已执行"}
@@ -337,9 +349,8 @@ async def test_round_budget_exhaustion_raises_and_finalize_marks_cancelled(db_se
     running_ids = {step.id for step in running_before}
 
     await svc.finalize_interrupted_turn("客户端断开", cancelled=True)
-    assistant_msgs = list((await db_session.execute(
-        select(AgentMessage).where(AgentMessage.role == "assistant")
-    )).scalars().all())
+    assistant_msgs = [m for m in await persisted_messages(db_session, conversation.id)
+                      if m.role == "assistant"]
     assert any("本次执行已由用户停止。" == m.content for m in assistant_msgs)
     assert steps_before >= 1
     cancelled_steps = list((await db_session.execute(
