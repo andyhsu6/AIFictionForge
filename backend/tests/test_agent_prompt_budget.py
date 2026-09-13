@@ -85,8 +85,13 @@ def test_negative_window_is_rejected_not_silently_clamped():
 
 
 def test_anchor_cap_matches_per_message_truncation_cap():
-    # 永不裁剪段的长度上限沿用历史里的单条 6000 字符口径，不新造一个魔法数
+    # 永不裁剪段的长度上限沿用历史里的单条 6000 字符口径，不新造一个魔法数。
+    # 只断言常量值证不了"口径一致"：`_build_prompt` 一旦改成别的切片宽度，两个数字
+    # 就各说各话了，所以同时钉住那个字面量还在历史裁剪里。
     assert HISTORY_BUDGET_ANCHOR_CAP_CHARS == 6_000
+    assert "[:6000]" in inspect.getsource(ProjectAgentService._build_prompt), (
+        "`_build_prompt` 的单条截断口径不再是 [:6000] ⇒ 锚点 cap 与它已不同源"
+    )
 
 
 class _WindowStub:

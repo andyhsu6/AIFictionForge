@@ -531,6 +531,12 @@ class AIService:
         window = await self.resolve_effective_window_tokens(model, provider)
         budget = int(window * _FULL_BOOK_BUDGET_RATIO)
         if budget <= 0:  # pragma: no cover - 门禁已保证 window >= 1M
+            # 这里那个 `model or self.default_model or ""` 是**第三处**模型表达式，
+            # 但它只用于把模型名塞进错误参数，不参与任何判定。实发模型的权威解析口径
+            # 在 `_resolve_model_or_raise`（显式传入优先，否则用户配置的默认模型，两者
+            # 皆空 ⇒ `validation.ai_model_not_configured`）；本支路刻意不走它：它在
+            # 门禁之后已不可达，为一行报错文案把签名改成 Optional 反而多出第二条
+            # "取模型"的路径。
             raise ApiError(
                 code="validation.ai_model_below_minimum",
                 params={"model": (model or self.default_model or "")},

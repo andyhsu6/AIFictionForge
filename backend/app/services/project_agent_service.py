@@ -945,7 +945,7 @@ class ProjectAgentService:
         content = (
             f"本次发送的历史预算 {trace.budget_chars} 字符，装入 {trace.used_chars} 字符后"
             f"仍有 {trace.dropped_messages} 条最旧的历史消息未进入 prompt"
-            f"（合计 {trace.dropped_chars} 字符）。本轮原始诉求不受影响，它由不参与裁剪的"
+            f"（合计 {trace.dropped_chars} 字符）。会话最早的原始诉求不受影响，它由不参与裁剪的"
             "单独段落承载。"
         )
         return content, detail
@@ -965,7 +965,7 @@ class ProjectAgentService:
 
         Task 4 之后那个"最旧消息被静默丢掉"的失效形态由**永不裁剪段**收口：最早的
         user 消息先被 `select_anchor_section()` 摘出去、单独成段，裁剪循环只看剩余的
-        `anchorless_history` ⇒ 本轮原始诉求不再参与取舍，也不计入 `dropped_*`。
+        `anchorless_history` ⇒ 会话最早的原始诉求不再参与取舍，也不计入 `dropped_*`。
         """
         history_parts: list[str] = []
         history_length = 0
