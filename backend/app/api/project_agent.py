@@ -30,6 +30,12 @@ from app.schemas.project_agent import (
     AgentToolCallResponse,
     AgentToolDecisionResponse,
 )
+from app.services.agent_plan_dispatch import (  # noqa: F401  —— PR-2b 的注册接缝在此可见
+    PLAN_TASK_TYPE,
+    create_plan_task,
+    dispatch_plan,
+    register_plan_runner,
+)
 from app.services.ai_service import AIService
 from app.services.project_agent_service import (
     ProjectAgentService,

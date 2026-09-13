@@ -9,12 +9,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.errors import ApiError
 from app.models.project import Project
 from app.models.project_agent import (
     AgentConversation,
     AgentExecutionStep,
     AgentMessage,
     AgentToolCall,
+)
+from app.services.agent_plan_dispatch import (
+    PLAN_RUNNER_UNAVAILABLE_CODE,
+    PLAN_TASK_TYPE,
+    create_plan_task,
+    dispatch_plan,
+    plan_runner,
 )
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
@@ -645,6 +653,21 @@ class ProjectAgentService:
 
                     record.arguments = plan
                     plan_produced = True
+                    if auto_approve:
+                        # Task 3 预留的接缝：auto_approve 的同回合直路由。
+                        # 绝不进 registry.execute —— 计划一步都没执行过。
+                        async for event in self._auto_approve_plan(
+                            record=record,
+                            plan=plan,
+                            tool_step=tool_step,
+                            conversation=conversation,
+                            steps=steps,
+                            tool_records=tool_records,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        ):
+                            yield event
+                        return
                     record.status = "waiting_confirmation"
                     proposed.append(record)
                     await self._save_tool_response(
@@ -1005,6 +1028,114 @@ class ProjectAgentService:
                 "conversation_id": conversation.id,
                 "message_id": assistant.id,
                 "status": "completed",
+            },
+        }
+
+    async def _auto_approve_plan(
+        self,
+        *,
+        record: AgentToolCall,
+        plan: dict[str, Any],
+        tool_step: AgentExecutionStep,
+        conversation: AgentConversation,
+        steps: list[AgentExecutionStep],
+        tool_records: list[AgentToolCall],
+        prompt_tokens: int,
+        completion_tokens: int,
+    ):
+        """auto_approve 直接放行：同事务置 executing + 建计划任务行，绝不经 registry.execute。
+
+        顺序是硬的：**先判执行器可用再建任务行**（否则留下一条永远 pending 的孤儿
+        行），**先提交再调度**（执行器用独立 session 反查任务行）。
+        """
+        plan_task = None
+        dispatch_error: str | None = None
+        dispatch_status = "failed"
+        if plan_runner() is None:
+            dispatch_error = "后台计划执行器尚未启用，本次计划没有被执行。"
+            record.status = "failed"
+            record.error_message = dispatch_error
+            await self._update_step(
+                tool_step,
+                content=dispatch_error,
+                status="failed",
+                detail={
+                    "plan": plan,
+                    "arguments": self._display_value(plan),
+                    "approval_mode": "automatic",
+                    "error_code": PLAN_RUNNER_UNAVAILABLE_CODE,
+                    "tool_call": self._tool_call_data(record),
+                },
+            )
+            yield {"type": "step_update", "data": self._step_data(tool_step)}
+        else:
+            record.status = "executing"
+            record.confirmed_at = datetime.now()
+            plan_task = await create_plan_task(
+                self.db,
+                project_id=self.project.id,
+                user_id=self.user_id,
+                conversation_id=conversation.id,
+                tool_call_id=record.id,
+                plan=plan,
+            )
+            # entity_id 单独不跨表唯一 ⇒ 必须配 task_type 才能反查（与 start_project_task 同规则）。
+            record.result = {"entity_id": plan_task.id, "task_type": PLAN_TASK_TYPE}
+            await self._update_step(
+                tool_step,
+                content="计划已自动批准，正在交给后台执行器逐步执行。",
+                status="completed",
+                detail={
+                    "plan": plan,
+                    "plan_task_id": plan_task.id,
+                    "approval_mode": "automatic",
+                    "tool_call": self._tool_call_data(record),
+                },
+            )
+            yield {"type": "step_update", "data": self._step_data(tool_step)}
+            await self.db.commit()
+            try:
+                await dispatch_plan(
+                    plan_task_id=plan_task.id,
+                    user_id=self.user_id,
+                    project_id=self.project.id,
+                    conversation_id=conversation.id,
+                    steps=plan["steps"],
+                )
+                dispatch_status = "running"
+            except ApiError:
+                # 只剩"检查与调度之间执行器被撤下"这一条竞态路径；任务行已提交，
+                # 必须就地置 failed，不能留在 pending。
+                dispatch_error = "后台计划执行器尚未启用，本次计划没有被执行。"
+                record.status = "failed"
+                record.error_message = dispatch_error
+                record.result = None
+                plan_task.status = "failed"
+                plan_task.status_code = PLAN_RUNNER_UNAVAILABLE_CODE
+                plan_task.error_message = "plan runner not registered"
+                dispatch_status = "failed"
+                await self.db.commit()
+
+        content = dispatch_error or (
+            f"我已按批准的计划开始执行，共 {len(plan['steps'])} 步，"
+            "进度会在任务面板显示。"
+        )
+        assistant = await self._save_assistant(
+            conversation, content, prompt_tokens, completion_tokens, commit=False
+        )
+        await self._attach_steps(steps, tool_records, assistant, commit=False)
+        await self.db.commit()
+        yield {"type": "final_start", "data": {"message_id": assistant.id}}
+        yield {"type": "final_chunk", "content": content}
+        yield {"type": "final_done", "data": {"message_id": assistant.id}}
+        yield {
+            "type": "result",
+            "data": {
+                "conversation_id": conversation.id,
+                "message_id": assistant.id,
+                "status": "completed",
+                "plan_task_id": plan_task.id if plan_task else None,
+                "plan_task_status": dispatch_status,
             },
         }
 

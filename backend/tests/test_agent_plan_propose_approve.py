@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
+import app.services.agent_plan_dispatch as dispatch
+from app.models.background_task import BackgroundTask
 from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.agent_plan_schema import (
@@ -270,8 +272,20 @@ async def read_tool_calls(env) -> list[AgentToolCall]:
         )).scalars().all())
 
 
-async def run_turn(env, responses, *, plan_mode: bool, calls: list) -> list[dict]:
-    """两个出口都要 patch：generate_text（工具决策轮）与 generate_text_stream_full（末轮）。"""
+async def run_turn(
+    env,
+    responses,
+    *,
+    plan_mode: bool,
+    calls: list,
+    auto_approve: bool = False,
+    forbidden_final: bool = False,
+) -> list[dict]:
+    """两个出口都要 patch：generate_text（工具决策轮）与 generate_text_stream_full（末轮）。
+
+    `forbidden_final=True` 用于 auto_approve 回合：计划被直接放行后必须在
+    propose_plan 分支里 return，走到最终回答轮本身就是缺陷。
+    """
 
     async def fake_generate_text(**kwargs):
         calls.append(kwargs)
@@ -279,6 +293,8 @@ async def run_turn(env, responses, *, plan_mode: bool, calls: list) -> list[dict
 
     async def fake_stream_full(**kwargs):
         calls.append(kwargs)
+        if forbidden_final:
+            raise AssertionError("auto-approved plan must not reach the answer round")
         return responses[min(len(calls) - 1, len(responses) - 1)]
 
     env.service.ai_service.generate_text = fake_generate_text
@@ -288,7 +304,7 @@ async def run_turn(env, responses, *, plan_mode: bool, calls: list) -> list[dict
             conversation_id=env.conversation_id,
             message="plan my book",
             page_context={"route": "/project/1"},
-            auto_approve=False,
+            auto_approve=auto_approve,
             plan_mode=plan_mode,
         )
     ]
@@ -602,3 +618,130 @@ async def test_plan_close_text_never_promises_a_diff_row(env):
     assert finals
     assert "计划" in finals[0]["content"]
     assert "请核对下方差异" not in finals[0]["content"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 5：auto_approve 的同事务直路由
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(autouse=True)
+def _no_plan_runner(monkeypatch):
+    """每个用例都从「执行器未注册」出发，并自动复位（setattr 要求符号存在）。"""
+    monkeypatch.setattr(dispatch, "_PLAN_RUNNER", None)
+
+
+async def read_plan_tasks(env) -> list[BackgroundTask]:
+    ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+    async with ReaderSession() as session:
+        return list((await session.execute(
+            select(BackgroundTask).where(BackgroundTask.project_id == env.project_id)
+        )).scalars().all())
+
+
+async def _noop_runner(**kwargs):
+    """占位执行器：PR-2a 只验证接缝的入参与时序，不验证执行。"""
+    return object()
+
+
+async def _forbid_registry(env) -> None:
+    async def boom(*a, **k):
+        raise AssertionError("propose_plan must never reach registry.execute/preview")
+
+    env.service.registry.execute = boom
+    env.service.registry.preview = boom
+
+
+@pytest.mark.anyio
+async def test_auto_approve_routes_plan_to_task_without_registry(env):
+    """同一事务内置 executing + 建 agent_plan 任务行；卡片根本不出现。"""
+    calls: list[dict] = []
+    dispatch.register_plan_runner(_noop_runner)
+    await _forbid_registry(env)
+    events = await run_turn(
+        env, [_plan_response()], plan_mode=True, calls=calls,
+        auto_approve=True, forbidden_final=True,
+    )
+
+    assert calls, "没有捕获到任何模型调用"
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+    rows = await read_tool_calls(env)
+    assert len(rows) == 1
+    record = rows[0]
+    assert record.tool_name == PROPOSE_PLAN_TOOL_NAME
+    assert record.status == "executing"
+    assert record.confirmed_at is not None
+    assert record.executed_at is None, "auto_approve 只放行计划，不得执行任何步骤"
+    assert record.message_id == events[-1]["data"]["message_id"]
+
+    tasks = await read_plan_tasks(env)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.task_type == "agent_plan"
+    assert task.status == "pending", "pending 只能由执行器改成 running"
+    assert task.task_input["tool_call_id"] == record.id
+    assert task.task_input["conversation_id"] == env.conversation_id
+    assert task.task_input["objective"] == "build three chapters"
+    assert [s["id"] for s in task.task_input["steps"]] == ["s1", "s2", "s3"]
+    # PR-3 刷新后靠 result 反查计划行（entity_id 单独不唯一，必须配 task_type）
+    assert record.result == {"entity_id": task.id, "task_type": "agent_plan"}
+    assert events[-1]["data"]["plan_task_id"] == task.id
+
+    tool_steps = [
+        e["data"] for e in events
+        if e["type"] == "step_update" and e["data"]["step_type"] == "tool"
+    ]
+    assert len(tool_steps) == 1
+    assert tool_steps[0]["status"] == "completed"
+    assert tool_steps[0]["detail"]["approval_mode"] == "automatic"
+    assert [s["id"] for s in tool_steps[0]["detail"]["plan"]["steps"]] == ["s1", "s2", "s3"]
+
+
+@pytest.mark.anyio
+async def test_auto_approve_without_runner_leaves_no_orphan_task(env):
+    """执行器未注册 ⇒ 判在**建任务行之前**：不留一条永远 pending 的孤儿计划行。"""
+    await _forbid_registry(env)
+    events = await run_turn(
+        env, [_plan_response()], plan_mode=True, calls=[],
+        auto_approve=True, forbidden_final=True,
+    )
+
+    assert await read_plan_tasks(env) == []
+    chunks = [e for e in events if e["type"] == "final_chunk"]
+    assert chunks and "执行器" in chunks[-1]["content"]
+    rows = await read_tool_calls(env)
+    assert [row.status for row in rows] == ["failed"]
+    assert rows[0].result is None
+    tool_steps = [
+        e["data"] for e in events
+        if e["type"] == "step_update" and e["data"]["step_type"] == "tool"
+    ]
+    assert len(tool_steps) == 1 and tool_steps[0]["status"] == "failed"
+    assert tool_steps[0]["detail"]["error_code"] == dispatch.PLAN_RUNNER_UNAVAILABLE_CODE
+
+
+@pytest.mark.anyio
+async def test_registered_runner_receives_anchors_after_commit(env):
+    """runner 用**独立 session** 也必须读得到任务行 ⇒ 调度必须发生在提交之后。"""
+    seen: dict = {}
+
+    async def fake_runner(**kwargs):
+        seen.update(kwargs)
+        ReaderSession = async_sessionmaker(bind=env.engine, expire_on_commit=False)
+        async with ReaderSession() as session:
+            seen["visible_task"] = await session.get(BackgroundTask, kwargs["plan_task_id"])
+
+    dispatch.register_plan_runner(fake_runner)
+    await _forbid_registry(env)
+    events = await run_turn(
+        env, [_plan_response()], plan_mode=True, calls=[],
+        auto_approve=True, forbidden_final=True,
+    )
+
+    assert seen, "runner 没有被调用"
+    assert seen["conversation_id"] == env.conversation_id
+    assert seen["user_id"] == env.user_id
+    assert seen["project_id"] == env.project_id
+    assert [s["id"] for s in seen["steps"]] == ["s1", "s2", "s3"]
+    assert seen["visible_task"] is not None, "调度早于提交：runner 读不到自己的任务行"
+    assert seen["visible_task"].status == "pending"
+    assert events[-1]["data"]["plan_task_id"] == seen["plan_task_id"]
