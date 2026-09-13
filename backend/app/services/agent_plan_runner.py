@@ -549,6 +549,8 @@ async def _run_plan_steps(
         status_message=_clip(f"计划开始执行（{total} 步）"),
         progress_details=_details(handle, "running", f"计划开始执行（{total} 步）"),
     )
+    if total > MAX_PLAN_STEPS:
+        return "failed", f"计划步骤数 {total} 超过上限 {MAX_PLAN_STEPS}"
     if not total:
         return "completed", "计划没有需要执行的步骤"
     try:
@@ -571,9 +573,17 @@ async def _run_step_loop(
 ) -> "tuple[str, str]":
     """顺序执行每一步，失败即停。返回 (outcome, summary)。"""
     total = len(handle.steps)
+    loop = asyncio.get_running_loop()
+    plan_deadline = loop.time() + PLAN_WALL_CLOCK_SECONDS
     for index, step in enumerate(handle.steps, start=1):
         if handle.cancel_requested:
             return "cancelled", _clip(handle.cancel_reason or "计划已取消", 200)
+        if loop.time() > plan_deadline:
+            handle.failed_at_step = index
+            return "failed", _clip(
+                f"计划总时长超过上限 {int(PLAN_WALL_CLOCK_SECONDS)} 秒，"
+                f"第 {index} 步未发起", 200,
+            )
         label = str(step.get("action") or step.get("tool") or f"step {index}")
         step_id = await _insert_step(
             factory,

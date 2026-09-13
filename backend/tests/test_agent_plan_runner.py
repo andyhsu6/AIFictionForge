@@ -826,3 +826,38 @@ async def test_cancel_plan_awaits_terminal_state(env, monkeypatch):
     plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
     assert plan_row.status == "cancelled"
     assert plan_row.progress_details["cancel"]["reason"] == "端点停止"
+
+
+@pytest.mark.anyio
+async def test_plan_rejects_more_than_max_steps(env, monkeypatch):
+    """max_steps=30 在执行器侧也要再挡一次（PR-2a 的 schema 是第一道）。"""
+    monkeypatch.setattr(runner, "MAX_PLAN_STEPS", 2)
+    launched: list[str] = []
+    install_fake_launcher(monkeypatch, env, registry_calls=launched)
+    result = await start_plan(env, [plan_step(i) for i in range(1, 4)])
+    assert launched == []                       # 一步都没发起
+    assert result.plan.status == "failed"
+    assert "超过上限" in result.plan.status_message
+    assert result.tool_call.status == "failed"
+
+
+@pytest.mark.anyio
+async def test_plan_wall_clock_limit_aborts_remaining_steps(env, monkeypatch):
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(runner, "PLAN_WALL_CLOCK_SECONDS", 0.15)
+    launched: list[str] = []
+
+    async def launcher(db, sub):
+        launched.append(sub.task_type)
+        asyncio.create_task(complete_sub_task(env.factory, sub.id, delay=0.1))
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    result = await start_plan(env, [
+        plan_step(i, tool="start_project_task", action="generate_chapter",
+                  arguments={"chapter_number": 1})
+        for i in range(1, 6)
+    ])
+    assert result.plan.status == "failed"
+    assert "总时长" in result.plan.status_message
+    assert len(launched) < 5
+    assert result.plan.progress_details["steps_total"] == 5
