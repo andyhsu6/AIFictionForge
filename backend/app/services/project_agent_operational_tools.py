@@ -23,7 +23,10 @@ from app.models.project_default_style import ProjectDefaultStyle
 from app.models.regeneration_task import RegenerationTask
 from app.models.writing_style import WritingStyle
 from app.services.outline_transfer_service import OutlineTransferService
-from app.services.task_resources import affected_resources_for_agent_action
+from app.services.task_resources import (
+    AGENT_TASK_ACTION_TYPES,
+    affected_resources_for_agent_action,
+)
 from app.services.project_agent_selectors import find_chapter
 
 
@@ -342,13 +345,21 @@ class ProjectAgentOperationalTools:
             else list(spec["resources"])
         )
         await self.db.flush()
-        return {
+        data: dict[str, Any] = {
             "message": message,
             "entity_id": entity_id,
             "before": before,
             "after": after,
             "resources": resources,
         }
+        if name == "start_project_task":
+            # 架构计划 §0：BackgroundTask / BatchGenerationTask / AnalysisTask 的
+            # 主键无跨表唯一性 ⇒ entity_id 必须配一个 task_type 才能反查表。
+            # 这里用 AGENT_TASK_ACTION_TYPES（action 名 ≠ 落库 task_type）。
+            mapped_task_type = AGENT_TASK_ACTION_TYPES.get(action)
+            if mapped_task_type:
+                data["task_type"] = mapped_task_type
+        return data
 
     async def _find_chapter(self, arguments: dict[str, Any]) -> Chapter:
         return await find_chapter(self.db, self.project.id, arguments)

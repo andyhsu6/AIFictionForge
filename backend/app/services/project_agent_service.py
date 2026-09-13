@@ -622,19 +622,23 @@ class ProjectAgentService:
                         }
                     continue
 
+                executed_result: dict[str, Any] | None = None
                 try:
                     result = await self.registry.execute(name, arguments)
+                    executed_result = result if isinstance(result, dict) else {}
                     record.status = "executed"
-                    record.result = result
+                    record.result = executed_result
+                    record.before_snapshot = executed_result.get("before")
+                    record.after_snapshot = executed_result.get("after")
                     record.executed_at = datetime.now()
-                    await self._save_tool_response(conversation, call_id, name, result)
+                    await self._save_tool_response(conversation, call_id, name, executed_result)
                     await self._update_step(
                         tool_step,
                         content="项目工具调用完成。",
                         status="completed",
                         detail={
                             "arguments": self._display_value(arguments),
-                            "result": self._display_value(result),
+                            "result": self._display_value(executed_result),
                             "risk": risk_detail,
                             "tool_call": self._tool_call_data(record),
                         },
@@ -649,8 +653,28 @@ class ProjectAgentService:
                         tool_step,
                         content=f"项目工具调用失败：{exc}",
                         status="failed",
+                        detail={
+                            "arguments": self._display_value(arguments),
+                            "risk": risk_detail,
+                            "tool_call": self._tool_call_data(record),
+                        },
                     )
+                # 后台任务已在本调用内创建并自行提交任务行；助手侧的行
+                # （AgentToolCall / step / role=tool）要到回合末才提交，
+                # 而 tool_executed 会让前端立刻发请求回读 ⇒ 先提交再下发。
+                await self.db.commit()
                 yield {"type": "step_update", "data": self._step_data(tool_step)}
+                executed_resources = (executed_result or {}).get("resources") or []
+                if executed_result is not None and executed_resources:
+                    yield {
+                        "type": "tool_executed",
+                        "data": {
+                            "tool_call": self._tool_call_data(record),
+                            "resources": list(executed_resources),
+                            "task_type": executed_result.get("task_type"),
+                            "approval_mode": "inline",
+                        },
+                    }
 
             if proposed:
                 await self._update_step(
