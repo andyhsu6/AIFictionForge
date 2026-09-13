@@ -163,3 +163,109 @@ async def test_resolve_task_snapshot_accepts_agent_plan_for_running_lookup(env):
             db, task_type="agent_plan", task_id=env.plan_task_id
         )
     assert (snap.status, snap.finished) == ("pending", False)
+
+
+@pytest.mark.anyio
+async def test_plan_row_is_written_even_after_generic_cancel_freeze(env):
+    """架构计划 §3 取消坑①：cancel_task 先置 cancelled，此后 TaskProgressTracker
+    ._update_task 永久跳过写入。runner 必须绕过这条冻结、把最终步数写进
+    progress_details（status_message 已被冻结，所以详情只能放这里）。
+    """
+    from app.services.background_task_service import background_task_service
+
+    async with env.factory() as db:
+        assert await background_task_service.cancel_task(
+            env.plan_task_id, env.user_id, db
+        ) is True
+
+    details = {"stage": "cancelled", "steps_total": 3, "steps_done": 2}
+    await runner._write_plan_row(
+        env.factory, env.plan_task_id,
+        status_message="计划已取消（2/3 步）",
+        progress_details=details,
+    )
+
+    row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert row.status == "cancelled"                 # 不越权把 cancelled 改回 completed
+    assert row.progress_details == details
+    assert row.progress_details["steps_done"] == 2
+
+
+@pytest.mark.anyio
+async def test_status_message_is_clipped_to_120_chars(env):
+    """status_message 是 String(500)，而项目支持 Postgres（SQLite 静默截断、PG 报错）
+    ⇒ 摘要硬上限 120 字，详情进 progress_details。"""
+    await runner._write_plan_row(
+        env.factory, env.plan_task_id, status_message="长" * 400
+    )
+    row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert len(row.status_message) <= runner.STATUS_MESSAGE_MAX_CHARS
+
+
+@pytest.mark.anyio
+async def test_step_rows_attach_to_plan_tool_call_without_user_message(env):
+    """AgentExecutionStep.user_message_id 可空 ⇒ 计划步骤挂到 propose_plan 那次调用。"""
+    step_id = await runner._insert_step(
+        env.factory,
+        conversation_id=env.conversation_id,
+        tool_call_id=env.tool_call_id,
+        sequence=1,
+        title="启动第 1 步",
+        content="step started",
+        detail={"action": "analyze_chapter"},
+    )
+    await runner._patch_step(
+        env.factory, step_id, status="completed",
+        content="done", detail={"sub_task_status": "completed"},
+    )
+
+    row = await load_row(env.factory, AgentExecutionStep, step_id)
+    assert row.status == "completed"
+    assert row.content == "done"
+    assert row.tool_call_id == env.tool_call_id
+    assert row.user_message_id is None
+    assert row.step_type == "tool" and row.category == "project"
+    assert row.detail == {"sub_task_status": "completed"}
+
+
+@pytest.mark.anyio
+async def test_tool_call_finalization_only_touches_executing_rows(env):
+    """runner 收尾必须回写 AgentToolCall，否则它永久停在 executing；
+    条件 UPDATE 保证不覆盖已被其它路径改过状态的行、且重复收尾幂等。"""
+    ok = await runner._finalize_tool_call(
+        env.factory, env.tool_call_id, status="executed",
+        result={"steps_done": 1, "steps_total": 1}, error_message=None,
+    )
+    assert ok is True
+    row = await load_row(env.factory, AgentToolCall, env.tool_call_id)
+    assert row.status == "executed" and row.result == {"steps_done": 1, "steps_total": 1}
+    assert row.executed_at is not None
+
+    assert await runner._finalize_tool_call(
+        env.factory, env.tool_call_id, status="failed", result=None, error_message="x"
+    ) is False
+    row = await load_row(env.factory, AgentToolCall, env.tool_call_id)
+    assert row.status == "executed"                  # 第二次收尾不得回退状态
+
+
+@pytest.mark.anyio
+async def test_resolve_tool_call_id_prefers_task_input_anchor(env):
+    """run_plan 签名里没有 tool_call_id ⇒ 只能从计划行的 task_input 拿锚点
+    （PR-2a 必须写入 task_input["tool_call_id"]），缺失时回退查最近一次 propose_plan。"""
+    found = await runner._resolve_tool_call_id(
+        env.factory, plan_task_id=env.plan_task_id,
+        project_id=env.project_id, user_id=env.user_id,
+    )
+    assert found == env.tool_call_id
+
+    async with env.factory() as db:
+        row = (await db.execute(
+            select(BackgroundTask).where(BackgroundTask.id == env.plan_task_id)
+        )).scalar_one()
+        row.task_input = {"objective": "plan"}       # 没有 tool_call_id
+        await db.commit()
+    fallback = await runner._resolve_tool_call_id(
+        env.factory, plan_task_id=env.plan_task_id,
+        project_id=env.project_id, user_id=env.user_id,
+    )
+    assert fallback == env.tool_call_id

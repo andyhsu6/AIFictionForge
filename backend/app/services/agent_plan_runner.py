@@ -15,15 +15,19 @@ LLM 只出现在两个端点：规划（PR-2a 的 propose_plan）与收尾（PR-
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any, NamedTuple
 
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.logger import get_logger
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
+from app.models.project_agent import AgentExecutionStep, AgentToolCall
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
 logger = get_logger(__name__)
@@ -148,3 +152,184 @@ async def resolve_task_snapshot(
         status_params=None,
         error_message=error,
     )
+
+
+def _clip(text: Any, limit: int | None = None) -> str:
+    """压成一行并把长度钉在 limit 内（默认取模块常量，不用函数默认值绑死）。
+
+    status_message 是 String(500)，且项目支持 Postgres：SQLite 静默截断、PG 直接报错。
+    所以面向用户那一列只放摘要，详情一律进 progress_details（JSON）。
+    """
+    max_chars = STATUS_MESSAGE_MAX_CHARS if limit is None else limit
+    normalized = " ".join(str(text if text is not None else "").split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(max_chars - 1, 1)] + "…"
+
+
+async def _write_plan_row(
+    session_factory: async_sessionmaker,
+    plan_task_id: str,
+    *,
+    status: str | None = None,
+    progress: int | None = None,
+    status_message: str | None = None,
+    status_code: str | None = None,
+    status_params: dict[str, Any] | None = None,
+    progress_details: dict[str, Any] | None = None,
+    task_result: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    started: bool = False,
+    completed: bool = False,
+) -> None:
+    """用直接 UPDATE 写计划行；**刻意不使用 TaskProgressTracker**。
+
+    TaskProgressTracker._update_task（background_task_service.py:24-45）开头就
+    ``if task.status == "cancelled" or task.cancel_requested: return``，而通用取消接口
+    cancel_task(:377-399) 会立刻把 status 置成 cancelled ⇒ 一旦走 tracker，取消后的
+    最终步数永远写不进计划行。直接 UPDATE 既绕过冻结，也绕过身份映射。
+    """
+    now = datetime.now()
+    values: dict[str, Any] = {"updated_at": now}
+    if status is not None:
+        values["status"] = status
+    if progress is not None:
+        values["progress"] = int(progress)
+    if status_message is not None:
+        values["status_message"] = _clip(status_message)
+    if status_code is not None:
+        values["status_code"] = status_code
+    if status_params is not None:
+        values["status_params"] = status_params
+    if progress_details is not None:
+        values["progress_details"] = progress_details
+    if task_result is not None:
+        values["task_result"] = task_result
+    if error_message is not None:
+        values["error_message"] = error_message
+    if started:
+        values["started_at"] = now
+    if completed:
+        values["completed_at"] = now
+    async with session_factory() as session:
+        await session.execute(
+            update(BackgroundTask)
+            .where(BackgroundTask.id == plan_task_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def _insert_step(
+    session_factory: async_sessionmaker,
+    *,
+    conversation_id: str,
+    tool_call_id: str | None,
+    sequence: int,
+    title: str,
+    content: str,
+    detail: dict[str, Any] | None,
+    status: str = "running",
+) -> str:
+    """新建一条步骤行。列语义对齐 project_agent_service._create_step:1186-1216
+    （title[:200]、step_type="tool"/category="project" 同 :896-897），但不要求
+    user_message 存在——detached runner 没有用户消息，那三列都可空。
+    """
+    step = AgentExecutionStep(
+        conversation_id=conversation_id,
+        tool_call_id=tool_call_id,
+        sequence=sequence,
+        step_type="tool",
+        category="project",
+        title=title[:200],
+        content=content,
+        status=status,
+        detail=detail,
+    )
+    async with session_factory() as session:
+        session.add(step)
+        await session.commit()
+    return step.id
+
+
+async def _patch_step(
+    session_factory: async_sessionmaker,
+    step_id: str,
+    *,
+    status: str | None = None,
+    content: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    values: dict[str, Any] = {"updated_at": datetime.now()}   # 对齐 _update_step:1234
+    if status is not None:
+        values["status"] = status
+    if content is not None:
+        values["content"] = content
+    if detail is not None:
+        values["detail"] = detail
+    async with session_factory() as session:
+        await session.execute(
+            update(AgentExecutionStep)
+            .where(AgentExecutionStep.id == step_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def _finalize_tool_call(
+    session_factory: async_sessionmaker,
+    tool_call_id: str,
+    *,
+    status: str,
+    result: dict[str, Any] | None,
+    error_message: str | None,
+) -> bool:
+    """把计划那条 AgentToolCall 从 executing 推到终态。
+
+    _claim_tool_call（api/project_agent.py:297-341）抢占后它是 executing；§3 若只写
+    step 与进度，这行就永久停在 executing，而 finalize_interrupted_turn(:1127) 只作用
+    在同请求实例、headless 够不着。条件 UPDATE 让收尾幂等。
+    """
+    async with session_factory() as session:
+        res = await session.execute(
+            update(AgentToolCall)
+            .where(
+                AgentToolCall.id == tool_call_id,
+                AgentToolCall.status == "executing",
+            )
+            .values(
+                status=status,
+                result=result,
+                error_message=error_message,
+                executed_at=datetime.now(),
+            )
+        )
+        await session.commit()
+        return (res.rowcount or 0) == 1
+
+
+async def _resolve_tool_call_id(
+    session_factory: async_sessionmaker,
+    *,
+    plan_task_id: str,
+    project_id: str,
+    user_id: str,
+) -> str | None:
+    """计划 → propose_plan 锚点。首选 PR-2a 写进 task_input 的 tool_call_id。"""
+    async with session_factory() as session:
+        raw = (await session.execute(
+            select(BackgroundTask.task_input).where(BackgroundTask.id == plan_task_id)
+        )).scalar_one_or_none()
+        if isinstance(raw, dict) and raw.get("tool_call_id"):
+            return str(raw["tool_call_id"])
+        return (await session.execute(
+            select(AgentToolCall.id)
+            .where(
+                AgentToolCall.project_id == project_id,
+                AgentToolCall.user_id == user_id,
+                AgentToolCall.tool_name == "propose_plan",
+                AgentToolCall.status == "executing",
+            )
+            .order_by(AgentToolCall.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
