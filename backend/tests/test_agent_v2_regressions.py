@@ -1,8 +1,9 @@
 """PR-0a 回归网：锁住 v2（持久化工具历史）在 v1 删除前的可观察行为。
 
-覆盖 6 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
+覆盖 7 项：waiting_confirmation 收口、finalize_interrupted_turn 三态、
 MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
-超大工具结果不挤掉首条诉求（护栏 2，锁 _serialize_tool_response 的长度上限）。
+超大工具结果不挤掉首条诉求（护栏 2，锁 _serialize_tool_response 的长度上限）、
+历史窗口容量与有界性（HISTORY_LIMIT）。
 
 前 5 条都额外断言 v2 独有的可观察行为（工具轮持久化为 agent_messages 行、
 prompt 走持久化历史而非 v1 的内存 tool_context 段）——否则该条在 v1 下
@@ -425,4 +426,30 @@ async def test_huge_tool_result_does_not_evict_earliest_request(db_session):
     assert "结" * 50000 not in prompt, "50000 字符工具结果原样进 prompt"
     assert prompt.count("<tool>") == 3, (
         f"三条 tool 结果段未全部进入 prompt：{prompt.count('<tool>')} ⇒ 仍有历史被舍"
+    )
+
+
+@pytest.mark.anyio
+async def test_history_limit_covers_multi_round_v2_tool_turns(db_session):
+    """HISTORY_LIMIT 语义：够装下完整的 v2 工具回合，且仍然是**有界**窗口。
+
+    v2 一个最坏回合（4 个工具轮 + 第 5 轮 force_answer）落 1 user + 6 assistant +
+    5 tool = 12 行 ⇒ 旧的 20 只够 1.7 个回合，第二个回合就会把第一个回合的原始
+    诉求挤出窗口（护栏 2 只解决了单行吃预算，没解决行数）。40 ⇒ 至少 3 个完整回合。
+    同时必须仍有界：45 行里最早的 5 行不得被读出来。
+    """
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    for i in range(45):
+        db_session.add(AgentMessage(
+            conversation_id=conversation.id, role="user", content=f"h{i}"))
+    await db_session.commit()
+
+    assert ProjectAgentService.HISTORY_LIMIT == 40, (
+        "HISTORY_LIMIT 被改小 ⇒ v2 工具回合的历史会被整回合舍掉"
+    )
+    history = await svc._load_history(conversation.id)
+    assert len(history) == 40, f"历史窗口大小 {len(history)} ≠ HISTORY_LIMIT"
+    assert [m.content for m in history] == [f"h{i}" for i in range(5, 45)], (
+        "取到的不是最新的 40 条有序行 ⇒ 窗口或排序基准失效（护栏 1）"
     )

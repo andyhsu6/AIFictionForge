@@ -107,7 +107,9 @@ async def execute_mcp_tool_call(
 
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
-    HISTORY_LIMIT = 20
+    # v2 一个最坏工具回合落 12 行（1 user + 6 assistant + 5 tool）⇒ 20 行只够 1.7
+    # 个回合，会把整回合的原始诉求挤出窗口。40 行 ≈ 3 个完整回合，仍是**有界**窗口。
+    HISTORY_LIMIT = 40
     # 单条工具结果进 prompt 的上限：落库侧 _save_tool_response 允许到 50000 字符，
     # 若不在此收口，一条即可吃光 _build_prompt 的 60000 历史预算并挤掉首条用户诉求。
     TOOL_RESULT_MAX_CHARS = 8000
