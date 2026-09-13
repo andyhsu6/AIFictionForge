@@ -8,6 +8,7 @@ from typing import Any, AsyncGenerator, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.logger import get_logger
 from app.models.project import Project
 from app.models.project_agent import (
     AgentConversation,
@@ -15,6 +16,8 @@ from app.models.project_agent import (
     AgentMessage,
     AgentToolCall,
 )
+from app.services import agent_prompt_budget
+from app.services.agent_prompt_budget import PromptBudgetTrace
 from app.services.ai_service import AIService
 from app.services.language_resolver import (
     GenerationLanguage,
@@ -23,6 +26,9 @@ from app.services.language_resolver import (
 )
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.project_agent_selectors import normalize_tool_arguments
+
+
+logger = get_logger(__name__)
 
 
 SYSTEM_PROMPT = """你是 AIFictionForge 的“灵创创作助手”，帮助用户查看和修改当前小说项目。
@@ -102,6 +108,16 @@ async def execute_mcp_tool_call(
         "error": "MCP 未返回结果",
     }
     return result
+
+
+def _count_remaining_chars(history: list["AgentMessage"], reversed_index: int) -> int:
+    """被丢弃消息的字符总量（仅供留痕，不参与预算判定）。
+
+    `reversed_index` 是新→旧遍历里触发上限的那一格，其后的更旧消息全部落进丢弃集。
+    刻意只统计 `content` 长度：不做二次序列化，避免留痕本身再吃一遍 CPU。
+    """
+    remaining = history[: len(history) - reversed_index]
+    return sum(len(m.content or "") for m in remaining)
 
 
 class ProjectAgentService:
@@ -300,6 +316,13 @@ class ProjectAgentService:
             if tool.get("function", {}).get("name") not in project_names
         ]
 
+        # 预算每回合算一次：它只取决于「本次实发模型的实测窗口」与四个配置键，
+        # 与 history 内容无关 ⇒ 挪进轮循环只是每轮多一次 await。
+        # 若 B 的门禁不给合格结论，这里直接抛 validation.ai_model_below_minimum
+        # —— 宁可这一回合失败，也不拿一个静默兜底值去发 prompt。
+        budget_trace = PromptBudgetTrace(budget_chars=0)
+        budget_chars = await self._history_budget_chars(budget_trace)
+
         for round_index in range(self.MAX_TOOL_ROUNDS + 1):
             force_answer = round_index == self.MAX_TOOL_ROUNDS
             thought = await self._create_step(
@@ -314,7 +337,15 @@ class ProjectAgentService:
             )
             sequence += 1
             yield {"type": "step_start", "data": self._step_data(thought)}
-            prompt = self._build_prompt(history, page_context, force_answer=force_answer)
+            prompt = self._build_prompt(
+                history,
+                page_context,
+                force_answer=force_answer,
+                budget_chars=budget_chars,
+                trace=budget_trace,
+            )
+            if budget_trace.dropped_messages:
+                logger.warning(budget_trace.as_log())
             response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
@@ -722,6 +753,31 @@ class ProjectAgentService:
         )
         return list(reversed(result.scalars().all()))
 
+    async def _history_budget_chars(
+        self, trace: PromptBudgetTrace | None = None
+    ) -> int:
+        """本轮历史预算（字符）。三元组一律取「本次实发」口径。
+
+        `provider`/`base_url` 必须是 `ai_service` 实例上的**已标准化**值
+        （`api_provider` 走 `normalize_provider`，`base_url` 走 `effective_base_url`），
+        与 B 写结论缓存时用同一口径，否则命中不到自己那条结论。
+        `default_model` 为空时传空串：B 的访问器会因「三元组命中 0 个」而抛
+        `validation.ai_model_below_minimum` ⇒ 这是刻意的「明确报错」，
+        本 PR 不自造错误码、也不兜底成 60000。
+
+        刻意经由模块属性调用：`agent_prompt_budget.resolve_history_budget_chars`
+        是本函数唯一的注入接缝（测试 monkeypatch 的是源模块的那个名字，
+        改成 `from ... import` 会把接缝挪到本模块、让补丁打空）。
+        """
+        return await agent_prompt_budget.resolve_history_budget_chars(
+            user_id=self.user_id,
+            model=self.ai_service.default_model or "",
+            db=self.db,
+            provider=self.ai_service.api_provider or "unknown",
+            base_url=self.ai_service.base_url or "",
+            trace=trace,
+        )
+
     async def _create_step(
         self,
         conversation: AgentConversation,
@@ -824,10 +880,18 @@ class ProjectAgentService:
         history: list[AgentMessage],
         page_context: dict[str, Any],
         force_answer: bool = False,
+        *,
+        budget_chars: int,
+        trace: PromptBudgetTrace | None = None,
     ) -> str:
+        """组装 prompt。`budget_chars` 由 `resolve_history_budget_chars()` 按实测窗口
+        换算（PR-0c，架构计划 §5），**刻意不给默认值**：历史总预算曾长期是硬编码
+        60000，且触发裁剪时静默 `break` 丢弃最旧消息 —— 首条用户诉求正是最旧的。
+        """
         history_parts: list[str] = []
         history_length = 0
-        for item in reversed(history):
+        total = len(history)
+        for index, item in enumerate(reversed(history)):
             if item.role == "assistant" and item.tool_calls:
                 part = self._serialize_assistant_with_tools(item)
             elif item.role == "tool":
@@ -835,10 +899,19 @@ class ProjectAgentService:
             else:
                 content = item.content[:6000]
                 part = f"<{item.role}>\n{content}\n</{item.role}>"
-            if history_parts and history_length + len(part) > 60000:
+            if history_parts and history_length + len(part) > budget_chars:
+                # 保持既有 `break` 语义（新→旧累积，装不下就停），但把"丢了多少"
+                # 记进 trace：reversed 序下 index 之前的都已收进，剩余即 dropped。
+                if trace is not None:
+                    trace.dropped_messages = total - index
+                    trace.dropped_chars = _count_remaining_chars(history, index)
+                    trace.dropped_summaries.append(f"{item.role}:{len(part)}c")
+                    trace.used_chars = history_length
                 break
             history_parts.append(part)
             history_length += len(part)
+        if trace is not None and trace.dropped_messages == 0:
+            trace.used_chars = history_length
         history_text = "\n".join(reversed(history_parts))
         safe_page_context = {
             "route": str(page_context.get("route") or "")[:500],

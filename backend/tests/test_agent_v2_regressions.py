@@ -48,8 +48,25 @@ from app.models.project_agent import (
     AgentToolCall,
 )
 from app.services import project_agent_service as pas
+from app.services import agent_prompt_budget as apb
 from app.services.project_agent_service import ProjectAgentService
 from app.services.project_agent_tools import ProjectAgentTool
+
+
+@pytest.fixture(autouse=True)
+def stub_history_budget(monkeypatch):
+    """PR-0c：本文件锁的是持久化链路，不是预算换算。
+
+    换算依赖 B 的探测结论（DB 缓存行 + 网关元数据）⇒ 与这里要证的事无关，
+    统一钉成 PR-0c 之前的硬编码 60000，既有断言一字不改。预算本身归
+    tests/test_agent_prompt_budget.py；本文件那条 eviction 前提自证走的是
+    `_build_prompt(budget_chars=60_000)` 的直调路径，不受本桩影响。
+    """
+
+    async def fake_resolve(**kwargs):
+        return 60_000
+
+    monkeypatch.setattr(apb, "resolve_history_budget_chars", fake_resolve)
 
 
 @pytest.fixture
@@ -90,7 +107,11 @@ def make_service(db) -> ProjectAgentService:
     project = Project(id="proj-1", user_id="test", title="测试项目")
     return ProjectAgentService(
         db=db,
-        ai_service=SimpleNamespace(default_model="test-model"),
+        ai_service=SimpleNamespace(
+            default_model="test-model",
+            api_provider="openai",
+            base_url="https://gw.example/v1",
+        ),
         project=project,
         user_id="test",
     )
@@ -435,10 +456,10 @@ async def test_huge_tool_result_does_not_evict_earliest_request(db_session, monk
         " ⇒ 截断分支未被触发，本用例是空场景"
     )
 
-    guarded = svc._build_prompt(history, {"route": "/project/1"})
+    guarded = svc._build_prompt(history, {"route": "/project/1"}, budget_chars=60_000)
     # 前提自证：关掉护栏 2，同一份历史必须真的发生 eviction，否则本用例没在测预算
     monkeypatch.setattr(ProjectAgentService, "TOOL_RESULT_MAX_CHARS", 10 ** 9)
-    unguarded = svc._build_prompt(history, {"route": "/project/1"})
+    unguarded = svc._build_prompt(history, {"route": "/project/1"}, budget_chars=60_000)
     assert first_request not in unguarded, (
         "关掉护栏 2 后首条诉求仍在 ⇒ 行大小已越过 eviction 区间，需重新放大或改测预算本身")
     prompt = guarded
