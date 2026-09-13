@@ -78,7 +78,7 @@ async def test_agent_message_tool_serialization(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"}, None, False)
+    prompt = svc._build_prompt(history, {"route": "/project/1"})
 
     # assistant(tool_calls) 格式：<assistant>\n{content}\n<tool_calls>\n{json}\n</tool_calls>\n</assistant>
     assert "<assistant>\n我来查询角色信息。\n<tool_calls>\n" in prompt
@@ -96,7 +96,7 @@ async def test_build_prompt_with_tool_history(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"}, None, False)
+    prompt = svc._build_prompt(history, {"route": "/project/1"})
 
     assert "查询角色列表" in prompt  # 用户消息保留
     assert "我来查询角色信息。" in prompt  # assistant 内容保留
