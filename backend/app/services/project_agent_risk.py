@@ -90,8 +90,9 @@ async def resolve_tool_risk(
                 risk = CONFIRMATION_RISK
                 reason = "overwrite_existing_analysis"
         except Exception:
-            # 探测不出结论时不得放行覆盖：分析会删除旧 StoryMemory、清理旧伏笔、
-            # 覆盖 PlotAnalysis，属于破坏性写入。
+            # 探测不出结论时不得放行覆盖：重新分析会替换该章既有的 PlotAnalysis
+            # （chapter_id 唯一，见 app/models/memory.py:86），并清理由分析产生的
+            # 旧伏笔（foreshadow_service.py:1074/1195），属于破坏性写入。
             risk = CONFIRMATION_RISK
             reason = "analysis_probe_failed"
 
