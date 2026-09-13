@@ -195,9 +195,43 @@ def test_config_defaults_match_the_module_constants():
     assert settings.agent_history_budget_max_chars == apb.HISTORY_BUDGET_MAX_CHARS
 
 
-def test_settings_can_tune_the_ratio(monkeypatch):
-    monkeypatch.setattr(apb, "HISTORY_BUDGET_RATIO", 0.5, raising=False)
-    assert compute_history_budget_chars(1_000_000, ratio=0.5) == 400_000
+#: 四个键各自的"只有 settings 生效才可能是这个数"的场景：期望值都**不等于**用模块
+#: 常量算出来的结果，所以「`resolve` 改回读模块常量」这个变异（评审 M5）会让四条
+#: 全部变红。取值刻意避开互相遮蔽（ratio 那条落在 min/max 之间，min/max 那条
+#: raw 值在界内一侧…），保证每条只测它自己那一个键。
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "key, value, tokens, expected",
+    [
+        # raw = 1_000_000 x 1.0 x 0.1 = 100000（界内 ⇒ 只有 ratio 被读过才是这个数；
+        # 模块常量 0.3 会算出 300000）
+        ("agent_history_budget_ratio", 0.1, 1_000_000, 100_000),
+        # raw = 100_000 x 1.0 x 0.3 = 30000 ⇒ 被**配置**的下限抬到 77777
+        # （模块常量 HISTORY_BUDGET_MIN_CHARS=60000 会算出 60000）
+        ("agent_history_budget_min_chars", 77_777, 100_000, 77_777),
+        # raw = 2_000_000 x 1.0 x 0.3 = 600000 ⇒ 被**配置**的上限压到 222222
+        # （模块常量 HISTORY_BUDGET_MAX_CHARS=400000 会算出 400000）
+        ("agent_history_budget_max_chars", 222_222, 2_000_000, 222_222),
+        # raw = 1_000_000 x 0.5 x 0.3 = 150000（界内 ⇒ 只有系数被读过才是这个数；
+        # 模块常量 CHARS_PER_TOKEN=1.0 会算出 300000）
+        ("agent_chars_per_token", 0.5, 1_000_000, 150_000),
+    ],
+)
+async def test_settings_drive_the_conversion(monkeypatch, key, value, tokens, expected):
+    """Task 2 标题的「settings-driven」必须有行为钉子，不是只对齐默认值。
+
+    `test_config_defaults_match_the_module_constants` 只保证"两边默认值相等"⇒
+    实现完全可以绕过 settings 直接读模块常量而让它保持绿色（评审实测变异 M5：把
+    `resolve_history_budget_chars` 里那四个 `settings.*` 换回模块常量 ⇒ 当时
+    53+33 个相关用例全绿）。本用例走的是**真链路**：monkeypatch `apb.settings` 上
+    的键，用窗口 stub 调 `resolve_history_budget_chars`（**不是** `compute_`，
+    后者拿显式实参、永远碰不到 settings），断言换算结果就是那个只有配置能算出来的数。
+    """
+    monkeypatch.setattr(apb.settings, key, value)
+    budget = await resolve_history_budget_chars(ai_service=_WindowStub(tokens=tokens))
+    assert budget == expected, (
+        f"settings.{key}={value} 没有参与换算 ⇒ 预算又回到只读模块常量的形态"
+    )
 
 
 # --------------------------------------------------------------------------
