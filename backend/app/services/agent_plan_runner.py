@@ -622,9 +622,127 @@ async def _execute_step(
     db.expire_all()
     await db.refresh(registry.project)   # expire_all 会让绑定会话的 project 变成惰性刷新，
     # 下一步的同步属性访问会在非 greenlet 上下文触发 IO（MissingGreenlet）；显式刷新一次。
-    if tool == BACKGROUND_LAUNCH_TOOL:
-        raise PlanStepError(f"PR-2b Task 3 尚未支持后台任务步骤：{action}")
+    if tool != BACKGROUND_LAUNCH_TOOL:
+        return {
+            "inline": True,
+            "entity_id": str(result.get("entity_id") or "") if isinstance(result, dict) else "",
+        }
+    if action not in AGENT_TASK_ACTION_TYPES:
+        raise PlanStepError(f"计划步骤的 action 不是可发起的后台任务：{action}")
+    task_type = AGENT_TASK_ACTION_TYPES[action]
+    sub_task_id = str(result.get("entity_id") or "") if isinstance(result, dict) else ""
+    if not sub_task_id:
+        raise PlanStepError(f"步骤未返回子任务标识：{action}")
+    snapshot = await _await_sub_task(handle, factory, task_type, sub_task_id)
+    if snapshot.status == "cancelled":
+        raise PlanStepError(f"子任务被外部取消：{action}")
+    if snapshot.status == "failed":
+        handle.propagated_code = snapshot.status_code
+        handle.propagated_params = snapshot.status_params
+        raise PlanStepError(_clip(
+            snapshot.error_message or f"{action} 执行失败", 200
+        ))
     return {
-        "inline": True,
-        "entity_id": str(result.get("entity_id") or "") if isinstance(result, dict) else "",
+        "inline": False,
+        "sub_task_id": sub_task_id,
+        "sub_task_type": task_type,
+        "sub_task_status": snapshot.status,
+        "sub_task_progress": snapshot.progress,
     }
+
+
+async def _cancel_in_flight(handle: _PlanHandle, factory: async_sessionmaker) -> None:
+    """取消当前在途子任务并记账（Task 5 的 _supervise 取消分支复用同一个函数）。
+
+    必须在 ``handle.in_flight`` 被清掉之前调用——轮询的 finally 会清它。
+    """
+    if handle.in_flight is None:
+        return
+    task_type, task_id = handle.in_flight
+    cancelled = await _cancel_sub_task(
+        factory, user_id=handle.user_id, task_type=task_type, task_id=task_id
+    )
+    (handle.cancelled_sub_tasks if cancelled else handle.uncancellable_sub_tasks).append(task_id)
+
+
+async def _await_sub_task(
+    handle: _PlanHandle, factory: async_sessionmaker, task_type: str, task_id: str
+) -> TaskSnapshot:
+    """轮询子任务直到终态；单步有超时上限，超时就把子任务取消掉再失败。
+
+    每次轮询都开一个短命会话：runner 那个长会话带 expire_on_commit=False，靠它轮询会
+    读到陈旧身份映射（见 resolve_task_snapshot 的注释）。
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + STEP_POLL_TIMEOUT_SECONDS
+    handle.in_flight = (task_type, task_id)
+    try:
+        while True:
+            if handle.cancel_requested:
+                # 先级联再抛：_supervise 的取消分支拿不到已被 finally 清空的 in_flight。
+                await _cancel_in_flight(handle, factory)
+                raise asyncio.CancelledError()
+            if await _plan_cancel_requested(factory, handle.plan_task_id):
+                handle.cancel_requested = True
+                handle.cancel_reason = handle.cancel_reason or "计划行已被外部取消"
+                await _cancel_in_flight(handle, factory)
+                raise asyncio.CancelledError()
+            async with factory() as session:
+                snapshot = await resolve_task_snapshot(
+                    session, task_type=task_type, task_id=task_id
+                )
+            if snapshot is None:
+                raise PlanStepError(f"子任务行不存在：{task_type}")
+            if snapshot.finished:
+                return snapshot
+            if loop.time() > deadline:
+                await _cancel_in_flight(handle, factory)
+                raise PlanStepError(
+                    f"步骤轮询超过 {int(STEP_POLL_TIMEOUT_SECONDS)} 秒"
+                )
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    finally:
+        handle.in_flight = None
+
+
+async def _plan_cancel_requested(factory: async_sessionmaker, plan_task_id: str) -> bool:
+    """轮询期间也要看计划行：用户可能走通用 POST /api/tasks/{id}/cancel。"""
+    async with factory() as session:
+        row = (await session.execute(
+            select(BackgroundTask.cancel_requested, BackgroundTask.status)
+            .where(BackgroundTask.id == plan_task_id)
+        )).first()
+    if row is None:
+        return False
+    return bool(row[0]) or row[1] == "cancelled"
+
+
+async def _cancel_sub_task(
+    factory: async_sessionmaker, *, user_id: str, task_type: str, task_id: str
+) -> bool:
+    """取消在途子任务；返回是否真的取消掉。
+
+    字段写入与 _manage_background_task_cancel（operational_tools:714-723）保持一致，
+    但不复用那个方法：它要经 _find_task -> _all_tasks 把项目里四张任务表全捞一遍，
+    而 runner 已经确切知道 (task_type, task_id)。AnalysisTask 没有可取消状态
+    （api/tasks.py:128 的 can_cancel=False），只能停止轮询，调用方按 False 记账。
+    """
+    model = _model_for_task_type(task_type)
+    if model is BackgroundTask:
+        from app.services.background_task_service import background_task_service
+
+        async with factory() as session:
+            return await background_task_service.cancel_task(task_id, user_id, session)
+    if model is BatchGenerationTask:
+        async with factory() as session:
+            res = await session.execute(
+                update(BatchGenerationTask)
+                .where(
+                    BatchGenerationTask.id == task_id,
+                    BatchGenerationTask.status.in_(("pending", "running")),
+                )
+                .values(status="cancelled", completed_at=datetime.now())
+            )
+            await session.commit()
+            return (res.rowcount or 0) == 1
+    return False

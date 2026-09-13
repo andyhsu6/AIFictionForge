@@ -408,3 +408,294 @@ async def test_same_user_plans_run_one_at_a_time(env, monkeypatch):
     )
     await asyncio.gather(first, second, return_exceptions=True)
     assert events == ["enter", "exit", "enter", "exit"]        # 绝不交错
+
+
+def install_fake_launcher(monkeypatch, env, on_launch=None, *, registry_calls=None):
+    """把 start_project_task 的发起替换成「建一行 BackgroundTask 并提交」。
+
+    替换 ProjectAgentOperationalTools.execute 而不是 registry.execute：后者要继续走
+    真实路由（normalize_tool_arguments -> get -> operational.execute），才能证明
+    sub_task_id 真的取自 result["entity_id"]（架构计划 §0）。
+    """
+    async def fake_execute(self, name, arguments):
+        action = str((arguments or {}).get("action") or "")
+        if registry_calls is not None:
+            registry_calls.append(action or name)
+        task_type = runner.AGENT_TASK_ACTION_TYPES.get(action, action)
+        sub = BackgroundTask(
+            user_id=env.user_id, project_id=env.project_id, task_type=task_type,
+            status="pending", progress=0, task_input={"action": action},
+        )
+        self.db.add(sub)
+        await self.db.commit()               # 必须提交：轮询用的是另一个会话
+        entity_id = sub.id
+        if on_launch is not None:
+            # on_launch 返回字符串时，它才是该步骤真正的子任务主键
+            # （用于子任务落在 AnalysisTask/BatchGenerationTask 的用例）
+            entity_id = str(await on_launch(self.db, sub) or sub.id)
+        return {
+            "message": f"launched {action}", "entity_id": entity_id,
+            "before": {}, "after": {"status": "pending"}, "resources": ["tasks"],
+        }
+
+    monkeypatch.setattr(
+        "app.services.project_agent_operational_tools.ProjectAgentOperationalTools.execute",
+        fake_execute,
+    )
+
+
+async def complete_sub_task(factory, sub_task_id, *, status="completed", delay=0.0,
+                            code=None, params=None, error=None):
+    """模拟 detached 子任务在**另一个会话**里跑完（真实场景就是队列 worker）。"""
+    if delay:
+        await asyncio.sleep(delay)
+    async with factory() as db:
+        row = (await db.execute(
+            select(BackgroundTask).where(BackgroundTask.id == sub_task_id)
+        )).scalar_one()
+        row.status = status
+        row.progress = 100 if status == "completed" else row.progress
+        if code:
+            row.status_code = code
+            row.status_params = params or {}
+        if error:
+            row.error_message = error
+        await db.commit()
+
+
+@pytest.mark.anyio
+async def test_background_step_waits_for_sub_task_terminal_state(env, monkeypatch):
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.01)
+    seen: list[str] = []
+    install_fake_launcher(
+        monkeypatch, env,
+        on_launch=lambda db, sub: complete_sub_task(
+            env.factory, sub.id, status="completed", delay=0.05
+        ),
+        registry_calls=seen,
+    )
+    result = await start_plan(env, [
+        plan_step(1, tool="start_project_task", action="generate_chapter",
+                  arguments={"chapter_number": 1})
+    ])
+    assert result.plan.status == "completed"
+    assert seen == ["generate_chapter"]
+    detail = result.plan.progress_details["step_results"][0]
+    assert detail["sub_task_type"] == "chapter_generate"
+    assert detail["sub_task_status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_zero_llm_calls_whether_three_or_eight_steps(env, monkeypatch):
+    """验收①：步骤数 3→8，LLM 调用次数不变（注入 mock ai_service 计数）。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.01)
+
+    async def run(count: int):
+        install_fake_launcher(
+            monkeypatch, env,
+            on_launch=lambda db, sub: complete_sub_task(env.factory, sub.id),
+        )
+        # 修正（deviation）：同一 env 复用两次运行。真实路径每次运行都是一次新的
+        # _claim_tool_call 抢占；_finalize_tool_call 的条件 UPDATE 被既有用例钉死为
+        # "只动 executing 行"，不复位这一行第二次收尾就写不进新的步数。
+        async with env.factory() as db:
+            tool_call = (await db.execute(
+                select(AgentToolCall).where(AgentToolCall.id == env.tool_call_id)
+            )).scalar_one()
+            tool_call.status = "executing"
+            await db.commit()
+        return await start_plan(env, [
+            plan_step(i, tool="start_project_task", action="generate_chapter",
+                      arguments={"chapter_number": 1})
+            for i in range(1, count + 1)
+        ])
+
+    three = await run(3)
+    eight = await run(8)
+    assert three.ai.calls == [] and eight.ai.calls == []
+    assert three.plan.progress_details["steps_done"] == 3
+    assert eight.plan.progress_details["steps_done"] == 8
+    assert eight.tool_call.result["steps_done"] == 8
+    for row in (three, eight):
+        assert row.plan.status == "completed" and row.tool_call.status == "executed"
+
+
+@pytest.mark.anyio
+async def test_generate_by_chapter_number_resolves_chapter_created_by_previous_step(
+    env, monkeypatch
+):
+    """验收④：「展开大纲建章 → 按 chapter_number:3 生成」后序步骤解析到前序新建章节。
+
+    红绿条件刻意做成可证伪的：新章节由"子任务"在 0.12s 之后用另一个会话提交。若执行器
+    不等子任务终态就发起下一步，find_chapter 必然抛"当前项目中未找到章节"。
+    """
+    from app.services.project_agent_selectors import find_chapter
+
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.01)
+    resolved: list[str] = []
+    created: dict[str, str] = {}
+
+    async def launcher(db, sub):
+        if sub.task_type == "outline_expand":
+            # 修正（deviation）：_execute_step 随后会 db.expire_all()，闭包里再碰
+            # sub.id 会触发非 greenlet 上下文的惰性刷新（MissingGreenlet）。先取字符串。
+            sub_id = sub.id
+
+            async def build_chapter():
+                await asyncio.sleep(0.12)           # 真实展开要花一阵
+                async with env.factory() as other:
+                    chapter = Chapter(
+                        project_id=env.project_id, chapter_number=3,
+                        title="chapter three", content="chapter three body",
+                    )
+                    other.add(chapter)
+                    row = (await other.execute(
+                        select(BackgroundTask).where(BackgroundTask.id == sub_id)
+                    )).scalar_one()
+                    row.status = "completed"
+                    await other.commit()
+                    await other.refresh(chapter)
+                    created["chapter_id"] = chapter.id
+            asyncio.create_task(build_chapter())
+            return
+        chapter = await find_chapter(db, env.project_id, {"chapter_number": 3})
+        resolved.append(chapter.id)
+        # 修正（deviation）：子任务行必须自己跑到终态，否则本步骤会一直轮询到
+        # 单步上限（900s）才失败；补上"该步骤的子任务随后完成"这一真实行为。
+        await complete_sub_task(env.factory, sub.id)
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    result = await start_plan(env, [
+        plan_step(1, tool="start_project_task", action="expand_outline",
+                  arguments={"outline_id": "o-1"}),
+        plan_step(2, tool="start_project_task", action="generate_chapter",
+                  arguments={"chapter_number": 3}),
+    ])
+
+    assert result.plan.progress_details["steps_done"] == 2, result.plan.status_message
+    assert result.plan.status == "completed"
+    assert resolved == [created["chapter_id"]]
+
+
+@pytest.mark.anyio
+async def test_step_poll_timeout_fails_step_and_cancels_sub_task(env, monkeypatch):
+    """单步轮询上限：超时后先取消子任务再失败即停，不留一个没人管的僵尸任务。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(runner, "STEP_POLL_TIMEOUT_SECONDS", 0.08)
+    held: list[str] = []
+
+    async def launcher(db, sub):
+        held.append(sub.id)                     # 永不结束
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    result = await start_plan(env, [
+        plan_step(1, tool="start_project_task", action="generate_chapter",
+                  arguments={"chapter_number": 1})
+    ])
+    assert result.plan.status == "failed"
+    assert result.plan.progress_details["failed_at_step"] == 1
+    assert result.plan.progress_details["cancel"]["cancelled_sub_tasks"] == held
+    assert (await load_row(env.factory, BackgroundTask, held[0])).status == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_sub_task_status_code_is_propagated_to_plan_row(env, monkeypatch):
+    """计划 B 接口契约：门禁命中的码必须原样出现在计划行，而不是笼统 failed。"""
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.01)
+
+    async def launcher(db, sub):
+        await complete_sub_task(
+            env.factory, sub.id, status="failed",
+            code="validation.ai_model_below_minimum",
+            params={"model": "small-model", "min_window": 1000000},
+            error="model window below minimum",
+        )
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    result = await start_plan(env, [
+        plan_step(1, tool="start_project_task", action="generate_chapter",
+                  arguments={"chapter_number": 1})
+    ])
+    assert result.plan.status == "failed"
+    assert result.plan.status_code == "validation.ai_model_below_minimum"
+    assert result.plan.status_params == {"model": "small-model", "min_window": 1000000}
+
+
+@pytest.mark.anyio
+async def test_manual_background_task_still_progresses_while_plan_polls(
+    env, monkeypatch
+):
+    """验收⑤：执行器**不是**队列的 task_func ⇒ 同用户手工任务照常推进。
+
+    红绿条件：若把 runner 塞进 spawn_background_task，每用户单 worker 会被它占死，
+    manual_done 永远排在 step_done 之后（或干脆不出现）⇒ 断言变红。
+    """
+    from app.services.background_task_service import (
+        BackgroundTaskService,
+        background_task_service,
+    )
+
+    monkeypatch.setattr(runner, "POLL_INTERVAL_SECONDS", 0.02)
+    # 修正（deviation）：本用例只测队列不饿死，不该依赖取消表（测试库里根本没有
+    # 这两行任务，真实 _is_task_cancelled 会因查不到行而把任务整条跳过）。
+    async def _never_cancelled(task_id, user_id):
+        return False
+
+    monkeypatch.setattr(
+        BackgroundTaskService, "_is_task_cancelled", staticmethod(_never_cancelled)
+    )
+    order: list[str] = []
+    # 单 worker FIFO：先让手工任务入队再让子任务入队，manual_done 才能先于
+    # step_done（修正 deviation：原 launcher 先入队子任务，FIFO 下顺序必然相反）。
+    manual_queued = asyncio.Event()
+
+    async def step_worker(task_id, user_id):
+        await asyncio.sleep(0.25)                 # 占住该用户的单 worker
+        order.append("step_done")
+        await complete_sub_task(env.factory, task_id)
+
+    async def launcher(db, sub):
+        await manual_queued.wait()
+        await background_task_service.spawn_background_task(sub.id, env.user_id, step_worker)
+
+    install_fake_launcher(monkeypatch, env, on_launch=launcher)
+    plan_task = await runner.run_plan(
+        plan_task_id=env.plan_task_id, user_id=env.user_id, project_id=env.project_id,
+        conversation_id=env.conversation_id,
+        steps=[plan_step(1, tool="start_project_task", action="generate_chapter",
+                         arguments={"chapter_number": 1})],
+        ai_service=CountingAIService(), session_factory=env.factory,
+    )
+    await asyncio.sleep(0.05)                     # 让计划先进入轮询
+
+    manual_id = f"manual-{uuid.uuid4().hex[:8]}"
+
+    async def manual_worker(task_id, user_id):
+        order.append("manual_done")
+
+    async with env.factory() as db:
+        db.add(BackgroundTask(
+            id=manual_id, user_id=env.user_id, project_id=env.project_id,
+            task_type="chapter_generate", status="pending", progress=0,
+        ))
+        await db.commit()
+    await background_task_service.spawn_background_task(manual_id, env.user_id, manual_worker)
+    manual_queued.set()
+
+    await asyncio.gather(plan_task, return_exceptions=True)
+    assert "manual_done" in order and "step_done" in order
+    assert order.index("manual_done") < order.index("step_done")
+    plan_row = await load_row(env.factory, BackgroundTask, env.plan_task_id)
+    assert plan_row.status == "completed"
+
+
+@pytest.mark.anyio
+async def test_spawn_queue_is_never_used_by_the_runner(env):
+    """硬约束：runner 模块内不得出现 spawn_background_task 调用（否则会饿死子任务）。"""
+    import inspect
+
+    source = inspect.getsource(runner)
+    # 修正（deviation）：模块 docstring 本就写着这个禁词来解释"为什么不能入队"，
+    # 裸字符串断言必红；改成查**调用形态**，既保住门禁又不逼文档回避 API 名。
+    assert "spawn_background_task(" not in source
+    assert "_user_worker_loop(" not in source
