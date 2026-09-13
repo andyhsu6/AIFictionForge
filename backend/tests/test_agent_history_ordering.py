@@ -20,6 +20,7 @@ session TimeZone 钉成 UTC（app/database.py 的 connect_args.server_settings�
 test_postgres_engine_pins_session_timezone_to_utc（不连真库，断言构造参数）。
 """
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -92,6 +93,30 @@ async def insert_via_server_default(db, table: str, columns: dict) -> None:
     await db.execute(text(f"INSERT INTO {table} ({cols}) VALUES ({binds})"), columns)
 
 
+async def wait_past_second_tick(db, stamp: datetime) -> None:
+    """等 SQLite 秒级 CURRENT_TIMESTAMP 跨过 stamp 所在秒（替代定长 sleep）。
+
+    调用方必须传**刚 ORM 提交那一行的 created_at**（Python 侧 naive UTC，含微秒），
+    不是提交前抓的 DB 时刻：只有这样"跨过了 stamp 所在秒"才等价于"下一条
+    server_default 行的戳严格晚于 stamp"——定长 sleep(1.05) 只是在赌这个条件成立。
+    CURRENT_TIMESTAMP 返回定长的 'YYYY-MM-DD HH:MM:SS' 字符串（实测 aiosqlite 原样
+    返回字符串，秒精度），字典序 == 时间序，故直接比较字符串。
+    """
+    target = stamp.strftime("%Y-%m-%d %H:%M:%S")
+    deadline = time.monotonic() + 3.0
+    while True:
+        now = str((await db.execute(text("SELECT CURRENT_TIMESTAMP"))).scalar_one())
+        if now > target:   # 定长格式，字典序==时间序
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"CURRENT_TIMESTAMP 3s 未跨过 {target} ⇒ 时钟异常；"
+                "或者 stamp 根本不在 UTC 基准上（ORM 默认值被改成本地时间时会领先秒针整"
+                " 8 小时，永远跨不过去）⇒ 先查 _naive_utc_now（护栏 1b/3）"
+            )
+        await asyncio.sleep(0.02)
+
+
 async def make_conversation(db) -> AgentConversation:
     db.add(Project(id="proj-1", user_id="test", title="p"))
     conv = AgentConversation(user_id="test", project_id="proj-1", title="t")
@@ -110,12 +135,13 @@ async def test_orm_default_and_server_default_share_one_time_basis(db_session):
     """
     conv = await make_conversation(db_session)
 
-    db_session.add(AgentMessage(
-        conversation_id=conv.id, role="user", content="orm-first"))
+    orm_row = AgentMessage(
+        conversation_id=conv.id, role="user", content="orm-first")
+    db_session.add(orm_row)
     await db_session.commit()
 
     # CURRENT_TIMESTAMP 只到秒，必须跨秒才能保证同基准下的先后无歧义。
-    await asyncio.sleep(1.05)
+    await wait_past_second_tick(db_session, orm_row.created_at)
     await insert_via_server_default(db_session, "agent_messages", {
         "id": str(uuid.uuid4()), "conversation_id": conv.id,
         "role": "assistant", "content": "server-default-second",
@@ -183,13 +209,14 @@ async def test_tool_call_orm_default_matches_server_default_basis(db_session):
     """
     conv = await make_conversation(db_session)
 
-    db_session.add(AgentToolCall(
+    orm_row = AgentToolCall(
         conversation_id=conv.id, user_id="test", project_id="proj-1",
         tool_name="orm_first", arguments={}, status="proposed",
-    ))
+    )
+    db_session.add(orm_row)
     await db_session.commit()
 
-    await asyncio.sleep(1.05)
+    await wait_past_second_tick(db_session, orm_row.created_at)
     await insert_via_server_default(db_session, "agent_tool_calls", {
         "id": str(uuid.uuid4()), "conversation_id": conv.id, "user_id": "test",
         "project_id": "proj-1", "tool_name": "sql_second", "arguments": "{}",

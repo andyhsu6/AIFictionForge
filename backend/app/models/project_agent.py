@@ -8,6 +8,12 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 
+def _naive_utc_now() -> datetime:
+    """naive UTC 当前时间：两侧 server_default 都是 UTC（SQLite 恒 UTC；PG 由
+    database.py 钉定 session TimeZone），Python 侧默认值必须同基准，见下方列注释。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class AgentConversation(Base):
     __tablename__ = "agent_conversations"
 
@@ -55,7 +61,7 @@ class AgentMessage(Base):
     # Python 侧默认值只为打破 SQLite CURRENT_TIMESTAMP 的秒级并列。
     created_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        default=_naive_utc_now,
         server_default=func.now(),
         nullable=False,
     )
@@ -94,7 +100,7 @@ class AgentToolCall(Base):
     # Python 侧默认值只为打破 api 侧 ORDER BY created_at 的秒级并列。
     created_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        default=_naive_utc_now,
         server_default=func.now(),
         nullable=False,
     )
