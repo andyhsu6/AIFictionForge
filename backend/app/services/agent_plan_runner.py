@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.common import verify_project_access
+from app.config import settings
 from app.core.errors import ApiError
 from app.database import get_engine
 from app.logger import get_logger
@@ -51,6 +52,37 @@ POLL_INTERVAL_SECONDS = 2.0
 STEP_GRACE_SECONDS = 0.0            # PR-4 调成 3.0（SQLite WAL 可见性）
 STATUS_MESSAGE_MAX_CHARS = 120      # status_message 是 String(500)，PG 超长直接报错
 CANCEL_SETTLE_TIMEOUT_SECONDS = 10.0
+
+SUMMARY_MAX_CHARS = 8000        # PR-2c 聚合消息裁剪；键名 agent_plan_summary_max_chars
+
+_DEFAULT_LIMITS: dict[str, Any] = {
+    "agent_plan_max_steps": MAX_PLAN_STEPS,
+    "agent_plan_wall_clock_seconds": PLAN_WALL_CLOCK_SECONDS,
+    "agent_plan_step_poll_timeout_seconds": STEP_POLL_TIMEOUT_SECONDS,
+    "agent_plan_poll_interval_seconds": POLL_INTERVAL_SECONDS,
+    "agent_plan_step_grace_seconds": STEP_GRACE_SECONDS,
+    "agent_plan_status_message_max_chars": STATUS_MESSAGE_MAX_CHARS,
+    "agent_plan_summary_max_chars": SUMMARY_MAX_CHARS,
+}
+
+
+def _limit(key: str, module_value: Any) -> Any:
+    """§3 配置面唯一读取口。
+
+    规则：调用方传进来的 module_value 若已被 monkeypatch 成非默认值 ⇒ 以它为准
+    （PR-2b 的用例靠 patch 模块常量驱动预算）；否则取 settings。
+    两者都不满足时直接返回默认，绝不抛错——runner 是 detached 任务，
+    配置读不出来不该让计划静默失败。
+    """
+    default = _DEFAULT_LIMITS.get(key)
+    if default is not None and module_value != default:
+        return module_value
+    value = getattr(settings, key, default)
+    if isinstance(default, bool) or isinstance(module_value, bool):
+        return bool(value)
+    if isinstance(default, int) and not isinstance(module_value, float):
+        return int(value)
+    return value
 
 
 class TaskSnapshot(NamedTuple):
@@ -166,7 +198,7 @@ def _clip(text: Any, limit: int | None = None) -> str:
     status_message 是 String(500)，且项目支持 Postgres：SQLite 静默截断、PG 直接报错。
     所以面向用户那一列只放摘要，详情一律进 progress_details（JSON）。
     """
-    max_chars = STATUS_MESSAGE_MAX_CHARS if limit is None else limit
+    max_chars = _limit("agent_plan_status_message_max_chars", STATUS_MESSAGE_MAX_CHARS) if limit is None else limit
     normalized = " ".join(str(text if text is not None else "").split())
     if len(normalized) <= max_chars:
         return normalized
@@ -551,13 +583,14 @@ async def _run_plan_steps(
 ) -> "tuple[str, str]":
     """预检 + 打开 runner 自己的会话与权限校验，然后把主循环交给 _run_step_loop。"""
     total = len(handle.steps)
+    max_steps = _limit("agent_plan_max_steps", MAX_PLAN_STEPS)
     await _write_plan_row(
         factory, handle.plan_task_id, status="running", progress=0, started=True,
         status_message=_clip(f"计划开始执行（{total} 步）"),
         progress_details=_details(handle, "running", f"计划开始执行（{total} 步）"),
     )
-    if total > MAX_PLAN_STEPS:
-        return "failed", f"计划步骤数 {total} 超过上限 {MAX_PLAN_STEPS}"
+    if total > max_steps:
+        return "failed", f"计划步骤数 {total} 超过上限 {max_steps}"
     if not total:
         return "completed", "计划没有需要执行的步骤"
     try:
@@ -580,15 +613,17 @@ async def _run_step_loop(
 ) -> "tuple[str, str]":
     """顺序执行每一步，失败即停。返回 (outcome, summary)。"""
     total = len(handle.steps)
+    wall_clock = _limit("agent_plan_wall_clock_seconds", PLAN_WALL_CLOCK_SECONDS)
+    grace = _limit("agent_plan_step_grace_seconds", STEP_GRACE_SECONDS)
     loop = asyncio.get_running_loop()
-    plan_deadline = loop.time() + PLAN_WALL_CLOCK_SECONDS
+    plan_deadline = loop.time() + wall_clock
     for index, step in enumerate(handle.steps, start=1):
         if handle.cancel_requested:
             return "cancelled", _clip(handle.cancel_reason or "计划已取消", 200)
         if loop.time() > plan_deadline:
             handle.failed_at_step = index
             return "failed", _clip(
-                f"计划总时长超过上限 {int(PLAN_WALL_CLOCK_SECONDS)} 秒，"
+                f"计划总时长超过上限 {int(wall_clock)} 秒，"
                 f"第 {index} 步未发起", 200,
             )
         label = str(step.get("action") or step.get("tool") or f"step {index}")
@@ -623,8 +658,8 @@ async def _run_step_loop(
             status_message=_clip(f"已完成 {index}/{total} 步"),
             progress_details=_details(handle, "running", f"已完成 {index}/{total} 步"),
         )
-        if STEP_GRACE_SECONDS:
-            await asyncio.sleep(STEP_GRACE_SECONDS)   # PR-4：步间 grace
+        if grace:
+            await asyncio.sleep(grace)   # PR-4：步间 grace
     return "completed", f"计划执行完成（{total}/{total} 步）"
 
 
@@ -704,8 +739,10 @@ async def _await_sub_task(
     带 expire_on_commit=False，靠它轮询会读到陈旧身份映射（见 resolve_task_snapshot 的
     注释）。
     """
+    poll_timeout = _limit("agent_plan_step_poll_timeout_seconds", STEP_POLL_TIMEOUT_SECONDS)
+    poll_interval = _limit("agent_plan_poll_interval_seconds", POLL_INTERVAL_SECONDS)
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + STEP_POLL_TIMEOUT_SECONDS
+    deadline = loop.time() + poll_timeout
     handle.in_flight = (task_type, task_id)
     try:
         while True:
@@ -729,9 +766,9 @@ async def _await_sub_task(
             if loop.time() > deadline:
                 await _cancel_in_flight(handle, factory)
                 raise PlanStepError(
-                    f"步骤轮询超过 {int(STEP_POLL_TIMEOUT_SECONDS)} 秒"
+                    f"步骤轮询超过 {int(poll_timeout)} 秒"
                 )
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
         # 外部 task.cancel()：异常穿过 finally 前 in_flight 还在，这里级联；轮询自查路径
         # 已经级联过（_cancel_in_flight 已把 in_flight 置空）⇒ 这里是空操作。
