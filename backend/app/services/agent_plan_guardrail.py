@@ -8,9 +8,10 @@ import logging
 from typing import Any, Optional
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.core.errors import ApiError
 from app.models.background_task import BackgroundTask
 
 logger = logging.getLogger(__name__)
@@ -84,3 +85,25 @@ def plan_run_facts(state: dict[str, Any] | None) -> str:
         "计划内的写入可能仍在进行，请勿基于中间态数据下确定结论，不要重复提出新计划；"
         "用户问及进度时应回答「计划仍在执行中」并说明可在计划面板停止它。"
     )[:FACTS_MAX_CHARS]
+
+
+async def assert_no_running_plan(
+    session_factory: async_sessionmaker,
+    *,
+    project_id: str,
+    user_id: str,
+    conversation_id: str,
+) -> None:
+    """§7②③：同会话已有未定稿计划 ⇒ 409 conflict.agent_plan_running。
+
+    必须在 _claim_tool_call 之前调用：抢占已 commit，先抢后拒会留下
+    executing 却无人执行的计划锚点。会话维度的隔离是刻意的——
+    不同会话允许各自跑一份计划，真正的资源序列化由 runner 的 per-user 信号量负责。
+    """
+    async with session_factory() as session:
+        row = await find_open_plan_task(
+            session, project_id=project_id, user_id=user_id,
+            conversation_id=conversation_id,
+        )
+    if row is not None:
+        raise ApiError(code="conflict.agent_plan_running")

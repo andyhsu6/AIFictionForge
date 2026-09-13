@@ -24,7 +24,11 @@ from app.services.agent_plan_dispatch import (
     dispatch_plan,
     plan_runner,
 )
-from app.services.agent_plan_guardrail import load_running_plan_state, plan_run_facts
+from app.services.agent_plan_guardrail import (
+    find_open_plan_task,
+    load_running_plan_state,
+    plan_run_facts,
+)
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
     PlanValidationError,
@@ -1067,6 +1071,56 @@ class ProjectAgentService:
         顺序是硬的：**先判执行器可用再建任务行**（否则留下一条永远 pending 的孤儿
         行），**先提交再调度**（执行器用独立 session 反查任务行）。
         """
+        # ⚠️ §7③：auto_approve 不豁免。放在建计划行之前 ⇒ 天然满足
+        # 「runner 未被调度、未建第二计划行」（验收项），不给孤儿行留机会。
+        # 这里用 find_open_plan_task 而不是 assert_no_running_plan：
+        # service 侧手上已有请求态 AsyncSession，不该再开一个会话。
+        blocking = await find_open_plan_task(
+            self.db, project_id=self.project.id, user_id=self.user_id,
+            conversation_id=conversation.id,
+        )
+        if blocking is not None:
+            # 收口形状照抄同函数 `except ApiError:` 分支的事件五件套，只换语义与码；
+            # 计划行不建、runner 不调度、不还原 waiting_confirmation。
+            record.status = "failed"
+            record.error_message = "同会话已有正在执行的计划"
+            await self._update_step(
+                tool_step,
+                content="同会话已有正在执行的计划，本次计划没有被启动。",
+                status="failed",
+                detail={
+                    "plan": plan,
+                    "blocking_plan_task_id": blocking.id,
+                    "approval_mode": "automatic",
+                    "status_code": "conflict.agent_plan_running",
+                    "tool_call": self._tool_call_data(record),
+                },
+            )
+            yield {"type": "step_update", "data": self._step_data(tool_step)}
+            content = (
+                "这个会话已经有一个计划在跑，我会先把它执行完。"
+                "请等它结束（或先停止它）之后再提交新计划；这次提交的计划没有被启动。"
+            )
+            assistant = await self._save_assistant(
+                conversation, content, prompt_tokens, completion_tokens, commit=False
+            )
+            record.message_id = assistant.id
+            await self._attach_steps(steps, tool_records, assistant, commit=False)
+            await self.db.commit()
+            yield {"type": "final_start", "data": {"message_id": assistant.id}}
+            yield {"type": "final_chunk", "content": content}
+            yield {"type": "final_done", "data": {"message_id": assistant.id}}
+            yield {
+                "type": "result",
+                "data": {
+                    "conversation_id": conversation.id,
+                    "message_id": assistant.id,
+                    "status": "completed",
+                    "plan_task_id": None,               # 本分支不建计划行
+                    "plan_task_status": "rejected",
+                },
+            }
+            return
         plan_task = None
         dispatch_error: str | None = None
         dispatch_status = "failed"
