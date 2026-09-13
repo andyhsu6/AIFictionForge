@@ -62,18 +62,11 @@ def agent_system_prompt(
     return append_language_instruction(prompt, language)
 
 
-_RISK_REASON_TEXT = {
-    "overwrite_existing_analysis": "该章节已有分析结果或故事记忆，继续执行会覆盖既有分析、记忆与伏笔联动。",
-    "analysis_probe_failed": "无法确认该章节是否已有分析结果，已按需要确认处理。",
-}
-
-
-def _confirmation_step_content(risk_detail: dict[str, Any] | None) -> str:
-    """确认步骤文案：基础文案 + 条件免确认判定的可读原因。"""
-    base = "已生成修改预览，等待用户确认。"
-    reason = risk_detail.get("reason") if risk_detail else None
-    extra = _RISK_REASON_TEXT.get(reason) if isinstance(reason, str) else None
-    return f"{base}{extra}" if extra else base
+# I1：确认步骤的"为什么需要确认"不再在后端翻译成中文拼进 step.content ——
+# 那会让英文用户在确认卡上读到整段中文（ProjectAgentPanel 原样渲染 content）。
+# detail.risk.reason 保留 snake_case 审计码，文案见
+# frontend/src/locales/{zh,en}/projectAgentPanel.json 的 riskReason.*。
+CONFIRMATION_STEP_CONTENT = "已生成修改预览，等待用户确认。"
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -587,7 +580,7 @@ class ProjectAgentService:
                             proposed.append(record)
                             await self._update_step(
                                 tool_step,
-                                content=_confirmation_step_content(risk_detail),
+                                content=CONFIRMATION_STEP_CONTENT,
                                 status="waiting_confirmation",
                                 detail={
                                     "arguments": self._display_value(arguments),
