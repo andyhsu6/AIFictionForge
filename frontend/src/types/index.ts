@@ -375,6 +375,26 @@ export interface AgentExecutionStep {
   updated_at: string;
 }
 
+export interface AgentPlanStep {
+  id: string;
+  tool: string;
+  action: string;
+  arguments: Record<string, unknown>;
+  note?: string;
+}
+
+export interface AgentPlanPayload {
+  objective: string;
+  steps: AgentPlanStep[];
+}
+
+export interface AgentPlanApproveResult {
+  plan_task_id: string;
+  status: string;
+  steps: AgentPlanStep[];
+  message?: string;
+}
+
 export interface AgentConversationDetail extends AgentConversation {
   messages: AgentMessage[];
   tool_calls: AgentToolCall[];

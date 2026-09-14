@@ -1285,6 +1285,21 @@ export const projectAgentApi = {
       `/projects/${projectId}/agent/tool-calls/${toolCallId}/reject`
     ),
 
+  // PR-2a：一次性批准整份计划（selected_step_ids = 过滤后保留的步骤 id，字段名与后端 AgentPlanApprovalRequest 一致）
+  approvePlan: (projectId: string, toolCallId: string, body: { selected_step_ids: string[] }) =>
+    api.post<unknown, import('../types').AgentPlanApproveResult>(
+      `/projects/${projectId}/agent/tool-calls/${toolCallId}/approve-plan`,
+      body
+    ),
+
+  // PR-2b service 层 request_plan_cancellation 的 HTTP 出口（服务端级联取消，
+  // 不得改用通用 cancelTask：那条路径会先把计划行置 cancelled，
+  // 使 TaskProgressTracker 永久跳过写入、计划拿不到最终步数）
+  cancelPlan: (projectId: string, planTaskId: string) =>
+    api.post<unknown, { message: string; status: string; plan_task_id: string }>(
+      `/projects/${projectId}/agent/plans/${planTaskId}/cancel`
+    ),
+
   chatStream: async (
     projectId: string,
     payload: {

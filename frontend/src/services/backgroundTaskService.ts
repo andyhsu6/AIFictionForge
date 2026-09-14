@@ -78,6 +78,16 @@ export interface TaskStatus {
     completed?: number;
     total?: number;
     current_chapter_number?: number | null;
+    // PR-2b agent_plan runner `_details()` 的计划键（顶层；取消信息嵌套在 cancel 下）。
+    steps_total?: number;
+    steps_done?: number;
+    failed_at_step?: number | null;
+    cancel?: {
+      requested?: boolean;
+      reason?: string | null;
+      cancelled_sub_tasks?: string[];
+      uncancellable_sub_tasks?: string[];
+    } | null;
   } | null;
   error_message: string | null;
   task_result: Record<string, unknown> | null;
@@ -88,6 +98,8 @@ export interface TaskStatus {
   completed_at: string | null;
   updated_at: string | null;
   archived_at?: string | null;
+  /** 计划任务原始输入（objective / steps / tool_call_id）；其它任务为 null */
+  task_input?: Record<string, unknown> | null;
   affected_resources: string[];
   can_cancel: boolean;
   can_delete: boolean;

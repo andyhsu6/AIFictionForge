@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { App as AntApp } from 'antd';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import FloatingTaskPanel from '../components/FloatingTaskPanel';
+import i18n from '../i18n';
+import { eventBus, EventNames } from '../store/eventBus';
+import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
 
 function readSource(relative: string): string {
   return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf-8');
@@ -9,6 +17,8 @@ function readSource(relative: string): string {
 const panelEmitSource = readSource('../components/FloatingTaskPanel.tsx');
 
 const panelSource = readSource('../components/project-agent/ProjectAgentPanel.tsx');
+
+const apiSource = readSource('../services/api.ts');
 
 describe('background task settled payload contract', () => {
   it('carries conversation attribution for plan tasks', () => {
@@ -20,5 +30,121 @@ describe('background task settled payload contract', () => {
     // 计划卡数据源是 AgentToolCall.arguments，不依赖 task_input；
     // 面板若开始读 task_input，说明后端最小透出被绕过。
     expect(panelSource).not.toContain('task_input');
+  });
+});
+
+describe('agent plan api contract', () => {
+  it('exposes approve-plan keyed by the tool call id', () => {
+    expect(apiSource).toContain('`/projects/${projectId}/agent/tool-calls/${toolCallId}/approve-plan`');
+  });
+
+  it('exposes a plan-specific cancel endpoint', () => {
+    expect(apiSource).toContain('`/projects/${projectId}/agent/plans/${planTaskId}/cancel`');
+  });
+
+  it('sends selected_step_ids (the AgentPlanApprovalRequest field name)', () => {
+    expect(apiSource).toContain('selected_step_ids');
+  });
+});
+
+// Behavioral guard for the settled-emit payload: the substring assertions above
+// were proven vacuous (moving the emitted keys into a comment still passed), so
+// mount the real panel against a stubbed task list and inspect the emitted args.
+const { taskApi } = vi.hoisted(() => ({
+  taskApi: {
+    getProjectTasks: vi.fn(),
+    getTaskStatus: vi.fn(),
+    cancelTask: vi.fn(),
+    cancelBatchTask: vi.fn(),
+    deleteTask: vi.fn(),
+    clearProjectTasks: vi.fn(),
+  },
+}));
+
+vi.mock('../services/backgroundTaskService', () => taskApi);
+
+function planTask(overrides: Partial<TaskStatus> = {}): TaskStatus {
+  return {
+    id: 'plan-task-1',
+    task_type: 'agent_plan',
+    project_id: 'proj-1',
+    conversation_id: 'conv-9',
+    status: 'completed',
+    progress: 100,
+    status_message: null,
+    progress_details: null,
+    error_message: null,
+    task_result: null,
+    retry_count: 0,
+    cancel_requested: false,
+    created_at: '2026-09-14T00:00:00',
+    started_at: '2026-09-14T00:00:01',
+    completed_at: '2026-09-14T00:00:02',
+    updated_at: '2026-09-14T00:00:03',
+    affected_resources: [],
+    can_cancel: false,
+    can_delete: true,
+    ...overrides,
+  };
+}
+
+function mountFloatingPanel(autoRefreshInterval = 3000) {
+  return render(
+    createElement(
+      AntApp,
+      null,
+      createElement(FloatingTaskPanel, { projectId: 'proj-1', autoRefreshInterval }),
+    ),
+  );
+}
+
+describe('settled emit behavior carries conversation attribution', () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage('zh');
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.mocked(getProjectTasks).mockReset();
+  });
+
+  it('emits conversationId + taskType when a watched plan task settles', async () => {
+    const task = planTask();
+    vi.mocked(getProjectTasks).mockResolvedValue({ items: [task] });
+    const emitSpy = vi.spyOn(eventBus, 'emit');
+
+    mountFloatingPanel();
+    await waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1));
+
+    // Register the task as watched, exactly like BACKGROUND_TASK_CREATED does at runtime.
+    act(() => {
+      eventBus.emit(EventNames.BACKGROUND_TASK_CREATED, { projectId: 'proj-1', taskId: task.id });
+    });
+
+    await waitFor(() => {
+      expect(emitSpy).toHaveBeenCalledWith(
+        EventNames.BACKGROUND_TASK_SETTLED,
+        expect.objectContaining({ conversationId: 'conv-9', taskType: 'agent_plan' }),
+      );
+    });
+  });
+
+  it('emits the same attribution after a running -> completed transition', async () => {
+    const running = planTask({ status: 'running', progress: 40 });
+    const completed = planTask({ status: 'completed', progress: 100 });
+    vi.mocked(getProjectTasks)
+      .mockResolvedValueOnce({ items: [running] })
+      .mockResolvedValue({ items: [completed] });
+    const emitSpy = vi.spyOn(eventBus, 'emit');
+
+    mountFloatingPanel(25);
+
+    await waitFor(() => {
+      expect(emitSpy).toHaveBeenCalledWith(
+        EventNames.BACKGROUND_TASK_SETTLED,
+        expect.objectContaining({ conversationId: 'conv-9', taskType: 'agent_plan' }),
+      );
+    }, { timeout: 2000 });
   });
 });
