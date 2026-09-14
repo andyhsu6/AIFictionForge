@@ -737,7 +737,7 @@ export default function ProjectAgentPanel({
       message.success(t('planCancelToast'));
       if (activeConversationId) await reloadConversation(activeConversationId);
     } catch (error) {
-      message.error(t('planCancelFailed', { message: (error as Error).message }));
+      console.error('停止计划失败:', error);
     }
   }, [activeConversationId, message, projectId, reloadConversation, t]);
 

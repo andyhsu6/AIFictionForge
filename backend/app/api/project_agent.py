@@ -632,7 +632,12 @@ async def cancel_agent_plan(
     await verify_project_access(project_id, user_id, db)
     from app.services.agent_plan_runner import request_plan_cancellation
 
-    if not request_plan_cancellation(plan_task_id, reason="用户已停止计划"):
+    if not request_plan_cancellation(
+        plan_task_id,
+        reason="用户已停止计划",
+        expected_user_id=user_id,
+        expected_project_id=project_id,
+    ):
         raise ApiError(code="not_found.agent_plan")
     return {"plan_task_id": plan_task_id, "status": "cancelling", "message": "计划已请求停止"}
 
