@@ -23,8 +23,10 @@ from app.services.ai_service import (
 # ---------------------------------------------------------------------------
 
 
-def test_characterization_context_window_unknown_is_32768():
-    assert detect_context_window("totally-unknown-model-xyz") == 32768
+def test_characterization_context_window_unknown_has_no_hint():
+    # 需求 #55 步骤 4：未登记模型不再回退成一个保守窗口值（那是伪装成实测结论的
+    # 猜测），而是 None —— 「没有提示」，窗口判定一律交给实测/显式声明的结论。
+    assert detect_context_window("totally-unknown-model-xyz") is None
 
 
 def test_characterization_context_window_prefers_longer_key():

@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     anthropic_base_url: Optional[str] = None
     default_ai_provider: str = "openai"
-    default_model: str = "gpt-4"
+    # 需求 #55 步骤 4：系统兜底模型常量（字段名 default_model，值是一个仅 8K 窗口的
+    # 模型名）已删除。系统绝不替用户猜模型；未配置即抛 validation.ai_model_not_configured。
     default_temperature: float = 0.7
     default_max_tokens: int = 32000
     # Allow Ollama / local Llama / Docker host.docker.internal as AI base URLs.
@@ -88,6 +89,25 @@ class Settings(BaseSettings):
     
     # MCP配置
     mcp_max_rounds: int = 3  # MCP工具调用最大轮数（全局统一控制）
+
+    # --- 助手 prompt 预算（PR-0c，架构计划 §5）-----------------------------
+    # 唯一换算式：clamp(实测窗口 tokens * agent_chars_per_token
+    #                   * agent_history_budget_ratio,
+    #                   min_chars, max_chars)
+    # 四个键的默认值必须与 app/services/agent_prompt_budget.py 的模块常量一致
+    # （tests/test_agent_prompt_budget.py::test_config_defaults_match_the_module_constants
+    #  会钉住这一点，漂移即红）。
+    # ratio=0.3：一个决策轮要先固定重发 系统提示词≈1.5k + 全量工具 schema≈20k 字符，
+    #   外加每轮输出余量，剩下才给历史；历史是**每轮重发**的，不是发一次。
+    # max=400000：防"把整张窗口当历史"造成成本失控。
+    # min=60000：防异常配置算出过小/无界预算，**不是**为小模型兜底
+    #   （窗口不足的模型已由计划 B 以 validation.ai_model_below_minimum 拦在系统外）。
+    # 调大任何一个数字前，先读 agent_prompt_budget.py 的「来历备忘」。
+    agent_history_budget_ratio: float = 0.3
+    agent_history_budget_min_chars: int = 60_000
+    agent_history_budget_max_chars: int = 400_000
+    # 中文≈1 字符/token 的保守近似；定义源仍是 CHARS_PER_TOKEN，此处仅为运维可调。
+    agent_chars_per_token: float = 1.0
     
     # LinuxDO OAuth2 配置
     LINUXDO_CLIENT_ID: Optional[str] = None

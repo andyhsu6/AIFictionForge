@@ -6,6 +6,7 @@ from typing import Dict, Any, AsyncGenerator
 import json
 import re
 
+from app.core.errors import ApiError
 from app.database import get_db
 from app.models.project import Project
 from app.models.character import Character
@@ -209,6 +210,11 @@ async def world_building_generator(
                         world_generation_success = True  # 标记为成功以继续流程
                         
             except Exception as e:
+                # 守卫类 ApiError（未配置模型 / 窗口不合格）重试必然同样失败，且重试计数
+                # 耗尽后会把它掩盖成「解析失败 / 重试耗尽」——直接上抛给外层泛型收尾，
+                # 保住 `validation.*` 码（#55 步骤 3b）。
+                if isinstance(e, ApiError):
+                    raise
                 logger.error(f"❌ 世界构建生成异常（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {type(e).__name__}: {e}")
                 world_retry_count += 1
                 if world_retry_count < MAX_WORLD_RETRIES:
@@ -313,7 +319,7 @@ async def world_building_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("世界构建事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 
 @router.post("/world-building", summary="流式生成世界构建")
@@ -573,13 +579,18 @@ async def career_system_generator(
                         return
             
             except Exception as e:
+                # 守卫类 ApiError（未配置模型 / 窗口不合格）重试必然同样失败，且重试计数
+                # 耗尽后会把它掩盖成「解析失败 / 重试耗尽」——直接上抛给外层泛型收尾，
+                # 保住 `validation.*` 码（#55 步骤 3b）。
+                if isinstance(e, ApiError):
+                    raise
                 logger.error(f"❌ 职业体系生成异常（尝试{career_retry_count+1}/{MAX_CAREER_RETRIES}）: {e}")
                 career_retry_count += 1
                 if career_retry_count < MAX_CAREER_RETRIES:
                     yield await tracker.retry(career_retry_count, MAX_CAREER_RETRIES, "生成异常", code="progress.retry_ai_failed")
                     continue
                 else:
-                    yield await tracker.error(f"职业体系生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+                    yield await tracker.error_from_exception(e, f"职业体系生成失败: {str(e)}")
                     return
         
     except GeneratorExit:
@@ -592,7 +603,7 @@ async def career_system_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("职业体系事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 
 @router.post("/career-system", summary="流式生成职业体系")
@@ -838,6 +849,11 @@ async def characters_generator(
                     if retry_count < MAX_RETRIES:
                         yield await tracker.retry(retry_count, MAX_RETRIES, "JSON解析失败", code="progress.retry_json_parse")
                 except Exception as e:
+                    # 守卫类 ApiError（未配置模型 / 窗口不合格）重试必然同样失败，且重试计数
+                    # 耗尽后会把它掩盖成「解析失败 / 重试耗尽」——直接上抛给外层泛型收尾，
+                    # 保住 `validation.*` 码（#55 步骤 3b）。
+                    if isinstance(e, ApiError):
+                        raise
                     logger.error(f"批次{batch_idx+1}生成异常(尝试{retry_count+1}/{MAX_RETRIES}): {e}")
                     batch_error_message = f"生成异常: {str(e)}"
                     retry_count += 1
@@ -1258,7 +1274,7 @@ async def characters_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("角色生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 
 @router.post("/characters", summary="流式批量生成角色")
@@ -1564,7 +1580,7 @@ async def outline_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("大纲生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 @router.post("/outline", summary="流式生成完整大纲")
 async def generate_outline_stream(
@@ -1732,6 +1748,11 @@ async def world_building_regenerate_generator(
                         world_generation_success = True
                         
             except Exception as e:
+                # 守卫类 ApiError（未配置模型 / 窗口不合格）重试必然同样失败，且重试计数
+                # 耗尽后会把它掩盖成「解析失败 / 重试耗尽」——直接上抛给外层泛型收尾，
+                # 保住 `validation.*` 码（#55 步骤 3b）。
+                if isinstance(e, ApiError):
+                    raise
                 logger.error(f"❌ 世界观重新生成异常（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）: {type(e).__name__}: {e}")
                 world_retry_count += 1
                 if world_retry_count < MAX_WORLD_RETRIES:
@@ -1767,7 +1788,7 @@ async def world_building_regenerate_generator(
         if not db_committed and db.in_transaction():
             await db.rollback()
             logger.info("世界观重新生成事务已回滚（异常）")
-        yield await tracker.error(f"生成失败: {str(e)}", error_code="internal.generation_failed", params={"error": str(e)})
+        yield await tracker.error_from_exception(e, f"生成失败: {str(e)}")
 
 
 @router.post("/world-building/{project_id}/regenerate", summary="流式重新生成世界观")
