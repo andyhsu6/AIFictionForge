@@ -252,7 +252,9 @@ async def env(db_engine, db_session):
 
     service = ProjectAgentService(
         db=db_session,
-        ai_service=SimpleNamespace(default_model="mock-model", api_provider="openai"),
+        ai_service=SimpleNamespace(
+            default_model="mock-model", api_provider="openai", base_url="",
+        ),
         project=Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"),
         user_id=USER_ID,
     )
@@ -439,6 +441,105 @@ async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
         PROPOSE_PLAN_TOOL_NAME
     ]
     assert calls[2]["tool_choice"] == "required"
+
+
+# --------------------------------------------------------------------------- #
+# 思考型模型不得收到强制 tool_choice（issue #77：真实运行被网关拒
+# "Thinking mode does not support this tool_choice" ⇒ 计划永远产不出来）
+# --------------------------------------------------------------------------- #
+
+
+async def _closing_turn_calls(
+    env, *, model: str, base_url: str, plan_mode: bool = True
+) -> list[dict]:
+    """驱动到第 3 次模型调用（规划模式的收口轮）并返回全部捕获的 kwargs。
+
+    收口轮不产出计划 ⇒ 走 (a) 形态有界重试；与
+    test_closing_round_offers_only_propose_plan_and_requires_it 用同一组响应，
+    因此第 3 次调用形状可直接比较。
+    """
+    env.service.ai_service.default_model = model
+    env.service.ai_service.base_url = base_url
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            answer("收口轮直接回答了（缺陷形态）。"),
+        ],
+        plan_mode=plan_mode,
+        calls=calls,
+    )
+    return calls
+
+
+@pytest.mark.anyio
+async def test_thinking_model_closing_round_uses_auto_tool_choice(env):
+    """思考型模型（deepseek 名 / commandcode 网关）拒收 required ⇒ 收口轮必须回退 auto。
+
+    收口轮工具集只留 propose_plan，auto 不削弱"模型仍能提交计划"的能力，
+    只解除网关对强制 tool_choice 的硬拒绝。
+    """
+    calls = await _closing_turn_calls(
+        env, model="deepseek-v4-flash", base_url="https://api.commandcode.ai/v1"
+    )
+
+    closing = calls[2]
+    assert [item["function"]["name"] for item in closing["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert closing["tool_choice"] == "auto"
+
+
+@pytest.mark.anyio
+async def test_thinking_model_closing_round_still_produces_plan(env):
+    """配对反向：回退 auto 之后，收口轮提交的计划仍必须被接受（不是死胡同）。"""
+    env.service.ai_service.default_model = "deepseek-v4-flash"
+    env.service.ai_service.base_url = "https://api.commandcode.ai/v1"
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            _plan_response(call_id="call-thinking-plan"),
+        ],
+        plan_mode=True,
+        calls=[],
+    )
+
+    final = [e for e in events if e["type"] == "result"][-1]
+    assert final["data"]["status"] == "waiting_confirmation"
+    plan_rows = [
+        row for row in await read_tool_calls(env)
+        if row.tool_name == PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert len(plan_rows) == 1 and plan_rows[0].status == "waiting_confirmation"
+
+
+@pytest.mark.anyio
+async def test_non_thinking_model_closing_round_still_requires_tool_choice(env):
+    """非思考型 openai 模型维持 required：PR-2a 的强制产出手段不得被本修复回退。"""
+    calls = await _closing_turn_calls(
+        env, model="gpt-4o", base_url="https://api.openai.com/v1"
+    )
+    assert calls[2]["tool_choice"] == "required"
+
+
+@pytest.mark.anyio
+async def test_plan_mode_off_keeps_tool_choice_auto(env):
+    """plan_mode=False 与 PR-1 逐字一致：看不到计划工具，且所有轮 tool_choice=auto。"""
+    calls = await _closing_turn_calls(
+        env,
+        model="deepseek-v4-flash",
+        base_url="https://api.commandcode.ai/v1",
+        plan_mode=False,
+    )
+    assert calls, "没有捕获到任何模型调用"
+    for call in calls:
+        names = {item["function"]["name"] for item in (call["tools"] or [])}
+        assert PROPOSE_PLAN_TOOL_NAME not in names
+        assert call["tool_choice"] == "auto"
 
 
 @pytest.mark.anyio

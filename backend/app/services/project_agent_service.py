@@ -36,7 +36,7 @@ from app.services.agent_plan_schema import (
     provider_supports_required_tool_choice,
     validate_plan,
 )
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, is_thinking_model
 from app.services.language_resolver import (
     GenerationLanguage,
     append_language_instruction,
@@ -442,6 +442,13 @@ class ProjectAgentService:
                 # 短路求值 ⇒ 非规划回合完全不读该属性，PR-1 的假 AI 夹具照旧可用。
                 if closing and provider_supports_required_tool_choice(
                     self.ai_service.api_provider
+                )
+                # 思考型模型（deepseek-* / commandcode 等网关）以 HTTP 400
+                # ("Thinking mode does not support this tool_choice") 拒收强制
+                # tool_choice；收口轮工具集只剩 propose_plan，降级 auto 不会失去
+                # 产出计划的能力，只解除网关侧硬拒绝。
+                and not is_thinking_model(
+                    self.ai_service.default_model, self.ai_service.base_url
                 )
                 else "auto"
             )
