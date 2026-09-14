@@ -97,6 +97,40 @@ def handle_with_steps():
     return _handle_with_steps(3)
 
 
+def _handle_with_action_steps(specs: list[tuple[str, dict, str]]) -> runner._PlanHandle:
+    """(step_id, step_overrides, status) -> handle。
+
+    Retire actions live inside a manage_foreshadow step's ``arguments`` exactly as
+    ``validate_plan`` persists them；只有 status 经 step_results 回喂（不带 result/detail 体）。
+    """
+    steps: list[dict[str, Any]] = []
+    for step_id, override, _status in specs:
+        step = {
+            "id": step_id,
+            "tool": "manage_foreshadow",
+            "action": None,
+            "arguments": {"action": "abandon", "foreshadow_id": f"fs-{step_id}"},
+            "note": "",
+        }
+        step.update(override)
+        steps.append(step)
+    handle = runner._PlanHandle(
+        plan_task_id="plan-retire-1",
+        user_id="u-1",
+        project_id="p-1",
+        conversation_id="conv-retire-1",
+        steps=steps,
+        tool_call_id="tool-anchor-retire",
+        task_input={"tool_call_id": "tool-anchor-retire", "objective": "retire duplicates"},
+    )
+    handle.step_results = [
+        {"index": index, "action": steps[index - 1]["arguments"].get("action") or "read",
+         "status": status}
+        for index, (_step_id, _override, status) in enumerate(specs, start=1)
+    ]
+    return handle
+
+
 class ClosingAIService:
     """收尾 LLM 出口：捕获 kwargs；流式/JSON 重试出口一律炸（runner 不得使用）。"""
 
@@ -511,6 +545,47 @@ async def test_summary_payload_carries_no_step_result_blobs(session_factory, han
             AgentMessage.conversation_id == handle_with_steps.conversation_id
         ))).scalar_one()
     assert SECRET_CHAPTER_TEXT not in content
+
+
+def test_retire_summary_counts_completed_actions_and_excludes_failed():
+    handle = _handle_with_action_steps([
+        ("s1", {"arguments": {"action": "resolve", "foreshadow_id": "fs-1"}}, "completed"),
+        ("s2", {"arguments": {"action": "resolve", "foreshadow_id": "fs-2"}}, "completed"),
+        ("s3", {"arguments": {"action": "abandon", "foreshadow_id": "fs-3"}}, "completed"),
+        ("s4", {"arguments": {"action": "abandon", "foreshadow_id": "fs-4"}}, "completed"),
+        ("s5", {"arguments": {"action": "delete", "foreshadow_id": "fs-5"}}, "completed"),
+        ("s6", {"arguments": {"action": "update", "foreshadow_id": "fs-6"}}, "completed"),
+        ("s7", {"tool": "list_foreshadows", "arguments": {}}, "completed"),
+        ("s8", {"arguments": {"action": "abandon", "foreshadow_id": "fs-8"}}, "failed"),
+    ])
+    payload = runner.build_plan_summary_payload(handle, "failed", "step failed")
+    retire = payload["retire_summary"]
+    assert retire["by_action"] == {"resolve": 2, "abandon": 2, "delete": 1, "update": 1}
+    assert retire["retired_total"] == 3
+    assert retire["failed_actions"] == ["abandon"]
+    dumped = json.dumps(payload, ensure_ascii=False, default=str)
+    assert SECRET_CHAPTER_TEXT not in dumped
+
+
+def test_retire_summary_is_zero_without_retire_actions():
+    handle = _handle_with_action_steps([
+        ("s1", {"arguments": {"action": "resolve", "foreshadow_id": "fs-1"}}, "completed"),
+        ("s2", {"arguments": {"action": "update", "foreshadow_id": "fs-2"}}, "completed"),
+        ("s3", {"tool": "list_foreshadows", "arguments": {}}, "completed"),
+    ])
+    payload = runner.build_plan_summary_payload(handle, "completed", "done")
+    retire = payload["retire_summary"]
+    assert retire["retired_total"] == 0
+    assert retire["failed_actions"] == []
+    assert "abandon" not in retire["by_action"]
+    assert "delete" not in retire["by_action"]
+
+
+def test_closing_instruction_calls_out_retired_entries():
+    instruction = runner.PLAN_CLOSING_INSTRUCTION
+    assert "retire_summary" in instruction
+    assert "退役" in instruction
+    assert "abandon" in instruction and "delete" in instruction
 
 
 @pytest.mark.anyio

@@ -73,6 +73,8 @@ _SUMMARY_FIELD_MAX_CHARS = 300                # 单字段上限，绝不透传 s
 PLAN_CLOSING_INSTRUCTION = (
     "下面是后台计划执行器生成的结构化执行摘要（JSON）。请用一段简洁的总结向用户说明："
     "计划整体结果、已完成步数与失败位置；只依据摘要内容，不得编造。"
+    "若 retire_summary.retired_total 大于 0，必须明确说明本次退役（abandon/delete）了多少条目，"
+    "并用 8 位前缀列出 steps 里 action 为 abandon/delete 且已完成的步骤 id；"
     "章节级分析结论不在摘要里，如需查看详情，提示用户在后续对话中使用 "
     "get_chapter_analysis 工具。不要调用任何工具，直接输出总结文本。\n"
 )
@@ -522,10 +524,39 @@ async def resolve_provider_call_id(
         return record.id
 
 
+def _retire_summary(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """退役/动作计数：只读 payload 已构建的 step 条目（action + terminal status）。
+
+    ``by_action`` 只计已完成步骤，失败步骤不抬高退役数、只在 ``failed_actions`` 登记；
+    ``retired_total`` = abandon + delete。绝不回读 result/detail 体。
+    """
+    by_action: dict[str, int] = {}
+    failed_actions: list[str] = []
+    for item in steps:
+        action = item.get("action")
+        status = item.get("status")
+        if status == "completed":
+            if action:
+                by_action[action] = by_action.get(action, 0) + 1
+        elif status == "failed":
+            label = action or item.get("tool")
+            if label and label not in failed_actions:
+                failed_actions.append(label)
+    return {
+        "by_action": by_action,
+        "retired_total": by_action.get("abandon", 0) + by_action.get("delete", 0),
+        "failed_actions": failed_actions,
+    }
+
+
 def build_plan_summary_payload(
     handle: _PlanHandle, outcome: str, summary: str
 ) -> dict[str, Any]:
-    """服务端白名单聚合 payload：step 原文（result/detail/arguments 等）一律不透传。"""
+    """服务端白名单聚合 payload：step 原文（result/detail/arguments 等）一律不透传。
+
+    action 只提取 arguments.action 短枚举（manage_* 步骤的动作在这里），
+    参数正文不进入 payload。
+    """
     results = {
         entry.get("index"): entry
         for entry in handle.step_results
@@ -542,6 +573,10 @@ def build_plan_summary_payload(
             "status": _clip(result.get("status") or "pending", 40),
         }
         action = raw_step.get("action")
+        if not action:
+            arguments = raw_step.get("arguments")
+            if isinstance(arguments, dict):
+                action = arguments.get("action")
         if action:
             item["action"] = _clip(action, _SUMMARY_FIELD_MAX_CHARS)
         for source_key, target_key in (
@@ -563,6 +598,7 @@ def build_plan_summary_payload(
         "failed_at_step": handle.failed_at_step,
         "cancelled": handle.cancel_requested or outcome == "cancelled",
         "steps": steps,
+        "retire_summary": _retire_summary(steps),
         "server_note": _clip(summary, _SUMMARY_FIELD_MAX_CHARS),
         "detail_source": "AgentExecutionStep; 需要章节/分析结论时调用只读工具，不要臆造",
     }
