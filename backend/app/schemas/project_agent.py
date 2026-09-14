@@ -31,6 +31,11 @@ class AgentMessageResponse(BaseModel):
     model: Optional[str] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
+    # agent_messages.tool_calls（TEXT，JSON 字符串）原样透传：前端
+    # AgentMessage.tool_calls?: string 由 countToolCalls 自行 JSON.parse，
+    # 解析失败按 0 处理。工具轮 content==""，丢掉该列会让历史消息被误判为
+    # 流式中而永久转圈。NULL/空串/非法 JSON 一律透传，不做后端解析。
+    tool_calls: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
