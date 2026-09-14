@@ -239,10 +239,49 @@ def _git_info() -> dict:
 GIT_INFO = _git_info()
 
 
+async def _count_running_plans(engine=None) -> int:
+    """当前在跑的 agent_plan 行数（PR-4：/health 用，全局口径，只返回整数）。
+
+    只数 running：pending 是"已批准还没开跑"，属 PR-2c 并发护栏的窗口期语义，
+    混进来会让"有没有计划在跑"这个运维问题答错。
+    """
+    from app.database import get_engine
+    from app.models.background_task import BackgroundTask
+    from sqlalchemy import func, select
+
+    if engine is None:
+        engine = await get_engine("system")
+    async with engine.connect() as conn:
+        return int(
+            (
+                await conn.execute(
+                    select(func.count())
+                    .select_from(BackgroundTask)
+                    .where(BackgroundTask.task_type == "agent_plan", BackgroundTask.status == "running")
+                )
+            ).scalar_one()
+        )
+
+
+def _health_engine():
+    """测试注入点：返回 None 表示按生产路径自取 system 引擎。"""
+    return None
+
+
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "branch": GIT_INFO["branch"], "commit": GIT_INFO["commit"]}
+    try:
+        plans_running = await _count_running_plans(engine=_health_engine())
+    except Exception as e:  # 计数失败绝不能把健康检查带崩（aistoryforge.sh 依赖本端点）
+        logger.warning(f"/health 统计运行中计划失败（忽略）: {e}")
+        plans_running = None
+    return {
+        "status": "ok",
+        "branch": GIT_INFO["branch"],
+        "commit": GIT_INFO["commit"],
+        "plans_running": plans_running,
+    }
 
 
 @app.get("/health/db-sessions")
