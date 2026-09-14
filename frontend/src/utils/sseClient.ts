@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mapErrorPayload, mapSSEError, mapSSEProgressMessage } from '../services/errorMapper';
+import { maybeShowModelGateGuidance } from '../services/modelGateGuidance';
 
 export interface SSEMessage {
   type: 'progress' | 'chunk' | 'result' | 'error' | 'done';
@@ -100,6 +101,9 @@ export class SSEClient {
         break;
 
       case 'error':
+        // #55 3b: SSE cannot pop the gate form, so a model-guard code must at least
+        // route the user to settings.
+        maybeShowModelGateGuidance(message.error_code);
         if (this.options.onError) {
           this.options.onError(mapSSEError(message), message.code);
         }
@@ -291,6 +295,8 @@ export class SSEPostClient {
         break;
 
       case 'error':
+        // #55 3b: same landing point as the EventSource client above.
+        maybeShowModelGateGuidance(message.error_code);
         if (this.options.onError) {
           this.options.onError(mapSSEError(message), message.code);
         }

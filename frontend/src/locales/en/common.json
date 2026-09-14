@@ -42,6 +42,11 @@
       "plotPoint": "Plot Point"
     }
   },
+  "modelGate": {
+    "goToSettings": "Open Settings",
+    "guidanceBody": "AI features are stopped: no model is configured, or its context window is below the required minimum. Choose a qualifying model in Settings.",
+    "guidanceTitle": "AI model setup needed"
+  },
   "partialToolbar": {
     "aiContinue": "Continue",
     "aiRewrite": "AI Rewrite",

@@ -19,6 +19,22 @@ from app.models.character import Character
 from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.project_agent_service import ProjectAgentService
+from app.services import agent_prompt_budget as apb
+
+
+@pytest.fixture(autouse=True)
+def stub_history_budget(monkeypatch):
+    """PR-0c：本文件锁的是持久化链路，不是预算换算。
+
+    换算要走 B 的探测结论（DB 里的缓存行 + 网关元数据），与这里要证的事无关，
+    故统一钉成 PR-0c 之前的硬编码 60000 ⇒ 既有断言一字不改。预算本身归
+    tests/test_agent_prompt_budget.py。
+    """
+
+    async def fake_resolve(**kwargs):
+        return 60_000
+
+    monkeypatch.setattr(apb, "resolve_history_budget_chars", fake_resolve)
 
 
 @pytest.fixture
@@ -39,7 +55,11 @@ async def db_session():
 def make_service(db, *, project_id="proj-1", user_id="test") -> ProjectAgentService:
     """构造最小 ProjectAgentService：registry 构造只存引用，不做 DB 查询。"""
     project = Project(id=project_id, user_id=user_id, title="测试项目")
-    ai_service = SimpleNamespace(default_model="test-model")
+    ai_service = SimpleNamespace(
+        default_model="test-model",
+        api_provider="openai",
+        base_url="https://gw.example/v1",
+    )
     return ProjectAgentService(
         db=db, ai_service=ai_service, project=project, user_id=user_id
     )
@@ -78,7 +98,7 @@ async def test_agent_message_tool_serialization(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"})
+    prompt = svc._build_prompt(history, {"route": "/project/1"}, budget_chars=60_000)
 
     # assistant(tool_calls) 格式：<assistant>\n{content}\n<tool_calls>\n{json}\n</tool_calls>\n</assistant>
     assert "<assistant>\n我来查询角色信息。\n<tool_calls>\n" in prompt
@@ -96,7 +116,7 @@ async def test_build_prompt_with_tool_history(db_session):
     svc = make_service(db_session)
     history = make_tool_history()
 
-    prompt = svc._build_prompt(history, {"route": "/project/1"})
+    prompt = svc._build_prompt(history, {"route": "/project/1"}, budget_chars=60_000)
 
     assert "查询角色列表" in prompt  # 用户消息保留
     assert "我来查询角色信息。" in prompt  # assistant 内容保留
