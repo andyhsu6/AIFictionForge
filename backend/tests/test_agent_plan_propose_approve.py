@@ -26,10 +26,26 @@ from app.services.agent_plan_schema import (
     plannable_tool_names,
     validate_plan,
 )
+from app.services.ai_service import is_thinking_model
 from app.services.project_agent_service import (
     PLAN_MODE_INSTRUCTION,
     ProjectAgentService,
 )
+
+
+@pytest.fixture(autouse=True)
+def stub_history_budget(monkeypatch):
+    """PR-0c 合并后：本文件锁的是规划回合，不是预算换算（与 main 侧同习惯）。
+
+    换算要走 B 的探测结论（DB 缓存行 + 网关元数据）⇒ 与本文件要证的事无关，
+    统一钉成 PR-0c 之前的硬编码 60000，规划断言一字不改。
+    """
+    import app.services.agent_prompt_budget as apb
+
+    async def fake_resolve(**kwargs):
+        return 60_000
+
+    monkeypatch.setattr(apb, "resolve_history_budget_chars", fake_resolve)
 
 
 ALLOWED = {"get_project_overview", "list_outlines", "start_project_task"}
@@ -243,9 +259,27 @@ async def db_session(db_engine):
         yield session
 
 
+class _FakeAgentAIService:
+    """假 AI 出口：忠实复刻服务层用到的公开出口（provider / 思考型判断）。
+
+    思考型判断必须真的读 `default_model` / `base_url`：本文件 issue #77 的用例
+    会逐次改这两个字段，恒 False 的桩会让那些断言真空通过。
+    """
+
+    def __init__(self, *, default_model: str = "mock-model", base_url: str = "") -> None:
+        self.default_model = default_model
+        self.base_url = base_url
+
+    def resolve_dispatch_provider(self, provider=None) -> str:
+        return "openai"
+
+    def is_thinking_model_active(self) -> bool:
+        return is_thinking_model(self.default_model, self.base_url)
+
+
 @pytest.fixture
 async def env(db_engine, db_session):
-    """种子数据 + 可直接驱动 stream_chat 的 service（api_provider 必须是真字符串）。"""
+    """种子数据 + 可直接驱动 stream_chat 的 service（provider 出口必须是真方法）。"""
     db_session.add(Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"))
     conversation = AgentConversation(
         user_id=USER_ID, project_id=PROJECT_ID, title="planning turn"
@@ -255,9 +289,7 @@ async def env(db_engine, db_session):
 
     service = ProjectAgentService(
         db=db_session,
-        ai_service=SimpleNamespace(
-            default_model="mock-model", api_provider="openai", base_url="",
-        ),
+        ai_service=_FakeAgentAIService(),
         project=Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"),
         user_id=USER_ID,
     )
@@ -429,9 +461,9 @@ def test_plan_mode_instruction_is_added_only_when_planning():
     ]
     page_context = {"route": "/project/p-plan"}
 
-    default_prompt = svc._build_prompt(history, page_context)
-    off_prompt = svc._build_prompt(history, page_context, plan_mode=False)
-    on_prompt = svc._build_prompt(history, page_context, plan_mode=True)
+    default_prompt = svc._build_prompt(history, page_context, budget_chars=60_000)
+    off_prompt = svc._build_prompt(history, page_context, plan_mode=False, budget_chars=60_000)
+    on_prompt = svc._build_prompt(history, page_context, plan_mode=True, budget_chars=60_000)
 
     assert off_prompt == default_prompt, "plan_mode=False 必须与 PR-1 逐字节一致"
     assert PLAN_MODE_INSTRUCTION not in off_prompt

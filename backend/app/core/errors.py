@@ -277,6 +277,12 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.agent_plan_invalid": ("计划内容已不再可用：{{reason}}", 400),
     "validation.agent_plan_step_selection": ("勾选的计划步骤无效，请重新选择", 400),
     "validation.ai_config_missing": ("请先在「设置 → 文本模型配置」中配置模型", 400),
+    # ---- 需求 #55：上下文窗口 >= 下限的硬前提（步骤 2 注册；below_minimum 的实发门禁在步骤 3）----
+    # ai_model_not_configured：用户未配置任何模型时明确报错，系统不得代猜一个。
+    # ai_model_below_minimum：实发模型上下文窗口不足下限（参数化码，raise 时须显式
+    # 传原文案 detail 以保证旧客户端 byte-identity）。
+    "validation.ai_model_below_minimum": ("模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型", 400),
+    "validation.ai_model_not_configured": ("尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称", 400),
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),
     "validation.book_import_new_project": ("当前仅支持新建项目导入，不支持指定 project_id", 400),
@@ -332,6 +338,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.polish_selection_mismatch": ("选中的文本与章节内容不匹配，请刷新页面后重试", 400),
     "validation.polish_start_before_end": ("起始位置必须小于结束位置", 400),
     "validation.preset_active_delete_blocked": ("无法删除激活中的预设，请先激活其他预设", 400),
+    "validation.preset_changed": ("预设内容在激活校验期间已发生变化，请重新激活", 409),
     "validation.qq_smtp_host": ("QQ 邮箱 SMTP 主机必须为 smtp.qq.com", 400),
     "validation.relationship_type_name_empty": ("关系类型名称不能为空", 422),
     "validation.required_fields": ("name 和 prompt_content 是必填字段", 400),
