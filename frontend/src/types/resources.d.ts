@@ -1339,6 +1339,7 @@ export default interface Resources {
     "internal": {
       "agent_execution_failed": "灵创创作助手执行失败：{{error}}",
       "agent_plan_not_available": "后台计划执行器尚未启用，批准暂时不可用",
+      "agent_plan_step_failed": "计划第 {{step}}/{{total}} 步执行失败，后续步骤已中止",
       "ai_chapter_plan_failed": "AI分析失败，未能生成章节规划",
       "ai_empty_response": "AI服务返回空响应",
       "ai_json_unparsable": "AI返回的内容无法解析为JSON：{{error}}",
@@ -1364,6 +1365,7 @@ export default interface Resources {
     },
     "not_found": {
       "agent_conversation": "对话不存在",
+      "agent_plan": "计划任务不存在",
       "agent_tool_call": "工具调用不存在",
       "api_route": "API路径不存在",
       "batch_task": "批量生成任务不存在",
