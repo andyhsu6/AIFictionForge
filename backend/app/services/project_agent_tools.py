@@ -1,5 +1,5 @@
 """项目智能体内部工具注册表与执行器。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import json
 from typing import Any, Awaitable, Callable
@@ -45,6 +45,9 @@ class ProjectAgentTool:
     parameters: dict[str, Any]
     risk_level: int = 0
     resources: tuple[str, ...] = ()
+    # PR-1：同一工具内不同 action 的风险不同（start_project_task 的分析/新增 vs 覆盖/重写）。
+    # 只影响运行期判定，不进 as_model_tool()，因此不会改变发给模型的工具 schema。
+    action_risk: dict[str, int] = field(default_factory=dict)
 
     @property
     def requires_confirmation(self) -> bool:
@@ -59,6 +62,16 @@ class ProjectAgentTool:
                 "parameters": self.parameters,
             },
         }
+
+
+def action_risk_level(tool: ProjectAgentTool, arguments: dict[str, Any]) -> int:
+    """action 级 risk：命中 action_risk 用之，否则回退工具级 risk_level。"""
+    action = arguments.get("action")
+    if tool.action_risk and isinstance(action, str):
+        mapped = tool.action_risk.get(action)
+        if mapped is not None:
+            return int(mapped)
+    return tool.risk_level
 
 
 def _object_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -299,11 +312,16 @@ class ProjectAgentToolRegistry:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         arguments = normalize_tool_arguments(arguments)
         tool = self.get(name)
+        # 扩展/运维写入工具按"名单"分派而不是按 requires_confirmation 分派：
+        # PR-1 后 start_project_task 的低风险 action 免确认，但它仍是运维写入工具，
+        # 若仍用 requires_confirmation 守卫，它会掉出写入分派、落到只读兜底并抛
+        # "工具尚未实现"（名单外的写入工具则掉进 _resolve_update 抛"不支持的写入工具"）。
+        # requires_confirmation 只保留"是否需要用户批准"这一语义。
+        if name in WRITE_TOOL_NAMES:
+            return await self.extended.execute(name, arguments)
+        if name in OPERATIONAL_WRITE_TOOL_NAMES:
+            return await self.operational.execute(name, arguments)
         if tool.requires_confirmation:
-            if name in WRITE_TOOL_NAMES:
-                return await self.extended.execute(name, arguments)
-            if name in OPERATIONAL_WRITE_TOOL_NAMES:
-                return await self.operational.execute(name, arguments)
             entity, fields, label = await self._resolve_update(name, arguments)
             before = {field: _json_value(getattr(entity, field)) for field in fields}
             for field, value in fields.items():

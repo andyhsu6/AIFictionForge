@@ -351,6 +351,29 @@ export interface AgentToolCall {
   created_at: string;
 }
 
+/**
+ * PR-1：`start_project_task` 启动的后台任务类型。
+ *
+ * BackgroundTask / BatchGenerationTask / AnalysisTask 的主键无跨表唯一性，
+ * `entity_id` 必须配 `task_type` 才能反查到表（消费点在 PR-3 与 PR-2b 轮询）。
+ * 值域 = 后端 `app/services/task_resources.py` 的 `AGENT_TASK_ACTION_TYPES` 的 value 集合。
+ * 两侧契约：前端 `src/types/agent-task-type.test.ts` 钉"联合类型存在且无重复"，
+ * 后端 `test_agent_task_types_all_resolve_to_a_known_resource_mapping` 钉"值域自洽"；
+ * 后端 pytest 不读前端文件（纯后端环境只装 backend/）⇒ 改后端映射时人工同步这里。
+ */
+export type AgentTaskType =
+  | 'outline_new'
+  | 'outline_expand'
+  | 'outline_batch_expand'
+  | 'chapter_generate'
+  | 'chapter_batch'
+  | 'chapter_analysis'
+  | 'chapter_regenerate'
+  | 'chapter_partial_regenerate'
+  | 'character_generate'
+  | 'organization_generate'
+  | 'career_generate';
+
 export interface AgentExecutionStep {
   id: string;
   conversation_id: string;

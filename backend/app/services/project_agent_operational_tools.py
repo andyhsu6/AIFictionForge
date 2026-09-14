@@ -23,7 +23,10 @@ from app.models.project_default_style import ProjectDefaultStyle
 from app.models.regeneration_task import RegenerationTask
 from app.models.writing_style import WritingStyle
 from app.services.outline_transfer_service import OutlineTransferService
-from app.services.task_resources import affected_resources_for_agent_action
+from app.services.task_resources import (
+    AGENT_TASK_ACTION_TYPES,
+    affected_resources_for_agent_action,
+)
 from app.services.project_agent_selectors import find_chapter
 
 
@@ -208,7 +211,11 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "start_project_task",
-        "description": "启动大纲生成/展开、章节生成/批量生成或章节分析后台任务；执行前必须确认。",
+        "description": (
+            "启动大纲生成/展开、章节生成/批量生成、章节分析或角色/组织/职业生成后台任务。"
+            "覆盖已有正文、重写、生成大纲与展开大纲需要用户确认；"
+            "分析尚无结果的章节、新增角色/组织/职业会直接启动，无需确认。"
+        ),
         "parameters": _schema({
             "action": {"type": "string", "enum": [
                 "generate_outlines", "expand_outline", "batch_expand_outlines",
@@ -221,7 +228,22 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
             "chapter_number": {"type": "integer", "minimum": 1},
             "data": DATA,
         }, ["action"]),
+        # 顶层必须是 2：OPERATIONAL_WRITE_TOOL_NAMES 依赖 spec["risk_level"] 真值。
+        # action 级降级见 action_risk。
         "risk_level": 2,
+        "action_risk": {
+            "generate_outlines": 2,
+            "expand_outline": 2,
+            "batch_expand_outlines": 2,
+            "generate_chapter": 2,
+            "batch_generate_chapters": 2,
+            "analyze_chapter": 1,
+            "regenerate_chapter": 2,
+            "partial_regenerate_chapter": 2,
+            "generate_character": 1,
+            "generate_organization": 1,
+            "generate_careers": 1,
+        },
         "resources": ("tasks", "outlines", "chapters", "projects"),
     },
 ]
@@ -323,13 +345,21 @@ class ProjectAgentOperationalTools:
             else list(spec["resources"])
         )
         await self.db.flush()
-        return {
+        data: dict[str, Any] = {
             "message": message,
             "entity_id": entity_id,
             "before": before,
             "after": after,
             "resources": resources,
         }
+        if name == "start_project_task":
+            # 架构计划 §0：BackgroundTask / BatchGenerationTask / AnalysisTask 的
+            # 主键无跨表唯一性 ⇒ entity_id 必须配一个 task_type 才能反查表。
+            # 这里用 AGENT_TASK_ACTION_TYPES（action 名 ≠ 落库 task_type）。
+            mapped_task_type = AGENT_TASK_ACTION_TYPES.get(action)
+            if mapped_task_type:
+                data["task_type"] = mapped_task_type
+        return data
 
     async def _find_chapter(self, arguments: dict[str, Any]) -> Chapter:
         return await find_chapter(self.db, self.project.id, arguments)

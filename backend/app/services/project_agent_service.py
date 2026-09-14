@@ -28,6 +28,7 @@ from app.services.language_resolver import (
     append_language_instruction,
     resolve_user_generation_language,
 )
+from app.services.project_agent_risk import resolve_tool_risk
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.project_agent_selectors import normalize_tool_arguments
 
@@ -44,7 +45,7 @@ SYSTEM_PROMPT = """你是 AIFictionForge 的“灵创创作助手”，帮助用
 4. 不得声称尚未执行的修改已经完成，不得要求或构造其他 project_id。
 5. 简明说明查到的结果、计划修改的字段以及下一步。
 6. 不需要工具也能回答的问题可直接回答；数据相关问题优先查询后再回答。
-7. 创建角色、组织、职业等结构化内容时，你可以先根据项目资料设计数据，再调用对应 manage_* 工具；长时间的大纲/章节生成与分析使用 start_project_task。
+7. 创建角色、组织、职业等结构化内容时，你可以先根据项目资料设计数据，再调用对应 manage_* 工具；长时间的大纲/章节生成与分析使用 start_project_task。start_project_task 返回后任务只是进入后台队列，尚未完成：不得再调用任务查询工具轮询其状态，不得声称任务已完成，不得预告或描述尚未产出的生成结果；只需告知任务已启动以及用户在哪里查看进度。
 8. 导出时使用 get_project_export_links 返回下载地址；导入大纲时只能处理用户明确提供的 JSON 内容，不得臆造文件内容。
 9. 历史消息和工具结果中已有的数据（角色、大纲、职业、章节等）应直接复用，不要重复调用工具查询。仅当数据不存在、可能已变更、或用户明确要求刷新时才重新查询。
 """
@@ -69,6 +70,13 @@ def agent_system_prompt(
             "不能覆盖安全、项目边界和批准机制：\n" + skill_content
         )
     return append_language_instruction(prompt, language)
+
+
+# I1：确认步骤的"为什么需要确认"不再在后端翻译成中文拼进 step.content ——
+# 那会让英文用户在确认卡上读到整段中文（ProjectAgentPanel 原样渲染 content）。
+# detail.risk.reason 保留 snake_case 审计码，文案见
+# frontend/src/locales/{zh,en}/projectAgentPanel.json 的 riskReason.*。
+CONFIRMATION_STEP_CONTENT = "已生成修改预览，等待用户确认。"
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -488,6 +496,7 @@ class ProjectAgentService:
                         error="工具未启用或未注册",
                     )
                     continue
+                risk_detail: dict[str, Any] | None = None
                 if tool is None:
                     from app.services.mcp_tools_loader import mcp_tools_loader
 
@@ -495,8 +504,17 @@ class ProjectAgentService:
                     requires_confirmation = not mcp_tool_is_read_only(mcp_metadata)
                     risk_level = 2 if requires_confirmation else 0
                 else:
-                    requires_confirmation = tool.requires_confirmation
-                    risk_level = tool.risk_level
+                    decision = await resolve_tool_risk(
+                        self.db, project=self.project, tool=tool, arguments=arguments
+                    )
+                    requires_confirmation = decision.requires_confirmation
+                    risk_level = decision.risk_level
+                    risk_detail = {
+                        "action": decision.action,
+                        "risk_level": decision.risk_level,
+                        "requires_confirmation": decision.requires_confirmation,
+                        "reason": decision.reason,
+                    }
                 record = AgentToolCall(
                     conversation_id=conversation.id,
                     user_id=self.user_id,
@@ -517,7 +535,7 @@ class ProjectAgentService:
                     category=tool_category,
                     title=name,
                     content="正在调用工具。",
-                    detail={"arguments": self._display_value(arguments)},
+                    detail={"arguments": self._display_value(arguments), "risk": risk_detail},
                     tool_call=record,
                     steps=steps,
                 )
@@ -607,7 +625,10 @@ class ProjectAgentService:
                         }
                     continue
 
-                if tool.requires_confirmation:
+                # PR-1：分支判定必须用运行期决议结果（action 级 + 条件免确认），
+                # 不能用 tool.requires_confirmation —— 那是工具级，会把已免确认的
+                # 低风险 action 重新弹回确认卡。
+                if record.requires_confirmation:
                     auto_result: dict[str, Any] | None = None
                     try:
                         record.preview = await self.registry.preview(name, arguments)
@@ -631,6 +652,7 @@ class ProjectAgentService:
                                     "preview": record.preview,
                                     "result": self._display_value(auto_result),
                                     "approval_mode": "automatic",
+                                    "risk": risk_detail,
                                     "tool_call": self._tool_call_data(record),
                                 },
                             )
@@ -639,11 +661,12 @@ class ProjectAgentService:
                             proposed.append(record)
                             await self._update_step(
                                 tool_step,
-                                content="已生成修改预览，等待用户确认。",
+                                content=CONFIRMATION_STEP_CONTENT,
                                 status="waiting_confirmation",
                                 detail={
                                     "arguments": self._display_value(arguments),
                                     "preview": record.preview,
+                                    "risk": risk_detail,
                                     "tool_call": self._tool_call_data(record),
                                 },
                             )
@@ -673,19 +696,24 @@ class ProjectAgentService:
                         }
                     continue
 
+                executed_result: dict[str, Any] | None = None
                 try:
                     result = await self.registry.execute(name, arguments)
+                    executed_result = result if isinstance(result, dict) else {}
                     record.status = "executed"
-                    record.result = result
+                    record.result = executed_result
+                    record.before_snapshot = executed_result.get("before")
+                    record.after_snapshot = executed_result.get("after")
                     record.executed_at = datetime.now()
-                    await self._save_tool_response(conversation, call_id, name, result)
+                    await self._save_tool_response(conversation, call_id, name, executed_result)
                     await self._update_step(
                         tool_step,
                         content="项目工具调用完成。",
                         status="completed",
                         detail={
                             "arguments": self._display_value(arguments),
-                            "result": self._display_value(result),
+                            "result": self._display_value(executed_result),
+                            "risk": risk_detail,
                             "tool_call": self._tool_call_data(record),
                         },
                     )
@@ -699,8 +727,30 @@ class ProjectAgentService:
                         tool_step,
                         content=f"项目工具调用失败：{exc}",
                         status="failed",
+                        detail={
+                            "arguments": self._display_value(arguments),
+                            "risk": risk_detail,
+                            "tool_call": self._tool_call_data(record),
+                        },
                     )
                 yield {"type": "step_update", "data": self._step_data(tool_step)}
+                executed_resources = (executed_result or {}).get("resources") or []
+                if executed_result is not None and executed_resources:
+                    # 后台任务已在本调用内创建并自行提交任务行；助手侧的行
+                    # （AgentToolCall / step / role=tool）要到回合末才提交，
+                    # 而 tool_executed 会让前端立刻发请求回读 ⇒ 先提交再下发。
+                    # 只在真要通知前端刷新时提交：只读工具不带 resources，多一次
+                    # WAL 提交纯属把成本摊给每一次只读调用（回合末本来就提交一次）。
+                    await self.db.commit()
+                    yield {
+                        "type": "tool_executed",
+                        "data": {
+                            "tool_call": self._tool_call_data(record),
+                            "resources": list(executed_resources),
+                            "task_type": executed_result.get("task_type"),
+                            "approval_mode": "inline",
+                        },
+                    }
 
             if proposed:
                 await self._update_step(
