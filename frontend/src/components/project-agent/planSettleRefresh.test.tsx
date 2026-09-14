@@ -341,9 +341,77 @@ describe('ProjectAgentPanel plan settlement refresh', () => {
       await waitFor(() => expect(projectAgentApi.approvePlan).toHaveBeenCalledWith(
         'proj-1', 'tc-plan', { selected_step_ids: ['s1'] },
       ));
+      expect(projectAgentApi.approvePlan).toHaveBeenCalledTimes(1);
       expect(projectAgentApi.confirmToolCall).not.toHaveBeenCalled();
     } finally {
       localStorage.removeItem('project-agent-auto-approve');
     }
+  });
+
+  it('never routes a propose_plan through confirm_tool_call on manual approve-all', async () => {
+    // Guard for the manual badge: waitingToolCalls is filtered by !isPlanToolCall,
+    // so a mixed waiting set may only confirm the plain tool calls. If a plan ever
+    // slipped into that set, one click would approve the whole plan through
+    // confirm_tool_call without a per-step selection.
+    localStorage.removeItem('project-agent-auto-approve');
+    vi.mocked(projectAgentApi.confirmToolCall).mockResolvedValue({
+      tool_call: { id: 'tc-a' }, resources: [],
+    } as never);
+    vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+      ...detail(),
+      tool_calls: [
+        {
+          id: 'tc-a', conversation_id: 'conv-1', tool_name: 'start_project_task',
+          arguments: { action: 'analyze_chapter', arguments: {} },
+          risk_level: 1, requires_confirmation: true, status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00',
+        },
+        {
+          id: 'tc-b', conversation_id: 'conv-1', tool_name: 'start_project_task',
+          arguments: { action: 'analyze_chapter', arguments: {} },
+          risk_level: 1, requires_confirmation: true, status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00',
+        },
+        {
+          id: 'tc-plan', conversation_id: 'conv-1', tool_name: 'propose_plan',
+          arguments: { objective: 'plan objective', steps: [{ id: 's1', tool: 'start_project_task', action: 'analyze_chapter', arguments: {} }] },
+          risk_level: 2, requires_confirmation: true, status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00',
+        },
+      ],
+      execution_steps: [
+        {
+          id: 'step-a', conversation_id: 'conv-1', assistant_message_id: 'm-1', tool_call_id: 'tc-a',
+          sequence: 1, step_type: 'tool', category: 'project', title: 'Change A',
+          content: '', status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00', updated_at: '2026-09-13T00:00:00',
+        },
+        {
+          id: 'step-b', conversation_id: 'conv-1', assistant_message_id: 'm-1', tool_call_id: 'tc-b',
+          sequence: 2, step_type: 'tool', category: 'project', title: 'Change B',
+          content: '', status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00', updated_at: '2026-09-13T00:00:00',
+        },
+        {
+          id: 'step-plan', conversation_id: 'conv-1', assistant_message_id: 'm-1', tool_call_id: 'tc-plan',
+          sequence: 3, step_type: 'tool', category: 'project', title: 'Plan step',
+          content: '', status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00', updated_at: '2026-09-13T00:00:00',
+        },
+      ],
+    });
+    renderPanel();
+    await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByText('思考与调用过程'));
+    const approveAll = await screen.findByRole('button', { name: /一键批准全部修改/, hidden: true });
+    expect(approveAll).toHaveTextContent('2');
+    fireEvent.click(approveAll);
+
+    await waitFor(() => expect(projectAgentApi.confirmToolCall).toHaveBeenCalledTimes(2));
+    const confirmedIds = vi.mocked(projectAgentApi.confirmToolCall).mock.calls.map(call => call[1]);
+    expect(confirmedIds).toEqual(expect.arrayContaining(['tc-a', 'tc-b']));
+    expect(confirmedIds).not.toContain('tc-plan');
+    expect(projectAgentApi.approvePlan).not.toHaveBeenCalled();
   });
 });
