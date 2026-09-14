@@ -8,6 +8,8 @@ from typing import Any, AsyncGenerator, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.core.errors import ApiError
 from app.logger import get_logger
 from app.models.project import Project
 from app.models.project_agent import (
@@ -15,6 +17,20 @@ from app.models.project_agent import (
     AgentExecutionStep,
     AgentMessage,
     AgentToolCall,
+)
+from app.services.agent_plan_dispatch import (
+    PLAN_RUNNER_UNAVAILABLE_CODE,
+    PLAN_TASK_TYPE,
+    create_plan_task,
+    dispatch_plan,
+    plan_runner,
+)
+from app.services.agent_plan_schema import (
+    PROPOSE_PLAN_TOOL_NAME,
+    PlanValidationError,
+    plannable_tool_names,
+    provider_supports_required_tool_choice,
+    validate_plan,
 )
 from app.services import agent_prompt_budget
 from app.services.agent_prompt_budget import (
@@ -77,6 +93,8 @@ def agent_system_prompt(
 # detail.risk.reason 保留 snake_case 审计码，文案见
 # frontend/src/locales/{zh,en}/projectAgentPanel.json 的 riskReason.*。
 CONFIRMATION_STEP_CONTENT = "已生成修改预览，等待用户确认。"
+# 计划卡与差异确认卡的区别：计划没有 preview，收口文案也不得提到"下方差异"。
+PLAN_APPROVAL_STEP_CONTENT = "已生成执行计划，等待你确认后开始逐步执行。"
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -134,6 +152,9 @@ def _count_remaining_chars(history: list["AgentMessage"], reversed_index: int) -
 
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
+    # 架构计划 §1 定案：产出校验失败最多重问 2 次（同一回合至多 3 次规划请求），
+    # 耗尽后以可读文案收口 —— 规划回合绝不落到循环尾的裸 RuntimeError。
+    PLAN_MAX_RETRIES = 2
     # 落库侧单条工具结果的行长上限（原 `[:50000]` 字面量提为常量，值与行为不变），
     # 供测试与 TOOL_RESULT_MAX_CHARS 配对断言。
     TOOL_RESULT_PERSIST_MAX_CHARS = 50000
@@ -157,6 +178,12 @@ class ProjectAgentService:
     # ::test_budget_binds_characters_not_row_count）。
     # 40 只解决"整回合被行数舍掉"这一层，字节层面的取舍归预算分层。
     HISTORY_LIMIT = 40
+    # 规划回合可用的工具轮数上限。**类常量 = 默认值 + monkeypatch 目标**，
+    # 真正取值一律走 `self._plan_round_budget()`。
+    # 配置键 `agent_plan_round_budget` 由 PR-2c 注册；PR-2a 单独合入时该键还不存在
+    # ⇒ `getattr(settings, ..., 默认值)` 兜回本常量，行为逐字不变。
+    PLAN_ROUND_BUDGET = 3
+    _PLAN_ROUND_BUDGET_DEFAULT = 3
 
     def __init__(
         self,
@@ -211,6 +238,7 @@ class ProjectAgentService:
         system_prompt: str,
         force_answer: bool,
         available_tools: list[dict[str, Any]],
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         """单轮 AI 调用：最终回答轮走流式，工具决策轮走非流式。
 
@@ -229,10 +257,63 @@ class ProjectAgentService:
             prompt=prompt,
             system_prompt=system_prompt,
             tools=available_tools,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             auto_mcp=False,
             handle_tool_calls=False,
         )
+
+    @staticmethod
+    def _tool_name(definition: dict[str, Any]) -> str:
+        return str((definition.get("function") or {}).get("name") or "")
+
+    def _tools_for_round(
+        self,
+        base_tools: list[dict[str, Any]],
+        *,
+        plan_mode: bool,
+        closing: bool,
+    ) -> list[dict[str, Any]]:
+        """普通回合不暴露 propose_plan；规划回合带上它；收口轮只留它。
+
+        非规划回合逐字等于 PR-1 行为 —— 这是「不注册即回滚」之外的第二道保险。
+        """
+        others = [
+            item for item in base_tools
+            if self._tool_name(item) != PROPOSE_PLAN_TOOL_NAME
+        ]
+        if not plan_mode:
+            return others
+        propose = [
+            item for item in base_tools
+            if self._tool_name(item) == PROPOSE_PLAN_TOOL_NAME
+        ]
+        if closing:
+            return propose or others
+        return others + propose
+
+    def _plan_closing_round(self, *, round_index: int, plan_attempts: int) -> bool:
+        """规划收口轮：独立预算耗尽、被要求重试、或已到最后一个带工具的轮。
+
+        刻意不复用 force_answer 轮（那轮不带工具且 prompt 里被注入「不要再调用工具」，
+        与 tool_choice="required" 互斥）。
+        """
+        return (
+            round_index >= self.MAX_TOOL_ROUNDS - 1
+            or round_index >= self._plan_round_budget() - 1
+            or plan_attempts > 0
+        )
+
+    def _plan_round_budget(self) -> int:
+        """回合预算的唯一读取口（与 PR-2c runner 的 `_limit()` 同规则）。
+
+        类常量被 monkeypatch 成非默认值 ⇒ 以类常量为准（本 PR 的用例靠
+        `monkeypatch.setattr(service, "PLAN_ROUND_BUDGET", n)` 驱动）；
+        否则取 `settings.agent_plan_round_budget`（PR-2c 落地的键）；
+        读不到 ⇒ 兜回类常量默认值。绝不抛错，规划回合不得因配置面失败。
+        """
+        if self.PLAN_ROUND_BUDGET != self._PLAN_ROUND_BUDGET_DEFAULT:
+            return self.PLAN_ROUND_BUDGET
+        return int(getattr(settings, "agent_plan_round_budget", self.PLAN_ROUND_BUDGET))
 
     async def stream_chat(
         self,
@@ -241,8 +322,14 @@ class ProjectAgentService:
         message: str,
         page_context: dict[str, Any],
         auto_approve: bool = False,
+        plan_mode: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """工具决策循环：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。"""
+        """工具决策循环：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。
+
+        `plan_mode=True` 时本回合是规划回合：普通轮额外提供终止型工具
+        `propose_plan`，收口轮只留它（并按 provider 能力置 tool_choice="required"）。
+        默认 False ⇒ 发给模型的工具集与逐轮行为与 PR-1 逐字一致。
+        """
         conversation = await self.get_or_create_conversation(conversation_id, message)
         user_message = AgentMessage(
             conversation_id=conversation.id,
@@ -339,6 +426,10 @@ class ProjectAgentService:
             if tool.get("function", {}).get("name") not in project_names
         ]
 
+        plan_attempts = 0
+        plan_produced = False
+        plan_correction = ""
+
         # 预算每回合算一次：它只取决于「本次实发模型的实测窗口」与四个配置键，
         # 与 history 内容无关 ⇒ 挪进轮循环只是每轮多一次 await。
         # 这条 await 走的是「先过门禁、再读缓存」的同一个入口（评审 D1）：三元组
@@ -404,11 +495,31 @@ class ProjectAgentService:
                         "type": "step_update",
                         "data": self._step_data(budget_trim_step),
                     }
+            closing = plan_mode and not plan_produced and self._plan_closing_round(
+                round_index=round_index, plan_attempts=plan_attempts
+            )
+            round_tools = self._tools_for_round(
+                available_tools, plan_mode=plan_mode, closing=closing
+            )
+            round_tool_choice = (
+                "required"
+                # provider 取自 `AIService.resolve_dispatch_provider()`（`_dispatch_endpoint`
+                # 的 provider 分量）：归一后正是"选哪个 client"的那个值，也是 tool_choice
+                # 能否进 payload 的唯一依据。全局 settings 里没有这一项（只有
+                # default_ai_provider，且被每用户设置覆盖），拿它会判错。走这层公开出口
+                # 而非在服务层读实例字段，与 PR-0c 的 D2 结构守卫同向。
+                # 短路求值 ⇒ 非规划回合完全不调用它，PR-1 的假 AI 夹具照旧可用。
+                if closing and provider_supports_required_tool_choice(
+                    self.ai_service.resolve_dispatch_provider()
+                )
+                else "auto"
+            )
             response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
                 force_answer=force_answer,
-                available_tools=available_tools,
+                available_tools=round_tools,
+                tool_choice=round_tool_choice,
             )
             usage = response.get("usage") or {}
             prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -416,6 +527,44 @@ class ProjectAgentService:
 
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
+                if plan_mode and closing and not plan_produced:
+                    # 形态 (a)：收口轮直接用讲道理代替计划。走最终回答路径就等于
+                    # 「规划回合静默失败」，必须计数重问，耗尽后以可读文案收口。
+                    plan_attempts += 1
+                    plan_correction = plan_correction or "本轮没有提交任何计划"
+                    exhausted = plan_attempts > self.PLAN_MAX_RETRIES
+                    await self._update_step(
+                        thought,
+                        content=(
+                            "多次仍未收到可执行计划，先说明还缺什么信息。"
+                            if exhausted
+                            else "本轮没有收到计划，正在要求助手重新提交。"
+                        ),
+                        status="completed",
+                    )
+                    yield {"type": "step_update", "data": self._step_data(thought)}
+                    if exhausted:
+                        async for event in self._finish_without_plan(
+                            conversation,
+                            prompt_tokens,
+                            completion_tokens,
+                            plan_correction,
+                            steps=steps,
+                            tool_records=tool_records,
+                        ):
+                            yield event
+                        return
+                    await self._save_assistant(
+                        conversation,
+                        (response.get("content") or "").strip() or "（未提交计划）",
+                        prompt_tokens,
+                        completion_tokens,
+                        commit=False,
+                    )
+                    await self._save_plan_correction(conversation, plan_correction)
+                    history = await self._load_history(conversation.id)
+                    await self.db.commit()
+                    continue
                 await self._update_step(
                     thought,
                     content="分析完成，正在整理回答。",
@@ -461,6 +610,8 @@ class ProjectAgentService:
             )
 
             proposed: list[AgentToolCall] = []
+            # 一轮只记一次账：(b) 在校验处已计数的轮，尾部的 (c) 不得再计一遍。
+            attempts_before_round = plan_attempts
             for raw_call in tool_calls:
                 try:
                     name, arguments = self._parse_tool_call(raw_call)
@@ -542,6 +693,91 @@ class ProjectAgentService:
                 sequence += 1
                 yield {"type": "step_start", "data": self._step_data(tool_step)}
                 call_id = raw_call.get("id") or record.id
+
+                if plan_mode and name == PROPOSE_PLAN_TOOL_NAME:
+                    # 终止型规划工具：只落计划，不 preview、不 execute（架构计划 §1 定案）。
+                    # 必须 gate 在 plan_mode 上：非规划回合里模型幻觉调用 propose_plan 时，
+                    # 特判会凭空产出一张「等待批准的计划卡」——一步都不会执行，却让用户
+                    # 看见一次错报。关掉特判后它落入既有的失败收口（registry 的终止型
+                    # 工具安全网抛 ValueError ⇒ record.status=failed），不新造错误码。
+                    # 必须前置到 requires_confirmation 判定之前：它 risk_level=0，落到
+                    # 下面任何一条既有分支都会被 registry 以「只读工具」路径拒收
+                    # （registry 的两条安全网就是为了让这种绕过显式失败，而不是静默执行）。
+                    # 也不进 MCP 分支——它是项目注册表里的工具。
+                    # 白名单取 available_tools（本回合注册表+MCP 的完整工具集）而不是
+                    # round_tools：收口轮只留 propose_plan，拿它当白名单会拒掉每一份计划。
+                    allowed = plannable_tool_names(available_tools)
+                    try:
+                        plan = validate_plan(arguments, allowed_tools=allowed)
+                    except PlanValidationError as exc:
+                        # (b) 形态：plan_attempts / plan_correction 由下面的有界重试消费。
+                        plan_attempts += 1
+                        plan_correction = str(exc)
+                        record.status = "failed"
+                        record.error_message = str(exc)
+                        await self._save_tool_response(
+                            conversation, call_id, name, None, error=str(exc)
+                        )
+                        await self._update_step(
+                            tool_step,
+                            content=f"计划格式需要修正：{exc}",
+                            status="failed",
+                            detail={"arguments": self._display_value(arguments)},
+                        )
+                        yield {"type": "step_update", "data": self._step_data(tool_step)}
+                        if plan_attempts > self.PLAN_MAX_RETRIES:
+                            async for event in self._finish_without_plan(
+                                conversation,
+                                prompt_tokens,
+                                completion_tokens,
+                                str(exc),
+                                steps=steps,
+                                tool_records=tool_records,
+                            ):
+                                yield event
+                            return
+                        continue
+
+                    record.arguments = plan
+                    plan_produced = True
+                    if auto_approve:
+                        # Task 3 预留的接缝：auto_approve 的同回合直路由。
+                        # 绝不进 registry.execute —— 计划一步都没执行过。
+                        # ⚠️ §7 的「同会话仅一个运行中计划」护栏对 auto_approve 同样生效，
+                        # 但**本 PR 未实现，属 PR-2c**：所以现在可以在同一会话里叠加放行
+                        # 多份计划。错误码 `conflict.agent_plan_running` 已注册（409）但
+                        # 零消费者，就是留给这条护栏的。
+                        # TODO(PR-2c): 直路由之前先查同会话 running 的 agent_plan 任务行。
+                        async for event in self._auto_approve_plan(
+                            record=record,
+                            plan=plan,
+                            tool_step=tool_step,
+                            conversation=conversation,
+                            steps=steps,
+                            tool_records=tool_records,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        ):
+                            yield event
+                        return
+                    record.status = "waiting_confirmation"
+                    proposed.append(record)
+                    await self._save_tool_response(
+                        conversation, call_id, name,
+                        {"status": "waiting_confirmation", "plan": plan},
+                    )
+                    await self._update_step(
+                        tool_step,
+                        content=PLAN_APPROVAL_STEP_CONTENT,
+                        status="waiting_confirmation",
+                        detail={
+                            "plan": plan,
+                            "arguments": self._display_value(plan),
+                            "tool_call": self._tool_call_data(record),
+                        },
+                    )
+                    yield {"type": "step_update", "data": self._step_data(tool_step)}
+                    continue
 
                 if tool is None:
                     if record.requires_confirmation:
@@ -752,6 +988,29 @@ class ProjectAgentService:
                         },
                     }
 
+            if (
+                plan_mode
+                and closing
+                and not plan_produced
+                and not proposed
+                and plan_attempts == attempts_before_round
+            ):
+                # 形态 (c)：收口轮调的不是计划工具（收窄与 tool_choice 都不生效的
+                # provider，如 gemini）。同样计数，耗尽即可读收口。
+                plan_attempts += 1
+                plan_correction = plan_correction or "本轮调用的不是计划工具"
+                if plan_attempts > self.PLAN_MAX_RETRIES:
+                    async for event in self._finish_without_plan(
+                        conversation,
+                        prompt_tokens,
+                        completion_tokens,
+                        plan_correction,
+                        steps=steps,
+                        tool_records=tool_records,
+                    ):
+                        yield event
+                    return
+
             if proposed:
                 await self._update_step(
                     thought,
@@ -761,8 +1020,16 @@ class ProjectAgentService:
                 yield {"type": "step_update", "data": self._step_data(thought)}
                 content = (response.get("content") or "").strip()
                 if not content:
-                    labels = "、".join(str(item.preview.get("label")) for item in proposed if item.preview)
-                    content = f"我已准备好修改{labels or '项目数据'}，请核对下方差异后确认。"
+                    # 计划卡的 preview 恒为 None ⇒ 它进不了标签拼接：一份纯计划提案
+                    # 若说「请核对下方差异」，用户看到的就是一张没有差异的卡（错报）。
+                    diff_records = [item for item in proposed if item.preview]
+                    if not diff_records:
+                        content = PLAN_APPROVAL_STEP_CONTENT
+                    else:
+                        labels = "、".join(
+                            str(item.preview.get("label")) for item in diff_records
+                        )
+                        content = f"我已准备好修改{labels or '项目数据'}，请核对下方差异后确认。"
                 assistant = await self._save_assistant(
                     conversation,
                     content,
@@ -793,6 +1060,176 @@ class ProjectAgentService:
             history = await self._load_history(conversation.id)
 
         raise RuntimeError("灵创创作助手超过最大工具调用轮数")
+
+    async def _save_plan_correction(
+        self, conversation: AgentConversation, reason: str
+    ) -> None:
+        """服务端纠正消息：(a) 类失败没有 tool 行可挂，只能额外回喂一条纠正意见。
+
+        走 role=system 而不是 role=user：ProjectAgentPanel 只渲染 user/assistant/tool
+        三种角色，且 role=user 会被画成**用户自己的气泡** —— 写成 user 等于把系统
+        的话冒充用户说过。`_build_prompt` 对未知角色统一渲染成 `<role>…</role>`
+        塞进不可信历史块，模型照样读得到。
+        """
+        self.db.add(AgentMessage(
+            conversation_id=conversation.id,
+            role="system",
+            content=(
+                "（系统提示）你上一轮没有给出可执行的计划。"
+                f"问题：{reason[:500]}。"
+                "请只调用 propose_plan 工具提交一份符合 schema 的计划，"
+                "或明确说明你还缺少什么信息。"
+            ),
+        ))
+        conversation.last_message_at = datetime.now()
+        await self.db.flush()
+
+    async def _finish_without_plan(
+        self,
+        conversation: AgentConversation,
+        prompt_tokens: int,
+        completion_tokens: int,
+        reason: str,
+        *,
+        steps: list[AgentExecutionStep],
+        tool_records: list[AgentToolCall],
+    ):
+        """重试耗尽后的可读收口：替代裸 `raise RuntimeError`。
+
+        `async def` + `yield` ⇒ 它是 async generator，调用方一律
+        `async for event in ...: yield event`，不要 `await`。
+        规划失败是"这一轮没拿到计划"，不是"助手崩了"，所以 result 仍是 completed，
+        不弹错误吐司；已产出的步骤行仍挂到这条 assistant 消息上，时间线不会悬空。
+        """
+        content = (
+            "我还需要一点信息才能给出可靠的执行计划。"
+            f"上一次尝试的问题：{str(reason)[:200]}。"
+            "请把目标拆得更具体一些，或先让我完成单个步骤。"
+        )
+        assistant = await self._save_assistant(
+            conversation, content, prompt_tokens, completion_tokens, commit=False
+        )
+        await self._attach_steps(steps, tool_records, assistant, commit=False)
+        await self.db.commit()
+        yield {"type": "final_start", "data": {"message_id": assistant.id}}
+        yield {"type": "final_chunk", "content": content}
+        yield {"type": "final_done", "data": {"message_id": assistant.id}}
+        yield {
+            "type": "result",
+            "data": {
+                "conversation_id": conversation.id,
+                "message_id": assistant.id,
+                "status": "completed",
+            },
+        }
+
+    async def _auto_approve_plan(
+        self,
+        *,
+        record: AgentToolCall,
+        plan: dict[str, Any],
+        tool_step: AgentExecutionStep,
+        conversation: AgentConversation,
+        steps: list[AgentExecutionStep],
+        tool_records: list[AgentToolCall],
+        prompt_tokens: int,
+        completion_tokens: int,
+    ):
+        """auto_approve 直接放行：同事务置 executing + 建计划任务行，绝不经 registry.execute。
+
+        顺序是硬的：**先判执行器可用再建任务行**（否则留下一条永远 pending 的孤儿
+        行），**先提交再调度**（执行器用独立 session 反查任务行）。
+        """
+        plan_task = None
+        dispatch_error: str | None = None
+        dispatch_status = "failed"
+        if plan_runner() is None:
+            dispatch_error = "后台计划执行器尚未启用，本次计划没有被执行。"
+            record.status = "failed"
+            record.error_message = dispatch_error
+            await self._update_step(
+                tool_step,
+                content=dispatch_error,
+                status="failed",
+                detail={
+                    "plan": plan,
+                    "arguments": self._display_value(plan),
+                    "approval_mode": "automatic",
+                    "error_code": PLAN_RUNNER_UNAVAILABLE_CODE,
+                    "tool_call": self._tool_call_data(record),
+                },
+            )
+            yield {"type": "step_update", "data": self._step_data(tool_step)}
+        else:
+            record.status = "executing"
+            record.confirmed_at = datetime.now()
+            plan_task = await create_plan_task(
+                self.db,
+                project_id=self.project.id,
+                user_id=self.user_id,
+                conversation_id=conversation.id,
+                tool_call_id=record.id,
+                plan=plan,
+            )
+            # entity_id 单独不跨表唯一 ⇒ 必须配 task_type 才能反查（与 start_project_task 同规则）。
+            record.result = {"entity_id": plan_task.id, "task_type": PLAN_TASK_TYPE}
+            await self._update_step(
+                tool_step,
+                content="计划已自动批准，正在交给后台执行器逐步执行。",
+                status="completed",
+                detail={
+                    "plan": plan,
+                    "plan_task_id": plan_task.id,
+                    "approval_mode": "automatic",
+                    "tool_call": self._tool_call_data(record),
+                },
+            )
+            yield {"type": "step_update", "data": self._step_data(tool_step)}
+            await self.db.commit()
+            try:
+                await dispatch_plan(
+                    plan_task_id=plan_task.id,
+                    user_id=self.user_id,
+                    project_id=self.project.id,
+                    conversation_id=conversation.id,
+                    steps=plan["steps"],
+                )
+                dispatch_status = "running"
+            except ApiError:
+                # 只剩"检查与调度之间执行器被撤下"这一条竞态路径；任务行已提交，
+                # 必须就地置 failed，不能留在 pending。
+                dispatch_error = "后台计划执行器尚未启用，本次计划没有被执行。"
+                record.status = "failed"
+                record.error_message = dispatch_error
+                record.result = None
+                plan_task.status = "failed"
+                plan_task.status_code = PLAN_RUNNER_UNAVAILABLE_CODE
+                plan_task.error_message = "plan runner not registered"
+                dispatch_status = "failed"
+                await self.db.commit()
+
+        content = dispatch_error or (
+            f"我已按批准的计划开始执行，共 {len(plan['steps'])} 步，"
+            "进度会在任务面板显示。"
+        )
+        assistant = await self._save_assistant(
+            conversation, content, prompt_tokens, completion_tokens, commit=False
+        )
+        await self._attach_steps(steps, tool_records, assistant, commit=False)
+        await self.db.commit()
+        yield {"type": "final_start", "data": {"message_id": assistant.id}}
+        yield {"type": "final_chunk", "content": content}
+        yield {"type": "final_done", "data": {"message_id": assistant.id}}
+        yield {
+            "type": "result",
+            "data": {
+                "conversation_id": conversation.id,
+                "message_id": assistant.id,
+                "status": "completed",
+                "plan_task_id": plan_task.id if plan_task else None,
+                "plan_task_status": dispatch_status,
+            },
+        }
 
     async def finalize_interrupted_turn(self, reason: str, *, cancelled: bool) -> None:
         """把已提交的部分调用记录绑定到一条可见的终止消息。"""

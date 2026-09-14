@@ -13,6 +13,11 @@ from app.models.foreshadow import Foreshadow
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.relationship import CharacterRelationship, Organization
+from app.services.agent_plan_schema import (
+    PLAN_TOOL_PARAMETERS,
+    PROPOSE_PLAN_TOOL_DESCRIPTION,
+    PROPOSE_PLAN_TOOL_NAME,
+)
 from app.services.relationship_service import relationship_display_names
 from app.services.project_agent_extended_tools import (
     EXTENDED_TOOL_SPECS,
@@ -273,6 +278,17 @@ class ProjectAgentToolRegistry:
         ]
         tools.extend(ProjectAgentTool(**spec) for spec in EXTENDED_TOOL_SPECS)
         tools.extend(ProjectAgentTool(**spec) for spec in OPERATIONAL_TOOL_SPECS)
+        # PR-2a：终止型规划工具放在最后，避免打乱既有工具顺序断言。
+        # risk_level 取默认 0 ⇒ requires_confirmation 为 False ⇒ 它进不了
+        # project_agent_service 的确认分支，也不会被批准模式自动执行；
+        # 它由 project_agent_service 里**按工具名的前置特判分支**接管（只落计划、永不执行）。
+        tools.append(
+            ProjectAgentTool(
+                PROPOSE_PLAN_TOOL_NAME,
+                PROPOSE_PLAN_TOOL_DESCRIPTION,
+                PLAN_TOOL_PARAMETERS,
+            ),
+        )
         return tools
 
     def definitions(self) -> list[dict[str, Any]]:
@@ -285,6 +301,13 @@ class ProjectAgentToolRegistry:
         return tool
 
     async def preview(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        # 安全网：propose_plan 是终止型规划工具，永远不该被预览。
+        # 不加这条，它会落到下面的「只读工具不需要修改预览」，而那句话的含义
+        # 随 risk 路由调整而漂移 ⇒ 绕过会变得无声无息。
+        if name == PROPOSE_PLAN_TOOL_NAME:
+            raise ValueError(
+                f"{PROPOSE_PLAN_TOOL_NAME} 是终止型规划工具，不得通过 registry 预览或执行"
+            )
         arguments = normalize_tool_arguments(arguments)
         tool = self.get(name)
         if not tool.requires_confirmation:
@@ -310,6 +333,14 @@ class ProjectAgentToolRegistry:
         }
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        # 安全网（与 preview() 同源）：路由靠名字集合，risk_level=0 的 propose_plan
+        # 既不在 WRITE_TOOL_NAMES 也不在 OPERATIONAL_WRITE_TOOL_NAMES，会一路掉到
+        # 只读兜底并抛「工具尚未实现」——与真实原因（终止型工具不得执行）无关的文案。
+        # 没有这条，日后任何一次名单/风险路由调整都可能把这条路径变成静默执行。
+        if name == PROPOSE_PLAN_TOOL_NAME:
+            raise ValueError(
+                f"{PROPOSE_PLAN_TOOL_NAME} 是终止型规划工具，不得通过 registry 预览或执行"
+            )
         arguments = normalize_tool_arguments(arguments)
         tool = self.get(name)
         # 扩展/运维写入工具按"名单"分派而不是按 requires_confirmation 分派：

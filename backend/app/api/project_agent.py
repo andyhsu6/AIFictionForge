@@ -27,8 +27,25 @@ from app.schemas.project_agent import (
     AgentConversationCreate,
     AgentConversationDetail,
     AgentConversationResponse,
+    AgentPlanApprovalRequest,
+    AgentPlanApprovalResponse,
     AgentToolCallResponse,
     AgentToolDecisionResponse,
+)
+from app.services.agent_plan_dispatch import (  # noqa: F401  —— PR-2b 的注册接缝在此可见
+    PLAN_RUNNER_UNAVAILABLE_CODE,
+    PLAN_TASK_TYPE,
+    create_plan_task,
+    dispatch_plan,
+    plan_runner,
+    plan_tool_names,
+    register_plan_runner,
+)
+from app.services.agent_plan_schema import (
+    PROPOSE_PLAN_TOOL_NAME,
+    PlanValidationError,
+    plannable_tool_names,
+    validate_plan,
 )
 from app.services.ai_service import AIService
 from app.services.project_agent_service import (
@@ -268,6 +285,7 @@ async def chat_stream(
                 message=payload.message,
                 page_context=payload.page_context,
                 auto_approve=payload.auto_approve,
+                plan_mode=payload.plan_mode,
             ):
                 yield SSEResponse.format_sse(event)
             yield await SSEResponse.send_done()
@@ -475,6 +493,115 @@ async def confirm_tool_call(
             await _restore_waiting_tool_call(db, refreshed, error=str(exc))
         detail = f"执行修改失败：{exc}"
         raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail) from exc
+
+
+@router.post("/tool-calls/{tool_call_id}/approve-plan", response_model=AgentPlanApprovalResponse)
+async def approve_plan(
+    project_id: str,
+    tool_call_id: str,
+    payload: AgentPlanApprovalRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """一次性批准整份计划：抢占成功后建 agent_plan 任务并交给执行器。
+
+    抢占只此一处：`_claim_tool_call` 的条件 UPDATE 谓词是
+    `status == "waiting_confirmation"`，所以第二次批准必然 rowcount != 1 ⇒ 409。
+    """
+    user_id = _user_id(request)
+    project = await verify_project_access(project_id, user_id, db)
+    tool_call = await _claim_tool_call(
+        db, tool_call_id=tool_call_id, project_id=project_id,
+        user_id=user_id, claimed_status="executing",
+    )
+    if tool_call.tool_name != PROPOSE_PLAN_TOOL_NAME:
+        await _restore_waiting_tool_call(db, tool_call, error="该调用不是计划提案")
+        raise ApiError(code="conflict.agent_modification_state")
+    if plan_runner() is None:
+        # 判在**建任务行之前**：否则未注册执行器时留下一条永远 pending 的孤儿计划行。
+        await _restore_waiting_tool_call(db, tool_call, error="计划执行器尚未启用")
+        raise ApiError(code=PLAN_RUNNER_UNAVAILABLE_CODE)
+
+    registry = ProjectAgentToolRegistry(project, db)
+    allowed = plannable_tool_names(registry.definitions()) | plan_tool_names(
+        tool_call.arguments or {}
+    )
+    try:
+        plan = validate_plan(tool_call.arguments or {}, allowed_tools=allowed)
+    except PlanValidationError as exc:
+        await _restore_waiting_tool_call(db, tool_call, error=str(exc))
+        raise ApiError(
+            code="validation.agent_plan_invalid", params={"reason": str(exc)}
+        ) from exc
+
+    # 省略 `selected_step_ids` ⇒ **批准全部步骤**（架构计划 §2 定案：客户端不传即整份批准）。
+    # 这不是"未校验的默认值"：字段名写错会被 `ConfigDict(extra="forbid")` 直接判 422，
+    # 所以本分支唯一可能的入站形态就是"客户端有意省略"（= 计划卡的「全选」）。
+    # 改成拒绝会让 PR-3 的全选路径静默失效；两种语义由
+    # tests/test_agent_plan_propose_approve.py 的省略/子集配对用例钉住。
+    selected = payload.selected_step_ids
+    if selected is None:
+        approved_steps = plan["steps"]
+    else:
+        wanted = set(selected)
+        known = {step["id"] for step in plan["steps"]}
+        if not wanted or not wanted <= known:
+            await _restore_waiting_tool_call(db, tool_call, error="勾选步骤无效")
+            raise ApiError(code="validation.agent_plan_step_selection")
+        # 顺序按计划，不按勾选顺序：勾选是集合语义，执行是序列语义。
+        approved_steps = [step for step in plan["steps"] if step["id"] in wanted]
+
+    plan_task = await create_plan_task(
+        db,
+        project_id=project_id,
+        user_id=user_id,
+        conversation_id=tool_call.conversation_id,
+        tool_call_id=tool_call.id,
+        plan={"objective": plan["objective"], "steps": approved_steps},
+    )
+    # entity_id 单独不跨表唯一 ⇒ 配 task_type 才反查得到计划行（PR-3 刷新后靠它）。
+    tool_call.result = {"entity_id": plan_task.id, "task_type": PLAN_TASK_TYPE}
+    tool_call.error_message = None
+    await db.execute(
+        update(AgentExecutionStep)
+        .where(AgentExecutionStep.tool_call_id == tool_call.id)
+        .values(
+            status="completed",
+            content="计划已批准，正在交给后台执行器逐步执行。",
+            updated_at=datetime.now(),
+        )
+    )
+    await db.execute(
+        update(AgentConversation)
+        .where(AgentConversation.id == tool_call.conversation_id)
+        .values(last_message_at=datetime.now())
+    )
+    await db.commit()
+
+    try:
+        await dispatch_plan(
+            plan_task_id=plan_task.id,
+            user_id=user_id,
+            project_id=project_id,
+            conversation_id=tool_call.conversation_id,
+            steps=approved_steps,
+        )
+    except ApiError:
+        # 只剩"检查与调度之间执行器被撤下"这条竞态；行已提交，就地置 failed。
+        tool_call.status = "failed"
+        tool_call.error_message = "计划执行器尚未启用"
+        tool_call.result = None
+        plan_task.status = "failed"
+        plan_task.status_code = PLAN_RUNNER_UNAVAILABLE_CODE
+        plan_task.error_message = "plan runner not registered"
+        await db.commit()
+        raise
+    return AgentPlanApprovalResponse(
+        tool_call_id=tool_call.id,
+        plan_task_id=plan_task.id,
+        status="executing",
+        steps_total=len(approved_steps),
+    )
 
 
 @router.post("/tool-calls/{tool_call_id}/reject", response_model=AgentToolDecisionResponse)

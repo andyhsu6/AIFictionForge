@@ -1223,6 +1223,7 @@ export default interface Resources {
     },
     "conflict": {
       "agent_modification_state": "该修改已处理或正在执行",
+      "agent_plan_running": "本会话已有正在执行的计划，请等待完成或先取消",
       "agent_preview_stale": "数据已发生变化，差异预览已刷新，请重新确认",
       "agent_tool_unavailable": "工具已不再可用",
       "career_in_use": "该职业被{{usage_count}}个角色使用，无法删除。请先移除角色的职业关联。",
@@ -1342,6 +1343,7 @@ export default interface Resources {
     },
     "internal": {
       "agent_execution_failed": "灵创创作助手执行失败：{{error}}",
+      "agent_plan_not_available": "后台计划执行器尚未启用，批准暂时不可用",
       "ai_chapter_plan_failed": "AI分析失败，未能生成章节规划",
       "ai_empty_response": "AI服务返回空响应",
       "ai_json_unparsable": "AI返回的内容无法解析为JSON：{{error}}",
@@ -1464,6 +1466,8 @@ export default interface Resources {
     },
     "unknown": "未知错误",
     "validation": {
+      "agent_plan_invalid": "计划内容已不再可用：{{reason}}",
+      "agent_plan_step_selection": "勾选的计划步骤无效，请重新选择",
       "ai_config_missing": "请先在「设置 → 文本模型配置」中配置模型",
       "ai_model_below_minimum": "模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型",
       "ai_model_not_configured": "尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称",
@@ -1606,6 +1610,7 @@ export default interface Resources {
     "statusPending": "等待中",
     "statusRunning": "运行中",
     "title": "后台任务",
+    "typeAgentPlan": "创作计划",
     "typeCareerGenerate": "职业生成",
     "typeChapterAnalysis": "章节分析",
     "typeChapterBatch": "批量章节生成",

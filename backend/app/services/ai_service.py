@@ -416,6 +416,15 @@ class AIService:
         base_url, api_key = entry
         return p or "", base_url, api_key
 
+    def resolve_dispatch_provider(self, provider: Optional[str] = None) -> str:
+        """本次派发实际使用的 provider 名（`_dispatch_endpoint` 的 provider 分量）。
+
+        归一化只允许存在于本类内部一处（PR-0c 评审 D2）：调用方需要 provider 名做
+        能力判断（如规划回合的 `tool_choice` 门）时走这里，不要在服务层读
+        `api_provider` 实例字段自行拼装 —— 那会是与派发不同的第二处口径。
+        """
+        return self._dispatch_endpoint(provider)[0]
+
     @staticmethod
     def _resolve_model_or_raise(model: Optional[str], default_model: Optional[str]) -> str:
         """解析本次请求的实发模型：显式传入优先，否则用**用户配置的**默认模型。

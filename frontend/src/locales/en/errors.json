@@ -20,6 +20,7 @@
   },
   "conflict": {
     "agent_modification_state": "This modification has already been processed or is in progress",
+    "agent_plan_running": "This conversation already has a plan running. Wait for it to finish or cancel it first",
     "agent_preview_stale": "The data has changed and the diff preview has been refreshed. Please confirm again",
     "agent_tool_unavailable": "The tool is no longer available",
     "career_in_use": "This career is used by {{usage_count}} character(s) and cannot be deleted. Remove the characters’ career links first.",
@@ -139,6 +140,7 @@
   },
   "internal": {
     "agent_execution_failed": "AI writing assistant failed: {{error}}",
+    "agent_plan_not_available": "The background plan executor is not enabled, so approving a plan is temporarily unavailable",
     "ai_chapter_plan_failed": "AI analysis failed: no chapter plan was generated",
     "ai_empty_response": "AI service returned an empty response",
     "ai_json_unparsable": "AI response could not be parsed as JSON: {{error}}",
@@ -261,6 +263,8 @@
   },
   "unknown": "Unknown error",
   "validation": {
+    "agent_plan_invalid": "The stored plan is no longer usable: {{reason}}",
+    "agent_plan_step_selection": "The selected plan steps are invalid. Please choose again",
     "ai_config_missing": "Configure a model first in Settings → Text Model Config",
     "ai_model_below_minimum": "The context window of model {{model}} is below the required {{min_window}} tokens. Pick a compliant model in Settings → Text Model Config",
     "ai_model_not_configured": "No AI model is configured yet. Enter a model name in Settings → Text Model Config",

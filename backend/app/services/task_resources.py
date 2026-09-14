@@ -14,6 +14,11 @@ TASK_TYPE_RESOURCES: dict[str, tuple[str, ...]] = {
     "organization_generate": ("characters", "organizations"),
     "career_generate": ("careers",),
     "wizard": ("projects", "outlines", "chapters", "characters"),
+    # 一份计划可触达全部创作实体；漏项会让 SETTLED 的 resources 为空、面板不刷新。
+    "agent_plan": (
+        "chapters", "outlines", "characters", "careers",
+        "organizations", "analysis", "projects", "foreshadows",
+    ),
 }
 
 AGENT_TASK_ACTION_TYPES: dict[str, str] = {
