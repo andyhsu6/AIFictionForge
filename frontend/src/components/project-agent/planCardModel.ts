@@ -194,3 +194,13 @@ export function isPlanSummaryMessage(input: {
       || input.parsedToolName === 'plan_run_summary')) return true;
   return Boolean(input.tool_call_id && planToolCallIds.has(input.tool_call_id));
 }
+
+/** 计划卡上需要标注"会覆盖既有结果"的 action 集合（协议标识，禁止本地化）。
+ *  判据来源：架构 §6 保持确认（risk 2）列表里的覆盖型动作。 */
+export const PLAN_OVERWRITE_ACTIONS: ReadonlySet<string> = new Set([
+  'analyze_chapter',
+  'regenerate_chapter',
+  'partial_regenerate_chapter',
+  'batch_generate_chapters',
+  'replace_chapter_text',
+]);

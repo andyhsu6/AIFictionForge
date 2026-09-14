@@ -69,7 +69,6 @@
   "planCardTitle": "Execution plan",
   "planEmptyTitle": "This plan could not be parsed",
   "planObjective": "Objective: {{objective}}",
-  "planOverwriteActions": "analyze_chapter,regenerate_chapter,replace_chapter_text,batch_generate_chapters",
   "planOverwriteWarning": "This step overwrites existing analysis / memory / foreshadowing",
   "planQueueNotice": "The plan runs step by step in the background and can take tens of minutes. Manual generation requests you submit meanwhile queue up behind it and will not jump ahead.",
   "planReject": "Do not run",

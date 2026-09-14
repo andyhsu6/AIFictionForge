@@ -2656,7 +2656,6 @@ export default interface Resources {
     "planCardTitle": "执行计划",
     "planEmptyTitle": "无法解析该计划",
     "planObjective": "目标：{{objective}}",
-    "planOverwriteActions": "analyze_chapter,regenerate_chapter,replace_chapter_text,batch_generate_chapters",
     "planOverwriteWarning": "该步骤会覆盖既有分析 / 记忆 / 伏笔",
     "planQueueNotice": "计划会在后台逐步执行，可能持续数十分钟。这期间你手工发起的生成任务会排在它后面等待，不会插队。",
     "planReject": "不执行",

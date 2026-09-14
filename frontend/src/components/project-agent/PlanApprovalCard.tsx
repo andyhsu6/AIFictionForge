@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { projectAgentApi } from '../../services/api';
-import { parsePlanPayload, toggleStepSelection } from './planCardModel';
+import { PLAN_OVERWRITE_ACTIONS, parsePlanPayload, toggleStepSelection } from './planCardModel';
 import type { AgentToolCall } from '../../types';
 
 const { Text } = Typography;
@@ -36,9 +36,7 @@ export default function PlanApprovalCard({ projectId, toolCall, onDecided }: Pla
   const [rejecting, setRejecting] = useState(false);
 
   if (!payload) return null;
-  const overwriteActions = new Set(
-    t('planOverwriteActions').split(',').map(item => item.trim()).filter(Boolean),
-  );
+  const overwriteActions = PLAN_OVERWRITE_ACTIONS;
 
   const approve = async () => {
     setApproving(true);
