@@ -97,3 +97,52 @@ def test_slow_acquire_is_counted_and_warned(monkeypatch):
     assert stats["acquire_total"] == 2
     assert stats["slow_acquires"] >= 1
     assert any("AI queue wait" in line and "queue_wait=" in line for line in recorder.warnings)
+
+
+def test_stats_failure_releases_slot_and_permit(monkeypatch):
+    reset_queue_stats()
+    monkeypatch.setattr(base_client, "logger", _Recorder())
+    sem = asyncio.Semaphore(1)
+
+    def boom(endpoint, waited):
+        raise RuntimeError("stats path failed")
+
+    monkeypatch.setattr(base_client, "_record_queue_wait", boom)
+
+    async def scenario():
+        try:
+            async with _acquire_slot(sem, 1, "/chat/completions"):
+                pass
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("_record_queue_wait 异常必须传播")
+        return get_queue_stats(), sem.locked()
+
+    stats, locked = asyncio.run(scenario())
+    assert stats["active"] == 0     # 计数路径抛错也不许泄漏 active
+    assert stats["waiters"] == 0
+    assert locked is False          # 许可必须已释放
+
+
+def test_cancelled_waiter_releases_waiters_counter(monkeypatch):
+    reset_queue_stats()
+    monkeypatch.setattr(base_client, "logger", _Recorder())
+
+    async def scenario():
+        sem = asyncio.Semaphore(1)
+        async with _acquire_slot(sem, 1, "/chat/completions"):
+            task = asyncio.ensure_future(_contend(sem))
+            await asyncio.sleep(0.01)
+            waiting = int(get_queue_stats()["waiters"])
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return waiting, get_queue_stats()
+
+    waiting, after = asyncio.run(scenario())
+    assert waiting == 1                 # 取消前确实有等待者
+    assert after["waiters"] == 0        # 取消路径不把计数减回去，归因就永远少一个
+    assert after["active"] == 0

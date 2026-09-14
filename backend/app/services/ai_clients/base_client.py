@@ -318,8 +318,8 @@ async def _acquire_slot(semaphore: asyncio.Semaphore, max_concurrent: int, endpo
         raise
     _queue_stats["waiters"] -= 1
     _queue_stats["active"] += 1
-    _record_queue_wait(endpoint, time.monotonic() - started)
     try:
+        _record_queue_wait(endpoint, time.monotonic() - started)
         yield
     finally:
         _queue_stats["active"] -= 1

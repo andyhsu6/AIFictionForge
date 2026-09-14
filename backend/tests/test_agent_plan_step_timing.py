@@ -9,18 +9,19 @@ from app.services import agent_plan_runner as runner
 
 
 def test_step_timing_reports_latency_and_queue_deltas(monkeypatch):
-    runner._step_timing._last_stats = None  # 隔离前序用例留下的基线快照
-    calls = iter([
-        {"acquire_total": 3, "slow_acquires": 0, "queue_wait_max_seconds": 0.0, "waiters": 0},
-        {"acquire_total": 6, "slow_acquires": 2, "queue_wait_max_seconds": 4.5, "waiters": 1},
-    ])
-    monkeypatch.setattr(runner, "get_queue_stats", lambda: dict(next(calls)))
+    monkeypatch.setattr(runner, "get_queue_stats", lambda: {
+        "acquire_total": 6,
+        "slow_acquires": 2,
+        "queue_wait_max_seconds": 4.5,
+        "waiters": 1,
+    })
     monkeypatch.setattr(time, "monotonic", lambda: 1000.5)
 
     timing = runner._step_timing(
         step_started_at="2026-09-13T10:00:00.000",
         dispatch_t0=1000.0,
         grace_seconds=3.0,
+        stats_before={"acquire_total": 3, "slow_acquires": 0, "queue_wait_max_seconds": 2.0},
     )
     assert timing == {
         "step_started_at": "2026-09-13T10:00:00.000",
@@ -28,7 +29,7 @@ def test_step_timing_reports_latency_and_queue_deltas(monkeypatch):
         "grace_seconds": 3.0,
         "ai_calls_during_step": 3,
         "ai_slow_queue_waits_during_step": 2,
-        "ai_max_queue_wait_seconds": 4.5,
+        "ai_max_queue_wait_seconds": 2.5,   # 每步增量，不是进程累计最大值
     }
 
 

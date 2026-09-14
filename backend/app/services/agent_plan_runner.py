@@ -817,24 +817,29 @@ def _iso_now() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
 
-def _step_timing(*, step_started_at: str, dispatch_t0: float, grace_seconds: float) -> dict[str, Any]:
+def _step_timing(
+    *,
+    step_started_at: str,
+    dispatch_t0: float,
+    grace_seconds: float,
+    stats_before: dict[str, float],
+) -> dict[str, Any]:
     """单步计时：发起延迟 + 实睡 grace + 本步期间的 AI 并发排队增量。
 
-    AI 侧计数是全局累计值（Task 1），这里全部取"发起前后差值"，否则归因不到具体步骤。
+    基线由调用方在步开始时抓取并传入：AI 调用发生在子任务里，步结束时才读计数，
+    若基线也懒到步结束才抓，第 1 步的增量永远是 0。四个 AI 键全部是「步开始 -> 步结束」差值。
     """
-    before = getattr(_step_timing, "_last_stats", None)
-    if before is None:
-        before = get_queue_stats()
     now = get_queue_stats()
     timing = {
         "step_started_at": step_started_at,
         "dispatch_latency_seconds": round(time.monotonic() - dispatch_t0, 3),
         "grace_seconds": round(grace_seconds, 3),
-        "ai_calls_during_step": int(now["acquire_total"] - before["acquire_total"]),
-        "ai_slow_queue_waits_during_step": int(now["slow_acquires"] - before["slow_acquires"]),
-        "ai_max_queue_wait_seconds": round(float(now["queue_wait_max_seconds"]), 3),
+        "ai_calls_during_step": int(now["acquire_total"] - stats_before["acquire_total"]),
+        "ai_slow_queue_waits_during_step": int(now["slow_acquires"] - stats_before["slow_acquires"]),
+        "ai_max_queue_wait_seconds": round(
+            float(now["queue_wait_max_seconds"] - stats_before["queue_wait_max_seconds"]), 3
+        ),
     }
-    _step_timing._last_stats = now          # type: ignore[attr-defined]
     return timing
 
 
@@ -1052,12 +1057,14 @@ async def _run_step_loop(
         )
         step_started_at = _iso_now()
         dispatch_t0 = time.monotonic()
+        stats_before = get_queue_stats()
         try:
             recorded = await _execute_step(handle, factory, db, registry, step)
         except Exception as exc:              # noqa: BLE001 —— 失败即停
             handle.failed_at_step = index
             timing = _step_timing(
-                step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=0.0
+                step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=0.0,
+                stats_before=stats_before,
             )
             handle.step_results.append(
                 {"index": index, "action": label, "status": "failed", "error": _clip(exc, 200), **timing}
@@ -1074,7 +1081,8 @@ async def _run_step_loop(
             await asyncio.sleep(grace)   # PR-4：步间 grace
             slept_grace = time.monotonic() - grace_t0
         timing = _step_timing(
-            step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=slept_grace
+            step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=slept_grace,
+            stats_before=stats_before,
         )
         logger.info(
             "计划步骤计时: plan_task_id=%s step=%s/%s action=%s dispatch_latency=%.3fs grace=%.3fs "

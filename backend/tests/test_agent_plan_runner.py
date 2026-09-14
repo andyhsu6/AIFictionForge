@@ -936,3 +936,36 @@ async def test_step_results_expose_dispatch_latency_and_queue_fields(env):
         assert isinstance(entry["ai_slow_queue_waits_during_step"], int)
     stamps = [entry["step_started_at"] for entry in details["step_results"]]
     assert stamps == sorted(stamps), "step_started_at 必须单调不减，否则计时接错了循环"
+
+
+@pytest.mark.anyio
+async def test_first_step_queue_delta_counts_calls_during_the_step(env, monkeypatch):
+    """基线必须在步开始时抓取：否则第 1 步的模型调用增量永远是 0。"""
+    stats = {"acquire_total": 0, "slow_acquires": 0, "queue_wait_max_seconds": 0.0}
+    real_execute = ProjectAgentToolRegistry.execute
+
+    async def counting_execute(self, name, arguments):
+        result = await real_execute(self, name, arguments)
+        stats["acquire_total"] += 1        # 模拟本步期间真实发生的模型调用
+        stats["slow_acquires"] += 1
+        stats["queue_wait_max_seconds"] += 0.5
+        return result
+
+    monkeypatch.setattr(runner, "get_queue_stats", lambda: dict(stats))
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", counting_execute)
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    entries = result.plan.progress_details["step_results"]
+    assert [e["ai_calls_during_step"] for e in entries] == [1, 1, 1]
+    assert [e["ai_slow_queue_waits_during_step"] for e in entries] == [1, 1, 1]
+    assert [e["ai_max_queue_wait_seconds"] for e in entries] == [0.5, 0.5, 0.5]
+
+
+@pytest.mark.anyio
+async def test_step_records_actual_slept_grace(env, monkeypatch):
+    """grace > 0 时每步必须记录真实睡掉的秒数（不是配置默认 0）。"""
+    monkeypatch.setattr(runner, "STEP_GRACE_SECONDS", 0.05)
+    result = await start_plan(env, [plan_step(1), plan_step(2)])
+    entries = result.plan.progress_details["step_results"]
+    assert len(entries) == 2
+    for entry in entries:
+        assert 0.05 <= entry["grace_seconds"] < 0.5
