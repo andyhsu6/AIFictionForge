@@ -27,7 +27,7 @@ from app.services.task_resources import (
     AGENT_TASK_ACTION_TYPES,
     affected_resources_for_agent_action,
 )
-from app.services.project_agent_selectors import find_chapter
+from app.services.project_agent_selectors import find_chapter, merge_flat_data_fields
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -293,6 +293,9 @@ class ProjectAgentOperationalTools:
     async def preview(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in OPERATIONAL_WRITE_TOOL_NAMES:
             raise ValueError(f"未注册的运维写入工具：{name}")
+        arguments, _ = merge_flat_data_fields(
+            arguments, FLAT_DATA_FIELDS.get(name, _NO_FLAT_DATA_FIELDS)
+        )
         action = str(arguments.get("action") or "")
         if name in {"import_outlines_json", "import_characters_json", "replace_chapter_text"}:
             action = "execute"
@@ -329,6 +332,9 @@ class ProjectAgentOperationalTools:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in OPERATIONAL_WRITE_TOOL_NAMES:
             raise ValueError(f"未注册的运维写入工具：{name}")
+        arguments, _ = merge_flat_data_fields(
+            arguments, FLAT_DATA_FIELDS.get(name, _NO_FLAT_DATA_FIELDS)
+        )
         action = str(arguments.get("action") or "")
         if name in {"import_outlines_json", "import_characters_json", "replace_chapter_text"}:
             action = "execute"
@@ -1381,3 +1387,13 @@ class ProjectAgentOperationalTools:
         return await self._enqueue_stream_task(
             action="career_generate", task_input=dict(self._data(arguments))
         )
+
+
+# 扁平参数归一化白名单（issue #94），与 ProjectAgentExtendedTools 的同名表同源约束：
+# 只登记 handler 真正从 data 读取的字段，顶层 selector（style_id 等）不并入。
+_NO_FLAT_DATA_FIELDS: frozenset[str] = frozenset()
+FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
+    "manage_writing_style": frozenset(
+        ProjectAgentOperationalTools.STYLE_FIELDS | {"preset_id"}
+    ),
+}
