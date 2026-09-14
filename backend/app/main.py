@@ -33,6 +33,16 @@ async def lifespan(app: FastAPI):
     # 注册MCP状态同步服务
     register_status_sync()
 
+    # 计划执行器注册（PR-2a 的 approve-plan 未注册时返回 501；revert 这一段即回滚）
+    try:
+        from app.api.project_agent import register_plan_runner
+        from app.services.agent_plan_runner import run_plan
+
+        register_plan_runner(run_plan)
+        logger.info("plan runner registered")
+    except Exception as exc:  # noqa: BLE001 —— 注册失败不得挡住启动
+        logger.warning(f"计划执行器注册失败（批准将返回 501）: {exc}")
+
     # 安全保障：确保后台任务表存在（兼容未执行Alembic迁移的旧部署）
     try:
         from app.database import get_engine
