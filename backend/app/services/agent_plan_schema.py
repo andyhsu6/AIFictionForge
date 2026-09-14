@@ -11,6 +11,7 @@ from typing import Any
 
 from app.services.project_agent_extended_tools import (
     FLAT_DATA_FIELDS as EXTENDED_FLAT_DATA_FIELDS,
+    STRICT_DATA_FIELDS as EXTENDED_STRICT_DATA_FIELDS,
 )
 from app.services.project_agent_operational_tools import (
     FLAT_DATA_FIELDS as OPERATIONAL_FLAT_DATA_FIELDS,
@@ -142,6 +143,10 @@ _PLAN_FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
     **OPERATIONAL_FLAT_DATA_FIELDS,
 }
 _NO_FLAT_DATA_FIELDS: frozenset[str] = frozenset()
+
+_PLAN_STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = dict(
+    EXTENDED_STRICT_DATA_FIELDS
+)
 
 
 def _json_type_name(value: Any) -> str:
@@ -323,6 +328,15 @@ def _step_arguments_error(
     unknown = sorted(set(effective) - declared - moved)
     if unknown:
         return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {', '.join(unknown)}"
+    strict_data = _PLAN_STRICT_DATA_FIELDS.get(tool, {}).get(
+        str(effective.get("action") or "")
+    )
+    data = effective.get("data")
+    if strict_data is not None and isinstance(data, dict):
+        unknown_data = sorted(key for key in data if key not in strict_data)
+        if unknown_data:
+            fields = ", ".join(f"data.{key}" for key in unknown_data)
+            return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {fields}"
     canonical = {key: value for key, value in effective.items() if key in declared}
     problem = _schema_error(canonical, schema)
     if problem:

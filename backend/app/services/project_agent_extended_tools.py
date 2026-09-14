@@ -1308,3 +1308,13 @@ FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
            "reached_current_stage_at", "notes"}
     ),
 }
+
+# 严格动作的 data 字段集合（issue #112）：这些动作在运行期走 _fields(data, *_FIELDS)，
+# 集合外的键会报错；提案期必须同判，否则用户批准的计划会在执行中途失败。
+# 集合与 handler 传入 _fields 的常量同源引用；未登记的工具/动作视为宽松（fail-open）。
+STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "manage_foreshadow": {
+        "create": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
+        "update": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
+    },
+}
