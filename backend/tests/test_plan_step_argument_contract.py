@@ -14,7 +14,10 @@
 (d) 无有效字段的 update 必须报错，不得报成功、不得写库；
 (e) validate_plan 在提案期就拒绝无法执行的步骤参数（消息指名步骤/工具/字段），
     同时接受归一化后的扁平形状；
-(f) propose_plan 描述写明 manage_* + data 约定与示例。
+(f) propose_plan 描述写明 manage_* + data 约定与示例；
+(g) data 内部字段的运行期契约前移到提案期（issue #112）：update 这类严格动作
+    在提案期就拒掉运行期必败的键，宽松动作（plant/resolve/abandon/delete）保持
+    fail-open，不得误伤。
 
 夹具与断言文本全部为中性占位（AGENTS.md 脱敏硬约束）。
 """
@@ -365,4 +368,94 @@ def test_propose_plan_description_exempts_flat_parameter_manage_tools():
     assert "顶层参数" in description
     assert "create/delete/reorder" in description
     assert "update_outline" in description
+
+
+# --- (g) data 字段运行期契约前移到提案期（issue #112）-------------------------
+
+
+def test_validate_plan_rejects_unsupported_update_data_key():
+    """(g1) real-machine 缺陷：update 的 data 里带 chapter_number 运行期必败。
+
+    旧实现只在运行期由 `_manage_foreshadow_update` → `_fields(..., FORESHADOW_FIELDS)`
+    拒绝，提案期因为 data 是 additionalProperties:true 而放行，导致用户批准的计划
+    在第 1 步就失败。提案期必须先拒，消息指名步骤/工具/字段。
+    """
+    step = {
+        "id": "s1", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "update", "foreshadow_id": FORESHADOW_ID,
+            "data": {"chapter_number": 41, "target_resolve_chapter_number": 50},
+        },
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s1" in message
+    assert "manage_foreshadow" in message
+    assert "chapter_number" in message
+
+
+def test_validate_plan_accepts_supported_update_data_key():
+    """(g2) 真实字段 target_resolve_chapter_number 必须继续通过（不得误伤）。"""
+    step = {
+        "id": "s2", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "update", "foreshadow_id": FORESHADOW_ID,
+            "data": {"target_resolve_chapter_number": 50},
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"] == {"target_resolve_chapter_number": 50}
+
+
+def test_validate_plan_accepts_chapter_number_for_resolve():
+    """(g3) resolve 的 chapter_number 是合法上下文键，提案期必须通过（宽松动作）。"""
+    step = {
+        "id": "s3", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "resolve", "foreshadow_id": FORESHADOW_ID,
+            "data": {"chapter_number": 40, "resolution_text": "placeholder resolution"},
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"]["chapter_number"] == 40
+
+
+@pytest.mark.anyio
+async def test_foreshadow_update_data_contract_matches_runtime(seeded):
+    """(g4) 提案期与运行期同判：update 带 chapter_number 两边都必须拒绝。"""
+    project, db = seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    payload = {
+        "action": "update", "foreshadow_id": FORESHADOW_ID,
+        "data": {"chapter_number": 41},
+    }
+    with pytest.raises(ValueError, match="包含不支持的字段"):
+        await tools.preview("manage_foreshadow", dict(payload))
+    step = {"id": "s1", "tool": "manage_foreshadow", "arguments": dict(payload)}
+    with pytest.raises(PlanValidationError, match="chapter_number"):
+        validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                      tool_schemas=_registry_schemas())
+
+
+@pytest.mark.anyio
+async def test_foreshadow_resolve_data_is_lenient(seeded):
+    """(g5) 反向守卫：resolve 运行期容忍未知键，提案期也不得误拒（fail-open）。"""
+    project, db = seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    payload = {
+        "action": "resolve", "foreshadow_id": FORESHADOW_ID,
+        "data": {
+            "chapter_number": 40, "resolution_text": "placeholder resolution",
+            "extra_context_key": 7,
+        },
+    }
+    await tools.preview("manage_foreshadow", dict(payload))
+    step = {"id": "s1", "tool": "manage_foreshadow", "arguments": dict(payload)}
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["action"] == "resolve"
 
