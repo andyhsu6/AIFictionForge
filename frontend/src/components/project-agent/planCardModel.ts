@@ -176,3 +176,21 @@ export function shouldPollRunningPlan(
 ): boolean {
   return toolCalls.some(toolCall => isPlanToolCall(toolCall as AgentToolCall) && toolCall.status === 'executing');
 }
+
+/**
+ * 该 role=tool 消息是否属于某份计划的收尾摘要。
+ * 两个信号取或：内容里的 tool 名，或 tool_call_id 指向一个 propose_plan 记录。
+ * 不能只信 tool_call_id：provider 未回传 id 时它会回退成 AgentToolCall.id（§0 的坑）。
+ * 名字信号必须覆盖 PR-2c 实际写出的哨兵 `plan_run_summary`（agent_plan_runner.py:68/581），
+ * 否则 provider id 与 record id 不同时会漏认收尾摘要。
+ */
+export function isPlanSummaryMessage(input: {
+  tool_call_id?: string;
+  parsedToolName?: unknown;
+}, planToolCallIds: Set<string>): boolean {
+  if (typeof input.parsedToolName === 'string'
+    && (input.parsedToolName === PLAN_TOOL_NAME
+      || input.parsedToolName === 'plan_summary'
+      || input.parsedToolName === 'plan_run_summary')) return true;
+  return Boolean(input.tool_call_id && planToolCallIds.has(input.tool_call_id));
+}

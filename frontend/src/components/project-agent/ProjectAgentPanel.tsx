@@ -48,7 +48,7 @@ import type {
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
 import PlanApprovalCard from './PlanApprovalCard';
-import { decideSettleRefresh, isPlanToolCall, parsePlanPayload, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
+import { decideSettleRefresh, isPlanSummaryMessage, isPlanToolCall, parsePlanPayload, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -691,6 +691,11 @@ export default function ProjectAgentPanel({
     isPlanToolCall(toolCall) && toolCall.status === 'waiting_confirmation'
   )), [toolCalls]);
 
+  // 收尾摘要识别共用这一份集合；放进 renderToolMessage 里会让每条 tool 消息重建一次（O(n²)）。
+  const planToolCallIds = useMemo(() => new Set(
+    toolCalls.filter(isPlanToolCall).map(toolCall => toolCall.id)
+  ), [toolCalls]);
+
   // 运行中的计划：进度块 + 唯一停止入口（planTaskIdOf 读 result.entity_id，
   // 需要 approve-plan 把 {entity_id, task_type} 持久化进 AgentToolCall.result）
   const runningPlans = useMemo(() => toolCalls
@@ -785,6 +790,40 @@ export default function ProjectAgentPanel({
       }
     } catch {
       // content 不是合法 JSON 时回退为原始文本
+    }
+    const isPlanSummary = isPlanSummaryMessage(
+      { tool_call_id: item.tool_call_id, parsedToolName: toolName },
+      planToolCallIds,
+    );
+    // 收尾摘要：默认展开的纯文本块。刻意不接 MarkdownRenderer —— 这段文案由服务端
+    // 结构化摘要生成，任何 markdown/HTML 都只应当作为字面量出现（既有安全决定）。
+    if (isPlanSummary) {
+      return (
+        <div key={item.id} style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{
+              width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+              display: 'grid', placeItems: 'center',
+              background: token.colorBgContainer,
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}>
+              <AssistantLogo size={20} />
+            </div>
+            <div style={{ maxWidth: 'calc(100% - 42px)', minWidth: 0, flex: 1 }}>
+              <Text type="secondary" style={{ fontSize: 11 }}>{t('toolCall', { name: toolName })}</Text>
+              <div
+                data-testid="plan-summary-text"
+                style={{
+                  marginTop: 4, padding: 8, borderRadius: 6, fontSize: 12,
+                  background: token.colorFillQuaternary,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  color: token.colorText,
+                }}
+              >{resultText}</div>
+            </div>
+          </div>
+        </div>
+      );
     }
     return (
       <div key={item.id} style={{ marginBottom: 10 }}>
