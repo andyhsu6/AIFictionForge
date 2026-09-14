@@ -197,7 +197,19 @@ async def find_foreshadow(db: AsyncSession, project_id: str, arguments: dict[str
             Foreshadow.project_id == project_id, Foreshadow.id == foreshadow_id
         ))).scalar_one_or_none()
         if row is None:
-            raise ValueError("当前项目中未找到指定伏笔 ID")
+            # 交接文档常只保留 ID 前缀，唯一前缀应当定位到行；命中多行时必须
+            # 失败关闭（静默取第一行会改错伏笔），完整 ID 仍走上面的精确查询。
+            matches = (await db.execute(select(Foreshadow).where(
+                Foreshadow.project_id == project_id,
+                Foreshadow.id.startswith(foreshadow_id, autoescape=True),
+            ))).scalars().all()
+            if len(matches) > 1:
+                raise ValueError(
+                    f"foreshadow_id 前缀匹配到 {len(matches)} 条伏笔，请提供更完整的伏笔 ID"
+                )
+            if not matches:
+                raise ValueError("当前项目中未找到指定伏笔 ID")
+            row = matches[0]
         if title is not None and row.title != title:
             raise ValueError("foreshadow_id 与 title 指向不同伏笔")
         return row
