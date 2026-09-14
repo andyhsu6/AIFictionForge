@@ -37,7 +37,11 @@ from app.services.agent_plan_schema import (
     PlanValidationError,
     validate_plan,
 )
-from app.services.project_agent_extended_tools import ProjectAgentExtendedTools
+from app.services.project_agent_extended_tools import (
+    EXTENDED_TOOL_SPECS,
+    ProjectAgentExtendedTools,
+)
+from app.services.project_agent_operational_tools import OPERATIONAL_TOOL_SPECS
 from app.services.project_agent_selectors import find_foreshadow
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 
@@ -333,3 +337,32 @@ def test_propose_plan_description_documents_manage_data_convention():
     assert "manage_" in description
     assert '"data"' in description
     assert "arguments" in description or "示例" in description
+
+
+def test_propose_plan_description_exempts_flat_parameter_manage_tools():
+    """(f2) 扁平参数的 manage_* 工具不得被 data 约定套住（issue #110）。
+
+    real-machine 证据：模型按描述把 manage_outline 字段塞进 arguments.data，
+    被 validate_plan 拒为「不支持的字段 data」；随后又猜了不存在的 action=update
+    （manage_outline 只有 create/delete/reorder），三次重试全部失败、没有计划卡。
+
+    这里从工具 spec 反推「无 data 字段的 manage_* 工具」集合，描述必须逐个点名并
+    写明其扁平契约，避免描述与 schema 各自漂移。
+    """
+    description = PROPOSE_PLAN_TOOL_DESCRIPTION
+    advertised_flat = sorted(
+        spec["name"]
+        for spec in (*EXTENDED_TOOL_SPECS, *OPERATIONAL_TOOL_SPECS)
+        if spec["name"].startswith("manage_")
+        and spec["name"] in description
+        and "data" not in (spec.get("parameters", {}).get("properties") or {})
+    )
+    assert advertised_flat == ["manage_outline"], (
+        "描述点名且扁平参数的 manage_* 工具集合变了；data 约定需要同步调整"
+    )
+    for name in advertised_flat:
+        assert name in description
+    assert "顶层参数" in description
+    assert "create/delete/reorder" in description
+    assert "update_outline" in description
+

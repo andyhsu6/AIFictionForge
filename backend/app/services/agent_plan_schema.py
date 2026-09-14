@@ -31,7 +31,10 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     f"{', '.join(sorted(AGENT_TASK_ACTION_TYPES))}。"
     "写入类步骤要调用 manage_* 工具（manage_outline/manage_character/manage_chapter/"
     "manage_relationship/manage_organization/manage_foreshadow/manage_career/manage_writing_style），"
-    "在 arguments 里给出 action，工具字段一律放在 arguments.data 对象内，不要把 data 字段摊在顶层。"
+    "在 arguments 里给出 action。其中 manage_outline 例外：它的字段是顶层参数"
+    "（outline_id/title/content/order_index/ordered_ids），action 只有 create/delete/reorder，"
+    "要改大纲内容请改用 update_outline；除它以外的 manage_* 工具，字段一律放在 "
+    "arguments.data 对象内，不要把 data 字段摊在顶层。"
     '示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"update",'
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
