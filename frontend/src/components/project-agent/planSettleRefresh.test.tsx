@@ -296,4 +296,54 @@ describe('ProjectAgentPanel plan settlement refresh', () => {
     releaseStream();
     await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalled());
   });
+
+  it('shows exactly one approve button when a plan awaits confirmation', async () => {
+    vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+      ...detail(),
+      tool_calls: [{
+        id: 'tc-plan',
+        conversation_id: 'conv-1',
+        tool_name: 'propose_plan',
+        arguments: { objective: 'plan objective', steps: [{ id: 's1', tool: 'start_project_task', action: 'analyze_chapter', arguments: {} }] },
+        risk_level: 2,
+        requires_confirmation: true,
+        status: 'waiting_confirmation',
+        created_at: '2026-09-13T00:00:00',
+      }],
+    });
+    const view = renderPanel();
+    await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.queryAllByTestId('plan-approve')).toHaveLength(1));
+    expect(view.queryAllByTestId('plan-approval-card')).toHaveLength(1);
+  });
+
+  it('auto-approves a waiting plan through approve-plan, never the generic confirm path', async () => {
+    // Regression guard for the bug in the plan (line 1314): a propose_plan in the
+    // generic auto-approve set would approve the whole plan through confirm_tool_call
+    // without ever showing the card. Auto-approve must call approvePlan with the
+    // full step list instead.
+    localStorage.setItem('project-agent-auto-approve', 'true');
+    try {
+      vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+        ...detail(),
+        tool_calls: [{
+          id: 'tc-plan',
+          conversation_id: 'conv-1',
+          tool_name: 'propose_plan',
+          arguments: { objective: 'plan objective', steps: [{ id: 's1', tool: 'start_project_task', action: 'analyze_chapter', arguments: {} }] },
+          risk_level: 2,
+          requires_confirmation: true,
+          status: 'waiting_confirmation',
+          created_at: '2026-09-13T00:00:00',
+        }],
+      });
+      renderPanel();
+      await waitFor(() => expect(projectAgentApi.approvePlan).toHaveBeenCalledWith(
+        'proj-1', 'tc-plan', { selected_step_ids: ['s1'] },
+      ));
+      expect(projectAgentApi.confirmToolCall).not.toHaveBeenCalled();
+    } finally {
+      localStorage.removeItem('project-agent-auto-approve');
+    }
+  });
 });

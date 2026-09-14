@@ -47,7 +47,8 @@ import type {
   AgentToolCall,
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
-import { decideSettleRefresh, shouldPollRunningPlan } from './planCardModel';
+import PlanApprovalCard from './PlanApprovalCard';
+import { decideSettleRefresh, isPlanToolCall, parsePlanPayload, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -623,13 +624,38 @@ export default function ProjectAgentPanel({
   // 开启自动批准后，处理已经在历史对话中等待确认的修改。
   useEffect(() => {
     if (!autoApprove || sending || decidingId || approvingAllMessageId) return;
-    const waiting = toolCalls.filter(toolCall => (
-      toolCall.status === 'waiting_confirmation' && !autoApprovalAttemptedRef.current.has(toolCall.id)
+    const planWaiting = toolCalls.filter(toolCall => (
+      isPlanToolCall(toolCall)
+      && toolCall.status === 'waiting_confirmation'
+      && !autoApprovalAttemptedRef.current.has(toolCall.id)
     ));
-    if (!waiting.length) return;
-    waiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
-    void approveAllTools(waiting, 'auto-approve');
-  }, [approveAllTools, autoApprove, approvingAllMessageId, decidingId, sending, toolCalls]);
+    const otherWaiting = toolCalls.filter(toolCall => (
+      !isPlanToolCall(toolCall)
+      && toolCall.status === 'waiting_confirmation'
+      && !autoApprovalAttemptedRef.current.has(toolCall.id)
+    ));
+    if (planWaiting.length) {
+      planWaiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
+      void (async () => {
+        for (const toolCall of planWaiting) {
+          const payload = parsePlanPayload(toolCall);
+          if (!payload) continue;
+          try {
+            await projectAgentApi.approvePlan(projectId, toolCall.id, {
+              selected_step_ids: payload.steps.map(step => step.id),
+            });
+            message.success(t('planApprovedToast'));
+          } catch (error) {
+            message.error(t('planApproveFailed', { message: (error as Error).message }));
+          }
+        }
+        if (activeConversationId) await reloadConversation(activeConversationId);
+      })();
+    }
+    if (!otherWaiting.length) return;
+    otherWaiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
+    void approveAllTools(otherWaiting, 'auto-approve');
+  }, [activeConversationId, approveAllTools, approvingAllMessageId, autoApprove, decidingId, message, projectId, reloadConversation, sending, t, toolCalls]);
 
   const startResize = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -658,6 +684,12 @@ export default function ProjectAgentPanel({
       : [{ key: 'empty', label: t('noConversations'), disabled: true }],
     onClick: ({ key }: { key: string }) => key !== 'empty' && void loadConversation(key),
   }), [conversations, loadConversation]);
+
+  // 计划卡单点挂载：整份计划只有一个批准入口（架构 §2「一次批准整份计划」）。
+  // 判据取服务端事实（propose_plan 且仍 waiting_confirmation），刷新与轮询后都成立。
+  const awaitingPlanCalls = useMemo(() => toolCalls.filter(toolCall => (
+    isPlanToolCall(toolCall) && toolCall.status === 'waiting_confirmation'
+  )), [toolCalls]);
 
   const renderStepIcon = (step: AgentExecutionStep) => {
     if (step.status === 'running') return <LoadingOutlined spin style={{ color: token.colorPrimary }} />;
@@ -787,6 +819,7 @@ export default function ProjectAgentPanel({
     const processKey = `process-${messageId}`;
     const waitingToolCalls = toolCalls.filter(toolCall => (
       toolCall.status === 'waiting_confirmation'
+      && !isPlanToolCall(toolCall)
       && ordered.some(step => step.tool_call_id === toolCall.id)
     ));
     const statusTag = running
@@ -984,6 +1017,22 @@ export default function ProjectAgentPanel({
         })}
         <div ref={endRef} />
       </div>
+
+      {awaitingPlanCalls.length > 0 && (
+        <div style={{ padding: '0 12px 10px' }}>
+          {awaitingPlanCalls.map(toolCall => (
+            <PlanApprovalCard
+              key={toolCall.id}
+              projectId={projectId}
+              toolCall={toolCall}
+              onDecided={() => {
+                if (activeConversationId) void reloadConversation(activeConversationId);
+                void loadConversations();
+              }}
+            />
+          ))}
+        </div>
+      )}
 
       <div style={{ padding: 10, borderTop: `1px solid ${token.colorBorderSecondary}`, flexShrink: 0 }}>
         <TextArea

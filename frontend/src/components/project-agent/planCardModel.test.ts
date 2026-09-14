@@ -98,6 +98,12 @@ describe('parsePlanPayload', () => {
       },
     }))).toBeNull();
   });
+
+  it('caps steps at the approval gate so the card never offers an unapprovable plan', () => {
+    const steps = (count: number) => Array.from({ length: count }, (_, index) => step(`s${index + 1}`, 'generate_chapter'));
+    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(12) } }))?.steps).toHaveLength(12);
+    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(13) } }))).toBeNull();
+  });
 });
 
 describe('planTaskIdOf', () => {
