@@ -71,9 +71,18 @@ async def seed_project_and_chapter(db, *, content="alpha beta gamma delta"):
 
 
 def make_service(db) -> ProjectAgentService:
+    # PR-0c：`stream_chat` 的历史预算要向 AIService 实发窗口换算，桩必须提供
+    # `resolve_effective_window_tokens`（同 tests/test_agent_prompt_budget.py 的桩；
+    # 本文件锁的是回合内启动链路，给一个 1M 窗口的实值即可，裁剪不参与断言）。
+    async def resolve_effective_window_tokens(model=None, provider=None) -> int:
+        return 1_000_000
+
     return ProjectAgentService(
         db=db,
-        ai_service=SimpleNamespace(default_model="test-model"),
+        ai_service=SimpleNamespace(
+            default_model="test-model",
+            resolve_effective_window_tokens=resolve_effective_window_tokens,
+        ),
         project=Project(id="proj-1", user_id="test", title="测试项目"),
         user_id="test",
     )
