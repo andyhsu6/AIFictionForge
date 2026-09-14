@@ -5,7 +5,6 @@
 """
 import os
 import uuid
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text
@@ -26,6 +25,7 @@ from app.services.project_agent_service import (
     CONFIRMATION_STEP_CONTENT,
     ProjectAgentService,
 )
+from support.agent_stubs import AgentAIServiceStub
 
 
 @pytest.fixture
@@ -71,18 +71,13 @@ async def seed_project_and_chapter(db, *, content="alpha beta gamma delta"):
 
 
 def make_service(db) -> ProjectAgentService:
-    # PR-0c：`stream_chat` 的历史预算要向 AIService 实发窗口换算，桩必须提供
-    # `resolve_effective_window_tokens`（同 tests/test_agent_prompt_budget.py 的桩；
-    # 本文件锁的是回合内启动链路，给一个 1M 窗口的实值即可，裁剪不参与断言）。
-    async def resolve_effective_window_tokens(model=None, provider=None) -> int:
-        return 1_000_000
-
+    # 预算窗口面由共享桩保证（tests/support/agent_stubs.py）：裸替身缺
+    # `resolve_effective_window_tokens` 时，`stream_chat` 一旦走到预算路径就
+    # 全体 AttributeError（#86/#87 的教训）。本文件锁的是回合内启动链路，
+    # 1M 窗口换算到预算上限，裁剪不参与断言。
     return ProjectAgentService(
         db=db,
-        ai_service=SimpleNamespace(
-            default_model="test-model",
-            resolve_effective_window_tokens=resolve_effective_window_tokens,
-        ),
+        ai_service=AgentAIServiceStub(default_model="test-model"),
         project=Project(id="proj-1", user_id="test", title="测试项目"),
         user_id="test",
     )

@@ -16,6 +16,7 @@ from app.models.project_agent import AgentConversation, AgentToolCall
 from app.services import agent_plan_dispatch as dispatch
 from app.services import agent_plan_guardrail as guardrail
 from app.services.project_agent_service import ProjectAgentService
+from support.agent_stubs import AgentAIServiceStub
 
 PROJECT_ID = "p-1"
 USER_ID = "u-1"
@@ -56,7 +57,7 @@ async def session_factory():
 def make_service(db, *, project_id="proj-1", user_id="test") -> ProjectAgentService:
     """构造最小 ProjectAgentService（照抄 test_agent_tool_persistence.py 的夹具）。"""
     project = Project(id=project_id, user_id=user_id, title="测试项目")
-    ai_service = SimpleNamespace(default_model="test-model")
+    ai_service = AgentAIServiceStub(default_model="test-model")
     return ProjectAgentService(
         db=db, ai_service=ai_service, project=project, user_id=user_id
     )
@@ -156,7 +157,7 @@ async def test_new_user_turn_prompt_contains_fact_block(session_factory):
     """架构 §7①：计划跑数十分钟期间用户再发消息，新回合必须看得见「有运行中计划」。"""
     collected: list[str] = []
 
-    class FakeAIService:
+    class FakeAIService(AgentAIServiceStub):
         default_model = "unit-test-model"
 
         async def generate_text(self, **kwargs):
@@ -333,7 +334,7 @@ async def test_auto_approve_path_still_hits_the_guardrail(session_factory, open_
             await db.commit()
             svc = make_service(db, project_id=PROJECT_ID, user_id=USER_ID)
 
-            class FakeAIService:
+            class FakeAIService(AgentAIServiceStub):
                 default_model = "unit-test-model"
                 api_provider = "openai"
 

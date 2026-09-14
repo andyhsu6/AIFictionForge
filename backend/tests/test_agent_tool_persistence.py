@@ -8,7 +8,6 @@
 import json
 import os
 import uuid
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.project_agent_service import ProjectAgentService
 from app.services import agent_prompt_budget as apb
+from support.agent_stubs import AgentAIServiceStub
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +55,7 @@ async def db_session():
 def make_service(db, *, project_id="proj-1", user_id="test") -> ProjectAgentService:
     """构造最小 ProjectAgentService：registry 构造只存引用，不做 DB 查询。"""
     project = Project(id=project_id, user_id=user_id, title="测试项目")
-    ai_service = SimpleNamespace(
+    ai_service = AgentAIServiceStub(
         default_model="test-model",
         api_provider="openai",
         base_url="https://gw.example/v1",
