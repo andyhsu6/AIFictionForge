@@ -90,6 +90,15 @@ def agent_system_prompt(
 CONFIRMATION_STEP_CONTENT = "已生成修改预览，等待用户确认。"
 # 计划卡与差异确认卡的区别：计划没有 preview，收口文案也不得提到"下方差异"。
 PLAN_APPROVAL_STEP_CONTENT = "已生成执行计划，等待你确认后开始逐步执行。"
+# 规划回合的显式指令：plan_mode=True 时由 `_build_prompt` 追加到 prompt 末尾。
+# 只把 propose_plan 挂进工具集而不告知模型何时该用它 ⇒ 具体多步请求（多章分析后总结）
+# 会被模型当成直接可执行任务，落到 start_project_task 的逐工具确认，计划卡永不出现。
+# 非规划回合（plan_mode=False）不得包含本段：prompt 必须与 PR-1 逐字节一致。
+PLAN_MODE_INSTRUCTION = (
+    "本回合是规划回合：用户的请求若需要多步完成（多个章节、批量操作、先分析再总结等），"
+    "必须先调用 propose_plan 提交完整的步骤清单并等待用户确认，不得直接执行这些步骤；"
+    "只有单步、只读或闲聊类请求才可以直接回答或调用工具。"
+)
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -425,7 +434,7 @@ class ProjectAgentService:
             yield {"type": "step_start", "data": self._step_data(thought)}
             prompt = self._build_prompt(
                 history, page_context, force_answer=force_answer,
-                plan_run_state=plan_run_state,
+                plan_run_state=plan_run_state, plan_mode=plan_mode,
             )
             closing = plan_mode and not plan_produced and self._plan_closing_round(
                 round_index=round_index, plan_attempts=plan_attempts
@@ -1381,6 +1390,7 @@ class ProjectAgentService:
         page_context: dict[str, Any],
         force_answer: bool = False,
         plan_run_state: dict[str, Any] | None = None,
+        plan_mode: bool = False,
     ) -> str:
         history_parts: list[str] = []
         history_length = 0
@@ -1418,6 +1428,10 @@ class ProjectAgentService:
             sections.append("已达到工具轮数上限。请根据现有信息直接回答，不要再调用工具。")
         else:
             sections.append("请处理最后一条用户消息；需要项目数据时调用工具。")
+        if plan_mode and not force_answer:
+            # force_answer 轮不带工具且已注入「不要再调用工具」：规划指令在那里不可执行，
+            # 只会与既有指令互相矛盾，因此只在常规规划轮追加。
+            sections.append(PLAN_MODE_INSTRUCTION)
         return "\n\n".join(sections)
 
     @staticmethod

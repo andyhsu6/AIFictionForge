@@ -26,7 +26,10 @@ from app.services.agent_plan_schema import (
     plannable_tool_names,
     validate_plan,
 )
-from app.services.project_agent_service import ProjectAgentService
+from app.services.project_agent_service import (
+    PLAN_MODE_INSTRUCTION,
+    ProjectAgentService,
+)
 
 
 ALLOWED = {"get_project_overview", "list_outlines", "start_project_task"}
@@ -411,6 +414,41 @@ async def test_non_planning_round_never_offers_propose_plan(env):
         names = {item["function"]["name"] for item in (call["tools"] or [])}
         assert names, "非规划回合也必须带项目工具"
         assert PROPOSE_PLAN_TOOL_NAME not in names
+
+
+def test_plan_mode_instruction_is_added_only_when_planning():
+    """规划回合必须在 prompt 里明说"先 propose_plan"；非规划回合逐字节回 PR-1。
+
+    只把 propose_plan 挂进工具集不构成指令：具体多步请求（多章分析后总结）下模型
+    照样直接调 start_project_task 并停在逐工具确认，计划卡永不出现（5/5 实测）。
+    """
+    svc = _bare_service()
+    svc.project = SimpleNamespace(id="p-plan", title="neutral project")
+    history = [
+        AgentMessage(conversation_id="c1", role="user", content="plan a multi-step request")
+    ]
+    page_context = {"route": "/project/p-plan"}
+
+    default_prompt = svc._build_prompt(history, page_context)
+    off_prompt = svc._build_prompt(history, page_context, plan_mode=False)
+    on_prompt = svc._build_prompt(history, page_context, plan_mode=True)
+
+    assert off_prompt == default_prompt, "plan_mode=False 必须与 PR-1 逐字节一致"
+    assert PLAN_MODE_INSTRUCTION not in off_prompt
+    assert PLAN_MODE_INSTRUCTION in on_prompt
+    assert on_prompt.startswith(off_prompt), "规划指令只能追加，不得改写既有段落"
+
+
+@pytest.mark.anyio
+async def test_planning_turn_threads_plan_mode_into_prompt(env):
+    """调用点必须把 plan_mode 穿到 _build_prompt：只测 _build_prompt 挡不住忘传。"""
+    plan_calls: list[dict] = []
+    await run_turn(env, [answer("收到。")], plan_mode=True, calls=plan_calls)
+    assert plan_calls and PLAN_MODE_INSTRUCTION in plan_calls[0]["prompt"]
+
+    off_calls: list[dict] = []
+    await run_turn(env, [answer("收到。")], plan_mode=False, calls=off_calls)
+    assert off_calls and PLAN_MODE_INSTRUCTION not in off_calls[0]["prompt"]
 
 
 @pytest.mark.anyio
