@@ -74,6 +74,9 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
           eventBus.emit(EventNames.BACKGROUND_TASK_SETTLED, {
             projectId: task.project_id,
             taskId: task.id,
+            // PR-3：agent_plan 的完成事件必须能归属到会话，否则面板无法定向刷新
+            conversationId: task.conversation_id ?? null,
+            taskType: task.task_type,
             resources: task.affected_resources || [],
             task,
           });

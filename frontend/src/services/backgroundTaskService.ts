@@ -60,6 +60,7 @@ export interface TaskStatus {
   id: string;
   task_type: string;
   project_id: string;
+  conversation_id?: string | null;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number; // 0-100
   status_message: string | null;
