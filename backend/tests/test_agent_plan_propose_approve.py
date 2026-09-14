@@ -428,6 +428,18 @@ def tool_call(name: str, arguments: dict, call_id: str = "call-pr2a-1") -> dict:
     }
 
 
+def multi_tool_call(calls: list[tuple[str, dict]]) -> dict:
+    """一轮里并发返回多个工具调用（issue #108 的真实形状：收口轮一次发 N 个读工具）。"""
+    return {
+        "content": "我再多读几处。",
+        "tool_calls": [
+            {"id": f"call-burst-{index}", "function": {"name": name, "arguments": args}}
+            for index, (name, args) in enumerate(calls)
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+
 def answer(content: str) -> dict:
     return {"content": content, "tool_calls": [], "usage": {}}
 
@@ -1119,6 +1131,125 @@ async def test_plan_produced_on_first_closing_round(env):
         PROPOSE_PLAN_TOOL_NAME
     ]
     assert rows[3].status == "waiting_confirmation"
+
+
+# --------------------------------------------------------------------------- #
+# issue #108：收口轮成串违规只能烧掉一次重试预算
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.anyio
+async def test_closing_round_burst_of_reads_costs_one_attempt_and_plan_still_lands(env):
+    """issue #108：收口轮一次发多个读工具，只记一次计划尝试，重试轮仍能产出计划。
+
+    真实发生（第二批真机清理）：读轮次用光后，收口轮一次返回 5 个读工具调用，全部被拦；
+    每个被拦调用各记一次 plan_attempts ⇒ 第 3 个就把 PLAN_MAX_RETRIES(2) 烧光，回合在
+    tool 循环里直接走耗尽收口，只回一句「需要更多信息」，永不产出计划。
+
+    预算按"轮"给 ⇒ 成串违规只记一次，模型拿到下一次收口轮并提交计划。
+    去掉去重（允许每调用各记一次）本用例必红。
+    """
+    calls: list[dict] = []
+    executed: list[str] = []
+    real_execute = env.service.registry.execute
+
+    async def spy_execute(name, arguments=None):
+        executed.append(name)
+        return await real_execute(name, arguments)
+
+    env.service.registry.execute = spy_execute
+
+    burst = [("list_outlines", {}) for _ in range(5)]
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            multi_tool_call(burst),
+            _plan_response(call_id="call-plan"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    # 成串违规一个都不执行；只有前面 3 个只读轮真的执行了
+    assert executed == ["list_outlines"] * 3
+    rows = await read_tool_calls(env)
+    blocked = [
+        row for row in rows
+        if row.tool_name == "list_outlines" and row.executed_at is None
+    ]
+    assert len(blocked) == 5, "收口轮的 5 个读工具调用必须全部拦下（不执行）"
+    assert all(row.status == "failed" for row in blocked)
+
+    # 只烧掉一次尝试 ⇒ 5 次模型调用（3 只读 + 1 成串违规 + 1 提交计划），计划落地
+    assert len(calls) == 5, f"成串违规后重试预算被烧光：实际 {len(calls)} 次模型调用"
+    final = events[-1]
+    assert final["type"] == "result" and final["data"]["status"] == "waiting_confirmation"
+    plan_rows = [row for row in rows if row.tool_name == PROPOSE_PLAN_TOOL_NAME]
+    assert [row.status for row in plan_rows] == ["waiting_confirmation"]
+
+
+@pytest.mark.anyio
+async def test_closing_violation_correction_requires_a_plan_now(env):
+    """issue #108：收口轮被拦后的纠正消息必须要求立刻提交计划（信息缺口写进步骤 note）。
+
+    真实场景里模型在收口轮被拦后会回一句「需要更多信息」；旧纠正文案保留了
+    「或明确说明你还缺少什么信息」的出口。新文案去掉该出口、点名 propose_plan 与
+    note。改回旧文案本用例必红。
+    """
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            tool_call("get_project_overview", {}, call_id="call-violation"),
+            _plan_response(call_id="call-plan"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    corrections = await read_messages(env, "system")
+    assert corrections, "收口轮违规必须回喂一条服务端纠正消息"
+    text = corrections[0].content
+    assert PROPOSE_PLAN_TOOL_NAME in text
+    assert "note" in text, "信息不足时的不确定项必须要求写进步骤 note"
+    assert "必须" in text
+
+
+@pytest.mark.anyio
+async def test_plan_force_answer_round_without_plan_finishes_readably(env, monkeypatch):
+    """issue #108 回归：计划模式 + 强制回答轮仍无计划 ⇒ 一致收尾，不得回传模型原文。"""
+    monkeypatch.setattr(
+        ProjectAgentService, "_plan_closing_round", lambda self, **kwargs: False
+    )
+    calls: list[dict] = []
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            tool_call("list_outlines", {}, call_id="c4"),
+            tool_call("list_outlines", {}, call_id="c5"),
+            tool_call("list_outlines", {}, call_id="c6"),
+            answer("我需要更多信息，暂时无法给出计划。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert "tools" not in calls[-1], "最后一轮必须是强制回答轮（无工具、走流式出口）"
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals, "必须以可读文案收口"
+    assert "计划" in finals[-1]["content"]
+    assert "我需要更多信息" not in finals[-1]["content"], "模型原文不得冒充最终回答"
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+
 
 
 @pytest.mark.anyio

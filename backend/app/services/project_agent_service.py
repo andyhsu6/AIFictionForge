@@ -471,6 +471,11 @@ class ProjectAgentService:
         max_rounds = self.MAX_TOOL_ROUNDS + plan_extra
         for round_index in range(max_rounds + 1):
             force_answer = round_index >= max_rounds
+            # issue #108：一轮最多记一次计划尝试。收口轮里成串的违规调用（实测模型一次
+            # 发 5 个读工具）不得一次烧光 PLAN_MAX_RETRIES —— 预算是按"轮"给的，不是
+            # 按"调用"给的。`attempts_before_round` 即本轮记账水位：(b) 在校验处已计数的
+            # 轮，同轮后续调用与尾部的 (c) 都不得再计第二遍。
+            attempts_before_round = plan_attempts
             thought = await self._create_step(
                 conversation,
                 user_message,
@@ -570,7 +575,8 @@ class ProjectAgentService:
                     # 「规划回合静默失败」，必须计数重问，耗尽后以可读文案收口。
                     # force_answer 轮的原文同样不得当普通回答返回（issue #96 P1）；
                     # 它必然满足 closing，这里显式要求以钉住该语义。
-                    plan_attempts += 1
+                    if plan_attempts == attempts_before_round:
+                        plan_attempts += 1
                     plan_correction = plan_correction or "本轮没有提交任何计划"
                     exhausted = plan_attempts > self.PLAN_MAX_RETRIES
                     await self._update_step(
@@ -650,8 +656,6 @@ class ProjectAgentService:
             )
 
             proposed: list[AgentToolCall] = []
-            # 一轮只记一次账：(b) 在校验处已计数的轮，尾部的 (c) 不得再计一遍。
-            attempts_before_round = plan_attempts
             for raw_call in tool_calls:
                 try:
                     name, arguments = self._parse_tool_call(raw_call)
@@ -739,7 +743,8 @@ class ProjectAgentService:
                     # 不认本轮工具集 ⇒ 模型在收口轮调只读工具会被真的执行。收口轮唯一
                     # 合法动作是提交计划：其余调用一律不执行，按既有 plan_attempts
                     # 路径计数 + 纠正 + 有界重试，耗尽即走可读收口。
-                    plan_attempts += 1
+                    if plan_attempts == attempts_before_round:
+                        plan_attempts += 1
                     violation = (
                         f"收口轮不允许调用工具“{name}”；本轮唯一允许的动作是调用 "
                         f"{PROPOSE_PLAN_TOOL_NAME} 提交执行计划，其他工具本轮一律不执行。"
@@ -792,7 +797,8 @@ class ProjectAgentService:
                         )
                     except PlanValidationError as exc:
                         # (b) 形态：plan_attempts / plan_correction 由下面的有界重试消费。
-                        plan_attempts += 1
+                        if plan_attempts == attempts_before_round:
+                            plan_attempts += 1
                         plan_correction = str(exc)
                         record.status = "failed"
                         record.error_message = str(exc)
@@ -1078,7 +1084,8 @@ class ProjectAgentService:
             ):
                 # 形态 (c)：收口轮调的不是计划工具（收窄与 tool_choice 都不生效的
                 # provider，如 gemini）。同样计数，耗尽即可读收口。
-                plan_attempts += 1
+                if plan_attempts == attempts_before_round:
+                    plan_attempts += 1
                 plan_correction = plan_correction or "本轮调用的不是计划工具"
                 if plan_attempts > self.PLAN_MAX_RETRIES:
                     async for event in self._finish_without_plan(
@@ -1171,8 +1178,9 @@ class ProjectAgentService:
             content=(
                 "（系统提示）你上一轮没有给出可执行的计划。"
                 f"问题：{reason[:500]}。"
-                "请只调用 propose_plan 工具提交一份符合 schema 的计划，"
-                "或明确说明你还缺少什么信息。"
+                "本轮唯一允许的动作是调用 propose_plan，不要再用任何读取工具。"
+                "必须现在提交计划：若仍有信息缺口，就把已经确定的部分拆成可执行步骤，"
+                "在对应步骤的 note 里写清不确定项，然后调用 propose_plan。"
             ),
         ))
         conversation.last_message_at = datetime.now()
