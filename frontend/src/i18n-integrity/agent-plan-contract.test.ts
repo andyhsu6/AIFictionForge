@@ -50,6 +50,11 @@ describe('plan panel wiring contract', () => {
   it('routes the stop door through the plan-specific cancel endpoint', () => {
     expect(panelSource).toContain('projectAgentApi.cancelPlan');
   });
+
+  it('consumes the result SSE event as authoritative conversation attribution', () => {
+    expect(panelSource).toContain('onResult:');
+    expect(panelSource).toContain('resultConversationIdRef');
+  });
 });
 
 describe('agent plan api contract', () => {

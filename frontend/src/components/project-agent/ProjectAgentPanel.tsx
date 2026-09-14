@@ -271,6 +271,7 @@ export default function ProjectAgentPanel({
   const reloadQueuedRef = useRef(false);
   const pendingSettleConversationRef = useRef<string | null>(null);
   const activeConversationIdRef = useRef<string | undefined>(undefined);
+  const resultConversationIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     sendingRef.current = sending;
@@ -379,6 +380,12 @@ export default function ProjectAgentPanel({
     setExecutionSteps([]);
     setExpandedProcessIds(new Set());
     autoApprovalAttemptedRef.current.clear();
+    // 切项目 = 换归属：旧会话的收尾标记与在途去重状态必须一起作废，
+    // 否则上一项目的 SETTLED 事件会用旧 projectId 去 reload（跨项目串数据）。
+    pendingSettleConversationRef.current = null;
+    reloadQueuedRef.current = false;
+    resultConversationIdRef.current = undefined;
+    activeConversationIdRef.current = undefined;
     void loadConversations(true);
     return () => abortRef.current?.abort();
   }, [loadConversations, projectId]);
@@ -440,9 +447,9 @@ export default function ProjectAgentPanel({
     }
   };
 
-  const send = async () => {
+  const send = useCallback(async () => {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sendingRef.current) return;
     setInput('');
     setSending(true);
     // 同步置位：settle 与本轮流式同 tick 到达时也必须判为 defer，不能等 effect 回填 ref。
@@ -519,10 +526,27 @@ export default function ProjectAgentPanel({
           ]);
           notifyToolResources(data.tool_call, data.resources || []);
         },
+        onResult: data => {
+          // SSE 的权威收口：记下真正归属的会话，收尾后按它 reload，
+          // 顺带让 Task 4 的 defer 队列有一个明确目标。
+          if (data?.conversation_id) {
+            streamConversationId = data.conversation_id;
+            setActiveConversationId(data.conversation_id);
+          }
+          if (data?.conversation_id) resultConversationIdRef.current = data.conversation_id;
+        },
         onError: error => message.error(error),
       }, controller.signal);
       await loadConversations();
-      if (streamConversationId) await loadConversation(streamConversationId);
+      const targetConversation = resultConversationIdRef.current || streamConversationId;
+      resultConversationIdRef.current = undefined;
+      if (targetConversation) await reloadConversation(targetConversation);
+      // 流式期间被 defer 的计划收尾：此刻一定补一次，避免"要等下一次轮询才见收尾"
+      const pendingSettle = pendingSettleConversationRef.current;
+      if (pendingSettle) {
+        pendingSettleConversationRef.current = null;
+        await reloadConversation(pendingSettle);
+      }
     } catch (error) {
       const aborted = (error as Error).name === 'AbortError';
       setExecutionSteps(items => items.map(step => (
@@ -565,7 +589,7 @@ export default function ProjectAgentPanel({
       sendingRef.current = false;
       abortRef.current = undefined;
     }
-  };
+  }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, projectId, reloadConversation, t]);
 
   const decideTool = async (toolCall: AgentToolCall, confirm: boolean) => {
     setDecidingId(toolCall.id);
@@ -613,7 +637,7 @@ export default function ProjectAgentPanel({
     } finally {
       setApprovingAllMessageId(undefined);
     }
-  }, [activeConversationId, approvingAllMessageId, decidingId, loadConversation, loadConversations, notifyToolResources, projectId]);
+  }, [activeConversationId, approvingAllMessageId, decidingId, loadConversation, loadConversations, message, notifyToolResources, projectId, t]);
 
   const toggleAutoApprove = (enabled: boolean) => {
     setAutoApprove(enabled);
@@ -683,7 +707,7 @@ export default function ProjectAgentPanel({
       ? conversations.map(item => ({ key: item.id, label: item.title }))
       : [{ key: 'empty', label: t('noConversations'), disabled: true }],
     onClick: ({ key }: { key: string }) => key !== 'empty' && void loadConversation(key),
-  }), [conversations, loadConversation]);
+  }), [conversations, loadConversation, t]);
 
   // 计划卡单点挂载：整份计划只有一个批准入口（架构 §2「一次批准整份计划」）。
   // 判据取服务端事实（propose_plan 且仍 waiting_confirmation），刷新与轮询后都成立。
@@ -1162,11 +1186,19 @@ export default function ProjectAgentPanel({
           </Text>
           <Switch size="small" checked={autoApprove} onChange={toggleAutoApprove} />
         </Space>
-          {sending ? (
-            <Button size="small" icon={<StopOutlined />} onClick={() => abortRef.current?.abort()}>{t('stop')}</Button>
-          ) : (
-            <Button type="primary" size="small" icon={<SendOutlined />} disabled={!input.trim()} onClick={() => void send()}>{t('send')}</Button>
-          )}
+          <Space size={6}>
+            {sending && (
+              <Button size="small" icon={<StopOutlined />} onClick={() => abortRef.current?.abort()}>{t('stop')}</Button>
+            )}
+            <Button
+              data-testid="composer-send"
+              type="primary"
+              size="small"
+              icon={<SendOutlined />}
+              disabled={sending || !input.trim()}
+              onClick={() => void send()}
+            >{t('send')}</Button>
+          </Space>
         </div>
       </div>
     </div>
