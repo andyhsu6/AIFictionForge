@@ -308,7 +308,8 @@ async def _acquire_slot(semaphore: asyncio.Semaphore, max_concurrent: int, endpo
     刻意不读 asyncio.Semaphore 的私有属性（_value/_waiters 属 CPython 实现细节，
     版本会变），改为自持 waiters/active 计数。获取失败（取消）也必须把 waiters 减回去。
     """
-    _queue_stats["max_concurrent_requests"] = max_concurrent
+    if not _queue_stats["max_concurrent_requests"]:
+        _queue_stats["max_concurrent_requests"] = max_concurrent
     _queue_stats["waiters"] += 1
     started = time.monotonic()
     try:

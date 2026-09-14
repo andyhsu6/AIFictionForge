@@ -969,3 +969,46 @@ async def test_step_records_actual_slept_grace(env, monkeypatch):
     assert len(entries) == 2
     for entry in entries:
         assert 0.05 <= entry["grace_seconds"] < 0.5
+
+
+@pytest.mark.anyio
+async def test_mid_run_stats_reset_cannot_produce_negative_deltas(env, monkeypatch):
+    """reset_queue_stats() 落在步间时，后续步骤必须从新的零基线起算，不得为负。"""
+    from app.services.ai_clients import base_client
+
+    incremented = {"done": False}
+    real_execute = ProjectAgentToolRegistry.execute
+    real_insert = runner._insert_step
+
+    async def counting_execute(self, name, arguments):
+        result = await real_execute(self, name, arguments)
+        if not incremented["done"]:
+            incremented["done"] = True
+            for _ in range(20):
+                base_client._record_queue_wait("/chat/completions", 0.0)
+            for _ in range(5):
+                base_client._record_queue_wait("/chat/completions", 3.0)
+        return result
+
+    async def resetting_insert_step(*args, **kwargs):
+        if kwargs.get("sequence") == 2:
+            base_client.reset_queue_stats()
+        return await real_insert(*args, **kwargs)
+
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", counting_execute)
+    monkeypatch.setattr(runner, "_insert_step", resetting_insert_step)
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    entries = result.plan.progress_details["step_results"]
+    assert len(entries) == 3
+    assert all(e["ai_calls_during_step"] >= 0 for e in entries), [
+        e["ai_calls_during_step"] for e in entries
+    ]
+    assert all(e["ai_slow_queue_waits_during_step"] >= 0 for e in entries), [
+        e["ai_slow_queue_waits_during_step"] for e in entries
+    ]
+    assert all(e["ai_max_queue_wait_seconds"] >= 0 for e in entries), [
+        e["ai_max_queue_wait_seconds"] for e in entries
+    ]
+    assert entries[0]["ai_calls_during_step"] == 25
+    assert entries[0]["ai_slow_queue_waits_during_step"] == 5
+    assert entries[1]["ai_calls_during_step"] == 0

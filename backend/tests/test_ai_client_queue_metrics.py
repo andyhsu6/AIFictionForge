@@ -117,12 +117,19 @@ def test_stats_failure_releases_slot_and_permit(monkeypatch):
             pass
         else:
             raise AssertionError("_record_queue_wait 异常必须传播")
-        return get_queue_stats(), sem.locked()
+        reacquired = False
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=0.25)
+            reacquired = True
+            sem.release()
+        except asyncio.TimeoutError:
+            pass
+        return get_queue_stats(), reacquired
 
-    stats, locked = asyncio.run(scenario())
+    stats, reacquired = asyncio.run(scenario())
     assert stats["active"] == 0     # 计数路径抛错也不许泄漏 active
     assert stats["waiters"] == 0
-    assert locked is False          # 许可必须已释放
+    assert reacquired is True       # 许可必须已释放，后续请求能立刻拿到
 
 
 def test_cancelled_waiter_releases_waiters_counter(monkeypatch):
