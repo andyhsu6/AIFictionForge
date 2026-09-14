@@ -556,32 +556,37 @@ async def test_planning_turn_threads_plan_mode_into_prompt(env):
 
 @pytest.mark.anyio
 async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
-    """手段 ①+② 的回合级落地：预算耗尽那一轮只给 propose_plan 且 tool_choice=required。"""
+    """手段 ①+② 的回合级落地：预算耗尽那一轮只给 propose_plan 且 tool_choice=required。
+
+    收口轮起点（issue #96 预算 3→5）= min(MAX_TOOL_ROUNDS-1, PLAN_ROUND_BUDGET-1) = 3，
+    因此前 3 轮是普通规划轮，第 4 次调用（index 3）才是收口轮。
+    """
     calls: list[dict] = []
     await run_turn(
         env,
         [
             tool_call("list_outlines", {}, call_id="c1"),
             tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
             answer("收口轮直接回答了（缺陷形态）。"),
         ],
         plan_mode=True,
         calls=calls,
     )
 
-    # Task 4 之后收口轮没产出计划会继续重问，所以总轮数不再恒为 3；
-    # 本用例钉的是**前三轮的工具集与 tool_choice 形状**，不是总轮数。
-    assert len(calls) >= 3
+    # Task 4 之后收口轮没产出计划会继续重问，所以总轮数不再恒为 4；
+    # 本用例钉的是**收口轮起点与形状**，不是总轮数。
+    assert len(calls) >= 4
     ordered = [
-        [item["function"]["name"] for item in (call["tools"] or [])] for call in calls[:2]
+        [item["function"]["name"] for item in (call["tools"] or [])] for call in calls[:3]
     ]
     assert all(names and names[-1] == PROPOSE_PLAN_TOOL_NAME for names in ordered)
     assert all(len(names) > 1 for names in ordered)   # 普通规划轮仍然保留只读工具
-    assert [call["tool_choice"] for call in calls[:2]] == ["auto", "auto"]
-    assert [item["function"]["name"] for item in calls[2]["tools"]] == [
+    assert [call["tool_choice"] for call in calls[:3]] == ["auto", "auto", "auto"]
+    assert [item["function"]["name"] for item in calls[3]["tools"]] == [
         PROPOSE_PLAN_TOOL_NAME
     ]
-    assert calls[2]["tool_choice"] == "required"
+    assert calls[3]["tool_choice"] == "required"
 
 
 # --------------------------------------------------------------------------- #
@@ -593,11 +598,11 @@ async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
 async def _closing_turn_calls(
     env, *, model: str, base_url: str, plan_mode: bool = True
 ) -> list[dict]:
-    """驱动到第 3 次模型调用（规划模式的收口轮）并返回全部捕获的 kwargs。
+    """驱动到第 4 次模型调用（规划模式的收口轮，index 3）并返回全部捕获的 kwargs。
 
     收口轮不产出计划 ⇒ 走 (a) 形态有界重试；与
     test_closing_round_offers_only_propose_plan_and_requires_it 用同一组响应，
-    因此第 3 次调用形状可直接比较。
+    因此收口轮调用形状可直接比较。
     """
     env.service.ai_service.default_model = model
     env.service.ai_service.base_url = base_url
@@ -607,6 +612,7 @@ async def _closing_turn_calls(
         [
             tool_call("list_outlines", {}, call_id="c1"),
             tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
             answer("收口轮直接回答了（缺陷形态）。"),
         ],
         plan_mode=plan_mode,
@@ -626,7 +632,7 @@ async def test_thinking_model_closing_round_uses_auto_tool_choice(env):
         env, model="deepseek-v4-flash", base_url="https://api.commandcode.ai/v1"
     )
 
-    closing = calls[2]
+    closing = calls[3]
     assert [item["function"]["name"] for item in closing["tools"]] == [
         PROPOSE_PLAN_TOOL_NAME
     ]
@@ -664,7 +670,7 @@ async def test_non_thinking_model_closing_round_still_requires_tool_choice(env):
     calls = await _closing_turn_calls(
         env, model="gpt-4o", base_url="https://api.openai.com/v1"
     )
-    assert calls[2]["tool_choice"] == "required"
+    assert calls[3]["tool_choice"] == "required"
 
 
 @pytest.mark.anyio
@@ -835,9 +841,8 @@ async def read_messages(env, role: str) -> list:
 async def test_closing_round_without_tool_call_retries_exactly_twice(env):
     """形态 (a)：收口轮没有 tool_calls ⇒ 计数重问，最多 2 次后以可读文案收口。
 
-    总轮数 5 = 2 轮只读 + 2 次重问 + 第 3 次失败即收口；把 PLAN_MAX_RETRIES 调大
-    会撞到 MAX_TOOL_ROUNDS 而抛裸 RuntimeError（本用例变红），调小则轮数与纠正
-    消息数同时变红——两个方向都钉住「≤2」。
+    总轮数 5 = 3 轮只读 + 2 次重问 + 循环尾收口（收口轮起点 index 3，force 轮 index 4）；
+    把 PLAN_MAX_RETRIES 调大/调小会让轮数或纠正消息数变红——两个方向都钉住「≤2」。
     """
     calls: list[dict] = []
     events = await run_turn(
@@ -845,9 +850,9 @@ async def test_closing_round_without_tool_call_retries_exactly_twice(env):
         [
             tool_call("list_outlines", {}, call_id="c1"),
             tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
             answer("我再想想。"),
             answer("还是先讲道理。"),
-            answer("最后仍然不讲道理。"),
         ],
         plan_mode=True,
         calls=calls,
@@ -860,11 +865,14 @@ async def test_closing_round_without_tool_call_retries_exactly_twice(env):
     finals = [e for e in events if e["type"] == "final_chunk"]
     assert finals, "必须以可读文案收口"
     assert "计划" in finals[-1]["content"]
+    # 重问历史里的模型原文不得冒充最终回答（收口语义由 _finish_without_plan 决定）
+    assert "我再想想" not in finals[-1]["content"]
+    assert "还是先讲道理" not in finals[-1]["content"]
     final = events[-1]
     assert final["type"] == "result" and final["data"]["status"] == "completed"
     # 计划一步都没产出 ⇒ 不得留下 waiting_confirmation 的假卡片
     rows = await read_tool_calls(env)
-    assert [row.tool_name for row in rows] == ["list_outlines", "list_outlines"]
+    assert [row.tool_name for row in rows] == ["list_outlines"] * 3
     assert all(row.status == "executed" for row in rows)
 
 
@@ -892,7 +900,11 @@ async def test_invalid_plan_budget_is_consumed_and_reason_reaches_user(env):
 
 @pytest.mark.anyio
 async def test_closing_round_wrong_tool_counts_against_retry_budget(env):
-    """形态 (c)：收口轮调了不是 propose_plan 的工具，同样计数并最终以可读文案收口。"""
+    """形态 (c)：收口轮调了不是 propose_plan 的工具，同样计数并最终以可读文案收口。
+
+    issue #96：收口轮的违规调用一律**不执行**（record 置 failed 并点名 propose_plan），
+    计数走同一条有界重试；未修复时这两行 list_outlines 会真的执行。
+    """
     events = await run_turn(
         env,
         [
@@ -908,6 +920,10 @@ async def test_closing_round_wrong_tool_counts_against_retry_budget(env):
     assert [row.tool_name for row in rows] == [
         PROPOSE_PLAN_TOOL_NAME, "list_outlines", "list_outlines",
     ]
+    assert all(row.status == "failed" for row in rows)
+    blocked = [row for row in rows if row.tool_name == "list_outlines"]
+    assert all(PROPOSE_PLAN_TOOL_NAME in (row.error_message or "") for row in blocked)
+    assert all(row.executed_at is None for row in blocked)
     finals = [e for e in events if e["type"] == "final_chunk"]
     assert finals and "计划" in finals[-1]["content"]
     assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
@@ -922,6 +938,228 @@ async def test_plan_close_text_never_promises_a_diff_row(env):
     assert finals
     assert "计划" in finals[0]["content"]
     assert "请核对下方差异" not in finals[0]["content"]
+
+
+# --------------------------------------------------------------------------- #
+# issue #96：收口轮强制执行 / 循环尾收口 / 预算默认值 / 标题容忍
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.anyio
+async def test_closing_round_never_executes_a_non_plan_tool(env):
+    """issue #96 P0：收口轮只允许 propose_plan，其他工具调用一律不执行。
+
+    收口轮（index 3）的工具集只留 propose_plan，但派发不看工具集 ⇒ 修复前收口轮里
+    的只读调用会被真的执行。违规必须落 failed 记录 + 可行动 tool 响应，并触发重试。
+    """
+    calls: list[dict] = []
+    executed: list[str] = []
+    real_execute = env.service.registry.execute
+
+    async def spy_execute(name, arguments=None):
+        executed.append(name)
+        return await real_execute(name, arguments)
+
+    env.service.registry.execute = spy_execute
+
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            tool_call("get_project_overview", {}, call_id="c-violation"),
+            answer("收口轮没有计划，我直接回答。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 5, "违规后必须发生重试（第 4 次调用是收口轮）"
+    assert [item["function"]["name"] for item in calls[3]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert executed.count("list_outlines") == 3
+    assert "get_project_overview" not in executed
+
+    rows = await read_tool_calls(env)
+    blocked = [row for row in rows if row.tool_name == "get_project_overview"]
+    assert len(blocked) == 1
+    assert blocked[0].status == "failed"
+    assert PROPOSE_PLAN_TOOL_NAME in (blocked[0].error_message or "")
+    assert blocked[0].executed_at is None
+
+    tool_messages = await read_messages(env, "tool")
+    violations = [
+        json.loads(message.content)
+        for message in tool_messages
+        if "get_project_overview" in (message.content or "")
+    ]
+    assert len(violations) == 1
+    assert violations[0]["error"]
+    assert PROPOSE_PLAN_TOOL_NAME in violations[0]["error"]
+
+    rejected_steps = [
+        event["data"] for event in events
+        if event["type"] == "step_update"
+        and "get_project_overview" in (event["data"]["content"] or "")
+    ]
+    assert rejected_steps, "违规必须以 step_update 对用户可见"
+    assert all(step["status"] == "failed" for step in rejected_steps)
+
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals and "计划" in finals[-1]["content"]
+    assert "收口轮没有计划，我直接回答。" not in finals[-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_closing_violation_retry_can_still_produce_the_plan(env):
+    """issue #96 (b)：违规后的重试轮仍能提交计划（重试轮是带工具的收口轮）。
+
+    一份非法计划把 plan_attempts 推到 1 ⇒ 下一次调用即收口轮（attempts>0）；
+    违规发生在 index 1，重试 index 2 仍在 MAX_TOOL_ROUNDS 之内且带 propose_plan。
+    """
+    calls: list[dict] = []
+    executed: list[str] = []
+    real_execute = env.service.registry.execute
+
+    async def spy_execute(name, arguments=None):
+        executed.append(name)
+        return await real_execute(name, arguments)
+
+    env.service.registry.execute = spy_execute
+
+    events = await run_turn(
+        env,
+        [
+            _bad_plan_response(call_id="call-bad"),
+            tool_call("list_outlines", {}, call_id="call-violation"),
+            _plan_response(call_id="call-plan"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 3
+    assert [item["function"]["name"] for item in calls[1]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert [item["function"]["name"] for item in calls[2]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert "list_outlines" not in executed
+
+    final = events[-1]
+    assert final["type"] == "result" and final["data"]["status"] == "waiting_confirmation"
+    plan_rows = [
+        row for row in await read_tool_calls(env)
+        if row.tool_name == PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert [row.status for row in plan_rows] == ["failed", "waiting_confirmation"]
+
+
+@pytest.mark.anyio
+async def test_force_answer_round_text_never_becomes_the_answer(env):
+    """issue #96 P1：force_answer 轮没有工具，拿不到计划就不得把原文当普通回答。
+
+    循环尾必须走 _finish_without_plan 的可读收口；未修复时这里会抛裸 RuntimeError。
+    """
+    calls: list[dict] = []
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            answer("我需要更多信息。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 5
+    assert "tools" not in calls[4], "第 5 次调用是 force_answer 轮（无工具、流式）"
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals, "必须以可读文案收口"
+    assert "计划" in finals[-1]["content"]
+    assert "我需要更多信息。" not in finals[-1]["content"]
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_plan_produced_on_first_closing_round(env):
+    """issue #96 回归：第一次收口轮就提交计划的路径与改动前一致（waiting_confirmation）。"""
+    calls: list[dict] = []
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            _plan_response(call_id="call-plan"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    assert len(calls) == 4
+    assert [item["function"]["name"] for item in calls[3]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert calls[3]["tool_choice"] == "required"
+    final = events[-1]
+    assert final["type"] == "result" and final["data"]["status"] == "waiting_confirmation"
+    rows = await read_tool_calls(env)
+    assert [row.tool_name for row in rows] == ["list_outlines"] * 3 + [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert rows[3].status == "waiting_confirmation"
+
+
+@pytest.mark.anyio
+async def test_non_plan_turn_keeps_normal_final_answer(env):
+    """issue #96 回归：plan_mode=False 的最终回答与工具行为逐字不变。"""
+    calls: list[dict] = []
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            answer("普通回答。"),
+        ],
+        plan_mode=False,
+        calls=calls,
+    )
+
+    assert len(calls) == 2
+    assert all(call["tool_choice"] == "auto" for call in calls)
+    assert all(
+        PROPOSE_PLAN_TOOL_NAME not in {
+            item["function"]["name"] for item in (call["tools"] or [])
+        }
+        for call in calls
+    )
+    finals = [e for e in events if e["type"] == "final_chunk"]
+    assert finals and finals[-1]["content"] == "普通回答。"
+    assert events[-1]["type"] == "result" and events[-1]["data"]["status"] == "completed"
+    rows = await read_tool_calls(env)
+    assert [row.tool_name for row in rows] == ["list_outlines"]
+    assert rows[0].status == "executed"
+
+
+def test_plan_round_budget_default_is_five_and_closing_starts_at_expected_round():
+    """issue #96 P1：预算默认值 5，config 与类常量必须一致；收口起点 index 3。"""
+    from app.config import settings
+
+    svc = _bare_service()
+    assert ProjectAgentService.PLAN_ROUND_BUDGET == 5
+    assert ProjectAgentService._PLAN_ROUND_BUDGET_DEFAULT == 5
+    assert settings.agent_plan_round_budget == 5
+    assert svc._plan_round_budget() == 5
+    # 收口起点 = min(MAX_TOOL_ROUNDS-1, budget-1) = 3
+    assert svc._plan_closing_round(round_index=2, plan_attempts=0) is False
+    assert svc._plan_closing_round(round_index=3, plan_attempts=0) is True
+    # 一次未产出计划后（plan_attempts>0），下一轮立即收口
+    assert svc._plan_closing_round(round_index=0, plan_attempts=1) is True
 
 
 # --------------------------------------------------------------------------- #
