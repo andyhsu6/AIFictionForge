@@ -21,6 +21,8 @@ from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.agent_plan_schema import (
     EXCLUDED_PLAN_TOOLS,
+    PLAN_TOOL_PARAMETERS,
+    PROPOSE_PLAN_TOOL_DESCRIPTION,
     PROPOSE_PLAN_TOOL_NAME,
     PlanValidationError,
     plannable_tool_names,
@@ -97,6 +99,72 @@ def test_start_project_task_requires_known_action():
     with pytest.raises(PlanValidationError, match="未知 action"):
         validate_plan(_plan([{"id": "s1", "tool": "start_project_task",
                               "action": "drop_chapters"}]), allowed_tools=ALLOWED)
+
+
+def test_propose_plan_action_enum_matches_validator_vocabulary():
+    """模型侧枚举必须与校验器同源：少一个 ⇒ 合法计划被拒（本缺陷的根因）。
+
+    直接对钉活常量而不是字面量：`AGENT_TASK_ACTION_TYPES` 改动时本用例先红，
+    schema 与 validate_plan 不可能各自漂移。同时核对同一份 schema 真的到达
+    provider（registry.definitions() 是模型唯一能看到的面）且 JSON 可序列化。
+    """
+    from app.services.task_resources import AGENT_TASK_ACTION_TYPES
+
+    action_schema = PLAN_TOOL_PARAMETERS["properties"]["steps"]["items"]["properties"]["action"]
+    assert action_schema["enum"] == sorted(AGENT_TASK_ACTION_TYPES)
+    assert action_schema["type"] == "string"
+    assert "start_project_task" in action_schema["description"]
+
+    from app.services.project_agent_tools import ProjectAgentToolRegistry
+
+    registry = ProjectAgentToolRegistry(SimpleNamespace(id="p1"), None)  # 构造不查库
+    definition = next(
+        item for item in registry.definitions()
+        if item["function"]["name"] == PROPOSE_PLAN_TOOL_NAME
+    )
+    advertised = definition["function"]["parameters"]["properties"]["steps"]["items"]["properties"]["action"]
+    assert advertised["enum"] == sorted(AGENT_TASK_ACTION_TYPES)
+    step_properties = definition["function"]["parameters"]["properties"]["steps"]["items"]["properties"]
+    assert step_properties["tool"]["description"]
+    json.dumps(definition)  # provider payload 只吃 JSON 可序列化的 schema
+
+
+def test_natural_language_action_still_rejected():
+    """fail-closed 回归：枚举只是告知模型，服务端不得因此放松校验。"""
+    with pytest.raises(PlanValidationError, match="未知 action"):
+        validate_plan(
+            _plan([{
+                "id": "s6", "tool": "start_project_task",
+                "action": "请重启这一章的正文分析",
+                "arguments": {"chapter_number": 39},
+            }]),
+            allowed_tools=ALLOWED,
+        )
+
+
+def test_valid_vocabulary_action_still_validates():
+    """反向配对：枚举里的每个 action 都必须能通过 validate_plan（不是只挡不认）。"""
+    from app.services.task_resources import AGENT_TASK_ACTION_TYPES
+
+    for action in sorted(AGENT_TASK_ACTION_TYPES):
+        plan = validate_plan(
+            _plan([{"id": "s1", "tool": "start_project_task",
+                    "action": action, "arguments": {}}]),
+            allowed_tools=ALLOWED,
+        )
+        assert plan["steps"][0]["action"] == action
+
+
+def test_tool_description_advertises_action_vocabulary():
+    """provider 忽略 JSON-Schema enum 时靠描述兜底：每个 action 名都必须出现。"""
+    from app.services.task_resources import AGENT_TASK_ACTION_TYPES
+
+    assert "start_project_task" in PROPOSE_PLAN_TOOL_DESCRIPTION
+    missing = [
+        action for action in sorted(AGENT_TASK_ACTION_TYPES)
+        if action not in PROPOSE_PLAN_TOOL_DESCRIPTION
+    ]
+    assert missing == []
 
 
 def test_empty_or_oversized_plan_rejected():

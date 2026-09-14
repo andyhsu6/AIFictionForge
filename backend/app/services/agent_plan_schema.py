@@ -19,6 +19,8 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "查清必要信息之后才调用。每一步只能是本回合可用工具白名单内的工具。"
     "跨步引用只允许执行期可解析的既有标识（chapter_number、outline.order_index、批次内序号），"
     "禁止引用前序步骤返回体里才会出现的新 ID。"
+    "tool 为 start_project_task 的步骤必须给出 action，且 action 只能是以下值之一："
+    f"{', '.join(sorted(AGENT_TASK_ACTION_TYPES))}。"
 )
 
 # 架构计划 §1：这两个工具要求模型自己给出 JSON 正文（SYSTEM_PROMPT 规则 8 禁止臆造），
@@ -28,12 +30,26 @@ EXCLUDED_PLAN_TOOLS = frozenset({"import_outlines_json", "import_characters_json
 # 需要 action 才能定位落库任务表的工具（PR-2b 用 AGENT_TASK_ACTION_TYPES 反查 task_type）。
 ACTION_BEARING_TOOLS = frozenset({"start_project_task"})
 
+# action 的枚举与 validate_plan 同源（AGENT_TASK_ACTION_TYPES）：新增 action 只改
+# task_resources.py，模型看到的 schema 与服务端校验器不可能各自漂移。
 _STEP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "id": {"type": "string", "minLength": 1, "pattern": r".*\S.*"},
-        "tool": {"type": "string", "minLength": 1, "pattern": r".*\S.*"},
-        "action": {"type": ["string", "null"]},
+        "tool": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": r".*\S.*",
+            "description": "步骤要使用的工具名，必须是本回合工具白名单内的工具。",
+        },
+        "action": {
+            "type": "string",
+            "enum": sorted(AGENT_TASK_ACTION_TYPES),
+            "description": (
+                "步骤动作：仅当 tool 为 start_project_task 时必须提供，"
+                "且只能取枚举值之一；其他工具的步骤请省略本字段。"
+            ),
+        },
         "arguments": {"type": "object"},
         "note": {"type": ["string", "null"]},
     },
