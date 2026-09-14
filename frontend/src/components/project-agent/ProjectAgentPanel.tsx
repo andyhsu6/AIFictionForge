@@ -472,6 +472,7 @@ export default function ProjectAgentPanel({
         message: content,
         page_context: { route: location.pathname, page: location.pathname.split('/').pop() },
         auto_approve: autoApprove,
+        plan_mode: true,
       }, {
         onConversation: data => {
           streamConversationId = data.conversation_id;

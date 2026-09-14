@@ -1307,6 +1307,7 @@ export const projectAgentApi = {
       message: string;
       page_context?: Record<string, unknown>;
       auto_approve?: boolean;
+      plan_mode?: boolean;
     },
     callbacks: ProjectAgentStreamCallbacks,
     signal?: AbortSignal,
