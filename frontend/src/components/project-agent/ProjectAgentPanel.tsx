@@ -48,7 +48,7 @@ import type {
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
 import PlanApprovalCard from './PlanApprovalCard';
-import { decideSettleRefresh, isPlanToolCall, parsePlanPayload, shouldPollRunningPlan } from './planCardModel';
+import { decideSettleRefresh, isPlanToolCall, parsePlanPayload, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -691,6 +691,27 @@ export default function ProjectAgentPanel({
     isPlanToolCall(toolCall) && toolCall.status === 'waiting_confirmation'
   )), [toolCalls]);
 
+  // 运行中的计划：进度块 + 唯一停止入口（planTaskIdOf 读 result.entity_id，
+  // 需要 approve-plan 把 {entity_id, task_type} 持久化进 AgentToolCall.result）
+  const runningPlans = useMemo(() => toolCalls
+    .filter(toolCall => isPlanToolCall(toolCall) && toolCall.status === 'executing')
+    .map(toolCall => ({ toolCall, planTaskId: planTaskIdOf(toolCall) }))
+    .filter((item): item is { toolCall: AgentToolCall; planTaskId: string } => Boolean(item.planTaskId)), [toolCalls]);
+
+  const orphanPlanSteps = useMemo(() => executionSteps.filter(step => (
+    !step.assistant_message_id && !step.user_message_id
+  )), [executionSteps]);
+
+  const stopPlan = useCallback(async (planTaskId: string) => {
+    try {
+      await projectAgentApi.cancelPlan(projectId, planTaskId);
+      message.success(t('planCancelToast'));
+      if (activeConversationId) await reloadConversation(activeConversationId);
+    } catch (error) {
+      message.error(t('planCancelFailed', { message: (error as Error).message }));
+    }
+  }, [activeConversationId, message, projectId, reloadConversation, t]);
+
   const renderStepIcon = (step: AgentExecutionStep) => {
     if (step.status === 'running') return <LoadingOutlined spin style={{ color: token.colorPrimary }} />;
     if (step.status === 'failed') return <CloseCircleOutlined style={{ color: token.colorError }} />;
@@ -1031,6 +1052,52 @@ export default function ProjectAgentPanel({
               }}
             />
           ))}
+        </div>
+      )}
+
+      {runningPlans.length > 0 && (
+        <div data-testid="plan-progress" style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {runningPlans.map(({ toolCall, planTaskId }) => {
+            const payload = parsePlanPayload(toolCall);
+            const total = payload ? payload.steps.length : 0;
+            const done = orphanPlanSteps.filter(step => step.status === 'completed' || step.status === 'failed').length;
+            return (
+              <div key={toolCall.id} style={{
+                border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 10, padding: 10,
+              }}>
+                <Space size={6} wrap>
+                  <LoadingOutlined spin style={{ color: token.colorPrimary }} />
+                  <Text strong style={{ fontSize: 12 }}>{t('planCardTitle')}</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    {t('planStepProgress', { current: Math.min(done, total), total })}
+                  </Text>
+                </Space>
+                <div data-testid="plan-steps" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {orphanPlanSteps.map(step => (
+                    <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {renderStepIcon(step)}
+                      <Text style={{ fontSize: 12, flex: 1 }}>{step.title}</Text>
+                    </div>
+                  ))}
+                </div>
+                <Popconfirm
+                  title={t('planStop')}
+                  description={t('planUncancellableNotice')}
+                  okText={t('planStop')}
+                  cancelText={t('cancel')}
+                  onConfirm={() => void stopPlan(planTaskId)}
+                >
+                  <Button
+                    data-testid="plan-stop-button"
+                    size="small"
+                    danger
+                    icon={<StopOutlined />}
+                    style={{ marginTop: 8 }}
+                  >{t('planStop')}</Button>
+                </Popconfirm>
+              </div>
+            );
+          })}
         </div>
       )}
 

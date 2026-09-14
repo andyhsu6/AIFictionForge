@@ -35,6 +35,23 @@ describe('background task settled payload contract', () => {
   });
 });
 
+describe('plan progress contract', () => {
+  it('renders runner steps that are not attached to any message', () => {
+    // PR-2b 的 _insert_step 允许 assistant_message_id 为空 ⇒ 面板必须有自己的挂载点，
+    // 否则计划执行步骤会落库但永远不显示。
+    expect(panelSource).toContain('plan-steps');
+    expect(panelSource).toContain('plan-stop-button');
+  });
+});
+
+// Task 2 dropped these panel wiring assertions; the behavioural halves live in
+// planProgress.test.tsx (stop door) and sendDefer.test.tsx (result attribution).
+describe('plan panel wiring contract', () => {
+  it('routes the stop door through the plan-specific cancel endpoint', () => {
+    expect(panelSource).toContain('projectAgentApi.cancelPlan');
+  });
+});
+
 describe('agent plan api contract', () => {
   it('exposes approve-plan keyed by the tool call id', () => {
     expect(apiSource).toContain('`/projects/${projectId}/agent/tool-calls/${toolCallId}/approve-plan`');
