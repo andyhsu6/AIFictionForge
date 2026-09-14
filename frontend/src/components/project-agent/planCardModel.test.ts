@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  decideSettleRefresh,
   isPlanToolCall,
   parsePlanPayload,
   planTaskIdOf,
@@ -158,5 +159,50 @@ describe('toggleStepSelection', () => {
     expect(toggleStepSelection(['s3'], 's2', all)).toEqual(['s2', 's3']);
     expect(toggleStepSelection(['s1', 's3'], 's2', all)).toEqual(['s1', 's2', 's3']);
     expect(toggleStepSelection(['s1', 's2', 's3'], 's2', all)).toEqual(['s1', 's3']);
+  });
+});
+
+describe('decideSettleRefresh', () => {
+  const base = {
+    currentProjectId: 'proj-1',
+    activeConversationId: 'conv-1',
+    sending: false,
+  };
+
+  it('ignores every non-plan task so ProjectDetail stays the only business refresher', () => {
+    expect(decideSettleRefresh({ ...base, taskType: 'outline_new', eventProjectId: 'proj-1' })).toBe('ignore');
+    expect(decideSettleRefresh({ ...base, taskType: undefined, eventProjectId: 'proj-1' })).toBe('ignore');
+  });
+
+  it('ignores events from another project', () => {
+    expect(decideSettleRefresh({ ...base, taskType: 'agent_plan', eventProjectId: 'proj-2' })).toBe('ignore');
+  });
+
+  it('only refreshes the list when the plan belongs to another conversation', () => {
+    expect(decideSettleRefresh({
+      ...base, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: 'conv-2',
+    })).toBe('list-only');
+  });
+
+  it('defers while a turn is being streamed so the optimistic placeholder survives', () => {
+    expect(decideSettleRefresh({
+      ...base, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: 'conv-1', sending: true,
+    })).toBe('defer');
+  });
+
+  it('reloads the active conversation once streaming is idle', () => {
+    expect(decideSettleRefresh({
+      ...base, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: 'conv-1',
+    })).toBe('reload');
+    // 老任务行没有 conversation_id（透出前创建的历史任务）时按当前会话处理
+    expect(decideSettleRefresh({
+      ...base, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: null,
+    })).toBe('reload');
+  });
+
+  it('ignores when there is nothing to reload', () => {
+    expect(decideSettleRefresh({
+      ...base, activeConversationId: undefined, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: null,
+    })).toBe('ignore');
   });
 });

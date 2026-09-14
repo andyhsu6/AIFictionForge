@@ -47,6 +47,7 @@ import type {
   AgentToolCall,
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
+import { decideSettleRefresh } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -256,6 +257,94 @@ export default function ProjectAgentPanel({
       console.error('加载灵创创作助手会话列表失败:', error);
     }
   }, [loadConversation, projectId]);
+
+  // ---- PR-3：计划完成后的自动收尾刷新 -------------------------------------
+  // 分工：业务数据刷新由 ProjectDetail.tsx 的 SETTLED 监听负责；
+  // 本面板只刷会话（messages / tool_calls / execution_steps），两侧互不重叠。
+  const sendingRef = useRef(false);
+  const reloadInFlightRef = useRef(false);
+  const reloadQueuedRef = useRef(false);
+  const pendingSettleConversationRef = useRef<string | null>(null);
+  const activeConversationIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  /**
+   * 同一时刻至多一条 getConversation 在途；在途期间的事件只留一个 trailing 标记，
+   * 因此 N 条并发事件最多产生 2 次请求，而不是 N 次。
+   */
+  const reloadConversation = useCallback(async (conversationId: string) => {
+    if (!conversationId) return;
+    if (reloadInFlightRef.current) {
+      reloadQueuedRef.current = true;
+      return;
+    }
+    reloadInFlightRef.current = true;
+    try {
+      do {
+        reloadQueuedRef.current = false;
+        await loadConversation(conversationId);
+      } while (reloadQueuedRef.current);
+    } catch (error) {
+      console.error('刷新灵创创作助手对话失败:', error);
+    } finally {
+      reloadInFlightRef.current = false;
+    }
+  }, [loadConversation]);
+
+  useEffect(() => {
+    const handlePlanSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as {
+        projectId?: string | null;
+        conversationId?: string | null;
+        taskType?: string | null;
+      };
+      const decision = decideSettleRefresh({
+        taskType: data.taskType,
+        eventProjectId: data.projectId,
+        currentProjectId: projectId,
+        eventConversationId: data.conversationId,
+        activeConversationId: activeConversationIdRef.current,
+        sending: sendingRef.current,
+      });
+      if (decision === 'ignore') return;
+      if (decision === 'list-only') {
+        void loadConversations();
+        return;
+      }
+      const target = data.conversationId || activeConversationIdRef.current;
+      if (!target) return;
+      // defer：正在流式输出时立刻 reload 会用服务端快照覆盖 send() 的乐观占位消息
+      if (decision === 'defer') {
+        pendingSettleConversationRef.current = target;
+        return;
+      }
+      void reloadConversation(target);
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handlePlanSettled);
+    return () => {
+      eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handlePlanSettled);
+      // 卸载或切换项目时丢弃延后的刷新：重订阅后 projectId 已变，旧会话 id
+      // 不能再用新项目去拉取。
+      pendingSettleConversationRef.current = null;
+    };
+  }, [loadConversations, projectId, reloadConversation]);
+
+  // 流式结束后补做被 defer 的刷新
+  useEffect(() => {
+    if (sending) return;
+    const pending = pendingSettleConversationRef.current;
+    if (!pending) return;
+    pendingSettleConversationRef.current = null;
+    void reloadConversation(pending);
+  }, [reloadConversation, sending]);
 
   useEffect(() => {
     setActiveConversationId(undefined);

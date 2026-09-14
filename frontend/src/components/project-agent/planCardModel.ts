@@ -141,3 +141,29 @@ export function toggleStepSelection(selected: string[], stepId: string, allStepI
   const order = allStepIds.includes(stepId) ? allStepIds : [stepId, ...allStepIds];
   return order.filter(item => item === stepId || selected.includes(item));
 }
+
+export type SettleRefreshDecision = 'reload' | 'defer' | 'list-only' | 'ignore';
+
+/**
+ * 计划完成事件是否要刷会话、怎么刷。
+ * 抽成纯函数的原因：这条判定同时承担三件事——
+ *  1) 与 ProjectDetail 的 SETTLED 监听分工（非 agent_plan 一律 ignore，业务数据刷新只归它）；
+ *  2) 会话归属（事件带的 conversationId 与当前会话不同 ⇒ 只刷列表，不覆盖视图）；
+ *  3) 撞上 send() 乐观占位时延后刷新。
+ */
+export function decideSettleRefresh(input: {
+  taskType?: string | null;
+  eventProjectId?: string | null;
+  currentProjectId: string;
+  eventConversationId?: string | null;
+  activeConversationId?: string;
+  sending: boolean;
+}): SettleRefreshDecision {
+  if (input.taskType !== PLAN_TASK_TYPE) return 'ignore';
+  if (input.eventProjectId && input.eventProjectId !== input.currentProjectId) return 'ignore';
+  if (input.eventConversationId && input.activeConversationId
+    && input.eventConversationId !== input.activeConversationId) return 'list-only';
+  const target = input.eventConversationId || input.activeConversationId;
+  if (!target) return 'ignore';
+  return input.sending ? 'defer' : 'reload';
+}
