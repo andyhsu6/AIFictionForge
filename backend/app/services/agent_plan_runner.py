@@ -61,7 +61,7 @@ MAX_PLAN_STEPS = 30
 PLAN_WALL_CLOCK_SECONDS = 7200.0
 STEP_POLL_TIMEOUT_SECONDS = 900.0
 POLL_INTERVAL_SECONDS = 2.0
-STEP_GRACE_SECONDS = 0.0            # PR-4 调成 3.0（SQLite WAL 可见性）
+STEP_GRACE_SECONDS = 3.0            # settings.agent_plan_step_grace_seconds 读不出来时的兜底（PR-4：对齐 WAL 可见性）
 STATUS_MESSAGE_MAX_CHARS = 120      # status_message 是 String(500)，PG 超长直接报错
 CANCEL_SETTLE_TIMEOUT_SECONDS = 10.0
 
@@ -1076,15 +1076,21 @@ async def _run_step_loop(
             )
             return "failed", _clip(f"第 {index} 步失败：{exc}", 200)
         handle.steps_done = index
-        slept_grace = 0.0
-        if grace:
-            grace_t0 = time.monotonic()
-            await asyncio.sleep(grace)   # PR-4：步间 grace
-            slept_grace = time.monotonic() - grace_t0
+        # PR-4：先把本步落库（step_results + 步骤行）再睡步间 grace。取消路由会 task.cancel()，
+        # grace 默认 3s 后，旧顺序（先睡后落库）会留下一个 3s 窗口：步骤行仍 running，
+        # 且 steps_done 与 step_results 对不上——取消恰好落在 sleep 上就把这窗口写进终态。
         timing = _step_timing(
-            step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=slept_grace,
+            step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=0.0,
             stats_before=stats_before,
         )
+        entry = {"index": index, "action": label, "status": "completed", **recorded, **timing}
+        handle.step_results.append(entry)
+        await _patch_step(factory, step_id, status="completed", content="完成")
+        if grace:
+            grace_t0 = time.monotonic()
+            await asyncio.sleep(grace)   # PR-4：步间 grace，等本步的写对下一会话可见
+            timing["grace_seconds"] = round(time.monotonic() - grace_t0, 3)
+            entry["grace_seconds"] = timing["grace_seconds"]
         logger.info(
             "计划步骤计时: plan_task_id=%s step=%s/%s action=%s dispatch_latency=%.3fs grace=%.3fs "
             "ai_calls=%s ai_slow_queue_waits=%s ai_max_queue_wait=%.3fs",
@@ -1098,8 +1104,6 @@ async def _run_step_loop(
             timing["ai_slow_queue_waits_during_step"],
             timing["ai_max_queue_wait_seconds"],
         )
-        handle.step_results.append({"index": index, "action": label, "status": "completed", **recorded, **timing})
-        await _patch_step(factory, step_id, status="completed", content="完成")
         await _write_plan_row(
             factory, handle.plan_task_id,
             progress=int(index / total * 100),

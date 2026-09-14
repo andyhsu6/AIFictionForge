@@ -42,7 +42,7 @@ def test_settings_expose_all_pr2c_plan_keys():
     assert settings.agent_plan_wall_clock_seconds == 7200.0
     assert settings.agent_plan_step_poll_timeout_seconds == 900.0
     assert settings.agent_plan_poll_interval_seconds == 2.0
-    assert settings.agent_plan_step_grace_seconds == 0.0
+    assert settings.agent_plan_step_grace_seconds == 3.0
     assert settings.agent_plan_status_message_max_chars == 120
     assert settings.agent_plan_summary_max_chars == 8000
     assert settings.agent_plan_running_guardrail_enabled is True
