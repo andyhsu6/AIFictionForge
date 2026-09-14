@@ -202,6 +202,7 @@
     "writing_style": "Writing style not found"
   },
   "progress": {
+    "agent_plan_interrupted": "The plan was interrupted by a restart ({{steps_done}}/{{steps_total}} steps finished). Results are not final — please start it again.",
     "career_done": "New careers generated! ({{total_main}} main, {{total_sub}} sub-careers)",
     "creation_done_words": "Writing and analysis complete! {{word_count}} characters in total",
     "done": "Generation complete",

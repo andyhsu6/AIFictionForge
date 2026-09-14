@@ -2,7 +2,9 @@
 import asyncio
 import hashlib
 import json
+import time
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
@@ -243,11 +245,103 @@ def _parse_sse_chat_completion_response(response: httpx.Response) -> Dict[str, A
     }
 
 
+# --- 并发排队可观测（PR-4）---------------------------------------------------
+# max_concurrent_requests=5（app/services/ai_config.py:31）是全局单例许可，
+# 计划执行器一次跑 N 步会把它吃满；届时症状是"排队变慢"而不是报错。
+# 下面的计数与日志就是为了让这种症状在一份日志里可归因。
+QUEUE_WAIT_WARN_SECONDS = 2.0
+
+_queue_stats: dict[str, float] = {
+    "max_concurrent_requests": 0,   # 实际生效的全局许可数（首次创建者决定）
+    "waiters": 0,                   # 当前正在等许可的请求数
+    "active": 0,                    # 当前持有许可的请求数
+    "acquire_total": 0,             # 累计成功获取次数
+    "queue_wait_total_seconds": 0.0,
+    "queue_wait_max_seconds": 0.0,
+    "slow_acquires": 0,             # 排队时长 >= QUEUE_WAIT_WARN_SECONDS 的次数
+}
+
+
+def get_queue_stats() -> dict[str, float]:
+    """排队计数快照（只读拷贝，供日志/健康检查/测试消费）。"""
+    return dict(_queue_stats)
+
+
+def reset_queue_stats() -> None:
+    """测试隔离用：清零累计计数。"""
+    for key in _queue_stats:
+        _queue_stats[key] = 0
+
+
+def _record_queue_wait(endpoint: str, waited: float) -> None:
+    """累计一次许可获取的排队时长，并按阈值决定日志级别。"""
+    _queue_stats["acquire_total"] += 1
+    _queue_stats["queue_wait_total_seconds"] += waited
+    if waited > _queue_stats["queue_wait_max_seconds"]:
+        _queue_stats["queue_wait_max_seconds"] = waited
+    if waited >= QUEUE_WAIT_WARN_SECONDS:
+        _queue_stats["slow_acquires"] += 1
+        logger.warning(
+            "AI queue wait exceeds threshold: endpoint=%s queue_wait=%.3fs waiters=%s "
+            "active=%s max_concurrent=%s slow_acquires=%s",
+            endpoint,
+            waited,
+            int(_queue_stats["waiters"]),
+            int(_queue_stats["active"]),
+            int(_queue_stats["max_concurrent_requests"]),
+            int(_queue_stats["slow_acquires"]),
+        )
+    elif waited > 0:
+        logger.debug(
+            "AI queue wait: endpoint=%s queue_wait=%.3fs active=%s max_concurrent=%s",
+            endpoint,
+            waited,
+            int(_queue_stats["active"]),
+            int(_queue_stats["max_concurrent_requests"]),
+        )
+
+
+@asynccontextmanager
+async def _acquire_slot(semaphore: asyncio.Semaphore, max_concurrent: int, endpoint: str):
+    """带排队计数的信号量获取。
+
+    刻意不读 asyncio.Semaphore 的私有属性（_value/_waiters 属 CPython 实现细节，
+    版本会变），改为自持 waiters/active 计数。获取失败（取消）也必须把 waiters 减回去。
+    """
+    if not _queue_stats["max_concurrent_requests"]:
+        _queue_stats["max_concurrent_requests"] = max_concurrent
+    _queue_stats["waiters"] += 1
+    started = time.monotonic()
+    try:
+        await semaphore.acquire()
+    except BaseException:
+        _queue_stats["waiters"] -= 1
+        raise
+    _queue_stats["waiters"] -= 1
+    _queue_stats["active"] += 1
+    try:
+        _record_queue_wait(endpoint, time.monotonic() - started)
+        yield
+    finally:
+        _queue_stats["active"] -= 1
+        semaphore.release()
+
+
 def _get_semaphore(max_concurrent: int) -> asyncio.Semaphore:
-    """获取全局信号量"""
+    """获取全局信号量。
+
+    ⚠️ 单例语义（既有行为，本 PR 不改）：第一个调用者的 max_concurrent 生效，
+    后续不同值只会被记录为"实际生效值"，不会重建信号量。计划排队归因时以此为准。
+    """
     global _global_semaphore
     if _global_semaphore is None:
         _global_semaphore = asyncio.Semaphore(max_concurrent)
+    elif max_concurrent != _queue_stats["max_concurrent_requests"] and _queue_stats["max_concurrent_requests"]:
+        logger.warning(
+            "AI 并发上限配置不一致，实际生效仍为 max_concurrent=%s（本次请求期望 %s）",
+            int(_queue_stats["max_concurrent_requests"]),
+            max_concurrent,
+        )
     return _global_semaphore
 
 
@@ -318,7 +412,7 @@ class BaseAIClient(ABC):
 
         semaphore = _get_semaphore(rate_cfg.max_concurrent_requests)
 
-        async with semaphore:
+        async with _acquire_slot(semaphore, rate_cfg.max_concurrent_requests, endpoint):
             await asyncio.sleep(rate_cfg.request_delay)
 
             for attempt in range(retry_cfg.max_retries):

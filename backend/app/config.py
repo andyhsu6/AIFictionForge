@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     agent_plan_wall_clock_seconds: float = 7200.0  # 计划级总时长上限（秒）
     agent_plan_step_poll_timeout_seconds: float = 900.0   # 单步等子任务终态上限
     agent_plan_poll_interval_seconds: float = 2.0         # 子任务轮询间隔
-    agent_plan_step_grace_seconds: float = 0.0            # 步间宽限（PR-4 调 3.0）
+    agent_plan_step_grace_seconds: float = 3.0            # 步间宽限：等 SQLite WAL 对其他会话可见（PR-4）
     agent_plan_status_message_max_chars: int = 120        # status_message 是 String(500)
     agent_plan_summary_max_chars: int = 8000               # 聚合 tool 消息/收尾文案上限
     agent_plan_running_guardrail_enabled: bool = True      # §7 护栏总开关（回滚用）

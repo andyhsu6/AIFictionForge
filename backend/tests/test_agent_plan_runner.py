@@ -919,3 +919,96 @@ async def test_runner_is_registered_at_startup(env):
     source = inspect.getsource(app_main)
     assert "register_plan_runner" in source
     assert "from app.services.agent_plan_runner import run_plan" in source
+
+
+@pytest.mark.anyio
+async def test_step_results_expose_dispatch_latency_and_queue_fields(env):
+    """跑完一份 3 步计划后，每一步都必须带可归因计时。"""
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    assert result.plan.status == "completed"
+    details = result.plan.progress_details
+    assert len(details["step_results"]) == 3
+    for entry in details["step_results"]:
+        assert isinstance(entry["dispatch_latency_seconds"], float)
+        assert entry["dispatch_latency_seconds"] >= 0.0
+        assert isinstance(entry["step_started_at"], str) and "." in entry["step_started_at"]
+        assert isinstance(entry["ai_calls_during_step"], int)
+        assert isinstance(entry["ai_slow_queue_waits_during_step"], int)
+    stamps = [entry["step_started_at"] for entry in details["step_results"]]
+    assert stamps == sorted(stamps), "step_started_at 必须单调不减，否则计时接错了循环"
+
+
+@pytest.mark.anyio
+async def test_first_step_queue_delta_counts_calls_during_the_step(env, monkeypatch):
+    """基线必须在步开始时抓取：否则第 1 步的模型调用增量永远是 0。"""
+    stats = {"acquire_total": 0, "slow_acquires": 0, "queue_wait_max_seconds": 0.0}
+    real_execute = ProjectAgentToolRegistry.execute
+
+    async def counting_execute(self, name, arguments):
+        result = await real_execute(self, name, arguments)
+        stats["acquire_total"] += 1        # 模拟本步期间真实发生的模型调用
+        stats["slow_acquires"] += 1
+        stats["queue_wait_max_seconds"] += 0.5
+        return result
+
+    monkeypatch.setattr(runner, "get_queue_stats", lambda: dict(stats))
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", counting_execute)
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    entries = result.plan.progress_details["step_results"]
+    assert [e["ai_calls_during_step"] for e in entries] == [1, 1, 1]
+    assert [e["ai_slow_queue_waits_during_step"] for e in entries] == [1, 1, 1]
+    assert [e["ai_max_queue_wait_seconds"] for e in entries] == [0.5, 0.5, 0.5]
+
+
+@pytest.mark.anyio
+async def test_step_records_actual_slept_grace(env, monkeypatch):
+    """grace > 0 时每步必须记录真实睡掉的秒数（不是配置默认 0）。"""
+    monkeypatch.setattr(runner, "STEP_GRACE_SECONDS", 0.05)
+    result = await start_plan(env, [plan_step(1), plan_step(2)])
+    entries = result.plan.progress_details["step_results"]
+    assert len(entries) == 2
+    for entry in entries:
+        assert 0.05 <= entry["grace_seconds"] < 0.5
+
+
+@pytest.mark.anyio
+async def test_mid_run_stats_reset_cannot_produce_negative_deltas(env, monkeypatch):
+    """reset_queue_stats() 落在步间时，后续步骤必须从新的零基线起算，不得为负。"""
+    from app.services.ai_clients import base_client
+
+    incremented = {"done": False}
+    real_execute = ProjectAgentToolRegistry.execute
+    real_insert = runner._insert_step
+
+    async def counting_execute(self, name, arguments):
+        result = await real_execute(self, name, arguments)
+        if not incremented["done"]:
+            incremented["done"] = True
+            for _ in range(20):
+                base_client._record_queue_wait("/chat/completions", 0.0)
+            for _ in range(5):
+                base_client._record_queue_wait("/chat/completions", 3.0)
+        return result
+
+    async def resetting_insert_step(*args, **kwargs):
+        if kwargs.get("sequence") == 2:
+            base_client.reset_queue_stats()
+        return await real_insert(*args, **kwargs)
+
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", counting_execute)
+    monkeypatch.setattr(runner, "_insert_step", resetting_insert_step)
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    entries = result.plan.progress_details["step_results"]
+    assert len(entries) == 3
+    assert all(e["ai_calls_during_step"] >= 0 for e in entries), [
+        e["ai_calls_during_step"] for e in entries
+    ]
+    assert all(e["ai_slow_queue_waits_during_step"] >= 0 for e in entries), [
+        e["ai_slow_queue_waits_during_step"] for e in entries
+    ]
+    assert all(e["ai_max_queue_wait_seconds"] >= 0 for e in entries), [
+        e["ai_max_queue_wait_seconds"] for e in entries
+    ]
+    assert entries[0]["ai_calls_during_step"] == 25
+    assert entries[0]["ai_slow_queue_waits_during_step"] == 5
+    assert entries[1]["ai_calls_during_step"] == 0

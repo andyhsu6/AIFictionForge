@@ -54,57 +54,7 @@ async def lifespan(app: FastAPI):
 
     # 安全保障：确保后台任务表存在（兼容未执行Alembic迁移的旧部署）
     try:
-        from app.database import get_engine
-        from app.models.background_task import BackgroundTask
-        from app.models.batch_generation_task import BatchGenerationTask
-        from app.models.analysis_task import AnalysisTask
-        from sqlalchemy import update as sql_update
-        _startup_engine = await get_engine("system")
-        async with _startup_engine.begin() as conn:
-            # 仅创建 background_tasks 表（如果不存在），不影响其他表
-            await conn.run_sync(
-                lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
-            )
-            # 补齐 i18n 结构化状态列（无迁移框架，旧库 ALTER ADD COLUMN，存量行保持 NULL）
-            from sqlalchemy import text
-            existing_cols = {
-                row[1] for row in await conn.execute(text("PRAGMA table_info(background_tasks)"))
-            }
-            for col, decl in (("status_code", "VARCHAR(100)"), ("status_params", "JSON")):
-                if col not in existing_cols:
-                    await conn.execute(text(f"ALTER TABLE background_tasks ADD COLUMN {col} {decl}"))
-                    logger.info(f"background_tasks 表已补列: {col}")
-            interrupted_at = datetime.now()
-            await conn.execute(
-                sql_update(BackgroundTask)
-                .where(BackgroundTask.status.in_(["pending", "running"]))
-                .values(
-                    status="failed",
-                    error_message="服务重启，后台任务已中断",
-                    status_message="服务重启，任务已中断，请重新发起",
-                    completed_at=interrupted_at,
-                    updated_at=interrupted_at,
-                )
-            )
-            await conn.execute(
-                sql_update(BatchGenerationTask)
-                .where(BatchGenerationTask.status.in_(["pending", "running"]))
-                .values(
-                    status="failed",
-                    error_message="服务重启，批量生成任务已中断",
-                    completed_at=interrupted_at,
-                )
-            )
-            await conn.execute(
-                sql_update(AnalysisTask)
-                .where(AnalysisTask.status.in_(["pending", "running"]))
-                .values(
-                    status="failed",
-                    error_message="服务重启，章节分析任务已中断",
-                    progress=0,
-                    completed_at=interrupted_at,
-                )
-            )
+        await _sweep_interrupted_tasks()
         logger.info("后台任务表检查完成")
     except Exception as e:
         logger.warning(f"后台任务表检查失败（不影响启动）: {e}")
@@ -124,6 +74,122 @@ async def lifespan(app: FastAPI):
     await close_db()
     
     logger.info("应用已关闭")
+
+
+async def _sweep_interrupted_tasks(engine=None) -> int:
+    """启动期把上一进程遗留的运行中/待跑任务判失败。
+
+    PR-4：agent_plan 额外写「可读中断说明」——它中断时收尾聚合永远不会产出，
+    用户只看得到一句 "failed" 就无从判断该重新做什么。**刻意不自动重发**：
+    analyze_chapter 会覆盖既有 PlotAnalysis/StoryMemory/伏笔，import 与 repair
+    同样非幂等，自动重放等于拿用户数据赌博。
+
+    返回被中断的 agent_plan 行数（供日志与测试断言）。
+    """
+    from app.database import get_engine
+    from app.models.analysis_task import AnalysisTask
+    from app.models.background_task import BackgroundTask
+    from app.models.batch_generation_task import BatchGenerationTask
+    from sqlalchemy import select as sql_select
+    from sqlalchemy import text
+    from sqlalchemy import update as sql_update
+
+    if engine is None:
+        engine = await get_engine("system")
+    interrupted_at = datetime.now()
+    async with engine.begin() as conn:
+        # 仅创建 background_tasks 表（如果不存在），不影响其他表
+        await conn.run_sync(
+            lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
+        )
+        # 补齐 i18n 结构化状态列（无迁移框架，旧库 ALTER ADD COLUMN，存量行保持 NULL）
+        existing_cols = {
+            row[1] for row in await conn.execute(text("PRAGMA table_info(background_tasks)"))
+        }
+        for col, decl in (("status_code", "VARCHAR(100)"), ("status_params", "JSON")):
+            if col not in existing_cols:
+                await conn.execute(text(f"ALTER TABLE background_tasks ADD COLUMN {col} {decl}"))
+                logger.info(f"background_tasks 表已补列: {col}")
+
+        plan_rows = (
+            await conn.execute(
+                sql_select(
+                    BackgroundTask.id,
+                    BackgroundTask.progress_details,
+                ).where(
+                    BackgroundTask.task_type == "agent_plan",
+                    BackgroundTask.status.in_(["pending", "running"]),
+                )
+            )
+        ).all()
+        from app.services.agent_plan_runner import STATUS_MESSAGE_MAX_CHARS
+
+        for row in plan_rows:
+            details = dict(row.progress_details or {})
+            steps = details.get("step_results") or []
+            steps_done = int(details.get("steps_done") or len(steps))
+            steps_total = int(details.get("steps_total") or len(steps))
+            note = f"服务重启，计划执行已中断（已完成 {steps_done}/{steps_total} 步），结果未定稿，请重新发起"
+            await conn.execute(
+                sql_update(BackgroundTask)
+                .where(BackgroundTask.id == row.id)
+                .values(
+                    status="failed",
+                    error_message="服务重启，计划执行已中断",
+                    status_message=note[:STATUS_MESSAGE_MAX_CHARS],
+                    status_code="progress.agent_plan_interrupted",
+                    status_params={"steps_done": steps_done, "steps_total": steps_total},
+                    # 只追加 interrupted 块；写方（PR-2b）的 stage/message/step_results 原样保留
+                    progress_details={
+                        **details,
+                        "interrupted": {
+                            "reason": "服务重启",
+                            "stage": "interrupted_by_restart",
+                            "steps_done": steps_done,
+                            "steps_total": steps_total,
+                            "auto_retry": False,
+                            "at": interrupted_at.isoformat(timespec="seconds"),
+                        },
+                    },
+                    completed_at=interrupted_at,
+                    updated_at=interrupted_at,
+                )
+            )
+        if plan_rows:
+            logger.info(f"启动期中断计划任务: {len(plan_rows)} 个 agent_plan 已标记为 failed 并写入中断说明")
+
+        # 以下三条 UPDATE 为既有行为，逐字保留（计划行此时已是 failed，不会再命中）
+        await conn.execute(
+            sql_update(BackgroundTask)
+            .where(BackgroundTask.status.in_(["pending", "running"]))
+            .values(
+                status="failed",
+                error_message="服务重启，后台任务已中断",
+                status_message="服务重启，任务已中断，请重新发起",
+                completed_at=interrupted_at,
+                updated_at=interrupted_at,
+            )
+        )
+        await conn.execute(
+            sql_update(BatchGenerationTask)
+            .where(BatchGenerationTask.status.in_(["pending", "running"]))
+            .values(
+                status="failed",
+                error_message="服务重启，批量生成任务已中断",
+                completed_at=interrupted_at,
+            )
+        )
+        await conn.execute(
+            sql_update(AnalysisTask)
+            .where(AnalysisTask.status.in_(["pending", "running"]))
+            .values(
+                status="failed",
+                error_message="服务重启，章节分析任务已中断",
+                progress=0,
+                completed_at=interrupted_at,
+            )
+        )
+    return len(plan_rows)
 
 
 app = FastAPI(
@@ -173,10 +239,49 @@ def _git_info() -> dict:
 GIT_INFO = _git_info()
 
 
+async def _count_running_plans(engine=None) -> int:
+    """当前在跑的 agent_plan 行数（PR-4：/health 用，全局口径，只返回整数）。
+
+    只数 running：pending 是"已批准还没开跑"，属 PR-2c 并发护栏的窗口期语义，
+    混进来会让"有没有计划在跑"这个运维问题答错。
+    """
+    from app.database import get_engine
+    from app.models.background_task import BackgroundTask
+    from sqlalchemy import func, select
+
+    if engine is None:
+        engine = await get_engine("system")
+    async with engine.connect() as conn:
+        return int(
+            (
+                await conn.execute(
+                    select(func.count())
+                    .select_from(BackgroundTask)
+                    .where(BackgroundTask.task_type == "agent_plan", BackgroundTask.status == "running")
+                )
+            ).scalar_one()
+        )
+
+
+def _health_engine():
+    """测试注入点：返回 None 表示按生产路径自取 system 引擎。"""
+    return None
+
+
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "branch": GIT_INFO["branch"], "commit": GIT_INFO["commit"]}
+    try:
+        plans_running = await _count_running_plans(engine=_health_engine())
+    except Exception as e:  # 计数失败绝不能把健康检查带崩（aistoryforge.sh 依赖本端点）
+        logger.warning(f"/health 统计运行中计划失败（忽略）: {e}")
+        plans_running = None
+    return {
+        "status": "ok",
+        "branch": GIT_INFO["branch"],
+        "commit": GIT_INFO["commit"],
+        "plans_running": plans_running,
+    }
 
 
 @app.get("/health/db-sessions")
