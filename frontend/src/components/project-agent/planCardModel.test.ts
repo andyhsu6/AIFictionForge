@@ -11,6 +11,7 @@ import {
   parsePlanPayload,
   planTaskIdOf,
   readPlanProgress,
+  shouldPollRunningPlan,
   toggleStepSelection,
   type AgentPlanStep,
 } from './planCardModel';
@@ -204,5 +205,19 @@ describe('decideSettleRefresh', () => {
     expect(decideSettleRefresh({
       ...base, activeConversationId: undefined, taskType: 'agent_plan', eventProjectId: 'proj-1', eventConversationId: null,
     })).toBe('ignore');
+  });
+});
+
+describe('shouldPollRunningPlan', () => {
+  it('polls only while the plan tool call is executing', () => {
+    expect(shouldPollRunningPlan([planToolCall({ status: 'executing' })])).toBe(true);
+    expect(shouldPollRunningPlan([planToolCall({ status: 'executed' })])).toBe(false);
+    expect(shouldPollRunningPlan([planToolCall({ status: 'failed' })])).toBe(false);
+    expect(shouldPollRunningPlan([planToolCall({ status: 'waiting_confirmation' })])).toBe(false);
+    expect(shouldPollRunningPlan([])).toBe(false);
+  });
+
+  it('never polls for non-plan tool calls', () => {
+    expect(shouldPollRunningPlan([planToolCall({ tool_name: 'start_project_task', status: 'executing' })])).toBe(false);
   });
 });

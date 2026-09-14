@@ -5,7 +5,7 @@
 import { App as AntdApp } from 'antd';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 
 import ProjectAgentPanel from './ProjectAgentPanel';
 import { eventBus, EventNames } from '../../store/eventBus';
@@ -150,5 +150,48 @@ describe('ProjectAgentPanel plan settlement refresh', () => {
     });
     await new Promise(resolve => { setTimeout(resolve, 30); });
     expect(projectAgentApi.getConversation).not.toHaveBeenCalled();
+  });
+
+  it('polls the conversation every 3s while the plan is executing', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+        ...detail(),
+        tool_calls: [{
+          id: 'tc-plan',
+          conversation_id: 'conv-1',
+          tool_name: 'propose_plan',
+          arguments: { objective: 'plan objective', steps: [{ id: 's1', tool: 'start_project_task', action: 'analyze_chapter', arguments: {} }] },
+          risk_level: 2,
+          requires_confirmation: true,
+          status: 'executing',
+          created_at: '2026-09-13T00:00:00',
+        }],
+      });
+      renderPanel();
+      await vi.waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+      vi.mocked(projectAgentApi.getConversation).mockClear();
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => { vi.useRealTimers(); });
+    }
+  });
+
+  it('stops polling once no plan is executing', async () => {
+    vi.useFakeTimers();
+    try {
+      renderPanel();
+      await vi.waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+      vi.mocked(projectAgentApi.getConversation).mockClear();
+
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(projectAgentApi.getConversation).not.toHaveBeenCalled();
+    } finally {
+      act(() => { vi.useRealTimers(); });
+    }
   });
 });

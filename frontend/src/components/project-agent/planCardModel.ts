@@ -167,3 +167,10 @@ export function decideSettleRefresh(input: {
   if (!target) return 'ignore';
   return input.sending ? 'defer' : 'reload';
 }
+
+/** 计划轮询的唯一判据：计划工具调用仍在 executing（runner 收尾后会变 executed/failed）。 */
+export function shouldPollRunningPlan(
+  toolCalls: Array<Pick<AgentToolCall, 'tool_name' | 'status'>>,
+): boolean {
+  return toolCalls.some(toolCall => isPlanToolCall(toolCall as AgentToolCall) && toolCall.status === 'executing');
+}

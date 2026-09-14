@@ -47,7 +47,7 @@ import type {
   AgentToolCall,
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
-import { decideSettleRefresh } from './planCardModel';
+import { decideSettleRefresh, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -345,6 +345,26 @@ export default function ProjectAgentPanel({
     pendingSettleConversationRef.current = null;
     void reloadConversation(pending);
   }, [reloadConversation, sending]);
+
+  // 计划执行期（数十分钟）SSE 早已关闭，服务端只写库不推事件 ⇒ 用 3s 轮询补偿，
+  // 让计划卡逐步推进。停止条件取自服务端事实（计划工具调用离开 executing），
+  // 不引入前端自己的超时，也不重复轮询 /api/tasks（FloatingTaskPanel 已在轮）。
+  const planRunning = useMemo(() => shouldPollRunningPlan(toolCalls), [toolCalls]);
+
+  useEffect(() => {
+    if (!planRunning) return;
+    const conversationId = activeConversationId;
+    if (!conversationId) return;
+    const timer = window.setInterval(() => {
+      // 撞上流式输出时本轮跳过（下一轮再补），避免覆盖 send() 的乐观占位消息
+      if (sendingRef.current) {
+        pendingSettleConversationRef.current = conversationId;
+        return;
+      }
+      void reloadConversation(conversationId);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activeConversationId, planRunning, reloadConversation]);
 
   useEffect(() => {
     setActiveConversationId(undefined);
