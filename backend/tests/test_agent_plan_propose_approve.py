@@ -29,6 +29,21 @@ from app.services.agent_plan_schema import (
 from app.services.project_agent_service import ProjectAgentService
 
 
+@pytest.fixture(autouse=True)
+def stub_history_budget(monkeypatch):
+    """PR-0c 合并后：本文件锁的是规划回合，不是预算换算（与 main 侧同习惯）。
+
+    换算要走 B 的探测结论（DB 缓存行 + 网关元数据）⇒ 与本文件要证的事无关，
+    统一钉成 PR-0c 之前的硬编码 60000，规划断言一字不改。
+    """
+    import app.services.agent_prompt_budget as apb
+
+    async def fake_resolve(**kwargs):
+        return 60_000
+
+    monkeypatch.setattr(apb, "resolve_history_budget_chars", fake_resolve)
+
+
 ALLOWED = {"get_project_overview", "list_outlines", "start_project_task"}
 
 
@@ -242,7 +257,7 @@ async def db_session(db_engine):
 
 @pytest.fixture
 async def env(db_engine, db_session):
-    """种子数据 + 可直接驱动 stream_chat 的 service（api_provider 必须是真字符串）。"""
+    """种子数据 + 可直接驱动 stream_chat 的 service（provider 出口必须是真方法）。"""
     db_session.add(Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"))
     conversation = AgentConversation(
         user_id=USER_ID, project_id=PROJECT_ID, title="planning turn"
@@ -252,7 +267,10 @@ async def env(db_engine, db_session):
 
     service = ProjectAgentService(
         db=db_session,
-        ai_service=SimpleNamespace(default_model="mock-model", api_provider="openai"),
+        ai_service=SimpleNamespace(
+            default_model="mock-model",
+            resolve_dispatch_provider=lambda **kwargs: "openai",
+        ),
         project=Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"),
         user_id=USER_ID,
     )
