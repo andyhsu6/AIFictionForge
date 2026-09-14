@@ -623,6 +623,33 @@ async def approve_plan(
     )
 
 
+@router.post("/plans/{plan_task_id}/cancel", summary="停止计划（服务端级联取消）")
+async def cancel_agent_plan(
+    project_id: str,
+    plan_task_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """停止一份运行中的计划。
+
+    必须走 runner 的 request_plan_cancellation（级联取消在跑的子任务并把原因写
+    progress_details），不能复用通用任务取消：那条路径会先把计划行置 cancelled，
+    之后 TaskProgressTracker 永久跳过写入，计划行拿不到最终步数。
+    """
+    user_id = _user_id(request)
+    await verify_project_access(project_id, user_id, db)
+    from app.services.agent_plan_runner import request_plan_cancellation
+
+    if not request_plan_cancellation(
+        plan_task_id,
+        reason="用户已停止计划",
+        expected_user_id=user_id,
+        expected_project_id=project_id,
+    ):
+        raise ApiError(code="not_found.agent_plan")
+    return {"plan_task_id": plan_task_id, "status": "cancelling", "message": "计划已请求停止"}
+
+
 @router.post("/tool-calls/{tool_call_id}/reject", response_model=AgentToolDecisionResponse)
 async def reject_tool_call(
     project_id: str,

@@ -20,10 +20,15 @@ logger = get_logger(__name__)
 
 
 def _background_task_data(task: BackgroundTask) -> dict:
+    raw_input = task.task_input
+    conversation_id = raw_input.get("conversation_id") if isinstance(raw_input, dict) else None
     return {
         "id": task.id,
         "task_type": task.task_type,
         "project_id": task.project_id,
+        # PR-3：计划类任务把会话归属透出（非计划任务恒为 None）。
+        # 只透出这个标量，不透出整个 task_input（内含用户提供的正文参数）。
+        "conversation_id": conversation_id if isinstance(conversation_id, str) else None,
         "status": task.status,
         "progress": task.progress or 0,
         "status_message": task.status_message,
@@ -64,6 +69,7 @@ def _batch_task_data(task: BatchGenerationTask) -> dict:
         "id": task.id,
         "task_type": "chapter_batch",
         "project_id": task.project_id,
+        "conversation_id": None,
         "status": task.status,
         "progress": progress,
         "status_message": status_message,
@@ -111,6 +117,7 @@ def _analysis_task_data(
         "id": task.id,
         "task_type": "chapter_analysis",
         "project_id": task.project_id,
+        "conversation_id": None,
         "status": task.status,
         "progress": task.progress or 0,
         "status_message": status_message,

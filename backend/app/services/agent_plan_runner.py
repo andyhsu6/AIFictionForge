@@ -1200,15 +1200,29 @@ async def _cancel_sub_task(
     return False
 
 
-def request_plan_cancellation(plan_task_id: str, *, reason: str = "计划已取消") -> bool:
+def request_plan_cancellation(
+    plan_task_id: str,
+    *,
+    reason: str = "计划已取消",
+    expected_user_id: str | None = None,
+    expected_project_id: str | None = None,
+) -> bool:
     """同步请求取消：置标记 + 取消 runner 自己的 asyncio.Task。
 
     架构计划 §3 取消坑②：只把计划行置 cancelled 不会打断正在等待的 600s 子任务，
     所以必须握有 Task 句柄、由 CancelledError 触发的收尾路径去级联取消在途子任务。
     取消原因写 progress_details，不写 status_message——那一列已经被 cancel_task 冻结。
+
+    expected_user_id / expected_project_id：HTTP 端点传入调用方身份，把 _PLAN_HANDLES 的
+    全局查找绑定到属主上；不匹配即返回 False 且不置标记、不取消 Task。两者都不传时保持
+    原有「只按 plan_task_id 查找」的语义（PR-2b/PR-2c 的调用点不受影响）。
     """
     handle = _PLAN_HANDLES.get(plan_task_id)
     if handle is None:
+        return False
+    if expected_user_id is not None and handle.user_id != expected_user_id:
+        return False
+    if expected_project_id is not None and handle.project_id != expected_project_id:
         return False
     if handle.cancel_requested:
         # 幂等：标记已置起说明 runner 正在收尾（外部首请求或轮询读到已取消的计划行），

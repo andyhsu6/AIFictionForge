@@ -47,6 +47,8 @@ import type {
   AgentToolCall,
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
+import PlanApprovalCard from './PlanApprovalCard';
+import { decideSettleRefresh, isPlanSummaryMessage, isPlanToolCall, parsePlanPayload, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -227,23 +229,27 @@ export default function ProjectAgentPanel({
     }
   }, [projectId]);
 
-  const loadConversation = useCallback(async (conversationId: string) => {
-    setLoadingHistory(true);
+  // silent：计划轮询 / 收尾刷新不得闪加载态，也不得重置用户手动展开的过程面板。
+  const loadConversation = useCallback(async (conversationId: string, opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setLoadingHistory(true);
     try {
       const detail = await projectAgentApi.getConversation(projectId, conversationId);
       setActiveConversationId(detail.id);
       setMessages(detail.messages);
       setToolCalls(detail.tool_calls);
       setExecutionSteps(detail.execution_steps || []);
-      setExpandedProcessIds(new Set(
-        (detail.execution_steps || [])
-          .filter(step => step.status === 'waiting_confirmation' && step.assistant_message_id)
-          .map(step => step.assistant_message_id as string)
-      ));
+      if (!silent) {
+        setExpandedProcessIds(new Set(
+          (detail.execution_steps || [])
+            .filter(step => step.status === 'waiting_confirmation' && step.assistant_message_id)
+            .map(step => step.assistant_message_id as string)
+        ));
+      }
     } catch (error) {
       console.error('加载灵创创作助手对话失败:', error);
     } finally {
-      setLoadingHistory(false);
+      if (!silent) setLoadingHistory(false);
     }
   }, [projectId]);
 
@@ -257,6 +263,116 @@ export default function ProjectAgentPanel({
     }
   }, [loadConversation, projectId]);
 
+  // ---- PR-3：计划完成后的自动收尾刷新 -------------------------------------
+  // 分工：业务数据刷新由 ProjectDetail.tsx 的 SETTLED 监听负责；
+  // 本面板只刷会话（messages / tool_calls / execution_steps），两侧互不重叠。
+  const sendingRef = useRef(false);
+  const reloadInFlightRef = useRef(false);
+  const reloadQueuedRef = useRef(false);
+  const pendingSettleConversationRef = useRef<string | null>(null);
+  const activeConversationIdRef = useRef<string | undefined>(undefined);
+  const resultConversationIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  /**
+   * 同一时刻至多一条 getConversation 在途；在途期间的事件只留一个 trailing 标记，
+   * 因此 N 条并发事件最多产生 2 次请求，而不是 N 次。
+   */
+  const reloadConversation = useCallback(async (conversationId: string) => {
+    if (!conversationId) return;
+    if (reloadInFlightRef.current) {
+      reloadQueuedRef.current = true;
+      return;
+    }
+    reloadInFlightRef.current = true;
+    try {
+      do {
+        reloadQueuedRef.current = false;
+        await loadConversation(conversationId, { silent: true });
+      } while (reloadQueuedRef.current);
+    } catch (error) {
+      console.error('刷新灵创创作助手对话失败:', error);
+    } finally {
+      reloadInFlightRef.current = false;
+    }
+  }, [loadConversation]);
+
+  useEffect(() => {
+    const handlePlanSettled = (payload?: unknown) => {
+      if (!payload || typeof payload !== 'object') return;
+      const data = payload as {
+        projectId?: string | null;
+        conversationId?: string | null;
+        taskType?: string | null;
+      };
+      const decision = decideSettleRefresh({
+        taskType: data.taskType,
+        eventProjectId: data.projectId,
+        currentProjectId: projectId,
+        eventConversationId: data.conversationId,
+        activeConversationId: activeConversationIdRef.current,
+        sending: sendingRef.current,
+      });
+      if (decision === 'ignore') return;
+      if (decision === 'list-only') {
+        void loadConversations();
+        return;
+      }
+      const target = data.conversationId || activeConversationIdRef.current;
+      if (!target) return;
+      // defer：正在流式输出时立刻 reload 会用服务端快照覆盖 send() 的乐观占位消息
+      if (decision === 'defer') {
+        pendingSettleConversationRef.current = target;
+        return;
+      }
+      void reloadConversation(target);
+    };
+    eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handlePlanSettled);
+    return () => {
+      eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handlePlanSettled);
+      // 卸载或切换项目时丢弃延后的刷新：重订阅后 projectId 已变，旧会话 id
+      // 不能再用新项目去拉取。
+      pendingSettleConversationRef.current = null;
+    };
+  }, [loadConversations, projectId, reloadConversation]);
+
+  // 流式结束后补做被 defer 的刷新；期间用户已切走会话则丢弃，避免用旧会话覆盖当前视图。
+  useEffect(() => {
+    if (sending) return;
+    const pending = pendingSettleConversationRef.current;
+    if (!pending) return;
+    pendingSettleConversationRef.current = null;
+    if (pending !== activeConversationIdRef.current) return;
+    void reloadConversation(pending);
+  }, [reloadConversation, sending]);
+
+  // 计划执行期（数十分钟）SSE 早已关闭，服务端只写库不推事件 ⇒ 用 3s 轮询补偿，
+  // 让计划卡逐步推进。停止条件取自服务端事实（计划工具调用离开 executing），
+  // 不引入前端自己的超时，也不重复轮询 /api/tasks（FloatingTaskPanel 已在轮）。
+  const planRunning = useMemo(() => shouldPollRunningPlan(toolCalls), [toolCalls]);
+
+  useEffect(() => {
+    if (!planRunning) return;
+    const conversationId = activeConversationId;
+    if (!conversationId) return;
+    const timer = window.setInterval(() => {
+      // 撞上流式输出时本轮跳过（下一轮再补），避免覆盖 send() 的乐观占位消息
+      if (sendingRef.current) {
+        pendingSettleConversationRef.current = conversationId;
+        return;
+      }
+      void reloadConversation(conversationId);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activeConversationId, planRunning, reloadConversation]);
+
   useEffect(() => {
     setActiveConversationId(undefined);
     setMessages([]);
@@ -264,6 +380,12 @@ export default function ProjectAgentPanel({
     setExecutionSteps([]);
     setExpandedProcessIds(new Set());
     autoApprovalAttemptedRef.current.clear();
+    // 切项目 = 换归属：旧会话的收尾标记与在途去重状态必须一起作废，
+    // 否则上一项目的 SETTLED 事件会用旧 projectId 去 reload（跨项目串数据）。
+    pendingSettleConversationRef.current = null;
+    reloadQueuedRef.current = false;
+    resultConversationIdRef.current = undefined;
+    activeConversationIdRef.current = undefined;
     void loadConversations(true);
     return () => abortRef.current?.abort();
   }, [loadConversations, projectId]);
@@ -325,11 +447,13 @@ export default function ProjectAgentPanel({
     }
   };
 
-  const send = async () => {
+  const send = useCallback(async () => {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sendingRef.current) return;
     setInput('');
     setSending(true);
+    // 同步置位：settle 与本轮流式同 tick 到达时也必须判为 defer，不能等 effect 回填 ref。
+    sendingRef.current = true;
     const now = new Date().toISOString();
     const userId = `local-user-${Date.now()}`;
     const assistantId = `local-assistant-${Date.now()}`;
@@ -348,6 +472,7 @@ export default function ProjectAgentPanel({
         message: content,
         page_context: { route: location.pathname, page: location.pathname.split('/').pop() },
         auto_approve: autoApprove,
+        plan_mode: true,
       }, {
         onConversation: data => {
           streamConversationId = data.conversation_id;
@@ -402,10 +527,27 @@ export default function ProjectAgentPanel({
           ]);
           notifyToolResources(data.tool_call, data.resources || []);
         },
+        onResult: data => {
+          // SSE 的权威收口：记下真正归属的会话，收尾后按它 reload，
+          // 顺带让 Task 4 的 defer 队列有一个明确目标。
+          if (data?.conversation_id) {
+            streamConversationId = data.conversation_id;
+            setActiveConversationId(data.conversation_id);
+          }
+          if (data?.conversation_id) resultConversationIdRef.current = data.conversation_id;
+        },
         onError: error => message.error(error),
       }, controller.signal);
       await loadConversations();
-      if (streamConversationId) await loadConversation(streamConversationId);
+      const targetConversation = resultConversationIdRef.current || streamConversationId;
+      resultConversationIdRef.current = undefined;
+      if (targetConversation) await reloadConversation(targetConversation);
+      // 流式期间被 defer 的计划收尾：此刻一定补一次，避免"要等下一次轮询才见收尾"
+      const pendingSettle = pendingSettleConversationRef.current;
+      if (pendingSettle) {
+        pendingSettleConversationRef.current = null;
+        await reloadConversation(pendingSettle);
+      }
     } catch (error) {
       const aborted = (error as Error).name === 'AbortError';
       setExecutionSteps(items => items.map(step => (
@@ -445,9 +587,10 @@ export default function ProjectAgentPanel({
       }
     } finally {
       setSending(false);
+      sendingRef.current = false;
       abortRef.current = undefined;
     }
-  };
+  }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, projectId, reloadConversation, t]);
 
   const decideTool = async (toolCall: AgentToolCall, confirm: boolean) => {
     setDecidingId(toolCall.id);
@@ -495,7 +638,7 @@ export default function ProjectAgentPanel({
     } finally {
       setApprovingAllMessageId(undefined);
     }
-  }, [activeConversationId, approvingAllMessageId, decidingId, loadConversation, loadConversations, notifyToolResources, projectId]);
+  }, [activeConversationId, approvingAllMessageId, decidingId, loadConversation, loadConversations, message, notifyToolResources, projectId, t]);
 
   const toggleAutoApprove = (enabled: boolean) => {
     setAutoApprove(enabled);
@@ -506,13 +649,38 @@ export default function ProjectAgentPanel({
   // 开启自动批准后，处理已经在历史对话中等待确认的修改。
   useEffect(() => {
     if (!autoApprove || sending || decidingId || approvingAllMessageId) return;
-    const waiting = toolCalls.filter(toolCall => (
-      toolCall.status === 'waiting_confirmation' && !autoApprovalAttemptedRef.current.has(toolCall.id)
+    const planWaiting = toolCalls.filter(toolCall => (
+      isPlanToolCall(toolCall)
+      && toolCall.status === 'waiting_confirmation'
+      && !autoApprovalAttemptedRef.current.has(toolCall.id)
     ));
-    if (!waiting.length) return;
-    waiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
-    void approveAllTools(waiting, 'auto-approve');
-  }, [approveAllTools, autoApprove, approvingAllMessageId, decidingId, sending, toolCalls]);
+    const otherWaiting = toolCalls.filter(toolCall => (
+      !isPlanToolCall(toolCall)
+      && toolCall.status === 'waiting_confirmation'
+      && !autoApprovalAttemptedRef.current.has(toolCall.id)
+    ));
+    if (planWaiting.length) {
+      planWaiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
+      void (async () => {
+        for (const toolCall of planWaiting) {
+          const payload = parsePlanPayload(toolCall);
+          if (!payload) continue;
+          try {
+            await projectAgentApi.approvePlan(projectId, toolCall.id, {
+              selected_step_ids: payload.steps.map(step => step.id),
+            });
+            message.success(t('planApprovedToast'));
+          } catch (error) {
+            message.error(t('planApproveFailed', { message: (error as Error).message }));
+          }
+        }
+        if (activeConversationId) await reloadConversation(activeConversationId);
+      })();
+    }
+    if (!otherWaiting.length) return;
+    otherWaiting.forEach(toolCall => autoApprovalAttemptedRef.current.add(toolCall.id));
+    void approveAllTools(otherWaiting, 'auto-approve');
+  }, [activeConversationId, approveAllTools, approvingAllMessageId, autoApprove, decidingId, message, projectId, reloadConversation, sending, t, toolCalls]);
 
   const startResize = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -540,7 +708,39 @@ export default function ProjectAgentPanel({
       ? conversations.map(item => ({ key: item.id, label: item.title }))
       : [{ key: 'empty', label: t('noConversations'), disabled: true }],
     onClick: ({ key }: { key: string }) => key !== 'empty' && void loadConversation(key),
-  }), [conversations, loadConversation]);
+  }), [conversations, loadConversation, t]);
+
+  // 计划卡单点挂载：整份计划只有一个批准入口（架构 §2「一次批准整份计划」）。
+  // 判据取服务端事实（propose_plan 且仍 waiting_confirmation），刷新与轮询后都成立。
+  const awaitingPlanCalls = useMemo(() => toolCalls.filter(toolCall => (
+    isPlanToolCall(toolCall) && toolCall.status === 'waiting_confirmation'
+  )), [toolCalls]);
+
+  // 收尾摘要识别共用这一份集合；放进 renderToolMessage 里会让每条 tool 消息重建一次（O(n²)）。
+  const planToolCallIds = useMemo(() => new Set(
+    toolCalls.filter(isPlanToolCall).map(toolCall => toolCall.id)
+  ), [toolCalls]);
+
+  // 运行中的计划：进度块 + 唯一停止入口（planTaskIdOf 读 result.entity_id，
+  // 需要 approve-plan 把 {entity_id, task_type} 持久化进 AgentToolCall.result）
+  const runningPlans = useMemo(() => toolCalls
+    .filter(toolCall => isPlanToolCall(toolCall) && toolCall.status === 'executing')
+    .map(toolCall => ({ toolCall, planTaskId: planTaskIdOf(toolCall) }))
+    .filter((item): item is { toolCall: AgentToolCall; planTaskId: string } => Boolean(item.planTaskId)), [toolCalls]);
+
+  const orphanPlanSteps = useMemo(() => executionSteps.filter(step => (
+    !step.assistant_message_id && !step.user_message_id
+  )), [executionSteps]);
+
+  const stopPlan = useCallback(async (planTaskId: string) => {
+    try {
+      await projectAgentApi.cancelPlan(projectId, planTaskId);
+      message.success(t('planCancelToast'));
+      if (activeConversationId) await reloadConversation(activeConversationId);
+    } catch (error) {
+      console.error('停止计划失败:', error);
+    }
+  }, [activeConversationId, message, projectId, reloadConversation, t]);
 
   const renderStepIcon = (step: AgentExecutionStep) => {
     if (step.status === 'running') return <LoadingOutlined spin style={{ color: token.colorPrimary }} />;
@@ -616,6 +816,40 @@ export default function ProjectAgentPanel({
     } catch {
       // content 不是合法 JSON 时回退为原始文本
     }
+    const isPlanSummary = isPlanSummaryMessage(
+      { tool_call_id: item.tool_call_id, parsedToolName: toolName },
+      planToolCallIds,
+    );
+    // 收尾摘要：默认展开的纯文本块。刻意不接 MarkdownRenderer —— 这段文案由服务端
+    // 结构化摘要生成，任何 markdown/HTML 都只应当作为字面量出现（既有安全决定）。
+    if (isPlanSummary) {
+      return (
+        <div key={item.id} style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{
+              width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+              display: 'grid', placeItems: 'center',
+              background: token.colorBgContainer,
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}>
+              <AssistantLogo size={20} />
+            </div>
+            <div style={{ maxWidth: 'calc(100% - 42px)', minWidth: 0, flex: 1 }}>
+              <Text type="secondary" style={{ fontSize: 11 }}>{t('toolCall', { name: toolName })}</Text>
+              <div
+                data-testid="plan-summary-text"
+                style={{
+                  marginTop: 4, padding: 8, borderRadius: 6, fontSize: 12,
+                  background: token.colorFillQuaternary,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  color: token.colorText,
+                }}
+              >{resultText}</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div key={item.id} style={{ marginBottom: 10 }}>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -670,6 +904,7 @@ export default function ProjectAgentPanel({
     const processKey = `process-${messageId}`;
     const waitingToolCalls = toolCalls.filter(toolCall => (
       toolCall.status === 'waiting_confirmation'
+      && !isPlanToolCall(toolCall)
       && ordered.some(step => step.tool_call_id === toolCall.id)
     ));
     const statusTag = running
@@ -868,6 +1103,68 @@ export default function ProjectAgentPanel({
         <div ref={endRef} />
       </div>
 
+      {awaitingPlanCalls.length > 0 && (
+        <div style={{ padding: '0 12px 10px' }}>
+          {awaitingPlanCalls.map(toolCall => (
+            <PlanApprovalCard
+              key={toolCall.id}
+              projectId={projectId}
+              toolCall={toolCall}
+              onDecided={() => {
+                if (activeConversationId) void reloadConversation(activeConversationId);
+                void loadConversations();
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {runningPlans.length > 0 && (
+        <div data-testid="plan-progress" style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {runningPlans.map(({ toolCall, planTaskId }) => {
+            const payload = parsePlanPayload(toolCall);
+            const total = payload ? payload.steps.length : 0;
+            const done = orphanPlanSteps.filter(step => step.status === 'completed' || step.status === 'failed').length;
+            return (
+              <div key={toolCall.id} style={{
+                border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 10, padding: 10,
+              }}>
+                <Space size={6} wrap>
+                  <LoadingOutlined spin style={{ color: token.colorPrimary }} />
+                  <Text strong style={{ fontSize: 12 }}>{t('planCardTitle')}</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    {t('planStepProgress', { current: Math.min(done, total), total })}
+                  </Text>
+                </Space>
+                <div data-testid="plan-steps" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {orphanPlanSteps.map(step => (
+                    <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {renderStepIcon(step)}
+                      <Text style={{ fontSize: 12, flex: 1 }}>{step.title}</Text>
+                    </div>
+                  ))}
+                </div>
+                <Popconfirm
+                  title={t('planStop')}
+                  description={t('planUncancellableNotice')}
+                  okText={t('planStop')}
+                  cancelText={t('cancel')}
+                  onConfirm={() => void stopPlan(planTaskId)}
+                >
+                  <Button
+                    data-testid="plan-stop-button"
+                    size="small"
+                    danger
+                    icon={<StopOutlined />}
+                    style={{ marginTop: 8 }}
+                  >{t('planStop')}</Button>
+                </Popconfirm>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ padding: 10, borderTop: `1px solid ${token.colorBorderSecondary}`, flexShrink: 0 }}>
         <TextArea
           value={input}
@@ -890,11 +1187,19 @@ export default function ProjectAgentPanel({
           </Text>
           <Switch size="small" checked={autoApprove} onChange={toggleAutoApprove} />
         </Space>
-          {sending ? (
-            <Button size="small" icon={<StopOutlined />} onClick={() => abortRef.current?.abort()}>{t('stop')}</Button>
-          ) : (
-            <Button type="primary" size="small" icon={<SendOutlined />} disabled={!input.trim()} onClick={() => void send()}>{t('send')}</Button>
-          )}
+          <Space size={6}>
+            {sending && (
+              <Button size="small" icon={<StopOutlined />} onClick={() => abortRef.current?.abort()}>{t('stop')}</Button>
+            )}
+            <Button
+              data-testid="composer-send"
+              type="primary"
+              size="small"
+              icon={<SendOutlined />}
+              disabled={sending || !input.trim()}
+              onClick={() => void send()}
+            >{t('send')}</Button>
+          </Space>
         </div>
       </div>
     </div>

@@ -425,6 +425,15 @@ class AIService:
         """
         return self._dispatch_endpoint(provider)[0]
 
+    def is_thinking_model_active(self) -> bool:
+        """本次实发模型是否思考型（与 `resolve_effective_max_tokens` 同一实例口径）。
+
+        规划收口轮用它决定是否放弃 `tool_choice="required"`：思考型网关以 HTTP 400
+        拒收强制 tool_choice。服务层不得读 `default_model` / `base_url` 实例字段
+        （PR-0c 评审 D2 守卫 + 默认模型读取点数守卫），取值留在本类内部。
+        """
+        return is_thinking_model(self.default_model, self.base_url)
+
     @staticmethod
     def _resolve_model_or_raise(model: Optional[str], default_model: Optional[str]) -> str:
         """解析本次请求的实发模型：显式传入优先，否则用**用户配置的**默认模型。

@@ -100,6 +100,15 @@ def agent_system_prompt(
 CONFIRMATION_STEP_CONTENT = "已生成修改预览，等待用户确认。"
 # 计划卡与差异确认卡的区别：计划没有 preview，收口文案也不得提到"下方差异"。
 PLAN_APPROVAL_STEP_CONTENT = "已生成执行计划，等待你确认后开始逐步执行。"
+# 规划回合的显式指令：plan_mode=True 时由 `_build_prompt` 追加到 prompt 末尾。
+# 只把 propose_plan 挂进工具集而不告知模型何时该用它 ⇒ 具体多步请求（多章分析后总结）
+# 会被模型当成直接可执行任务，落到 start_project_task 的逐工具确认，计划卡永不出现。
+# 非规划回合（plan_mode=False）不得包含本段：prompt 必须与 PR-1 逐字节一致。
+PLAN_MODE_INSTRUCTION = (
+    "本回合是规划回合：用户的请求若需要多步完成（多个章节、批量操作、先分析再总结等），"
+    "必须先调用 propose_plan 提交完整的步骤清单并等待用户确认，不得直接执行这些步骤；"
+    "只有单步、只读或闲聊类请求才可以直接回答或调用工具。"
+)
 
 
 def mcp_tool_is_read_only(metadata: dict[str, Any]) -> bool:
@@ -474,6 +483,7 @@ class ProjectAgentService:
                 budget_chars=budget_chars,
                 trace=budget_trace,
                 plan_run_state=plan_run_state,
+                plan_mode=plan_mode,
             )
             if budget_trace.dropped_messages:
                 logger.warning(budget_trace.as_log())
@@ -524,6 +534,12 @@ class ProjectAgentService:
                 if closing and provider_supports_required_tool_choice(
                     self.ai_service.resolve_dispatch_provider()
                 )
+                # 思考型模型（deepseek-* / commandcode 等网关）以 HTTP 400
+                # ("Thinking mode does not support this tool_choice") 拒收强制
+                # tool_choice；收口轮工具集只剩 propose_plan，降级 auto 不会失去
+                # 产出计划的能力，只解除网关侧硬拒绝。判断经 AIService 公开出口，
+                # 服务层不读 default_model / base_url 实例字段（两道结构守卫同向）。
+                and not self.ai_service.is_thinking_model_active()
                 else "auto"
             )
             response = await self._call_round(
@@ -1505,6 +1521,7 @@ class ProjectAgentService:
         page_context: dict[str, Any],
         force_answer: bool = False,
         plan_run_state: dict[str, Any] | None = None,
+        plan_mode: bool = False,
         *,
         budget_chars: int,
         trace: PromptBudgetTrace | None = None,
@@ -1583,6 +1600,10 @@ class ProjectAgentService:
             sections.append("已达到工具轮数上限。请根据现有信息直接回答，不要再调用工具。")
         else:
             sections.append("请处理最后一条用户消息；需要项目数据时调用工具。")
+        if plan_mode and not force_answer:
+            # force_answer 轮不带工具且已注入「不要再调用工具」：规划指令在那里不可执行，
+            # 只会与既有指令互相矛盾，因此只在常规规划轮追加。
+            sections.append(PLAN_MODE_INSTRUCTION)
         return "\n\n".join(sections)
 
     @staticmethod

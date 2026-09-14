@@ -26,7 +26,11 @@ from app.services.agent_plan_schema import (
     plannable_tool_names,
     validate_plan,
 )
-from app.services.project_agent_service import ProjectAgentService
+from app.services.ai_service import is_thinking_model
+from app.services.project_agent_service import (
+    PLAN_MODE_INSTRUCTION,
+    ProjectAgentService,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -255,6 +259,24 @@ async def db_session(db_engine):
         yield session
 
 
+class _FakeAgentAIService:
+    """假 AI 出口：忠实复刻服务层用到的公开出口（provider / 思考型判断）。
+
+    思考型判断必须真的读 `default_model` / `base_url`：本文件 issue #77 的用例
+    会逐次改这两个字段，恒 False 的桩会让那些断言真空通过。
+    """
+
+    def __init__(self, *, default_model: str = "mock-model", base_url: str = "") -> None:
+        self.default_model = default_model
+        self.base_url = base_url
+
+    def resolve_dispatch_provider(self, provider=None) -> str:
+        return "openai"
+
+    def is_thinking_model_active(self) -> bool:
+        return is_thinking_model(self.default_model, self.base_url)
+
+
 @pytest.fixture
 async def env(db_engine, db_session):
     """种子数据 + 可直接驱动 stream_chat 的 service（provider 出口必须是真方法）。"""
@@ -267,10 +289,7 @@ async def env(db_engine, db_session):
 
     service = ProjectAgentService(
         db=db_session,
-        ai_service=SimpleNamespace(
-            default_model="mock-model",
-            resolve_dispatch_provider=lambda **kwargs: "openai",
-        ),
+        ai_service=_FakeAgentAIService(),
         project=Project(id=PROJECT_ID, user_id=USER_ID, title="neutral project"),
         user_id=USER_ID,
     )
@@ -429,6 +448,41 @@ async def test_non_planning_round_never_offers_propose_plan(env):
         assert PROPOSE_PLAN_TOOL_NAME not in names
 
 
+def test_plan_mode_instruction_is_added_only_when_planning():
+    """规划回合必须在 prompt 里明说"先 propose_plan"；非规划回合逐字节回 PR-1。
+
+    只把 propose_plan 挂进工具集不构成指令：具体多步请求（多章分析后总结）下模型
+    照样直接调 start_project_task 并停在逐工具确认，计划卡永不出现（5/5 实测）。
+    """
+    svc = _bare_service()
+    svc.project = SimpleNamespace(id="p-plan", title="neutral project")
+    history = [
+        AgentMessage(conversation_id="c1", role="user", content="plan a multi-step request")
+    ]
+    page_context = {"route": "/project/p-plan"}
+
+    default_prompt = svc._build_prompt(history, page_context, budget_chars=60_000)
+    off_prompt = svc._build_prompt(history, page_context, plan_mode=False, budget_chars=60_000)
+    on_prompt = svc._build_prompt(history, page_context, plan_mode=True, budget_chars=60_000)
+
+    assert off_prompt == default_prompt, "plan_mode=False 必须与 PR-1 逐字节一致"
+    assert PLAN_MODE_INSTRUCTION not in off_prompt
+    assert PLAN_MODE_INSTRUCTION in on_prompt
+    assert on_prompt.startswith(off_prompt), "规划指令只能追加，不得改写既有段落"
+
+
+@pytest.mark.anyio
+async def test_planning_turn_threads_plan_mode_into_prompt(env):
+    """调用点必须把 plan_mode 穿到 _build_prompt：只测 _build_prompt 挡不住忘传。"""
+    plan_calls: list[dict] = []
+    await run_turn(env, [answer("收到。")], plan_mode=True, calls=plan_calls)
+    assert plan_calls and PLAN_MODE_INSTRUCTION in plan_calls[0]["prompt"]
+
+    off_calls: list[dict] = []
+    await run_turn(env, [answer("收到。")], plan_mode=False, calls=off_calls)
+    assert off_calls and PLAN_MODE_INSTRUCTION not in off_calls[0]["prompt"]
+
+
 @pytest.mark.anyio
 async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
     """手段 ①+② 的回合级落地：预算耗尽那一轮只给 propose_plan 且 tool_choice=required。"""
@@ -457,6 +511,105 @@ async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
         PROPOSE_PLAN_TOOL_NAME
     ]
     assert calls[2]["tool_choice"] == "required"
+
+
+# --------------------------------------------------------------------------- #
+# 思考型模型不得收到强制 tool_choice（issue #77：真实运行被网关拒
+# "Thinking mode does not support this tool_choice" ⇒ 计划永远产不出来）
+# --------------------------------------------------------------------------- #
+
+
+async def _closing_turn_calls(
+    env, *, model: str, base_url: str, plan_mode: bool = True
+) -> list[dict]:
+    """驱动到第 3 次模型调用（规划模式的收口轮）并返回全部捕获的 kwargs。
+
+    收口轮不产出计划 ⇒ 走 (a) 形态有界重试；与
+    test_closing_round_offers_only_propose_plan_and_requires_it 用同一组响应，
+    因此第 3 次调用形状可直接比较。
+    """
+    env.service.ai_service.default_model = model
+    env.service.ai_service.base_url = base_url
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            answer("收口轮直接回答了（缺陷形态）。"),
+        ],
+        plan_mode=plan_mode,
+        calls=calls,
+    )
+    return calls
+
+
+@pytest.mark.anyio
+async def test_thinking_model_closing_round_uses_auto_tool_choice(env):
+    """思考型模型（deepseek 名 / commandcode 网关）拒收 required ⇒ 收口轮必须回退 auto。
+
+    收口轮工具集只留 propose_plan，auto 不削弱"模型仍能提交计划"的能力，
+    只解除网关对强制 tool_choice 的硬拒绝。
+    """
+    calls = await _closing_turn_calls(
+        env, model="deepseek-v4-flash", base_url="https://api.commandcode.ai/v1"
+    )
+
+    closing = calls[2]
+    assert [item["function"]["name"] for item in closing["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert closing["tool_choice"] == "auto"
+
+
+@pytest.mark.anyio
+async def test_thinking_model_closing_round_still_produces_plan(env):
+    """配对反向：回退 auto 之后，收口轮提交的计划仍必须被接受（不是死胡同）。"""
+    env.service.ai_service.default_model = "deepseek-v4-flash"
+    env.service.ai_service.base_url = "https://api.commandcode.ai/v1"
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            _plan_response(call_id="call-thinking-plan"),
+        ],
+        plan_mode=True,
+        calls=[],
+    )
+
+    final = [e for e in events if e["type"] == "result"][-1]
+    assert final["data"]["status"] == "waiting_confirmation"
+    plan_rows = [
+        row for row in await read_tool_calls(env)
+        if row.tool_name == PROPOSE_PLAN_TOOL_NAME
+    ]
+    assert len(plan_rows) == 1 and plan_rows[0].status == "waiting_confirmation"
+
+
+@pytest.mark.anyio
+async def test_non_thinking_model_closing_round_still_requires_tool_choice(env):
+    """非思考型 openai 模型维持 required：PR-2a 的强制产出手段不得被本修复回退。"""
+    calls = await _closing_turn_calls(
+        env, model="gpt-4o", base_url="https://api.openai.com/v1"
+    )
+    assert calls[2]["tool_choice"] == "required"
+
+
+@pytest.mark.anyio
+async def test_plan_mode_off_keeps_tool_choice_auto(env):
+    """plan_mode=False 与 PR-1 逐字一致：看不到计划工具，且所有轮 tool_choice=auto。"""
+    calls = await _closing_turn_calls(
+        env,
+        model="deepseek-v4-flash",
+        base_url="https://api.commandcode.ai/v1",
+        plan_mode=False,
+    )
+    assert calls, "没有捕获到任何模型调用"
+    for call in calls:
+        names = {item["function"]["name"] for item in (call["tools"] or [])}
+        assert PROPOSE_PLAN_TOOL_NAME not in names
+        assert call["tool_choice"] == "auto"
 
 
 @pytest.mark.anyio
