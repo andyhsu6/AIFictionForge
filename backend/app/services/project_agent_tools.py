@@ -212,10 +212,10 @@ class ProjectAgentToolRegistry:
             ),
             ProjectAgentTool(
                 "list_foreshadows",
-                "查询当前项目伏笔，可按状态筛选。",
+                "查询当前项目伏笔，可按状态筛选；limit 上限 500，默认 50。",
                 _object_schema({
                     "status": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                 }),
             ),
             ProjectAgentTool(
@@ -654,7 +654,7 @@ class ProjectAgentToolRegistry:
         ]}
 
     async def _list_foreshadows(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        limit = min(max(int(arguments.get("limit", 50)), 1), 100)
+        limit = min(max(int(arguments.get("limit", 50)), 1), 500)
         query = select(Foreshadow).where(Foreshadow.project_id == self.project.id)
         if arguments.get("status"):
             query = query.where(Foreshadow.status == arguments["status"])

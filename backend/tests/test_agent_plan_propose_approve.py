@@ -841,8 +841,9 @@ async def read_messages(env, role: str) -> list:
 async def test_closing_round_without_tool_call_retries_exactly_twice(env):
     """形态 (a)：收口轮没有 tool_calls ⇒ 计数重问，最多 2 次后以可读文案收口。
 
-    总轮数 5 = 3 轮只读 + 2 次重问 + 循环尾收口（收口轮起点 index 3，force 轮 index 4）；
-    把 PLAN_MAX_RETRIES 调大/调小会让轮数或纠正消息数变红——两个方向都钉住「≤2」。
+    总轮数 6 = 3 轮只读 + 3 次收口尝试（issue #98 起收口轮 index 3/4/5 都带工具，
+    第 3 次尝试触发耗尽收口）；把 PLAN_MAX_RETRIES 调大/调小会让轮数或纠正消息数
+    变红——两个方向都钉住「≤2 次重问」。
     """
     calls: list[dict] = []
     events = await run_turn(
@@ -858,9 +859,10 @@ async def test_closing_round_without_tool_call_retries_exactly_twice(env):
         calls=calls,
     )
 
-    assert len(calls) == 5, f"实际发生 {len(calls)} 次模型调用，重试上界失控"
+    assert len(calls) == 6, f"实际发生 {len(calls)} 次模型调用，重试上界失控"
     # 定案的数字，不是从被测常量推出来的：改 PLAN_MAX_RETRIES 就必须同时改这里。
     assert ProjectAgentService.PLAN_MAX_RETRIES == 2
+    # 恰好 2 次重问各写一条 system 纠正；第 3 次尝试直接触发耗尽收口，不再回喂纠正。
     assert len(await read_messages(env, "system")) == 2
     finals = [e for e in events if e["type"] == "final_chunk"]
     assert finals, "必须以可读文案收口"
@@ -975,7 +977,7 @@ async def test_closing_round_never_executes_a_non_plan_tool(env):
         calls=calls,
     )
 
-    assert len(calls) == 5, "违规后必须发生重试（第 4 次调用是收口轮）"
+    assert len(calls) == 6, "违规后必须发生重试（第 4 次调用是收口轮，3 次尝试用满）"
     assert [item["function"]["name"] for item in calls[3]["tools"]] == [
         PROPOSE_PLAN_TOOL_NAME
     ]
@@ -1059,10 +1061,11 @@ async def test_closing_violation_retry_can_still_produce_the_plan(env):
 
 
 @pytest.mark.anyio
-async def test_force_answer_round_text_never_becomes_the_answer(env):
-    """issue #96 P1：force_answer 轮没有工具，拿不到计划就不得把原文当普通回答。
+async def test_closing_round_text_never_becomes_the_answer(env):
+    """issue #96 P1 / #98：拿不到计划就不得把模型原文当普通回答。
 
-    循环尾必须走 _finish_without_plan 的可读收口；未修复时这里会抛裸 RuntimeError。
+    issue #98 起规划回合的收口轮带工具（index 3/4/5），本形状在 index 5 触发耗尽
+    收口；无论走 force_answer 兜底还是耗尽收口，模型原文都不得冒充最终回答。
     """
     calls: list[dict] = []
     events = await run_turn(
@@ -1077,8 +1080,10 @@ async def test_force_answer_round_text_never_becomes_the_answer(env):
         calls=calls,
     )
 
-    assert len(calls) == 5
-    assert "tools" not in calls[4], "第 5 次调用是 force_answer 轮（无工具、流式）"
+    assert len(calls) == 6
+    assert [item["function"]["name"] for item in calls[5]["tools"]] == [
+        PROPOSE_PLAN_TOOL_NAME
+    ], "第 6 次调用仍是带工具的收口轮（耗尽收口在此前落地）"
     finals = [e for e in events if e["type"] == "final_chunk"]
     assert finals, "必须以可读文案收口"
     assert "计划" in finals[-1]["content"]

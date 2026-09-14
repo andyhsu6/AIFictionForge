@@ -463,8 +463,14 @@ class ProjectAgentService:
         # §5 ④：裁剪留痕**每回合一条**（多轮时更新同一行，不让一次裁剪刷出 N 行）。
         budget_trim_step: AgentExecutionStep | None = None
 
-        for round_index in range(self.MAX_TOOL_ROUNDS + 1):
-            force_answer = round_index == self.MAX_TOOL_ROUNDS
+        # issue #98：规划回合在常规工具轮之后补 `PLAN_MAX_RETRIES` 个**带工具**的
+        # 收口轮。收口轮被产出校验拒收（如步骤参数越界）时，模型需要下一轮才能重试；
+        # 只按 MAX_TOOL_ROUNDS 收束会让最后一次拒收直接落到无工具的 force_answer 轮，
+        # 重试无处可发。非规划回合 plan_extra=0 ⇒ 轮数与逐轮行为与今天逐字一致。
+        plan_extra = self.PLAN_MAX_RETRIES if plan_mode else 0
+        max_rounds = self.MAX_TOOL_ROUNDS + plan_extra
+        for round_index in range(max_rounds + 1):
+            force_answer = round_index >= max_rounds
             thought = await self._create_step(
                 conversation,
                 user_message,

@@ -70,8 +70,8 @@ RELATIONSHIP_DATA = {
 EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "list_organizations",
-        "description": "查询当前项目的结构化组织及势力属性。",
-        "parameters": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+        "description": "查询当前项目的结构化组织及势力属性；limit 上限 500，默认 50。",
+        "parameters": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}),
     },
     {
         "name": "get_organization_detail",
@@ -80,8 +80,8 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "list_careers",
-        "description": "查询当前项目的主职业和副职业体系。",
-        "parameters": _schema({"career_type": {"type": "string", "enum": ["all", "main", "sub"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+        "description": "查询当前项目的主职业和副职业体系；limit 上限 500，默认 50。",
+        "parameters": _schema({"career_type": {"type": "string", "enum": ["all", "main", "sub"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}),
     },
     {
         "name": "get_career_detail",
@@ -306,7 +306,7 @@ class ProjectAgentExtendedTools:
         return await handler(arguments)
 
     async def _list_organizations(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        limit = min(max(int(arguments.get("limit", 50)), 1), 100)
+        limit = min(max(int(arguments.get("limit", 50)), 1), 500)
         query = (
             select(Organization, Character)
             .join(Character, Organization.character_id == Character.id)
@@ -344,7 +344,7 @@ class ProjectAgentExtendedTools:
         }
 
     async def _list_careers(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        limit = min(max(int(arguments.get("limit", 50)), 1), 100)
+        limit = min(max(int(arguments.get("limit", 50)), 1), 500)
         query = select(Career).where(Career.project_id == self.project.id)
         career_type = arguments.get("career_type", "all")
         if career_type in {"main", "sub"}:
