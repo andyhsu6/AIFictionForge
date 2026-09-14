@@ -196,6 +196,7 @@ export default function ProjectAgentPanel({
   const [input, setInput] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sending, setSending] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string>();
   const [decidingId, setDecidingId] = useState<string>();
   const [approvingAllMessageId, setApprovingAllMessageId] = useState<string>();
   const [autoApprove, setAutoApprove] = useState(() => localStorage.getItem(AUTO_APPROVE_KEY) === 'true');
@@ -462,6 +463,7 @@ export default function ProjectAgentPanel({
       { id: userId, conversation_id: activeConversationId || '', role: 'user', content, created_at: now },
       { id: assistantId, conversation_id: activeConversationId || '', role: 'assistant', content: '', created_at: now },
     ]);
+    setStreamingMessageId(assistantId);
     let streamConversationId = activeConversationId;
     let streamAssistantId = assistantId;
     const controller = new AbortController();
@@ -493,6 +495,7 @@ export default function ProjectAgentPanel({
         },
         onFinalStart: data => {
           streamAssistantId = data.message_id;
+          setStreamingMessageId(data.message_id);
           setMessages(items => items.map(item => (
             item.id === assistantId ? { ...item, id: data.message_id } : item
           )));
@@ -589,6 +592,7 @@ export default function ProjectAgentPanel({
       setSending(false);
       sendingRef.current = false;
       abortRef.current = undefined;
+      setStreamingMessageId(undefined);
     }
   }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, projectId, reloadConversation, t]);
 
@@ -1063,7 +1067,7 @@ export default function ProjectAgentPanel({
             : [];
           const toolCallCount = item.role === 'assistant' ? countToolCalls(item.tool_calls) : 0;
           return (
-            <div key={item.id} style={{ marginBottom: 14 }}>
+            <div key={item.id} data-testid={`agent-message-${item.id}`} style={{ marginBottom: 14 }}>
               <div style={{
                 display: 'flex', gap: 8,
                 flexDirection: item.role === 'user' ? 'row-reverse' : 'row',
@@ -1092,7 +1096,9 @@ export default function ProjectAgentPanel({
                           ? <MarkdownRenderer content={item.content} compact />
                           : (toolCallCount > 0
                               ? <Text type="secondary" style={{ fontSize: 12 }}>{t('preparingToolCalls', { count: toolCallCount })}</Text>
-                              : <Spin size="small" />))
+                              : (sending && item.id === streamingMessageId
+                                  ? <Spin size="small" />
+                                  : null)))
                       : item.content}
                   </div>
                 </div>
