@@ -5,7 +5,7 @@
 import { App as AntdApp } from 'antd';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import ProjectAgentPanel from './ProjectAgentPanel';
 import { eventBus, EventNames } from '../../store/eventBus';
@@ -43,6 +43,33 @@ const detail = (): AgentConversationDetail => ({
   messages: [{ id: 'm-1', conversation_id: 'conv-1', role: 'assistant', content: 'done', created_at: '2026-09-13T00:00:00' }],
   tool_calls: [],
   execution_steps: [],
+});
+
+const runningDetail = (): AgentConversationDetail => ({
+  ...detail(),
+  tool_calls: [{
+    id: 'tc-plan',
+    conversation_id: 'conv-1',
+    tool_name: 'propose_plan',
+    arguments: { objective: 'plan objective', steps: [{ id: 's1', tool: 'start_project_task', action: 'analyze_chapter', arguments: {} }] },
+    risk_level: 2,
+    requires_confirmation: true,
+    status: 'executing',
+    created_at: '2026-09-13T00:00:00',
+  }],
+  execution_steps: [{
+    id: 'step-1',
+    conversation_id: 'conv-1',
+    assistant_message_id: 'm-1',
+    sequence: 1,
+    step_type: 'tool',
+    category: 'analysis',
+    title: 'Analyze chapter 1',
+    content: 'step body',
+    status: 'completed',
+    created_at: '2026-09-13T00:00:00',
+    updated_at: '2026-09-13T00:00:00',
+  }],
 });
 
 const renderPanel = () => render(
@@ -193,5 +220,80 @@ describe('ProjectAgentPanel plan settlement refresh', () => {
     } finally {
       act(() => { vi.useRealTimers(); });
     }
+  });
+
+  it('keeps the transcript and an expanded process panel intact across a poll tick', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(projectAgentApi.getConversation).mockResolvedValue(runningDetail());
+      renderPanel();
+      await vi.waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+      vi.mocked(projectAgentApi.getConversation).mockClear();
+
+      fireEvent.click(screen.getByText('思考与调用过程'));
+      expect(screen.getByText('Analyze chapter 1')).toBeVisible();
+
+      let releasePoll: (value: AgentConversationDetail) => void = () => {};
+      vi.mocked(projectAgentApi.getConversation).mockImplementationOnce(
+        () => new Promise(resolve => { releasePoll = resolve; })
+      );
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(document.querySelector('.ant-spin')).toBeNull();
+      expect(screen.getByText('Analyze chapter 1')).toBeVisible();
+
+      await act(async () => {
+        releasePoll(runningDetail());
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(document.querySelector('.ant-spin')).toBeNull();
+      expect(screen.getByText('Analyze chapter 1')).toBeVisible();
+    } finally {
+      act(() => { vi.useRealTimers(); });
+    }
+  });
+
+  it('stops polling once a polled snapshot shows the plan left the executing state', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(projectAgentApi.getConversation)
+        .mockResolvedValueOnce(runningDetail())
+        .mockResolvedValue(detail());
+      renderPanel();
+      await vi.waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+      vi.mocked(projectAgentApi.getConversation).mockClear();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+      expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => { vi.useRealTimers(); });
+    }
+  });
+
+  it('defers a settle during streaming and reloads once the turn ends', async () => {
+    let releaseStream: () => void = () => {};
+    vi.mocked(projectAgentApi.chatStream).mockImplementation(() => new Promise<void>(resolve => {
+      releaseStream = () => resolve();
+    }));
+    renderPanel();
+    await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+    vi.mocked(projectAgentApi.getConversation).mockClear();
+
+    fireEvent.change(screen.getByPlaceholderText('询问或修改当前项目……'), { target: { value: '继续' } });
+    fireEvent.click(screen.getByRole('button', { name: /发送/ }));
+    await waitFor(() => expect(projectAgentApi.chatStream).toHaveBeenCalledTimes(1));
+
+    eventBus.emit(EventNames.BACKGROUND_TASK_SETTLED, {
+      projectId: 'proj-1', taskId: 'plan-1', conversationId: 'conv-1', taskType: 'agent_plan',
+      resources: [], task: { id: 'plan-1', status: 'completed' },
+    });
+    await new Promise(resolve => { setTimeout(resolve, 30); });
+    expect(projectAgentApi.getConversation).not.toHaveBeenCalled();
+
+    releaseStream();
+    await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalled());
   });
 });

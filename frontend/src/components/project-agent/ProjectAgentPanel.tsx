@@ -228,23 +228,27 @@ export default function ProjectAgentPanel({
     }
   }, [projectId]);
 
-  const loadConversation = useCallback(async (conversationId: string) => {
-    setLoadingHistory(true);
+  // silent：计划轮询 / 收尾刷新不得闪加载态，也不得重置用户手动展开的过程面板。
+  const loadConversation = useCallback(async (conversationId: string, opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setLoadingHistory(true);
     try {
       const detail = await projectAgentApi.getConversation(projectId, conversationId);
       setActiveConversationId(detail.id);
       setMessages(detail.messages);
       setToolCalls(detail.tool_calls);
       setExecutionSteps(detail.execution_steps || []);
-      setExpandedProcessIds(new Set(
-        (detail.execution_steps || [])
-          .filter(step => step.status === 'waiting_confirmation' && step.assistant_message_id)
-          .map(step => step.assistant_message_id as string)
-      ));
+      if (!silent) {
+        setExpandedProcessIds(new Set(
+          (detail.execution_steps || [])
+            .filter(step => step.status === 'waiting_confirmation' && step.assistant_message_id)
+            .map(step => step.assistant_message_id as string)
+        ));
+      }
     } catch (error) {
       console.error('加载灵创创作助手对话失败:', error);
     } finally {
-      setLoadingHistory(false);
+      if (!silent) setLoadingHistory(false);
     }
   }, [projectId]);
 
@@ -289,7 +293,7 @@ export default function ProjectAgentPanel({
     try {
       do {
         reloadQueuedRef.current = false;
-        await loadConversation(conversationId);
+        await loadConversation(conversationId, { silent: true });
       } while (reloadQueuedRef.current);
     } catch (error) {
       console.error('刷新灵创创作助手对话失败:', error);
@@ -337,12 +341,13 @@ export default function ProjectAgentPanel({
     };
   }, [loadConversations, projectId, reloadConversation]);
 
-  // 流式结束后补做被 defer 的刷新
+  // 流式结束后补做被 defer 的刷新；期间用户已切走会话则丢弃，避免用旧会话覆盖当前视图。
   useEffect(() => {
     if (sending) return;
     const pending = pendingSettleConversationRef.current;
     if (!pending) return;
     pendingSettleConversationRef.current = null;
+    if (pending !== activeConversationIdRef.current) return;
     void reloadConversation(pending);
   }, [reloadConversation, sending]);
 
@@ -439,6 +444,8 @@ export default function ProjectAgentPanel({
     if (!content || sending) return;
     setInput('');
     setSending(true);
+    // 同步置位：settle 与本轮流式同 tick 到达时也必须判为 defer，不能等 effect 回填 ref。
+    sendingRef.current = true;
     const now = new Date().toISOString();
     const userId = `local-user-${Date.now()}`;
     const assistantId = `local-assistant-${Date.now()}`;
@@ -554,6 +561,7 @@ export default function ProjectAgentPanel({
       }
     } finally {
       setSending(false);
+      sendingRef.current = false;
       abortRef.current = undefined;
     }
   };
