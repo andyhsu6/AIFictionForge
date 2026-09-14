@@ -919,3 +919,20 @@ async def test_runner_is_registered_at_startup(env):
     source = inspect.getsource(app_main)
     assert "register_plan_runner" in source
     assert "from app.services.agent_plan_runner import run_plan" in source
+
+
+@pytest.mark.anyio
+async def test_step_results_expose_dispatch_latency_and_queue_fields(env):
+    """跑完一份 3 步计划后，每一步都必须带可归因计时。"""
+    result = await start_plan(env, [plan_step(1), plan_step(2), plan_step(3)])
+    assert result.plan.status == "completed"
+    details = result.plan.progress_details
+    assert len(details["step_results"]) == 3
+    for entry in details["step_results"]:
+        assert isinstance(entry["dispatch_latency_seconds"], float)
+        assert entry["dispatch_latency_seconds"] >= 0.0
+        assert isinstance(entry["step_started_at"], str) and "." in entry["step_started_at"]
+        assert isinstance(entry["ai_calls_during_step"], int)
+        assert isinstance(entry["ai_slow_queue_waits_during_step"], int)
+    stamps = [entry["step_started_at"] for entry in details["step_results"]]
+    assert stamps == sorted(stamps), "step_started_at 必须单调不减，否则计时接错了循环"

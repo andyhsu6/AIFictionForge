@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
@@ -41,6 +42,7 @@ from app.models.project_agent import (
     _naive_utc_now,
 )
 from app.services.agent_plan_schema import PROPOSE_PLAN_TOOL_NAME
+from app.services.ai_clients.base_client import get_queue_stats
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.project_agent_service import agent_system_prompt
 from app.services.project_agent_tools import ProjectAgentToolRegistry
@@ -731,6 +733,17 @@ async def _close_and_finalize(
         logger.error(f"计划收尾异常（继续写终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
     if handle.cancel_requested and outcome == "completed":
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
+    if handle.step_results:
+        logger.info(
+            "计划计时汇总: plan_task_id=%s steps=%s total_grace=%.3fs max_dispatch_latency=%.3fs "
+            "ai_calls=%s ai_slow_queue_waits=%s",
+            handle.plan_task_id,
+            len(handle.step_results),
+            sum(float(s.get("grace_seconds", 0.0)) for s in handle.step_results),
+            max((float(s.get("dispatch_latency_seconds", 0.0)) for s in handle.step_results), default=0.0),
+            sum(int(s.get("ai_calls_during_step", 0)) for s in handle.step_results),
+            sum(int(s.get("ai_slow_queue_waits_during_step", 0)) for s in handle.step_results),
+        )
     await _write_final_state(handle, factory, outcome, summary)
 
 
@@ -797,6 +810,32 @@ async def _default_session_factory(user_id: str) -> async_sessionmaker:
     """生产路径自造依赖，范式照 background_task_service.py:27-31。"""
     engine = await get_engine(user_id)
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+def _iso_now() -> str:
+    """毫秒级 ISO 时间戳：步间 grace 的 ≥3s 断言要它，秒级精度会把 3.0s 量成 2s/3s。"""
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+def _step_timing(*, step_started_at: str, dispatch_t0: float, grace_seconds: float) -> dict[str, Any]:
+    """单步计时：发起延迟 + 实睡 grace + 本步期间的 AI 并发排队增量。
+
+    AI 侧计数是全局累计值（Task 1），这里全部取"发起前后差值"，否则归因不到具体步骤。
+    """
+    before = getattr(_step_timing, "_last_stats", None)
+    if before is None:
+        before = get_queue_stats()
+    now = get_queue_stats()
+    timing = {
+        "step_started_at": step_started_at,
+        "dispatch_latency_seconds": round(time.monotonic() - dispatch_t0, 3),
+        "grace_seconds": round(grace_seconds, 3),
+        "ai_calls_during_step": int(now["acquire_total"] - before["acquire_total"]),
+        "ai_slow_queue_waits_during_step": int(now["slow_acquires"] - before["slow_acquires"]),
+        "ai_max_queue_wait_seconds": round(float(now["queue_wait_max_seconds"]), 3),
+    }
+    _step_timing._last_stats = now          # type: ignore[attr-defined]
+    return timing
 
 
 def _details(handle: _PlanHandle, stage: str, summary: str) -> dict[str, Any]:
@@ -1011,12 +1050,17 @@ async def _run_step_loop(
             detail={"index": index, "tool": step.get("tool"), "action": step.get("action"),
                     "arguments": step.get("arguments") or {}, "note": step.get("note")},
         )
+        step_started_at = _iso_now()
+        dispatch_t0 = time.monotonic()
         try:
             recorded = await _execute_step(handle, factory, db, registry, step)
         except Exception as exc:              # noqa: BLE001 —— 失败即停
             handle.failed_at_step = index
+            timing = _step_timing(
+                step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=0.0
+            )
             handle.step_results.append(
-                {"index": index, "action": label, "status": "failed", "error": _clip(exc, 200)}
+                {"index": index, "action": label, "status": "failed", "error": _clip(exc, 200), **timing}
             )
             await _patch_step(
                 factory, step_id, status="failed",
@@ -1024,7 +1068,28 @@ async def _run_step_loop(
             )
             return "failed", _clip(f"第 {index} 步失败：{exc}", 200)
         handle.steps_done = index
-        handle.step_results.append({"index": index, "action": label, "status": "completed", **recorded})
+        slept_grace = 0.0
+        if grace:
+            grace_t0 = time.monotonic()
+            await asyncio.sleep(grace)   # PR-4：步间 grace
+            slept_grace = time.monotonic() - grace_t0
+        timing = _step_timing(
+            step_started_at=step_started_at, dispatch_t0=dispatch_t0, grace_seconds=slept_grace
+        )
+        logger.info(
+            "计划步骤计时: plan_task_id=%s step=%s/%s action=%s dispatch_latency=%.3fs grace=%.3fs "
+            "ai_calls=%s ai_slow_queue_waits=%s ai_max_queue_wait=%.3fs",
+            handle.plan_task_id,
+            index,
+            total,
+            label,
+            timing["dispatch_latency_seconds"],
+            timing["grace_seconds"],
+            timing["ai_calls_during_step"],
+            timing["ai_slow_queue_waits_during_step"],
+            timing["ai_max_queue_wait_seconds"],
+        )
+        handle.step_results.append({"index": index, "action": label, "status": "completed", **recorded, **timing})
         await _patch_step(factory, step_id, status="completed", content="完成")
         await _write_plan_row(
             factory, handle.plan_task_id,
@@ -1032,8 +1097,6 @@ async def _run_step_loop(
             status_message=_clip(f"已完成 {index}/{total} 步"),
             progress_details=_details(handle, "running", f"已完成 {index}/{total} 步"),
         )
-        if grace:
-            await asyncio.sleep(grace)   # PR-4：步间 grace
     return "completed", f"计划执行完成（{total}/{total} 步）"
 
 
