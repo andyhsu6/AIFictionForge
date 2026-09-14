@@ -1400,6 +1400,7 @@ export default interface Resources {
       "writing_style": "写作风格不存在"
     },
     "progress": {
+      "agent_plan_interrupted": "计划执行已中断（已完成 {{steps_done}}/{{steps_total}} 步），结果未定稿，请重新发起",
       "career_done": "新职业生成完成！（主职业{{total_main}}个，副职业{{total_sub}}个）",
       "creation_done_words": "创作和分析完成！共 {{word_count}} 字",
       "done": "生成完成",
