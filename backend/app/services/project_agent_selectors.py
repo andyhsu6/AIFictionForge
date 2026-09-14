@@ -244,6 +244,20 @@ async def find_foreshadow(db: AsyncSession, project_id: str, arguments: dict[str
     row = (await db.execute(select(Foreshadow).where(
         Foreshadow.project_id == project_id, Foreshadow.title == title
     ))).scalar_one_or_none()
-    if row is None:
+    if row is not None:
+        return row
+    # issue #96 P2：交接文档里标题常只保留一部分。精确匹配失败后做项目内包含匹配：
+    # 唯一命中即定位；命中多行失败关闭（静默取第一行会改错伏笔）；0 行保持既有
+    # 「未找到」。消费者是 ProjectAgentExtendedTools._find_foreshadow（读取与
+    # manage_foreshadow 各 action 共用）。
+    matches = (await db.execute(select(Foreshadow).where(
+        Foreshadow.project_id == project_id,
+        Foreshadow.title.contains(title, autoescape=True),
+    ))).scalars().all()
+    if len(matches) > 1:
+        raise ValueError(
+            f"title 匹配到 {len(matches)} 条伏笔，请提供更完整的标题或 foreshadow_id"
+        )
+    if not matches:
         raise ValueError("当前项目中未找到伏笔")
-    return row
+    return matches[0]
