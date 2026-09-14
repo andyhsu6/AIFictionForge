@@ -197,8 +197,8 @@ class ProjectAgentService:
     # 真正取值一律走 `self._plan_round_budget()`。
     # 配置键 `agent_plan_round_budget` 由 PR-2c 注册；PR-2a 单独合入时该键还不存在
     # ⇒ `getattr(settings, ..., 默认值)` 兜回本常量，行为逐字不变。
-    PLAN_ROUND_BUDGET = 3
-    _PLAN_ROUND_BUDGET_DEFAULT = 3
+    PLAN_ROUND_BUDGET = 5
+    _PLAN_ROUND_BUDGET_DEFAULT = 5
 
     def __init__(
         self,
@@ -540,6 +540,9 @@ class ProjectAgentService:
                 # tool_choice；收口轮工具集只剩 propose_plan，降级 auto 不会失去
                 # 产出计划的能力，只解除网关侧硬拒绝。判断经 AIService 公开出口，
                 # 服务层不读 default_model / base_url 实例字段（两道结构守卫同向）。
+                # issue #96：对在网模型实测 {"type":"function","function":{"name":
+                # "propose_plan"}} 同样被 400 拒绝（同一句错误），故思考型模型继续用
+                # auto；强制产出改由收口轮的派发约束（closing 分支）兜住。
                 and not self.ai_service.is_thinking_model_active()
                 else "auto"
             )
@@ -556,9 +559,11 @@ class ProjectAgentService:
 
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
-                if plan_mode and closing and not plan_produced:
+                if plan_mode and not plan_produced and (closing or force_answer):
                     # 形态 (a)：收口轮直接用讲道理代替计划。走最终回答路径就等于
                     # 「规划回合静默失败」，必须计数重问，耗尽后以可读文案收口。
+                    # force_answer 轮的原文同样不得当普通回答返回（issue #96 P1）；
+                    # 它必然满足 closing，这里显式要求以钉住该语义。
                     plan_attempts += 1
                     plan_correction = plan_correction or "本轮没有提交任何计划"
                     exhausted = plan_attempts > self.PLAN_MAX_RETRIES
@@ -722,6 +727,43 @@ class ProjectAgentService:
                 sequence += 1
                 yield {"type": "step_start", "data": self._step_data(tool_step)}
                 call_id = raw_call.get("id") or record.id
+
+                if closing and name != PROPOSE_PLAN_TOOL_NAME:
+                    # issue #96 P0：收口轮工具集只剩 propose_plan，但派发只认 registry
+                    # 不认本轮工具集 ⇒ 模型在收口轮调只读工具会被真的执行。收口轮唯一
+                    # 合法动作是提交计划：其余调用一律不执行，按既有 plan_attempts
+                    # 路径计数 + 纠正 + 有界重试，耗尽即走可读收口。
+                    plan_attempts += 1
+                    violation = (
+                        f"收口轮不允许调用工具“{name}”；本轮唯一允许的动作是调用 "
+                        f"{PROPOSE_PLAN_TOOL_NAME} 提交执行计划，其他工具本轮一律不执行。"
+                    )
+                    plan_correction = plan_correction or violation
+                    record.status = "failed"
+                    record.error_message = violation
+                    await self._save_tool_response(
+                        conversation, call_id, name, None, error=violation
+                    )
+                    await self._update_step(
+                        tool_step,
+                        content=violation,
+                        status="failed",
+                        detail={"arguments": self._display_value(arguments)},
+                    )
+                    yield {"type": "step_update", "data": self._step_data(tool_step)}
+                    if plan_attempts > self.PLAN_MAX_RETRIES:
+                        async for event in self._finish_without_plan(
+                            conversation,
+                            prompt_tokens,
+                            completion_tokens,
+                            plan_correction,
+                            steps=steps,
+                            tool_records=tool_records,
+                        ):
+                            yield event
+                        return
+                    await self._save_plan_correction(conversation, plan_correction)
+                    continue
 
                 if plan_mode and name == PROPOSE_PLAN_TOOL_NAME:
                     # 终止型规划工具：只落计划，不 preview、不 execute（架构计划 §1 定案）。
@@ -1092,6 +1134,19 @@ class ProjectAgentService:
             await self.db.commit()
             history = await self._load_history(conversation.id)
 
+        if plan_mode and not plan_produced:
+            # issue #96 P1：规划回合的循环出口也必须收口。没有计划的 plan 回合不得
+            # 落到裸 RuntimeError，也不得把最后一轮模型原文当答案；走既有可读收口。
+            async for event in self._finish_without_plan(
+                conversation,
+                prompt_tokens,
+                completion_tokens,
+                plan_correction or "本轮没有提交任何计划",
+                steps=steps,
+                tool_records=tool_records,
+            ):
+                yield event
+            return
         raise RuntimeError("灵创创作助手超过最大工具调用轮数")
 
     async def _save_plan_correction(

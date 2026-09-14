@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     agent_plan_status_message_max_chars: int = 120        # status_message 是 String(500)
     agent_plan_summary_max_chars: int = 8000               # 聚合 tool 消息/收尾文案上限
     agent_plan_running_guardrail_enabled: bool = True      # §7 护栏总开关（回滚用）
-    agent_plan_round_budget: int = 3                       # 规划回合工具轮数上限（消费方 = PR-2a 的 service，不走 runner `_limit`）
+    agent_plan_round_budget: int = 5                       # 规划回合工具轮数上限（消费方 = PR-2a 的 service，不走 runner `_limit`；issue #96: 3→5）
 
     # --- 助手 prompt 预算（PR-0c，架构计划 §5）-----------------------------
     # 唯一换算式：clamp(实测窗口 tokens * agent_chars_per_token

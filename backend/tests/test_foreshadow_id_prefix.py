@@ -169,3 +169,52 @@ async def test_manage_foreshadow_ambiguous_prefix_fails(seeded):
         )
     assert "未找到" not in str(exc_info.value)
     assert "前缀" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
+# issue #96 P2：title 定位（无 foreshadow_id 时的标题容忍）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.anyio
+async def test_title_exact_match_resolves(seeded):
+    """(a) 精确标题定位到目标行（既有行为，不得被容忍逻辑改写）。"""
+    _, db = seeded
+    row = await find_foreshadow(db, PROJECT_ID, {"title": "placeholder unique"})
+    assert row.id == UNIQUE_FULL_ID
+
+
+@pytest.mark.anyio
+async def test_title_unique_partial_match_resolves(seeded):
+    """(b) 项目内唯一的部分匹配解析到目标行，工具层 payload 与整段 ID 一致。"""
+    project, db = seeded
+    row = await find_foreshadow(db, PROJECT_ID, {"title": "unique"})
+    assert row.id == UNIQUE_FULL_ID
+    payload = await ProjectAgentExtendedTools(project, db).read(
+        "get_foreshadow_detail", {"title": "unique"}
+    )
+    assert payload["id"] == UNIQUE_FULL_ID
+    assert payload["title"] == "placeholder unique"
+
+
+@pytest.mark.anyio
+async def test_title_ambiguous_partial_match_raises_distinct_error(seeded):
+    """(c) 部分匹配命中多行：失败关闭，报出命中数量且不是通用「未找到」。"""
+    _, db = seeded
+    with pytest.raises(ValueError) as exc_info:
+        await find_foreshadow(db, PROJECT_ID, {"title": "placeholder ambiguous"})
+    message = str(exc_info.value)
+    assert "未找到" not in message
+    assert "2" in message
+    assert "title" in message
+
+
+@pytest.mark.anyio
+async def test_title_missing_keeps_existing_not_found_error(seeded):
+    """(d) 零命中保持既有「未找到」，且不越项目取行。"""
+    _, db = seeded
+    with pytest.raises(ValueError, match="当前项目中未找到伏笔"):
+        await find_foreshadow(db, PROJECT_ID, {"title": "placeholder nowhere"})
+    # 「placeholder foreign」只存在于另一个项目：本项目查询不得命中
+    with pytest.raises(ValueError, match="当前项目中未找到伏笔"):
+        await find_foreshadow(db, PROJECT_ID, {"title": "placeholder foreign"})
