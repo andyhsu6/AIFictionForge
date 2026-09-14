@@ -40,6 +40,11 @@
       "plotPoint": "情节点"
     }
   },
+  "modelGate": {
+    "goToSettings": "前往设置",
+    "guidanceBody": "当前模型未配置，或其上下文窗口不足要求，AI 功能已停止。请前往设置页改选满足要求的模型。",
+    "guidanceTitle": "需要配置 AI 模型"
+  },
   "partialToolbar": {
     "aiContinue": "AI续写",
     "aiRewrite": "AI重写",

@@ -344,7 +344,8 @@ async def generate_career_system(
                 
             except Exception as ai_error:
                 logger.error(f"❌ AI服务调用异常：{str(ai_error)}")
-                yield await tracker.error(f"AI服务调用失败：{str(ai_error)}", error_code="internal.ai_service_failed", params={"error": str(ai_error)})
+                # 先于外层 ApiError 分支捕获：保住守卫的 `validation.*` 码（#55 步骤 3b）
+                yield await tracker.error_from_exception(ai_error, f"AI服务调用失败：{str(ai_error)}", fallback_code="internal.ai_service_failed")
                 return
             
             if not ai_response or not ai_response.strip():

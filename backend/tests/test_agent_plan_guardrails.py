@@ -22,6 +22,21 @@ USER_ID = "u-1"
 CONVERSATION_ID = "conv-guard-1"
 
 
+@pytest.fixture(autouse=True)
+def stub_history_budget(monkeypatch):
+    """PR-0c 合并后：本文件锁的是 §7 护栏，不是预算换算（与 main 侧同习惯）。
+
+    换算要走 B 的探测结论（DB 缓存行 + 网关元数据）⇒ 与本文件要证的事无关，
+    统一钉成 PR-0c 之前的硬编码 60000，护栏断言一字不改。
+    """
+    import app.services.agent_prompt_budget as apb
+
+    async def fake_resolve(**kwargs):
+        return 60_000
+
+    monkeypatch.setattr(apb, "resolve_history_budget_chars", fake_resolve)
+
+
 @pytest.fixture
 async def session_factory():
     """临时文件 SQLite（范本：test_agent_tool_persistence.py 的 db_session），绝不碰开发库。"""
