@@ -155,7 +155,14 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "manage_foreshadow",
-        "description": "创建、更新、删除、埋入、回收或废弃伏笔；执行前必须确认。",
+        "description": (
+            "创建、更新、删除、埋入、回收或废弃伏笔；执行前必须确认。"
+            "重复、孤儿或失效的条目必须主动退役，不要只改内容而留着状态："
+            "优先 action=\"abandon\"（保留行与痕迹，原因写入 data.reason，落库到 resolution_notes），"
+            "确需从台账彻底移除时才用 action=\"delete\"（行被删除，原因只保留在结果消息里）；"
+            "两个动作都必须给出目标自身的 foreshadow_id（支持唯一前缀），"
+            "并在 data.reason 写明退役原因。"
+        ),
         "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "plant", "resolve", "abandon"]}, "foreshadow_id": ID, "data": DATA}, ["action"]),
         "risk_level": 2,
         "resources": ("foreshadows",),
@@ -1058,8 +1065,10 @@ class ProjectAgentExtendedTools:
     async def _manage_foreshadow_delete(self, arguments: dict[str, Any]):
         row = await self._find_foreshadow(arguments)
         entity_id, title = row.id, row.title
+        reason = str(self._data(arguments).get("reason") or "").strip()
         await self.db.delete(row)
-        return entity_id, {}, f"已删除伏笔《{title}》"
+        suffix = f"（原因：{reason}）" if reason else ""
+        return entity_id, {}, f"已删除伏笔《{title}》{suffix}"
 
     async def _manage_foreshadow_preview_plant(self, arguments: dict[str, Any]):
         row = await self._find_foreshadow(arguments)
