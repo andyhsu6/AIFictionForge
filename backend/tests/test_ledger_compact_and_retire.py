@@ -1,6 +1,6 @@
-"""Ledger tools: retire duplicate entries.
+"""Ledger tools: retire duplicate entries + read a whole large ledger.
 
-A real gap on the project agent's foreshadow ledger surface:
+Two real gaps on the project agent's foreshadow ledger surface:
 
 A. A handoff asked the agent to retire duplicate rows produced by a merge
    that never took effect, but the produced plan only carried
@@ -8,6 +8,12 @@ A. A handoff asked the agent to retire duplicate rows produced by a merge
    ``abandon``/``delete``; the tool descriptions never say which one to pick
    for a duplicate/void row, nor where the reason belongs, so the model does
    not choose them.
+B. ``list_foreshadows`` returns full rows, so a real ``limit=100`` call
+   produced ~49KB of JSON while the model-facing tool result is clipped at
+   ``ProjectAgentService.TOOL_RESULT_MAX_CHARS`` (8000).  With a 200-row
+   ledger the model cannot see the table at all.  ``compact`` + ``offset``
+   give it the whole ledger (paged, and small enough per page to survive the
+   clip).
 
 Behavior pinned against the real handlers:
 - ``abandon``: row kept, ``status`` -> ``"abandoned"``, ``data.reason``
@@ -19,6 +25,7 @@ Fixtures and assertion strings are neutral placeholders (no source text).
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -183,3 +190,95 @@ async def test_delete_plan_step_validates_and_removes_the_row(ledger):
 
     assert await _load(ledger.db, TWIN_ID) is None   # truly removed
     assert REASON in result["message"]               # reason survives in the result
+
+
+# --- B. compact + paged list --------------------------------------------------
+
+
+def test_list_description_recommends_compact_paging():
+    definition = _definitions()[LEDGER_TOOL]
+    description = definition["description"]
+    assert "compact" in description
+    assert "offset" in description
+    assert "500" in description          # limit cap stays advertised
+
+    properties = definition["parameters"]["properties"]
+    assert properties["compact"]["type"] == "boolean"
+    assert properties["offset"]["type"] == "integer"
+    assert properties["offset"]["minimum"] == 0
+    assert properties["limit"]["maximum"] == 500
+
+
+@pytest.mark.anyio
+async def test_compact_200_rows_survives_the_tool_result_clip(ledger):
+    result = await ledger.registry.execute(
+        LEDGER_TOOL, {"compact": True, "limit": ROW_COUNT}
+    )
+    stored = json.dumps(
+        {"tool": LEDGER_TOOL, "error": None, "result": result},
+        ensure_ascii=False,
+        default=str,
+    )
+    assert len(stored) < 8000
+
+    assert result["total"] == ROW_COUNT
+    assert result["returned"] == ROW_COUNT
+    assert result["offset"] == 0
+    assert len(result["items"]) == ROW_COUNT
+
+    by_id: dict[str, list] = {}
+    for item in result["items"]:
+        assert isinstance(item, list)
+        assert len(item) <= 6
+        by_id[item[0]] = item
+    assert len(by_id) == ROW_COUNT
+    for i in range(ROW_COUNT):
+        item = by_id[_row_id(i)]
+        assert item[1] == _row_title(i)
+        assert item[2] == STATUSES[i % len(STATUSES)]
+    # chapter numbers ride along when available; trailing nulls are trimmed
+    assert by_id[_row_id(0)] == [_row_id(0), _row_title(0), "pending", 1]
+    assert by_id[_row_id(5)] == [_row_id(5), _row_title(5), STATUSES[1]]
+    # a null between two chapter numbers is kept (positional meaning stays stable)
+    assert by_id[_row_id(1)] == [_row_id(1), _row_title(1), "planted", None, 2]
+
+
+@pytest.mark.anyio
+async def test_compact_offset_paging_returns_disjoint_windows(ledger):
+    windows = [
+        await ledger.registry.execute(
+            LEDGER_TOOL, {"compact": True, "limit": 50, "offset": offset}
+        )
+        for offset in (0, 50, 150)
+    ]
+    ids = [[item[0] for item in window["items"]] for window in windows]
+
+    assert ids[0] == [_row_id(i) for i in range(50)]
+    assert ids[1] == [_row_id(i) for i in range(50, 100)]
+    assert ids[2] == [_row_id(i) for i in range(150, 200)]
+    assert not set(ids[0]) & set(ids[1])
+    assert not set(ids[1]) & set(ids[2])
+    assert not set(ids[0]) & set(ids[2])
+    for window, offset in zip(windows, (0, 50, 150)):
+        assert window["total"] == ROW_COUNT
+        assert window["returned"] == 50
+        assert window["offset"] == offset
+
+
+@pytest.mark.anyio
+async def test_non_compact_payload_is_unchanged(ledger):
+    result = await ledger.registry.execute(LEDGER_TOOL, {"limit": ROW_COUNT})
+
+    assert set(result.keys()) == {"total", "items"}
+    assert result["total"] == ROW_COUNT
+    assert result["items"] == [
+        {
+            "id": _row_id(i),
+            "title": _row_title(i),
+            "content": "placeholder",
+            "status": STATUSES[i % len(STATUSES)],
+            "importance": 0.5,
+            "target_resolve_chapter_number": i + 1 if i % 5 else None,
+        }
+        for i in range(ROW_COUNT)
+    ]

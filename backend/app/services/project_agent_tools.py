@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chapter import Chapter
@@ -136,6 +136,10 @@ class ProjectAgentToolRegistry:
         "current_state", "state_updated_chapter",
     }
     CHAPTER_FIELDS = {"title", "summary", "status"}
+    COMPACT_FORESHADOW_FIELDS = (
+        "id", "title", "status", "plant_chapter_number",
+        "target_resolve_chapter_number", "actual_resolve_chapter_number",
+    )
 
     def __init__(self, project: Project, db: AsyncSession):
         self.project = project
@@ -212,10 +216,15 @@ class ProjectAgentToolRegistry:
             ),
             ProjectAgentTool(
                 "list_foreshadows",
-                "查询当前项目伏笔，可按状态筛选；limit 上限 500，默认 50。",
+                "查询当前项目伏笔，可按状态筛选；limit 上限 500，默认 50，offset 默认 0。"
+                "台账大（数百条）时用 compact=true 配合 offset 分页逐页读：compact 的 items 是数组，"
+                "字段顺序为 [id, title, status, 埋入章节号, 计划回收章节号, 实际回收章节号]，尾部 null 省略；"
+                "响应含 total/returned/offset。非 compact 仍返回完整条目。",
                 _object_schema({
                     "status": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "compact": {"type": "boolean"},
                 }),
             ),
             ProjectAgentTool(
@@ -655,13 +664,39 @@ class ProjectAgentToolRegistry:
 
     async def _list_foreshadows(self, arguments: dict[str, Any]) -> dict[str, Any]:
         limit = min(max(int(arguments.get("limit", 50)), 1), 500)
-        query = select(Foreshadow).where(Foreshadow.project_id == self.project.id)
+        offset = max(int(arguments.get("offset", 0) or 0), 0)
+        compact = arguments.get("compact") is True
+        conditions = [Foreshadow.project_id == self.project.id]
         if arguments.get("status"):
-            query = query.where(Foreshadow.status == arguments["status"])
-        rows = (await self.db.execute(query.order_by(Foreshadow.created_at).limit(limit))).scalars().all()
-        return {"total": len(rows), "items": [
-            {"id": row.id, "title": row.title, "content": row.content,
-             "status": row.status, "importance": row.importance,
-             "target_resolve_chapter_number": row.target_resolve_chapter_number}
-            for row in rows
-        ]}
+            conditions.append(Foreshadow.status == arguments["status"])
+        # created_at 在批量导入下会撞值，加主键做稳定排序，offset 分页才可能不重不漏。
+        rows = (await self.db.execute(
+            select(Foreshadow).where(*conditions)
+            .order_by(Foreshadow.created_at, Foreshadow.id)
+            .limit(limit).offset(offset)
+        )).scalars().all()
+        if not compact:
+            # 非 compact 保持旧输出（键与条目字段不变），老调用方逐字节兼容。
+            return {"total": len(rows), "items": [
+                {"id": row.id, "title": row.title, "content": row.content,
+                 "status": row.status, "importance": row.importance,
+                 "target_resolve_chapter_number": row.target_resolve_chapter_number}
+                for row in rows
+            ]}
+        total = (await self.db.execute(
+            select(func.count(Foreshadow.id)).where(*conditions)
+        )).scalar_one()
+        return {
+            "total": total,
+            "returned": len(rows),
+            "offset": offset,
+            "items": [self._compact_foreshadow(row) for row in rows],
+        }
+
+    @staticmethod
+    def _compact_foreshadow(row: Foreshadow) -> list[Any]:
+        """紧凑条目：只留可操作字段，尾部 null 省略（超长台账要能过工具结果上限）。"""
+        values = [getattr(row, field) for field in ProjectAgentToolRegistry.COMPACT_FORESHADOW_FIELDS]
+        while values and values[-1] is None:
+            values.pop()
+        return values
