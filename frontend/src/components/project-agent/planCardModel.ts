@@ -2,13 +2,14 @@ import type { AgentToolCall } from '../../types';
 
 export const PLAN_TOOL_NAME = 'propose_plan';
 export const PLAN_TASK_TYPE = 'agent_plan';
-/** 与后端 agent_plan_runner 的 max_steps 对齐；前端只做展示裁剪，不做授权判定。 */
+/** 展示裁剪上限，对齐 runner 的 MAX_PLAN_STEPS（agent_plan_runner.py:58）；
+ *  批准闸门是 schema 的 12 步上限（agent_plan_schema.py:14,115），前端不做授权判定。 */
 export const PLAN_MAX_STEPS = 30;
 
 export interface AgentPlanStep {
   id: string;
   tool: string;
-  action: string;
+  action: string | null;
   arguments: Record<string, unknown>;
   note?: string;
 }
@@ -53,24 +54,25 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  */
 export function parsePlanPayload(toolCall: AgentToolCall): AgentPlanPayload | null {
   if (!isPlanToolCall(toolCall)) return null;
-  const raw = asRecord(toolCall.arguments) || asRecord({ ...toolCall.arguments });
-  if (!raw) return null;
-  const source = typeof toolCall.arguments === 'string'
-    ? asRecord(toolCall.arguments)
-    : raw;
+  const source = asRecord(toolCall.arguments);
   if (!source) return null;
   const objective = typeof source.objective === 'string' ? source.objective : '';
   const steps = source.steps;
   if (!Array.isArray(steps) || steps.length === 0 || steps.length > PLAN_MAX_STEPS) return null;
   const parsed: AgentPlanStep[] = [];
+  const seenIds = new Set<string>();
   for (const item of steps) {
     const entry = asRecord(item);
     if (!entry || typeof entry.id !== 'string' || !entry.id) return null;
-    if (typeof entry.action !== 'string' || !entry.action) return null;
+    // id 重复 = 后端 validate_plan 会拒收（agent_plan_schema.py:124-126）。
+    if (seenIds.has(entry.id)) return null;
+    seenIds.add(entry.id);
+    // 后端 schema 只 required [id, tool]；action 可空（仅 start_project_task 强制 action）。
+    if (typeof entry.tool !== 'string' || !entry.tool) return null;
     parsed.push({
       id: entry.id,
-      tool: typeof entry.tool === 'string' ? entry.tool : entry.action,
-      action: entry.action,
+      tool: entry.tool,
+      action: typeof entry.action === 'string' && entry.action ? entry.action : null,
       arguments: asRecord(entry.arguments) || {},
       note: typeof entry.note === 'string' ? entry.note : undefined,
     });

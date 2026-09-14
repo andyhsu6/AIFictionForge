@@ -20,6 +20,8 @@ const panelSource = readSource('../components/project-agent/ProjectAgentPanel.ts
 
 const apiSource = readSource('../services/api.ts');
 
+const typesSource = readSource('../types/index.ts');
+
 describe('background task settled payload contract', () => {
   it('carries conversation attribution for plan tasks', () => {
     expect(panelEmitSource).toContain('conversationId: task.conversation_id ?? null');
@@ -44,6 +46,20 @@ describe('agent plan api contract', () => {
 
   it('sends selected_step_ids (the AgentPlanApprovalRequest field name)', () => {
     expect(apiSource).toContain('selected_step_ids');
+  });
+});
+
+describe('agent plan approve result contract', () => {
+  it('carries exactly the backend AgentPlanApprovalResponse fields', () => {
+    const block = typesSource.match(/export interface AgentPlanApproveResult \{([^}]*)\}/)?.[1] ?? '';
+    expect(block).toContain('tool_call_id');
+    expect(block).toContain('plan_task_id');
+    expect(block).toContain('status');
+    expect(block).toContain('steps_total');
+    expect(block).not.toMatch(/\bsteps\b/);
+    expect(block).not.toMatch(/\bmessage\b/);
+    const fields = block.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    expect(fields).toHaveLength(4);
   });
 });
 

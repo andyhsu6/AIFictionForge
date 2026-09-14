@@ -378,7 +378,7 @@ export interface AgentExecutionStep {
 export interface AgentPlanStep {
   id: string;
   tool: string;
-  action: string;
+  action: string | null;
   arguments: Record<string, unknown>;
   note?: string;
 }
@@ -389,10 +389,10 @@ export interface AgentPlanPayload {
 }
 
 export interface AgentPlanApproveResult {
+  tool_call_id: string;
   plan_task_id: string;
   status: string;
-  steps: AgentPlanStep[];
-  message?: string;
+  steps_total: number;
 }
 
 export interface AgentConversationDetail extends AgentConversation {

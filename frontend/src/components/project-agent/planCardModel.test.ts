@@ -62,6 +62,40 @@ describe('parsePlanPayload', () => {
     expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: [{ id: 's1' }] } }))).toBeNull();
     expect(parsePlanPayload(planToolCall({ arguments: 'not json' as unknown as Record<string, unknown> }))).toBeNull();
   });
+
+  it('accepts a step without action (read-only tool) and stores null', () => {
+    const payload = parsePlanPayload(planToolCall({
+      arguments: { objective: 'x', steps: [{ id: 's1', tool: 'get_project_overview' }] },
+    }));
+    expect(payload?.steps).toHaveLength(1);
+    expect(payload?.steps[0]?.action).toBeNull();
+  });
+
+  it('accepts an explicit null action', () => {
+    const payload = parsePlanPayload(planToolCall({
+      arguments: { objective: 'x', steps: [{ id: 's1', tool: 'list_chapters', action: null }] },
+    }));
+    expect(payload?.steps).toHaveLength(1);
+    expect(payload?.steps[0]?.action).toBeNull();
+  });
+
+  it('rejects a step whose tool is missing or empty (no action fallback)', () => {
+    expect(parsePlanPayload(planToolCall({
+      arguments: { objective: 'x', steps: [{ id: 's1', action: 'analyze_chapter' }] },
+    }))).toBeNull();
+    expect(parsePlanPayload(planToolCall({
+      arguments: { objective: 'x', steps: [{ id: 's1', tool: '', action: 'analyze_chapter' }] },
+    }))).toBeNull();
+  });
+
+  it('rejects duplicate step ids', () => {
+    expect(parsePlanPayload(planToolCall({
+      arguments: {
+        objective: 'x',
+        steps: [step('s1', 'analyze_chapter'), step('s1', 'generate_chapter')],
+      },
+    }))).toBeNull();
+  });
 });
 
 describe('planTaskIdOf', () => {
