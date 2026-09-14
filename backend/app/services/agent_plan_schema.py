@@ -34,6 +34,9 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "在 arguments 里给出 action，工具字段一律放在 arguments.data 对象内，不要把 data 字段摊在顶层。"
     '示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"update",'
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
+    "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
+    "优先 action=\"abandon\"（保留痕迹，原因放 data.reason），"
+    "确需彻底移除才用 action=\"delete\"；foreshadow_id 必须是条目自身的 ID。"
 )
 
 # 架构计划 §1：这两个工具要求模型自己给出 JSON 正文（SYSTEM_PROMPT 规则 8 禁止臆造），
