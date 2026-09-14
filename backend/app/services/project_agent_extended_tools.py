@@ -28,6 +28,7 @@ from app.services.project_agent_selectors import (
     find_character,
     find_foreshadow,
     find_organization,
+    merge_flat_data_fields,
 )
 
 
@@ -239,6 +240,9 @@ class ProjectAgentExtendedTools:
     async def preview(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in WRITE_TOOL_NAMES:
             raise ValueError(f"未注册的扩展写入工具：{name}")
+        arguments, _ = merge_flat_data_fields(
+            arguments, FLAT_DATA_FIELDS.get(name, _NO_FLAT_DATA_FIELDS)
+        )
         action = str(arguments.get("action") or "")
         if not action:
             raise ValueError("缺少 action")
@@ -267,8 +271,15 @@ class ProjectAgentExtendedTools:
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in WRITE_TOOL_NAMES:
             raise ValueError(f"未注册的扩展写入工具：{name}")
+        arguments, _ = merge_flat_data_fields(
+            arguments, FLAT_DATA_FIELDS.get(name, _NO_FLAT_DATA_FIELDS)
+        )
         action = str(arguments.get("action") or "")
-        before, _, label = await self._prepare(name, action, arguments)
+        # 与 preview() 同源的空修改守卫：计划步骤从不经过 preview()，
+        # 若只在这里跳过比较，空字段 update 会返回「已更新…」却零写入（issue #94）。
+        before, preview_after, label = await self._prepare(name, action, arguments)
+        if before == preview_after:
+            raise ValueError("没有检测到需要修改的字段")
         handler = getattr(self, f"_{name}_{action}", None)
         if handler is None:
             raise ValueError(f"工具 {name} 不支持动作 {action}")
@@ -1254,3 +1265,37 @@ class ProjectAgentExtendedTools:
             return json.loads(value) if value else fallback
         except (json.JSONDecodeError, TypeError):
             return fallback
+
+
+# 扁平参数归一化白名单（issue #94）：只并入各 handler 真正从 data 读取的字段，
+# 与 handler 的 *_FIELDS 集合同源引用；顶层 selector（career_id/character_id 等）
+# 不并入，manage_outline/update_outline 等本就以顶层参数为主的工具无需登记。
+_NO_FLAT_DATA_FIELDS: frozenset[str] = frozenset()
+FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
+    "manage_character": frozenset(
+        ProjectAgentExtendedTools.CHARACTER_FIELDS
+        | ProjectAgentExtendedTools.ORGANIZATION_FIELDS
+    ),
+    "manage_chapter": frozenset({
+        "chapter_number", "title", "content", "summary", "status",
+        "outline_id", "sub_index", "expansion_plan",
+    }),
+    "manage_relationship": frozenset(
+        ProjectAgentExtendedTools.RELATIONSHIP_FIELDS
+        | {"character_from_id", "character_to_id"}
+    ),
+    "manage_organization": frozenset(
+        ProjectAgentExtendedTools.ORGANIZATION_FIELDS
+        | ProjectAgentExtendedTools.MEMBER_FIELDS
+        | {"character_id"}
+    ),
+    "manage_foreshadow": frozenset(
+        ProjectAgentExtendedTools.FORESHADOW_FIELDS
+        | {"chapter_id", "chapter_number", "is_partial", "reason"}
+    ),
+    "manage_career": frozenset(
+        ProjectAgentExtendedTools.CAREER_FIELDS
+        | {"current_stage", "stage_progress", "started_at",
+           "reached_current_stage_at", "notes"}
+    ),
+}

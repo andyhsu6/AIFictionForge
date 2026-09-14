@@ -46,6 +46,7 @@ from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
     PlanValidationError,
     plannable_tool_names,
+    tool_parameter_schemas,
     validate_plan,
 )
 from app.services.ai_service import AIService
@@ -542,11 +543,16 @@ async def approve_plan(
         raise ApiError(code=PLAN_RUNNER_UNAVAILABLE_CODE)
 
     registry = ProjectAgentToolRegistry(project, db)
-    allowed = plannable_tool_names(registry.definitions()) | plan_tool_names(
+    registry_definitions = registry.definitions()
+    allowed = plannable_tool_names(registry_definitions) | plan_tool_names(
         tool_call.arguments or {}
     )
     try:
-        plan = validate_plan(tool_call.arguments or {}, allowed_tools=allowed)
+        plan = validate_plan(
+            tool_call.arguments or {},
+            allowed_tools=allowed,
+            tool_schemas=tool_parameter_schemas(registry_definitions),
+        )
     except PlanValidationError as exc:
         await _restore_waiting_tool_call(db, tool_call, error=str(exc))
         raise ApiError(

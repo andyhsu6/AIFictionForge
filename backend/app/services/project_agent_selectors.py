@@ -7,7 +7,7 @@ precedence over a valid alternate selector such as ``chapter_number``.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,34 @@ def normalize_tool_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         if key.endswith("_id") and isinstance(value, str):
             normalized[key] = clean_identifier(value)
     return normalized
+
+
+def merge_flat_data_fields(
+    arguments: dict[str, Any],
+    fields: Iterable[str],
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """Move whitelisted top-level fields under ``data`` (issue #94).
+
+    ``propose_plan`` steps carry free-form ``arguments``, so a model may pass a
+    manage_* tool's payload fields flat instead of nesting them under ``data``.
+    Only ``fields`` (the tool's own whitelist) may be moved, and only when
+    ``data`` is missing/empty — the nested path is returned unchanged.
+
+    Returns ``(effective_arguments, moved_keys)``.  Top-level copies are kept
+    because selectors (``chapter_number``, ``character_id``, ...) may be read
+    there as well.
+    """
+    data = arguments.get("data")
+    if data is not None and not isinstance(data, dict):
+        return arguments, frozenset()
+    if isinstance(data, dict) and data:
+        return arguments, frozenset()
+    moved = {key: arguments[key] for key in fields if key in arguments}
+    if not moved:
+        return arguments, frozenset()
+    effective = dict(arguments)
+    effective["data"] = {**(data or {}), **moved}
+    return effective, frozenset(moved)
 
 
 def _chapter_number(value: Any) -> int | None:

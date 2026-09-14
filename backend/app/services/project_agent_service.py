@@ -35,6 +35,7 @@ from app.services.agent_plan_schema import (
     PlanValidationError,
     plannable_tool_names,
     provider_supports_required_tool_choice,
+    tool_parameter_schemas,
     validate_plan,
 )
 from app.services import agent_prompt_budget
@@ -736,7 +737,11 @@ class ProjectAgentService:
                     # round_tools：收口轮只留 propose_plan，拿它当白名单会拒掉每一份计划。
                     allowed = plannable_tool_names(available_tools)
                     try:
-                        plan = validate_plan(arguments, allowed_tools=allowed)
+                        plan = validate_plan(
+                            arguments,
+                            allowed_tools=allowed,
+                            tool_schemas=tool_parameter_schemas(available_tools),
+                        )
                     except PlanValidationError as exc:
                         # (b) 形态：plan_attempts / plan_correction 由下面的有界重试消费。
                         plan_attempts += 1
