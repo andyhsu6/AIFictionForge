@@ -31,6 +31,7 @@ from app.services.project_agent_service import (
     PLAN_MODE_INSTRUCTION,
     ProjectAgentService,
 )
+from support.agent_stubs import AgentAIServiceStub
 
 
 @pytest.fixture(autouse=True)
@@ -213,7 +214,7 @@ async def test_call_round_forwards_tool_choice_and_keeps_agent_side_routing():
         return {"content": "", "tool_calls": [], "usage": {}}
 
     svc = _bare_service()
-    svc.ai_service = SimpleNamespace(generate_text=fake_generate_text)
+    svc.ai_service = AgentAIServiceStub(generate_text=fake_generate_text)
     await ProjectAgentService._call_round(
         svc,
         prompt="p",
@@ -259,10 +260,12 @@ async def db_session(db_engine):
         yield session
 
 
-class _FakeAgentAIService:
+class _FakeAgentAIService(AgentAIServiceStub):
     """假 AI 出口：忠实复刻服务层用到的公开出口（provider / 思考型判断）。
 
-    思考型判断必须真的读 `default_model` / `base_url`：本文件 issue #77 的用例
+    预算窗口面继承自 `AgentAIServiceStub`（本文件另用 autouse fixture 钉住 60000，
+    见 `stub_history_budget`，那层隔离保留）。思考型判断必须真的读
+    `default_model` / `base_url`：本文件 issue #77 的用例
     会逐次改这两个字段，恒 False 的桩会让那些断言真空通过。
     """
 

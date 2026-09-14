@@ -8,9 +8,10 @@ import pytest
 
 from app.models.project import Project
 from app.services.project_agent_service import ProjectAgentService
+from support.agent_stubs import AgentAIServiceStub
 
 
-class _FakeAI:
+class _FakeAI(AgentAIServiceStub):
     """记录两种调用方式的假 AI 服务。"""
 
     def __init__(self):

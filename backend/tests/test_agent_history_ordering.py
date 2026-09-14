@@ -34,6 +34,7 @@ from app.database import Base
 from app.models.project import Project
 from app.models.project_agent import AgentConversation, AgentMessage, AgentToolCall
 from app.services.project_agent_service import ProjectAgentService
+from support.agent_stubs import AgentAIServiceStub
 
 # 同一瞬间的两种写入路径允许漂移的秒数上限；远超它即视为基准不一致（8h = 28800s）。
 BASIS_TOLERANCE_SECONDS = 60
@@ -62,7 +63,7 @@ async def test_same_second_burst_keeps_insertion_order(db_session):
     await db_session.flush()
 
     svc = ProjectAgentService(
-        db=db_session, ai_service=SimpleNamespace(default_model="m"),
+        db=db_session, ai_service=AgentAIServiceStub(default_model="m"),
         project=Project(id="proj-1", user_id="test", title="p"), user_id="test",
     )
     burst = ["user", "assistant", "tool", "assistant", "tool", "user", "assistant", "tool"]
@@ -149,7 +150,7 @@ async def test_orm_default_and_server_default_share_one_time_basis(db_session):
     await db_session.commit()
 
     history = await ProjectAgentService(
-        db=db_session, ai_service=SimpleNamespace(default_model="m"),
+        db=db_session, ai_service=AgentAIServiceStub(default_model="m"),
         project=Project(id="proj-1", user_id="test", title="p"), user_id="test",
     )._load_history(conv.id)
     by_content = {m.content: m.created_at for m in history}

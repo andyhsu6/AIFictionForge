@@ -36,7 +36,6 @@ MCP 工具批准、auto_approve 直通、page_context 透传与轮数上限、
 import json
 import uuid
 from collections import Counter
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -54,6 +53,7 @@ from app.services import project_agent_service as pas
 from app.services import agent_prompt_budget as apb
 from app.services.project_agent_service import ProjectAgentService
 from app.services.project_agent_tools import ProjectAgentTool
+from support.agent_stubs import AgentAIServiceStub
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +110,7 @@ def make_service(db) -> ProjectAgentService:
     project = Project(id="proj-1", user_id="test", title="测试项目")
     return ProjectAgentService(
         db=db,
-        ai_service=SimpleNamespace(
+        ai_service=AgentAIServiceStub(
             default_model="test-model",
             api_provider="openai",
             base_url="https://gw.example/v1",
