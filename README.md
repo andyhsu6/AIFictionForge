@@ -100,11 +100,18 @@ below are documented as product behaviour, not as implementation detail.
 - Per-user background work is served by a single worker. A plan that runs
   for tens of minutes holds that worker, so a manual generation you start
   meanwhile waits until the plan finishes (worst case = total plan time).
-- Every step logs its dispatch latency and how many model calls queued
-  while it ran (`/tmp` backend log, one line per step); `/health` reports
-  `plans_running`, the global count of plans in `running` state
-  (approved-but-not-started plans are not counted, and no user or project
-  identifiers are ever exposed).
+- Completed steps log their dispatch latency and how many model calls
+  queued while they ran (`/tmp` backend log, one line per completed step;
+  the failed-step path records its timing in the plan's `step_results`
+  without a per-step log, and a run that recorded any step also logs one
+  closing summary line). `/health` reports `plans_running`, the global
+  count of plans in `running` state (approved-but-not-started plans are
+  not counted, and no user or project identifiers are ever exposed).
+  Each probe runs one extra COUNT filtered by
+  `task_type='agent_plan' AND status='running'`; `background_tasks` has no
+  index on that column pair, so the count scans the table. That is
+  immaterial at current row counts, and adding an index is out of scope
+  for this PR.
 
 **Timing**
 
@@ -116,9 +123,11 @@ below are documented as product behaviour, not as implementation detail.
 
 **Restart**
 
-- A server restart marks in-flight plans as failed and writes a readable
-  note ("finished N of M steps, results are not final — please start
-  again") on the plan row.
+- A server restart marks in-flight plans as failed and writes a localized
+  interruption note on the plan row, surfaced through the
+  `progress.agent_plan_interrupted` status code: how many steps finished,
+  that the results are not final, and that the plan has to be started
+  again.
 - **Plans are never re-sent automatically.** Chapter analysis overwrites
   existing analysis results, story memories and foreshadowing; JSON
   import and consistency repair are not idempotent either. Replaying them
