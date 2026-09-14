@@ -339,7 +339,8 @@ async def test_inline_steps_complete_and_finalize_tool_call(env):
     assert result.plan.progress_details["steps_total"] == 2
     assert result.plan.progress_details["steps_done"] == 2
     assert result.plan.progress_details["failed_at_step"] is None
-    assert result.ai.calls == []                        # 零 LLM
+    assert [c for c in result.ai.calls if c != "generate_text"] == []   # 执行阶段零 LLM
+    assert result.ai.calls.count("generate_text") == 1                  # 收尾恰一次
     assert result.tool_call.status == "executed"
     assert result.tool_call.result["steps_done"] == 2
     async with env.factory() as db:
@@ -370,7 +371,8 @@ async def test_second_step_failure_stops_plan(env, monkeypatch):
     assert result.plan.status == "failed"
     assert result.plan.progress_details["failed_at_step"] == 2
     assert result.plan.progress_details["steps_done"] == 1
-    assert result.plan.status_code == "task.failed"
+    assert result.plan.status_code == "internal.agent_plan_step_failed"
+    assert result.plan.status_params == {"step": 2, "total": 3}
     assert result.tool_call.status == "failed"
     assert "目标实体不存在" in (result.tool_call.error_message or "")
 
@@ -523,7 +525,10 @@ async def test_zero_llm_calls_whether_three_or_eight_steps(env, monkeypatch):
 
     three = await run(3)
     eight = await run(8)
-    assert three.ai.calls == [] and eight.ai.calls == []
+    assert [c for c in three.ai.calls if c != "generate_text"] == []
+    assert [c for c in eight.ai.calls if c != "generate_text"] == []
+    assert three.ai.calls.count("generate_text") == 1
+    assert eight.ai.calls.count("generate_text") == 1
     assert three.plan.progress_details["steps_done"] == 3
     assert eight.plan.progress_details["steps_done"] == 8
     assert eight.tool_call.result["steps_done"] == 8

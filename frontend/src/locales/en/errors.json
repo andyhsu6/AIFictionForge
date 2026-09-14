@@ -141,6 +141,7 @@
   "internal": {
     "agent_execution_failed": "AI writing assistant failed: {{error}}",
     "agent_plan_not_available": "The background plan executor is not enabled, so approving a plan is temporarily unavailable",
+    "agent_plan_step_failed": "Plan step {{step}}/{{total}} failed; the remaining steps were aborted",
     "ai_chapter_plan_failed": "AI analysis failed: no chapter plan was generated",
     "ai_empty_response": "AI service returned an empty response",
     "ai_json_unparsable": "AI response could not be parsed as JSON: {{error}}",
@@ -166,6 +167,7 @@
   },
   "not_found": {
     "agent_conversation": "Conversation not found",
+    "agent_plan": "Plan task not found",
     "agent_tool_call": "Tool call not found",
     "api_route": "API route not found",
     "batch_task": "Batch generation task not found",

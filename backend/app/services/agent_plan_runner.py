@@ -15,6 +15,7 @@ LLM 只出现在两个端点：规划（PR-2a 的 propose_plan）与收尾（PR-
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
@@ -25,13 +26,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.common import verify_project_access
+from app.config import settings
 from app.core.errors import ApiError
 from app.database import get_engine
 from app.logger import get_logger
 from app.models.analysis_task import AnalysisTask
 from app.models.background_task import BackgroundTask
 from app.models.batch_generation_task import BatchGenerationTask
-from app.models.project_agent import AgentExecutionStep, AgentToolCall
+from app.models.project_agent import (
+    AgentConversation,
+    AgentExecutionStep,
+    AgentMessage,
+    AgentToolCall,
+    _naive_utc_now,
+)
+from app.services.agent_plan_schema import PROPOSE_PLAN_TOOL_NAME
+from app.services.language_resolver import resolve_user_generation_language
+from app.services.project_agent_service import agent_system_prompt
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
@@ -51,6 +62,49 @@ POLL_INTERVAL_SECONDS = 2.0
 STEP_GRACE_SECONDS = 0.0            # PR-4 调成 3.0（SQLite WAL 可见性）
 STATUS_MESSAGE_MAX_CHARS = 120      # status_message 是 String(500)，PG 超长直接报错
 CANCEL_SETTLE_TIMEOUT_SECONDS = 10.0
+
+SUMMARY_MAX_CHARS = 8000        # PR-2c 聚合消息裁剪；键名 agent_plan_summary_max_chars
+
+PLAN_SUMMARY_TOOL_NAME = "plan_run_summary"   # 单条聚合 tool 行的哨兵（幂等按它过滤）
+_SUMMARY_FIELD_MAX_CHARS = 300                # 单字段上限，绝不透传 step 原文
+
+PLAN_CLOSING_INSTRUCTION = (
+    "下面是后台计划执行器生成的结构化执行摘要（JSON）。请用一段简洁的总结向用户说明："
+    "计划整体结果、已完成步数与失败位置；只依据摘要内容，不得编造。"
+    "章节级分析结论不在摘要里，如需查看详情，提示用户在后续对话中使用 "
+    "get_chapter_analysis 工具。不要调用任何工具，直接输出总结文本。\n"
+)
+
+_DEFAULT_LIMITS: dict[str, Any] = {
+    "agent_plan_max_steps": MAX_PLAN_STEPS,
+    "agent_plan_wall_clock_seconds": PLAN_WALL_CLOCK_SECONDS,
+    "agent_plan_step_poll_timeout_seconds": STEP_POLL_TIMEOUT_SECONDS,
+    "agent_plan_poll_interval_seconds": POLL_INTERVAL_SECONDS,
+    "agent_plan_step_grace_seconds": STEP_GRACE_SECONDS,
+    "agent_plan_status_message_max_chars": STATUS_MESSAGE_MAX_CHARS,
+    "agent_plan_summary_max_chars": SUMMARY_MAX_CHARS,
+}
+
+
+def _limit(key: str, module_value: Any) -> Any:
+    """§3 配置面唯一读取口。
+
+    规则：调用方传进来的 module_value 若已被 monkeypatch 成非默认值 ⇒ 以它为准
+    （PR-2b 的用例靠 patch 模块常量驱动预算）；否则取 settings。
+    两者都不满足时直接返回默认，绝不抛错——runner 是 detached 任务，
+    配置读不出来不该让计划静默失败。
+    """
+    default = _DEFAULT_LIMITS.get(key)
+    if default is not None and module_value != default:
+        return module_value
+    value = getattr(settings, key, default)
+    if value is None:
+        return default
+    if isinstance(default, bool) or isinstance(module_value, bool):
+        return bool(value)
+    if isinstance(default, int) and not isinstance(module_value, float):
+        return int(value)
+    return value
 
 
 class TaskSnapshot(NamedTuple):
@@ -166,7 +220,7 @@ def _clip(text: Any, limit: int | None = None) -> str:
     status_message 是 String(500)，且项目支持 Postgres：SQLite 静默截断、PG 直接报错。
     所以面向用户那一列只放摘要，详情一律进 progress_details（JSON）。
     """
-    max_chars = STATUS_MESSAGE_MAX_CHARS if limit is None else limit
+    max_chars = _limit("agent_plan_status_message_max_chars", STATUS_MESSAGE_MAX_CHARS) if limit is None else limit
     normalized = " ".join(str(text if text is not None else "").split())
     if len(normalized) <= max_chars:
         return normalized
@@ -341,6 +395,345 @@ async def _resolve_tool_call_id(
         )).scalar_one_or_none()
 
 
+def _tool_call_entries(raw: Any) -> list[dict]:
+    """provider 原始 tool_calls 载荷 -> 良构 entry 列表；畸形输入返回空表，绝不抛错。"""
+    entries = raw
+    if isinstance(entries, str):
+        try:
+            entries = json.loads(entries)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _entry_function(entry: dict) -> dict:
+    function = entry.get("function")
+    return function if isinstance(function, dict) else {}
+
+
+def _entry_arguments_dict(entry: dict) -> dict | None:
+    arguments = _entry_function(entry).get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return None
+    return arguments if isinstance(arguments, dict) else None
+
+
+def _plan_match_key(args: Any) -> tuple[str, tuple[tuple[str, str, str], ...]] | None:
+    """Raw 与 validate_plan 后的计划 dict 配对的稳定键。
+
+    validate_plan 会给每一步补 action/note 等归一化字段（raw 侧没有），全量 dict
+    相等在生产恒不成立；但 objective、各步 (id, tool) 与步 arguments 两侧都保留，
+    前两者 strip、arguments 用 sort_keys 规范化，所以这几样能跨 raw/validated 形状
+    配对（validate_plan 原样透传 raw arguments，见 agent_plan_schema.py:157）。
+    """
+    if not isinstance(args, dict):
+        return None
+    steps = args.get("steps")
+    if not isinstance(steps, list):
+        return None
+    return (
+        str(args.get("objective") or "").strip(),
+        tuple(
+            (
+                str(step.get("id") or "").strip(),
+                str(step.get("tool") or "").strip(),
+                json.dumps(step.get("arguments") or {}, sort_keys=True),
+            )
+            for step in steps
+            if isinstance(step, dict)
+        ),
+    )
+
+
+def _propose_plan_entry_id(entry: dict) -> str:
+    if _entry_function(entry).get("name") != PROPOSE_PLAN_TOOL_NAME:
+        return ""
+    return str(entry.get("id") or "").strip()
+
+
+async def resolve_provider_call_id(
+    session_factory: async_sessionmaker,
+    *,
+    tool_call_id: str | None,
+    conversation_id: str,
+    plan_task_input: dict[str, Any] | None = None,
+) -> str:
+    """聚合收尾消息该挂哪个 tool_call_id（架构 §0）。
+
+    顺序：① task_input 里显式写的 provider_call_id（前瞻：PR-2a 若补写则无缝生效）
+    ② 该 AgentToolCall 关联的 assistant 消息里 propose_plan 那条原始 id
+    ③ 会话内扫描：真实 propose-plan 流把 record.message_id 指向 tool_calls=NULL
+       的计划卡（project_agent_service.py:950-958），provider id 只存在于更早那条
+       带 tool_calls 的 assistant 消息里 ⇒ 按会话从新到旧扫，先按 arguments 配对，
+       配不上再取最新一条同名 entry
+    ④ 兜底 = AgentToolCall.id。
+    ⚠️ :906 的回退分支意味着 provider 未回传 id 时 ②/③ 与 ④ **同值**，
+    这是合法状态，下游一律不得写成 "if provider_id != record_id" 的分支。
+    """
+    if not tool_call_id:
+        return ""
+    async with session_factory() as session:
+        record = await session.get(AgentToolCall, tool_call_id)
+        if record is None:
+            return ""
+        if plan_task_input:
+            explicit = str(plan_task_input.get("provider_call_id") or "").strip()
+            if explicit:
+                return explicit
+        message_id = getattr(record, "message_id", None)
+        if message_id:
+            message = await session.get(AgentMessage, message_id)
+            raw_entries = getattr(message, "tool_calls", None) if message else None
+            for entry in _tool_call_entries(raw_entries):
+                entry_id = _propose_plan_entry_id(entry)
+                if entry_id:
+                    return entry_id
+        messages = (await session.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.conversation_id == conversation_id,
+                AgentMessage.role == "assistant",
+            )
+            .order_by(AgentMessage.created_at.desc())
+        )).scalars().all()
+        parsed = [
+            _tool_call_entries(getattr(message, "tool_calls", None))
+            for message in messages
+        ]
+        wanted = _plan_match_key(record.arguments)
+        if wanted is not None:
+            for entries in parsed:
+                for entry in entries:
+                    entry_id = _propose_plan_entry_id(entry)
+                    if entry_id and _plan_match_key(_entry_arguments_dict(entry)) == wanted:
+                        return entry_id
+        for entries in parsed:
+            for entry in reversed(entries):
+                entry_id = _propose_plan_entry_id(entry)
+                if entry_id:
+                    return entry_id
+        return record.id
+
+
+def build_plan_summary_payload(
+    handle: _PlanHandle, outcome: str, summary: str
+) -> dict[str, Any]:
+    """服务端白名单聚合 payload：step 原文（result/detail/arguments 等）一律不透传。"""
+    results = {
+        entry.get("index"): entry
+        for entry in handle.step_results
+        if isinstance(entry, dict)
+    }
+    steps: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(handle.steps, start=1):
+        if not isinstance(raw_step, dict):
+            continue
+        result = results.get(index) or {}
+        item: dict[str, Any] = {
+            "id": _clip(raw_step.get("id"), _SUMMARY_FIELD_MAX_CHARS),
+            "tool": _clip(raw_step.get("tool"), _SUMMARY_FIELD_MAX_CHARS),
+            "status": _clip(result.get("status") or "pending", 40),
+        }
+        action = raw_step.get("action")
+        if action:
+            item["action"] = _clip(action, _SUMMARY_FIELD_MAX_CHARS)
+        for source_key, target_key in (
+            ("sub_task_id", "sub_task_id"),
+            ("sub_task_type", "task_type"),
+            ("error_code", "error_code"),
+        ):
+            value = result.get(source_key)
+            if value:
+                item[target_key] = _clip(value, _SUMMARY_FIELD_MAX_CHARS)
+        steps.append(item)
+    task_input = handle.task_input if isinstance(handle.task_input, dict) else {}
+    return {
+        "plan_task_id": handle.plan_task_id,
+        "objective": _clip(task_input.get("objective") or "", _SUMMARY_FIELD_MAX_CHARS),
+        "outcome": outcome,
+        "steps_total": len(handle.steps),
+        "steps_done": handle.steps_done,
+        "failed_at_step": handle.failed_at_step,
+        "cancelled": handle.cancel_requested or outcome == "cancelled",
+        "steps": steps,
+        "server_note": _clip(summary, _SUMMARY_FIELD_MAX_CHARS),
+        "detail_source": "AgentExecutionStep; 需要章节/分析结论时调用只读工具，不要臆造",
+    }
+
+
+async def _insert_plan_summary_message(
+    session_factory: async_sessionmaker,
+    *,
+    handle: _PlanHandle,
+    provider_call_id: str,
+    outcome: str,
+    summary: str,
+) -> str:
+    """写唯一一条 role=tool 聚合消息（DB 级幂等：同会话/同 tool_call_id 已有则不重复写）。"""
+    content = _clip(
+        json.dumps(
+            {
+                "tool": PLAN_SUMMARY_TOOL_NAME,
+                "error": None,
+                "result": build_plan_summary_payload(handle, outcome, summary),
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+        _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS),
+    )
+    before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
+    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
+    async with session_factory() as session:
+        existing = (await session.execute(
+            select(AgentMessage.id)
+            .where(
+                AgentMessage.conversation_id == handle.conversation_id,
+                AgentMessage.role == "tool",
+                AgentMessage.tool_call_id == provider_call_id,
+                AgentMessage.content.like(f"%{PLAN_SUMMARY_TOOL_NAME}%"),
+            )
+            .order_by(AgentMessage.created_at.asc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        message = AgentMessage(
+            conversation_id=handle.conversation_id,
+            role="tool",
+            content=content,
+            tool_call_id=provider_call_id,
+            created_at=before,
+        )
+        session.add(message)
+        await session.execute(
+            update(AgentConversation)
+            .where(AgentConversation.id == handle.conversation_id)
+            .values(last_message_at=conversation_now)
+        )
+        await session.commit()
+        return message.id
+
+
+async def _insert_plan_assistant_message(
+    session_factory: async_sessionmaker,
+    *,
+    conversation_id: str,
+    content: str,
+    model: str | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> str | None:
+    """落收尾 role=assistant 消息；空 content 不写。绝不写 role=user。"""
+    if not content or not content.strip():
+        return None
+    before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
+    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
+    async with session_factory() as session:
+        message = AgentMessage(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=_clip(content, _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS)),
+            model=model,
+            prompt_tokens=prompt_tokens or None,
+            completion_tokens=completion_tokens or None,
+            created_at=before,
+        )
+        session.add(message)
+        await session.execute(
+            update(AgentConversation)
+            .where(AgentConversation.id == conversation_id)
+            .values(last_message_at=conversation_now)
+        )
+        await session.commit()
+        return message.id
+
+
+async def _closing_stage(
+    handle: _PlanHandle, factory: async_sessionmaker, outcome: str, summary: str
+) -> None:
+    """收尾：恒写 1 条聚合 tool 消息；非取消且有 ai_service 时恰好 1 次 headless LLM。
+
+    幂等经 handle.closing_done；所有异常在此吞掉并 log —— 收尾失败不得改计划终态，
+    也不得让计划行卡在 running（ai_service 缺失只降级为聚合消息）。
+    """
+    if handle.closing_done:
+        return
+    handle.closing_done = True
+    try:
+        provider_call_id = await resolve_provider_call_id(
+            factory,
+            tool_call_id=handle.tool_call_id,
+            conversation_id=handle.conversation_id,
+            plan_task_input=handle.task_input,
+        )
+    except Exception as exc:                  # noqa: BLE001 —— 锚点解析失败不得吞掉聚合行
+        logger.warning(
+            f"计划 {handle.plan_task_id[:8]} 解析 provider_call_id 失败，回退锚点: {exc}"
+        )
+        provider_call_id = handle.tool_call_id or ""
+    handle.summary_message_id = await _insert_plan_summary_message(
+        factory, handle=handle, provider_call_id=provider_call_id,
+        outcome=outcome, summary=summary,
+    )
+    if outcome == "cancelled":
+        logger.info(f"计划已取消，跳过收尾 LLM 调用 {handle.plan_task_id[:8]}")
+        return
+    if handle.ai_service is None:
+        logger.warning(f"计划收尾缺少 ai_service，仅写聚合消息 {handle.plan_task_id[:8]}")
+        return
+    try:
+        async with factory() as session:
+            generation_language = await resolve_user_generation_language(session, handle.user_id)
+        payload = build_plan_summary_payload(handle, outcome, summary)
+        response = await handle.ai_service.generate_text(
+            prompt=PLAN_CLOSING_INSTRUCTION + json.dumps(payload, ensure_ascii=False, default=str),
+            system_prompt=agent_system_prompt(
+                generation_language,
+                approval_prompt=(
+                    "\n\n当前为手动批准模式：写入工具生成预览后必须等待用户在界面确认，"
+                    "不得提前声称修改已生效。"
+                ),
+            ),
+            tools=None,
+            auto_mcp=False,
+            handle_tool_calls=False,
+        )
+        usage = (response or {}).get("usage") or {}
+        await _insert_plan_assistant_message(
+            factory,
+            conversation_id=handle.conversation_id,
+            content=(response or {}).get("content") or "",
+            model=(response or {}).get("model") or getattr(handle.ai_service, "default_model", None),
+            prompt_tokens=usage.get("prompt_tokens") or 0,
+            completion_tokens=usage.get("completion_tokens") or 0,
+        )
+    except Exception as exc:                  # noqa: BLE001 —— 收尾失败不得影响终态
+        logger.error(f"计划收尾失败（不影响终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+
+
+async def _close_and_finalize(
+    handle: _PlanHandle, factory: async_sessionmaker, outcome: str, summary: str
+) -> None:
+    """收尾 + 终态写入打包成一个原子单元；调用方一律 shield 它。
+
+    取消落在收尾等待中时，外层 await 会立刻抛 CancelledError，但本协程作为 shield
+    的被保护任务继续跑完：计划行绝不因为取消而停在 running（终态必须被写一次）。
+    """
+    try:
+        await _closing_stage(handle, factory, outcome, summary)
+    except Exception as exc:                  # noqa: BLE001 —— 收尾异常也要把终态写完
+        logger.error(f"计划收尾异常（继续写终态） {handle.plan_task_id[:8]}: {exc}", exc_info=True)
+    if handle.cancel_requested and outcome == "completed":
+        outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
+    await _write_final_state(handle, factory, outcome, summary)
+
+
 class PlanStepError(RuntimeError):
     """步骤级失败（发起报错、子任务失败/超时、子任务不存在）。一律导致失败即停。"""
 
@@ -371,6 +764,9 @@ class _PlanHandle:
     cancelled_sub_tasks: list[str] = field(default_factory=list)
     uncancellable_sub_tasks: list[str] = field(default_factory=list)
     step_results: list[dict[str, Any]] = field(default_factory=list)
+    task_input: dict[str, Any] | None = None   # run_plan 起跑时缓存，收尾 payload/配对复用
+    summary_message_id: str | None = None      # 聚合 tool 行 id（收尾幂等锚点 + 可观测）
+    closing_done: bool = False                 # 收尾一旦开跑就不再重复（含取消兜底）
 
 
 # plan_task_id -> handle：模块级强引用（范式同 api/chapters.py:77 + :116-121 的
@@ -419,6 +815,7 @@ def _details(handle: _PlanHandle, stage: str, summary: str) -> dict[str, Any]:
             "uncancellable_sub_tasks": list(handle.uncancellable_sub_tasks),
         },
         "step_results": list(handle.step_results),
+        "summary_message_id": handle.summary_message_id,
     }
 
 
@@ -440,6 +837,13 @@ async def run_plan(
     「执行阶段零 LLM 调用」与「中途取消」两条验收根本不可证伪。
     """
     factory = session_factory or await _default_session_factory(user_id)
+    task_input: dict[str, Any] | None = None
+    async with factory() as session:
+        raw_input = (await session.execute(
+            select(BackgroundTask.task_input).where(BackgroundTask.id == plan_task_id)
+        )).scalar_one_or_none()
+    if isinstance(raw_input, dict):
+        task_input = raw_input
     tool_call_id = await _resolve_tool_call_id(
         factory, plan_task_id=plan_task_id, project_id=project_id, user_id=user_id
     )
@@ -451,6 +855,7 @@ async def run_plan(
         steps=[dict(step) for step in (steps or []) if isinstance(step, dict)],
         ai_service=ai_service,
         tool_call_id=tool_call_id,
+        task_input=task_input,
     )
     task = asyncio.create_task(_supervise(handle, factory))
     handle.task = task
@@ -477,12 +882,13 @@ async def _supervise(handle: _PlanHandle, factory: async_sessionmaker) -> None:
     except asyncio.CancelledError:
         outcome, summary = "cancelled", (handle.cancel_reason or "计划已取消")
         await _cancel_in_flight(handle, factory)
-        await _write_final_state(handle, factory, outcome, summary)
+        # shield：第二次取消不得把「收尾 + 终态写入」打断在半路。
+        await asyncio.shield(_close_and_finalize(handle, factory, outcome, summary))
         raise
     except Exception as exc:                  # noqa: BLE001 —— 含权限校验失败
         outcome, summary = "failed", str(exc)
         logger.error(f"❌ 计划执行异常 {handle.plan_task_id[:8]}: {exc}", exc_info=True)
-    await _write_final_state(handle, factory, outcome, summary)
+    await asyncio.shield(_close_and_finalize(handle, factory, outcome, summary))
 
 
 def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str, Any]:
@@ -490,6 +896,9 @@ def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str,
         code = "task.cancelled"
     elif handle.propagated_code:
         code = handle.propagated_code         # 计划 B 契约：原样上送子任务的码
+    elif outcome == "failed" and handle.failed_at_step is not None:
+        # §3 失败即停：有明确失败步时用可读码 + 步数参数，取代笼统 task.failed
+        code = "internal.agent_plan_step_failed"
     elif outcome == "failed":
         code = "task.failed"
     else:
@@ -504,7 +913,11 @@ def _status_fields(handle: _PlanHandle, outcome: str, summary: str) -> dict[str,
         "status_params": (
             handle.propagated_params
             if code == handle.propagated_code and handle.propagated_params
-            else {}
+            else (
+                {"step": handle.failed_at_step, "total": max(len(handle.steps), 1)}
+                if code == "internal.agent_plan_step_failed"
+                else {}
+            )
         ),
         "progress_details": _details(handle, outcome, summary),
         "task_result": {
@@ -544,13 +957,14 @@ async def _run_plan_steps(
 ) -> "tuple[str, str]":
     """预检 + 打开 runner 自己的会话与权限校验，然后把主循环交给 _run_step_loop。"""
     total = len(handle.steps)
+    max_steps = _limit("agent_plan_max_steps", MAX_PLAN_STEPS)
     await _write_plan_row(
         factory, handle.plan_task_id, status="running", progress=0, started=True,
         status_message=_clip(f"计划开始执行（{total} 步）"),
         progress_details=_details(handle, "running", f"计划开始执行（{total} 步）"),
     )
-    if total > MAX_PLAN_STEPS:
-        return "failed", f"计划步骤数 {total} 超过上限 {MAX_PLAN_STEPS}"
+    if total > max_steps:
+        return "failed", f"计划步骤数 {total} 超过上限 {max_steps}"
     if not total:
         return "completed", "计划没有需要执行的步骤"
     try:
@@ -573,15 +987,17 @@ async def _run_step_loop(
 ) -> "tuple[str, str]":
     """顺序执行每一步，失败即停。返回 (outcome, summary)。"""
     total = len(handle.steps)
+    wall_clock = _limit("agent_plan_wall_clock_seconds", PLAN_WALL_CLOCK_SECONDS)
+    grace = _limit("agent_plan_step_grace_seconds", STEP_GRACE_SECONDS)
     loop = asyncio.get_running_loop()
-    plan_deadline = loop.time() + PLAN_WALL_CLOCK_SECONDS
+    plan_deadline = loop.time() + wall_clock
     for index, step in enumerate(handle.steps, start=1):
         if handle.cancel_requested:
             return "cancelled", _clip(handle.cancel_reason or "计划已取消", 200)
         if loop.time() > plan_deadline:
             handle.failed_at_step = index
             return "failed", _clip(
-                f"计划总时长超过上限 {int(PLAN_WALL_CLOCK_SECONDS)} 秒，"
+                f"计划总时长超过上限 {int(wall_clock)} 秒，"
                 f"第 {index} 步未发起", 200,
             )
         label = str(step.get("action") or step.get("tool") or f"step {index}")
@@ -616,8 +1032,8 @@ async def _run_step_loop(
             status_message=_clip(f"已完成 {index}/{total} 步"),
             progress_details=_details(handle, "running", f"已完成 {index}/{total} 步"),
         )
-        if STEP_GRACE_SECONDS:
-            await asyncio.sleep(STEP_GRACE_SECONDS)   # PR-4：步间 grace
+        if grace:
+            await asyncio.sleep(grace)   # PR-4：步间 grace
     return "completed", f"计划执行完成（{total}/{total} 步）"
 
 
@@ -697,8 +1113,10 @@ async def _await_sub_task(
     带 expire_on_commit=False，靠它轮询会读到陈旧身份映射（见 resolve_task_snapshot 的
     注释）。
     """
+    poll_timeout = _limit("agent_plan_step_poll_timeout_seconds", STEP_POLL_TIMEOUT_SECONDS)
+    poll_interval = _limit("agent_plan_poll_interval_seconds", POLL_INTERVAL_SECONDS)
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + STEP_POLL_TIMEOUT_SECONDS
+    deadline = loop.time() + poll_timeout
     handle.in_flight = (task_type, task_id)
     try:
         while True:
@@ -722,9 +1140,9 @@ async def _await_sub_task(
             if loop.time() > deadline:
                 await _cancel_in_flight(handle, factory)
                 raise PlanStepError(
-                    f"步骤轮询超过 {int(STEP_POLL_TIMEOUT_SECONDS)} 秒"
+                    f"步骤轮询超过 {int(poll_timeout)} 秒"
                 )
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
         # 外部 task.cancel()：异常穿过 finally 前 in_flight 还在，这里级联；轮询自查路径
         # 已经级联过（_cancel_in_flight 已把 in_flight 置空）⇒ 这里是空操作。

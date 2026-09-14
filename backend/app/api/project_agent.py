@@ -41,6 +41,7 @@ from app.services.agent_plan_dispatch import (  # noqa: F401  —— PR-2b 的�
     plan_tool_names,
     register_plan_runner,
 )
+from app.services.agent_plan_guardrail import find_open_plan_task
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
     PlanValidationError,
@@ -510,6 +511,24 @@ async def approve_plan(
     """
     user_id = _user_id(request)
     project = await verify_project_access(project_id, user_id, db)
+    # §7② 先查后抢：_claim_tool_call 会 commit 并把行推到 executing，先抢后拒会留下
+    # 一个 executing 却无人执行的计划锚点。只对 propose_plan 的锚点做并发护栏，
+    # 其他工具的既有报错路径不变。端点只有请求态 AsyncSession（无 factory）⇒ 用
+    # find_open_plan_task + 显式 raise 的等价形态。
+    pre_claim = (await db.execute(select(AgentToolCall).where(
+        AgentToolCall.id == tool_call_id,
+        AgentToolCall.project_id == project_id,
+        AgentToolCall.user_id == user_id,
+    ))).scalar_one_or_none()
+    if (pre_claim is not None
+            and pre_claim.status == "waiting_confirmation"
+            and pre_claim.tool_name == PROPOSE_PLAN_TOOL_NAME):
+        blocking_plan = await find_open_plan_task(
+            db, project_id=project_id, user_id=user_id,
+            conversation_id=pre_claim.conversation_id,
+        )
+        if blocking_plan is not None:
+            raise ApiError(code="conflict.agent_plan_running")
     tool_call = await _claim_tool_call(
         db, tool_call_id=tool_call_id, project_id=project_id,
         user_id=user_id, claimed_status="executing",

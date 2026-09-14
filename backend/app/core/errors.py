@@ -51,7 +51,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "auth.verification_code_required": ("请先发送验证码", 400),
     "auth.verification_code_wrong": ("验证码错误", 400),
     "conflict.agent_modification_state": ("该修改已处理或正在执行", 409),
-    # PR-2a 只注册不使用：「同会话仅一个运行中计划」护栏在 PR-2c 落地。
+    # PR-2c §7 护栏②：同会话已有 pending/running 的 agent_plan 时，approve-plan 返 409。
+    # 架构计划原文写的 conflict.agent_plan_state 由本码承载（见 .omo/plans/plan-a-pr2c.md 裁定表）。
     "conflict.agent_plan_running": ("本会话已有正在执行的计划，请等待完成或先取消", 409),
     "conflict.agent_preview_stale": ("数据已发生变化，差异预览已刷新，请重新确认", 409),
     "conflict.agent_tool_unavailable": ("工具已不再可用", 409),
@@ -175,6 +176,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "internal.agent_execution_failed": ("灵创创作助手执行失败：{{error}}", 200),
     # 执行器未注册（PR-2b 未落地或已回滚）⇒ 批准端点必须在建任务行之前返回带码 501。
     "internal.agent_plan_not_available": ("后台计划执行器尚未启用，批准暂时不可用", 501),
+    "internal.agent_plan_step_failed": ("计划第 {{step}}/{{total}} 步执行失败，后续步骤已中止", 500),
     "internal.ai_chapter_plan_failed": ("AI分析失败，未能生成章节规划", 200),
     "internal.ai_empty_response": ("AI服务返回空响应", 200),
     "internal.ai_json_unparsable": ("AI返回的内容无法解析为JSON：{{error}}", 200),
@@ -195,6 +197,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "internal.relationship_type_create_failed": ("关系类型创建失败", 500),
     "internal.user_id_missing_for_project": ("用户ID缺失，无法创建项目", 200),
     "not_found.agent_conversation": ("对话不存在", 404),
+    "not_found.agent_plan": ("计划任务不存在", 404),
     "not_found.agent_tool_call": ("工具调用不存在", 404),
     "not_found.api_route": ("API路径不存在", 404),
     "not_found.batch_task": ("批量生成任务不存在", 404),

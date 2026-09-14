@@ -987,6 +987,14 @@ async def test_approve_plan_omitting_selection_approves_every_step(env):
     assert [s["id"] for s in started[0]["steps"]] == ["s1", "s2", "s3"], \
         "省略字段必须等价于按计划的完整步骤序列"
 
+    # §7②：同一会话已有未定稿计划 ⇒ 第二次批准会被并发护栏拒绝；
+    # 本用例只钉选择语义，因此第二次批准换到干净会话（夹具修正，非放宽护栏）。
+    second_conversation = AgentConversation(
+        user_id=env.user_id, project_id=env.project_id, title="second planning turn"
+    )
+    env.service.db.add(second_conversation)
+    await env.service.db.commit()
+    env.conversation_id = second_conversation.id
     subset_call = await seed_waiting_plan_call(env)
     subset_result = await approve(env, subset_call, selected_step_ids=["s2"])
     assert subset_result.steps_total == 1

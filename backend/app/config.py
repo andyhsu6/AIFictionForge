@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     # MCP配置
     mcp_max_rounds: int = 3  # MCP工具调用最大轮数（全局统一控制）
 
+    # 计划执行器预算（架构计划 A §3 / PR-2c）——默认值必须与
+    # app/services/agent_plan_runner.py 的模块常量逐字一致，两者不一致时以常量优先规则生效。
+    agent_plan_max_steps: int = 30                 # 一份计划最多步数
+    agent_plan_wall_clock_seconds: float = 7200.0  # 计划级总时长上限（秒）
+    agent_plan_step_poll_timeout_seconds: float = 900.0   # 单步等子任务终态上限
+    agent_plan_poll_interval_seconds: float = 2.0         # 子任务轮询间隔
+    agent_plan_step_grace_seconds: float = 0.0            # 步间宽限（PR-4 调 3.0）
+    agent_plan_status_message_max_chars: int = 120        # status_message 是 String(500)
+    agent_plan_summary_max_chars: int = 8000               # 聚合 tool 消息/收尾文案上限
+    agent_plan_running_guardrail_enabled: bool = True      # §7 护栏总开关（回滚用）
+    agent_plan_round_budget: int = 3                       # 规划回合工具轮数上限（消费方 = PR-2a 的 service，不走 runner `_limit`）
+
     # --- 助手 prompt 预算（PR-0c，架构计划 §5）-----------------------------
     # 唯一换算式：clamp(实测窗口 tokens * agent_chars_per_token
     #                   * agent_history_budget_ratio,
