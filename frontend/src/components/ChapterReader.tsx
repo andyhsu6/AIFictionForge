@@ -127,7 +127,7 @@ export default function ChapterReader({
           setLoading(false);
         });
     }
-  }, [visible, chapter?.id]);
+  }, [visible, chapter?.id, message, t]);
 
   // 保存设置变更
   useEffect(() => {

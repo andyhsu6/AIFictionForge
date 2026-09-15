@@ -77,7 +77,7 @@ export default function AuthCallback() {
     };
 
     handleCallback();
-  }, [navigate]);
+  }, [navigate, t]);
 
   if (status === 'loading') {
     return (

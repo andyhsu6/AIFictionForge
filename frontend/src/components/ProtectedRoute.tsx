@@ -34,7 +34,7 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     
     return () => {
     };
-  }, []);
+  }, [message]);
 
   if (isAuthenticated === null) {
     return (
