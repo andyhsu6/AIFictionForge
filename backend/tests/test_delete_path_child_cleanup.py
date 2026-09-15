@@ -838,3 +838,182 @@ async def test_cleanup_script_cleans_links_of_orphan_relationship_type(tmp_path)
     assert type_ids == {2}
     assert link_count == 0
     assert after == []
+
+
+async def _seed_cross_project_organization_graph(db_session):
+    """种子：项目 A/B + 角色 X/Y + 组织 A（父，属 A）/B（子，属 B）+ 双向跨项目成员。
+
+    组织 A 属于项目 A、组织 B 属于项目 B 且以 A 为父组织；成员关系同时覆盖
+    “项目 B 角色加入项目 A 组织”与“项目 A 角色加入项目 B 组织”两个方向 ——
+    接口层未做同项目校验，这两种跨项目行都可能在真实数据中出现。
+    """
+    project_a = Project(id="project-a", user_id=USER_ID, title="Project A")
+    project_b = Project(id="project-b", user_id=USER_ID, title="Project B")
+    char_x = Character(id="char-a", project_id=project_a.id, name="Character X")
+    char_y = Character(id="char-b", project_id=project_b.id, name="Character Y")
+    org_a = Organization(id="org-a", project_id=project_a.id, character_id=char_x.id)
+    org_b = Organization(id="org-b", project_id=project_b.id, character_id=char_y.id,
+                         parent_org_id=org_a.id)
+    members = [
+        OrganizationMember(id="member-y-in-a", organization_id=org_a.id,
+                           character_id=char_y.id, position="Advisor"),
+        OrganizationMember(id="member-x-in-b", organization_id=org_b.id,
+                           character_id=char_x.id, position="Advisor"),
+    ]
+    db_session.add_all([project_a, project_b, char_x, char_y, org_a, org_b, *members])
+    await db_session.commit()
+    return {"project_a": project_a, "project_b": project_b, "char_x": char_x,
+            "char_y": char_y, "org_a": org_a, "org_b": org_b}
+
+
+async def _assert_cross_project_organization_references_gone(db_session) -> None:
+    """删除/清空项目 A 后：组织 A 消失、组织 B 幸存且断父、跨项目成员行全部清理。"""
+    assert await count_where(db_session, Organization, Organization.id, "org-a") == 0
+    org_b = (
+        await db_session.execute(select(Organization).where(Organization.id == "org-b"))
+    ).scalar_one_or_none()
+    assert org_b is not None
+    assert org_b.parent_org_id is None
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.id, "member-y-in-a") == 0
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.id, "member-x-in-b") == 0
+    assert await fk_violations(
+        db_session, {"organizations", "organization_members"}
+    ) == []
+
+
+@pytest.mark.anyio
+async def test_delete_project_cleans_cross_project_organization_rows(db_session):
+    """删项目 A：组织 B 幸存的跨项目成员/父组织引用必须清理，不得悬空。"""
+    await _seed_cross_project_organization_graph(db_session)
+
+    await delete_project("project-a", make_request(), db_session)
+
+    assert await count_where(db_session, Project, Project.id, "project-a") == 0
+    assert await count_where(db_session, Project, Project.id, "project-b") == 1
+    assert await count_where(db_session, Character, Character.id, "char-b") == 1
+    await _assert_cross_project_organization_references_gone(db_session)
+
+
+@pytest.mark.anyio
+async def test_clear_project_data_cleans_cross_project_organization_rows(db_session):
+    """覆盖导入清空项目 A：跨项目成员/父组织引用同上；项目配置（#132 边界）保留。"""
+    await _seed_cross_project_organization_graph(db_session)
+    style = WritingStyle(id=1, user_id=USER_ID, name="Style A",
+                         style_type="custom", prompt_content="p")
+    default_style = ProjectDefaultStyle(project_id="project-a", style_id=style.id)
+    rel_type = RelationshipType(id=1, project_id="project-a", name="Type A", category="social")
+    db_session.add_all([style, default_style, rel_type])
+    await db_session.commit()
+
+    svc = BookImportService()
+    await svc._clear_project_data(db=db_session, project_id="project-a")
+    await db_session.commit()
+
+    assert await count_where(db_session, Project, Project.id, "project-a") == 1
+    assert await count_where(db_session, Project, Project.id, "project-b") == 1
+    assert await count_where(db_session, Character, Character.id, "char-a") == 0
+    assert await count_where(db_session, Character, Character.id, "char-b") == 1
+    await _assert_cross_project_organization_references_gone(db_session)
+    # #132 边界：项目级关系类型与默认写作风格（include_default_styles=False）均保留
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.project_id, "project-a") == 1
+    assert await count_where(db_session, ProjectDefaultStyle,
+                             ProjectDefaultStyle.project_id, "project-a") == 1
+
+
+@pytest.mark.anyio
+async def test_delete_project_cleans_cross_project_relationships(db_session):
+    """删项目 A：以项目 A 角色为端点的项目 B 关系行及其类型链接不得悬空。"""
+    project_a = Project(id="project-a", user_id=USER_ID, title="Project A")
+    project_b = Project(id="project-b", user_id=USER_ID, title="Project B")
+    char_a = Character(id="char-a", project_id=project_a.id, name="Character X")
+    char_b = Character(id="char-b", project_id=project_b.id, name="Character Y")
+    char_c = Character(id="char-c", project_id=project_b.id, name="Character Z")
+    type_b = RelationshipType(id=1, project_id=project_b.id, name="Type B", category="social")
+    rel_from_a = CharacterRelationship(
+        id="rel-from-a", project_id=project_b.id,
+        character_from_id=char_a.id, character_to_id=char_b.id,
+        relationship_type_id=type_b.id,
+    )
+    rel_to_a = CharacterRelationship(
+        id="rel-to-a", project_id=project_b.id,
+        character_from_id=char_c.id, character_to_id=char_a.id,
+    )
+    link = RelationshipTypeLink(relationship_id=rel_from_a.id,
+                                relationship_type_id=type_b.id)
+    db_session.add_all([project_a, project_b, char_a, char_b, char_c,
+                        type_b, rel_from_a, rel_to_a, link])
+    await db_session.commit()
+
+    await delete_project("project-a", make_request(), db_session)
+
+    assert await count_where(db_session, CharacterRelationship,
+                             CharacterRelationship.id, "rel-from-a") == 0
+    assert await count_where(db_session, CharacterRelationship,
+                             CharacterRelationship.id, "rel-to-a") == 0
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, link.id) == 0
+    # 项目 B 的类型定义与存活角色不受影响
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.id, type_b.id) == 1
+    assert await count_where(db_session, Character, Character.id, "char-b") == 1
+    assert await count_where(db_session, Project, Project.id, "project-b") == 1
+    assert await fk_violations(
+        db_session, {"character_relationships", "character_relationship_type_links"}
+    ) == []
+
+
+def _seed_cleanup_relationship_type_live_reference(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO projects (id, user_id, title, outline_mode, current_words, cover_status)
+                VALUES ('project-a', 'user-1', 'Project A', 'one-to-many', 0, 'none');
+            INSERT INTO characters (id, project_id, name) VALUES ('char-x', 'project-a', 'Character X');
+            INSERT INTO characters (id, project_id, name) VALUES ('char-y', 'project-a', 'Character Y');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (1, 'ghost-project', 'Type Orphan', 'social');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (2, NULL, 'Type Preset', 'social');
+            INSERT INTO character_relationships
+                (id, project_id, character_from_id, character_to_id, relationship_type_id)
+                VALUES ('rel-live', 'project-a', 'char-x', 'char-y', 1);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.anyio
+async def test_cleanup_script_nulls_live_relationship_type_reference(tmp_path):
+    """孤立 relationship_type 仍被活关系引用：先置空缓存列，再删类型，不得 FK 中止。"""
+    db_path = str(tmp_path / "cleanup-reltype-live.db")
+    _create_cleanup_db(db_path)
+    _seed_cleanup_relationship_type_live_reference(db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        conn.close()
+
+    applied = cleanup_run(db_path, apply=True)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        type_ids = {row[0] for row in conn.execute("SELECT id FROM relationship_types")}
+        rel_type_id = conn.execute(
+            "SELECT relationship_type_id FROM character_relationships WHERE id = 'rel-live'"
+        ).fetchone()[0]
+        after = conn.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        conn.close()
+
+    assert applied["after"] == {}
+    assert type_ids == {2}
+    assert rel_type_id is None
+    assert after == []
