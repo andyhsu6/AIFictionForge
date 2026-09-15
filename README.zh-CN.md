@@ -4,12 +4,6 @@
 
 **English | [中文](/README.zh-CN.md)**
 
-![Version](https://img.shields.io/badge/version-1.5.4-blue.svg)
-![Python](https://img.shields.io/badge/python-3.12-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.109.0-green.svg)
-![React](https://img.shields.io/badge/react-18.3.1-blue.svg)
-![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
-
 **基于 AI 的智能小说创作助手**
 
 [特性](#-特性) • [模型要求](#-模型要求) • [快速开始](#-快速开始) • [配置说明](#%EF%B8%8F-配置说明) • [项目结构](#-项目结构)
@@ -24,481 +18,173 @@
 
 ---
 
-## ⚠️ 破坏性变更：现在要求模型具备 ≥900,000 token 的上下文窗口
+## 🧠 模型要求
 
-**版本说明：自 `v1.5.4` 之后的第一个发布版本生效。** 最近一个已打标签的版本（`v1.5.4`，也就是顶部徽章显示的版本）还接受更小的模型并对其做静默分级降级；它之后的版本不再接受。
-
-- 所有 AI 功能都要求底座模型的上下文窗口至少 **900,000 tokens**。低于这条下限的模型会被拒绝——保存时拒，**每一次真正要把该模型发出去的请求**也拒，包括逐次请求传入的模型覆盖。
-- **分级降级已删除。** 不再有「128K 模式」把全书注入悄悄换成最近章节摘要 + 记忆检索；也**没有隐式兜底模型**：未配置模型的账户会拿到 `validation.ai_model_not_configured`，而不会被系统塞一个默认值。
-- **存量账户不会被静默迁移。** 原先配置着较小模型的用户，下一次 AI 请求会以 `validation.ai_model_below_minimum` 被拒，应用会把他们引导到设置页（流式与后台任务路径给出常驻提示，已在设置页时则直接内联显示门禁表单）。该表单只凭缓存结论就能同屏显示三个数——实测窗口 / 你声明的窗口 / 实际采用的预算，并另列 900,000 下限——因此即使此刻网关不可达，也能当场看清需要重新选择模型。
-- **`DEFAULT_MODEL` 环境变量后端已不再读取。** 对应的配置项已删除；你的 `.env` 或 `docker-compose.yml` 里若还留着它，会被忽略。模型改为在应用内按账户配置。
-- 因此全新安装在你**于设置里添加模型之前没有任何可用的 AI 模型**。
-
-这条下限会尽探测所能地强制执行，但这**不等于「任何时刻都不会被绕过」**——探测具体测了什么、仍有哪两个盲区，见下文[「模型要求」](#-模型要求)。
+- 所有 AI 功能都要求底座模型的上下文窗口**至少 900,000 token**。低于这条下限的模型，保存时会被拒绝，每一次真正要派发该模型的请求也会被拒。
+- **没有隐式兜底模型**，也没有「128K 模式」之类的分级降级。全新安装在**设置**里添加模型之前没有任何可用的 AI 模型，窗口会在那里针对你自己的端点实测。
+- `DEFAULT_MODEL` 已废弃，后端不再读取。请在应用内按账户配置模型。
+- 窗口的实测方式与探测仍然存在的盲区，见 [docs/model-requirements.md](docs/model-requirements.md)。
 
 ---
 
 ## ✨ 特性
 
-- 🤖 **多 AI 服务商** - 支持 OpenAI、Gemini、Claude 及任意 OpenAI 兼容端点（仅指协议兼容；所配置的模型仍需具备 ≥900,000 token 上下文窗口，见「模型要求」）
-- 📝 **智能向导** - AI 自动生成大纲、角色和世界观
-- 👥 **角色管理** - 人物关系、组织架构可视化管理
-- 📖 **章节编辑** - 支持创建、编辑、重新生成和润色
-- 🌐 **世界观设定** - 构建完整的故事背景
-- 🔐 **多种登录** - LinuxDO OAuth 或本地账户登录
-- 💾 **PostgreSQL** - 生产级数据库，多用户数据隔离
-- 🐳 **Docker 部署** - 一键启动，开箱即用
+- 🤖 **多 AI 服务商**：支持 OpenAI、Gemini、Claude 及任意 OpenAI 兼容端点（仅指协议兼容；所配置的模型仍需具备 >=900,000 token 上下文窗口）。
+- 🧙 **项目创建向导**：AI 根据简短描述生成大纲、角色和世界观。
+- 📖 **章节工作流**：创建、编辑、整章或局部重新生成、润色，并可设置目标字数。
+- 📚 **拆书**：导入既有文本并逐章分析。
+- 🧵 **伏笔追踪**：追踪剧情伏笔、提醒未回收线索，并提供伏笔时间线。
+- 👥 **角色与组织**：角色和组织管理、关系图谱，以及可自定义的职业等级体系（修仙境界、魔法等级等）。
+- 🌐 **世界观设定**：构建完整的故事背景与设定。
+- 💡 **灵感模式**：生成创作灵感和方向。
+- ✍️ **自定义写作风格**：定义并复用你自己的 AI 写作风格。
+- 🧩 **提示词模板编辑**：在界面中可视化编辑提示词模板。
+- 🧠 **故事记忆与一致性**：按项目维护长期故事记忆，并提供数据一致性检查与修复。
+- 🛠️ **Skills 与 MCP 插件**：内置写作技能（扫描、分析、写作、去 AI 味）与 MCP 插件管理。
+- 🧭 **计划执行器**：批准多步计划后由服务端连续执行。详见[计划执行器语义](docs/plan-runner-semantics.md)。
+- 🔍 **搜索**：对项目内容做全文搜索。
+- 🌍 **国际化**：zh/en 界面，`content_language` 控制 AI 输出语言。
+- 🔐 **登录**：本地账户或 LinuxDO OAuth（自动创建账号）。
+- 📦 **导入 / 导出**：项目数据，以及角色和组织卡片，支持跨项目共享。
+- 🐳 **部署**：Docker Compose，或由后端以单端口 8008 提供构建产物。
 
 ## 📸 项目预览
 
 <details>
-
 <summary>多图预警</summary>
 
-<div align="center">
-
-### 登录界面
-![登录界面](images/1.png)
-
-![登录界面](images/1-1.png)
-
-### 主界面
-![主界面](images/2.png)
-
-![主界面（暗色）](images/2-1.png)
-
-### 项目管理
-![项目管理](images/3.png)
-
-![项目管理](images/3-1.png)
-
-</div>
+| 登录 | 主界面 | 项目管理 |
+|:--:|:--:|:--:|
+| ![登录](images/1.png) | ![主界面](images/2.png) | ![项目管理](images/3.png) |
+| ![登录（备选）](images/1-1.png) | ![主界面（暗色）](images/2-1.png) | ![项目管理（备选）](images/3-1.png) |
 
 </details>
 
-## 📋 TODO List
-
-### ✅ 已完成功能
-
-- [x] **灵感模式** - 创作灵感和点子生成
-- [x] **自定义写作风格** - 支持自定义 AI 写作风格
-- [x] **数据导入导出** - 项目数据的导入导出
-- [x] **Prompt 调整界面** - 可视化编辑 Prompt 模板
-- [x] **章节字数限制** - 用户可设置生成字数
-- [x] **思维链与章节关系图谱** - 可视化章节逻辑关系
-- [x] **根据分析一键重写** - 根据分析建议重新生成
-- [x] **Linux DO 自动创建账号** - OAuth 登录自动生成账号
-- [x] **职业等级体系** - 自定义职业和等级系统，支持修仙境界、魔法等级等多种体系
-- [x] **角色/组织卡片导入导出** - 单独导出角色和组织卡片，支持跨项目数据共享
-- [x] **伏笔管理** - 智能追踪剧情伏笔，提醒未回收线索，可视化伏笔时间线
-- [x] **拆书功能** - 一键拆书
-
-### 📝 规划中功能
-
-......
-
-## 🧭 计划执行器：并发、时序与中断语义
-
-计划一次批准后，服务器会连续跑完剩余步骤、不再逐步询问。这会影响负载下的表现，
-因此下面这些限制按"产品行为"公开，而不是当作实现细节藏在代码里。
-
-**并发**
-
-- 所有模型调用共用一个进程级信号量 `max_concurrent_requests = 5`。计划的调用与
-  交互式对话排在同一个队列里，因此计划运行时，你手工发起的生成会变慢。
-  **可见症状是变慢，不是报错。**
-- 同一用户同时只跑一个计划；计划内步骤严格串行。
-- 每用户的后台任务由单个 worker 承接。一个跑几十分钟的计划会占住这个 worker，
-  期间你手工发起的生成要等到计划结束（最坏情况 = 计划总时长）。
-- 只有**完成的步骤**才会记录发起延迟与该步期间的模型调用排队数（后端日志每完成一步一行）；
-  失败分支只把计时写进计划行的 `step_results`，不单独打日志；一次运行只要有步骤结果，
-  还会再打一条收尾汇总。`/health` 增加 `plans_running`，为全局处于 `running` 的计划数
-  （已批准未开跑的不计），且只输出整数，不暴露任何用户或项目标识。该计数每次探测都会多执行
-  一条按 `task_type='agent_plan' AND status='running'` 过滤的 COUNT；`background_tasks`
-  在这两列上没有索引，因此会扫表——以当前行数看影响可忽略，本 PR 也不新增索引。
-
-**时序**
-
-- 两步之间默认等待 `agent_plan_step_grace_seconds`（默认 `3.0`）：章节分析依赖
-  SQLite WAL 把已写入的行对其他会话可见，而自动化的"写完立刻发起下一步"会把这条链上
-  偶发的竞态变成常态。除非你已迁离 SQLite，否则不要把它调成 0。
-
-**重启**
-
-- 服务重启会把在跑的计划判为失败，并在计划行写一条**本地化的**中断说明，
-  经 `progress.agent_plan_interrupted` 状态码呈现：已完成 N/M 步、结果未定稿、
-  需要重新发起。
-- **计划不会被自动重发。** 章节分析会覆盖既有分析结果、故事记忆与伏笔；
-  JSON 导入与一致性修复同样非幂等。无人值守地重放等于拿你的数据赌博。
-
-**取消：到底停住了什么**
-
-- 停止计划会停住计划本身：剩余步骤不再发起，已完成步数会被记录。
-- **已经在跑的「章节分析」子任务不会被级联取消，它会自己跑完。**
-  该任务类型目前没有取消通道；计划会把这类子任务记在 `uncancellable_sub_tasks` 里，
-  而不是假装已经停住。支持取消的子任务会被取消。
-- 被取消或被中断的计划不产出收尾总结，也不会再为它付费调用一次模型。
-
-## 🧠 模型要求
-
-**本项目要求使用大上下文模型——上下文窗口至少 900,000 token。**
-
-几乎所有核心功能都要把书本体量的内容灌进 prompt：章节生成可注入全书、拆书要解析整本导入文本、创作助手还要在此基础上携带很长的项目历史与工具结果。窗口不足时的失效形态是**静默的，而不是变慢**——助手的历史预算装满后会丢掉你最早的指令，批量分析的收尾总结可能只覆盖了一部分章节却听起来很完整。这类质量退化事后无法挽回，所以我们把窗口当作底线而非性能偏好。
-
-| 上下文窗口 | 支持状态 |
-|---|---|
-| ≥ 900,000 token | ✅ 支持 |
-| 实测低于下限 | ❌ 不支持 —— 保存即被拒，且每一次真正派发该模型的请求都会被拒 |
-| 探测无法定论 | ❌ 同样不支持 —— 未知即不合格，直到你在设置表单里把 `context_window_tokens` 声明为 ≥900,000 |
-
-没有中间档，也没有任何「勾一下放行」的开关：被**实测**出低于下限的模型，即使你声明更大的窗口也照样拒绝。声明框只服务「探测判不出」这一种情况。
-
-系统也**没有隐式默认模型**。未配置模型的账户不会被系统塞一个默认值：AI 功能直接以 `validation.ai_model_not_configured` 停下并引导你去设置页。已废弃的 `DEFAULT_MODEL` 环境变量后端不再读取——请在应用内按账户配置模型，窗口是在那里实测的。
-
-### 应用实测的是什么
-
-结论按 **(provider, base URL, 模型名)** 三元组缓存。只要本次要派发的模型在这个三元组上从未有过结论——首次配置，或三者中任一发生变更——应用会先探测你的端点并**等结果出来**再执行：
-
-1. **元数据档**：`GET /models/<id>`，读取网关暴露的窗口字段（0 token，多数网关不提供）。
-2. **服务端上界档**：极小 prompt + 把 `max_tokens` 设成产品下限并流式发送，靠服务端自己的上界校验判定——接受这个输出预算就是「窗口 ≥ 下限」的证据（≈0 token；拿到首个分片即断开）。而一次拒绝，**只有当网关自己报出一个低于下限的上下文/输入上限数字时**，才算「窗口更小」的证据；只是拒绝超量请求却没给出这样一个数（包括仅涉及**输出**上限的报错）一律记为「判不出」，而不是「太小」——因为在恰好等于下限处被拒，并不能排除窗口正好就是下限。「判不出」正是显式声明字段所服务的那一态。
-
-已有结论会被**长期沿用**——本版本不再有任何周期性自动复测。设置表单另有手动「重新检测」，它只测不拦（并把结论落缓存），拒绝由保存/派发门禁负责；只有改动三元组中任一要素或这次手动动作才会重新探测。第三档（把输入填到接近 1M 再回读一枚 needle）才是区分「网关接受了请求」与「模型真读进去了该窗口」的唯一手段，**本期刻意未接线**，因为它每个用户就要花掉 ≈1M 输入 token。表单会把三个数并排显示——实测窗口 / 你填写的窗口 / 实际采用的预算——并另列下限，让最终采用哪个数一目了然。
-
-第二档记录的是它**接受的那个探测刻度**，不是模型的真实窗口，而全书注入预算 = 记录值 × 0.6。因此真实窗口为 1,000,000 token 的模型现在会记成 900,000，预算为 540,000 字符而不是 600,000——少注入 10%。方向是安全的：注入的比你书能装下的更少，绝不会更多。
-
-首次探测可能失败（网关不可达、密钥一时失效），而「判不出」不是结论。因此当本次要派发的模型没有结论、或只有这条「没有结论」时，应用会重新探测并等结果，且按三元组节流到最多每分钟一次，避免网关故障期间每个请求都变成一次对外探测。**派发期重测仍然判不出时，结果不落库**：`GET /settings` 的 `context_window_gate` 保持 `null`，卡片显示「未检测」，而 AI 请求按「未知即不合格」被拒。这比谎称测过更诚实；代价是会出现「卡片写着未检测、AI 却被拒」的状态——这是预期行为，手动「重新检测」（或网关恢复后重试）即可解决。
-
-是否合格**不**由写死的模型清单决定。内置登记表只用来提示从哪个刻度开始探测，它永远不能给模型开合格证、也不能判模型不合格。**模型由你选，端点给了多大窗口由你声明——你的端点你说了算，不是一张表说了算。**
-
-> **盲区一：静默截断型网关可以通过前两档。** 相当多兼容网关对超量请求不报错，而是直接截断。这类端点会像接受了下限刻度那样回答第 2 档，于是被判为合格。第 3 档未接线，这条没有防线，所以过了门禁的模型仍可能读不到你书的开头。若产出质量明显差于所报告的窗口，请怀疑网关而不是模型名。
-
-> **盲区二：网关换模型或降配，以及永不复测的过期结论。** 结论按 (provider, base URL, 模型名) 三元组缓存，**不会**按 UTC 日程、也不会在派发时自动刷新。在你改动三元组中任一要素或手动「重新检测」之前，请求会一直沿用那条过期结论放行；网关侧降配因此一直不可见，直到你这么做。
-
-> **即使判定正确也测不出的部分**：能吃下下限规模的 token ≠ 能把这个窗口用好。长篇小说中段的前后一致性仍取决于具体模型，换新模型前建议先用自己的文本试一轮。
-
-> **支持某个 API 协议 ≠ 满足窗口要求**：技术栈一节列出的 OpenAI/Claude/Gemini SDK 只说明传输层兼容，是否合格由你所配置模型的实测（或显式声明）窗口决定。
-
 ## 💻 硬件配置要求
 
-### 最低配置（个人使用/开发环境）
-
-| 组件 | 要求 |
-|------|------|
-| **CPU** | 2 核 |
-| **内存** | 2 GB RAM |
-| **存储** | 10 GB 可用空间 |
-| **网络** | 稳定互联网连接（用于调用 AI API） |
-
-### 推荐配置（小型团队/生产环境）
-
-| 组件 | 要求 |
-|------|------|
-| **CPU** | 4 核 |
-| **内存** | 8 GB RAM |
-| **存储** | 20 GB SSD |
-| **网络** | 稳定互联网连接 |
-
-### 高并发配置（80-150 用户）
-
-| 组件 | 要求 |
-|------|------|
-| **CPU** | 8 核 |
-| **内存** | 16 GB RAM |
-| **存储** | 50 GB+ SSD |
-| **网络** | 高带宽连接 |
+| 场景 | CPU | 内存 | 存储 | 网络 |
+|------|------|------|------|------|
+| 最低配置（个人使用 / 开发） | 2 核 | 2 GB RAM | 10 GB 可用空间 | 稳定互联网连接（用于调用 AI API） |
+| 推荐配置（小型团队 / 生产） | 4 核 | 8 GB RAM | 20 GB SSD | 稳定互联网连接 |
+| 高并发配置（80-150 用户） | 8 核 | 16 GB RAM | 50 GB+ SSD | 高带宽连接 |
 
 > **📌 说明**
-> - **Embedding 模型**：约 400 MB 磁盘空间，运行时加载到内存
-> - **PostgreSQL**：默认配置使用 256 MB shared_buffers，1 GB effective_cache_size
-> - **Docker 部署**：建议预留额外 1-2 GB 内存给容器运行时
-> - 本项目主要依赖外部 AI API（OpenAI/Claude/Gemini），不需要本地 GPU
+> - **Embedding 模型**：约 400 MB 磁盘空间，运行时加载到内存。
+> - 不需要本地 GPU；本项目依赖外部 AI API。
 
 ## 🚀 快速开始
 
-### 前置要求
-
-- Docker 和 Docker Compose（可选，本地开发无需）
-- 至少一个 AI 服务的 API Key（OpenAI/Gemini/Claude/DeepSeek 兼容），**且该模型需具备 ≥900,000 token 上下文窗口**，见上文「模型要求」
+**前置要求**：Docker 和 Docker Compose（可选，本地开发无需），以及至少一个 AI 服务的 API Key（OpenAI / Gemini / Claude / 任意 OpenAI 兼容中转），且该模型需具备 >=900,000 token 上下文窗口。
 
 ### Docker Compose 部署
 
 ```bash
-# 1. 获取源码（本地已有源码则跳过）
-# 若从上游 fork，先克隆上游仓库：
-git clone https://github.com/xiamuceer-j/MuMuAINovel.git
-cd MuMuAINovel
-# 然后将本衍生版本的修改合并到你的副本中
-
-# 2. 配置环境变量（必需）
-cp backend/.env.example .env
-# 编辑 .env 文件，填入必要配置（API Key、数据库密码等）
-
-# 3. 确保文件准备完整
-# ⚠️ 重要：确保以下文件存在
-# - .env（配置文件，必需挂载到容器）
-# - backend/scripts/init_postgres.sql（数据库初始化脚本）
-
-# 4. 启动服务
-docker-compose up -d
-
-# 5. 访问应用
-# 打开浏览器访问 http://localhost:8008
+git clone https://github.com/andyhsu6/AIFictionForge.git && cd AIFictionForge
+cp backend/.env.example .env          # 然后填入必要配置
+docker-compose up -d                  # 然后访问 http://localhost:8008
 ```
 
-> **📌 注意事项**
->
-> 1. **`.env` 文件挂载**: `docker-compose.yml` 会自动将 `.env` 挂载到容器，确保文件存在
-> 2. **数据库初始化**: `init_postgres.sql` 会在首次启动时自动执行，安装必要的 PostgreSQL 扩展
-> 3. **自行构建**: 本项目不提供预构建镜像，请使用 `docker-compose build` 从源码自行构建；Embedding 模型文件需放置到 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`
+`docker-compose.yml` 会自动把 `.env` 挂载进容器，`backend/scripts/init_postgres.sql` 会在首次启动时执行并安装所需的 PostgreSQL 扩展。本项目不提供预构建镜像：请用 `docker-compose build` 自行构建，并将 embedding 模型文件放到 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`。
 
 ### 本地开发 / 从源码构建
 
-#### 前置准备
+先准备 embedding 模型（约 400 MB，放在 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`）。首次启动时会从 Hugging Face 自动下载，也可手动从 <https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2> 获取。
 
 ```bash
-# ⚠️ 重要：从源码运行前，需要先准备 embedding 模型文件
-# 模型文件较大（约 400MB），需放置到以下目录：
-# backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/
-#
-# 📥 获取方式：首次启动时会从 Hugging Face 官方仓库自动下载，或手动下载
-# https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-```
-
-#### 后端
-
-```bash
+# 后端
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 配置 .env 文件
-cp .env.example .env
-# 编辑 .env 填入必要配置
-
-# 启动 PostgreSQL（可使用 Docker）
-docker run -d --name postgres \
-  -e POSTGRES_PASSWORD=your_password \
-  -e POSTGRES_DB=aistoryforge \
-  -p 5432:5432 \
-  postgres:18-alpine
-
-# 启动后端
+cp .env.example .env                                 # 然后编辑
+docker run -d --name postgres -e POSTGRES_PASSWORD=your_password \
+  -e POSTGRES_DB=aistoryforge -p 5432:5432 postgres:18-alpine
 python -m uvicorn app.main:app --host localhost --port 8008 --reload
-```
 
-#### 前端
-
-```bash
-cd frontend
+# 前端
+cd ../frontend
 npm install
-npm run dev  # 开发模式
+npm run dev    # 开发模式
 npm run build  # 生产构建
 ```
 
-> **📌 端口说明**：前端开发服务器运行在 **5173**（Vite，代理 `/api` -> `http://localhost:8008`）；后端监听 **8008**。执行 `npm run build` 后，构建产物由后端以单端口 **8008** 入口直接提供访问。
+> **📌 端口说明**：前端开发服务器运行在 **5173**（Vite，代理 `/api` 与 `/generated-assets` 到 `http://localhost:8008`）；后端监听 **8008**。执行 `npm run build` 后，构建产物由后端以单端口 **8008** 入口提供访问。
 
 ## ⚙️ 配置说明
 
-### 必需配置
-
-创建 `.env` 文件：
+`.env` 必需项：
 
 ```bash
-# PostgreSQL 数据库（必需）
 DATABASE_URL=postgresql+asyncpg://aistoryforge:your_password@postgres:5432/aistoryforge
 POSTGRES_PASSWORD=your_secure_password
-
-# AI 服务
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
-# DEFAULT_MODEL 已废弃：后端不再读取该变量，系统也不提供任何默认模型。
-# 请在应用内按账户配置模型，窗口是在那里实测的；该模型必须具备 ≥900,000 token
-# 上下文窗口，详见上文「模型要求」。
-# 全书上下文注入量随所配置窗口伸缩；拆书等长输出任务建议配合流式。
-
-# 本地账户登录
 LOCAL_AUTH_ENABLED=true
 LOCAL_AUTH_USERNAME=admin
 LOCAL_AUTH_PASSWORD=your_password
+# DEFAULT_MODEL 已废弃：后端不再读取该变量，系统也不提供任何默认模型。
+# 请在应用内按账户配置具备 >=900,000 token 窗口的模型（设置页）。
 ```
 
-### 可选配置
+任何 OpenAI 兼容中转都可用：把 `OPENAI_BASE_URL` 指向中转地址，并把密钥填到 `OPENAI_API_KEY`。完整清单（含小米 MiMo 适配）见 [`backend/.env.example`](backend/.env.example)。
+
+常用可选项：
 
 ```bash
-# LinuxDO OAuth
-LINUXDO_CLIENT_ID=your_client_id
+LINUXDO_CLIENT_ID=your_client_id             # LinuxDO OAuth
 LINUXDO_CLIENT_SECRET=your_client_secret
 LINUXDO_REDIRECT_URI=http://localhost:8008/api/auth/callback
-# LinuxDO 登录专用代理（可选，仅影响 OAuth token 与用户信息请求）
-LINUXDO_PROXY_URL=http://127.0.0.1:7890
-
-# PostgreSQL 连接池（高并发优化）
-DATABASE_POOL_SIZE=30
-DATABASE_MAX_OVERFLOW=20
-
-# 计划执行器：步间等待秒数（默认 3.0；除非已迁离 SQLite，否则不要调成 0）
-AGENT_PLAN_STEP_GRACE_SECONDS=3
-
-# 会话 Cookie Secure 标记
-# 默认 true，适合 HTTPS 部署；如果使用 HTTP 访问并且浏览器不保存登录 Cookie，可设为 false
-SESSION_COOKIE_SECURE=true
-
-# 本地 / Docker 内网 LLM（默认关闭，保持 SSRF 防护）
-# ALLOW_PRIVATE_AI_ENDPOINTS=true
+LINUXDO_PROXY_URL=http://127.0.0.1:7890      # 仅 OAuth 专用代理
+AGENT_PLAN_STEP_GRACE_SECONDS=3              # 计划执行器步间等待
+SESSION_COOKIE_SECURE=true                   # HTTP 部署登录 Cookie 不保存时设为 false
+# ALLOW_PRIVATE_AI_ENDPOINTS=true            # 本地 / Docker 内网 LLM
 # ALLOWED_AI_HOSTS=host.docker.internal,127.0.0.1
 ```
 
-> **🔐 Cookie Secure 说明**
->
-> - HTTPS 部署：建议保持 `SESSION_COOKIE_SECURE=true`，浏览器只会通过 HTTPS 发送登录 Cookie。
-> - HTTP 部署：如果登录后浏览器没有保存 Cookie，请在 `.env` 中设置 `SESSION_COOKIE_SECURE=false`，然后重启后端或 Docker 容器。
->
-> **🌐 LinuxDO 专用代理说明**
->
-> - 如果只有 LinuxDO 授权登录在当前网络不可达，优先配置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`。
-> - `LINUXDO_PROXY_URL` 只会用于 LinuxDO OAuth 的 token 交换和用户信息请求，不影响 AI 服务、SMTP、数据库等其他网络调用。
-> - 常见示例：`LINUXDO_PROXY_URL=http://127.0.0.1:7890`；Docker 容器内访问宿主机代理时通常需要使用宿主机在 Docker 网络中的地址，而不是容器内的 `127.0.0.1`。
-> - 当前示例按 HTTP 代理配置；如果需要 SOCKS 代理，请先确保运行环境安装了 httpx 的 SOCKS 支持依赖。
->
-> **🖥️ 本地 / Docker 内网 LLM 说明**
->
-> - 默认会拒绝 `localhost`、`127.0.0.1`、私网 IP 以及解析到内网的主机名（例如 `host.docker.internal`），用于降低 SSRF 风险。
-> - 如果 AI 服务跑在本机 Ollama / llama.cpp，或 Docker 容器需要访问宿主机上的模型，请在 `.env` 中设置 `ALLOW_PRIVATE_AI_ENDPOINTS=true`，或把允许的主机名写入 `ALLOWED_AI_HOSTS`。
-> - 即使开启本地放行，链路本地地址（如云厂商元数据 `169.254.169.254`）仍然会被拒绝。
-> - MCP 插件 URL 不受该开关影响，继续走严格的公网校验。
-
-### 中转 API 配置
-
-支持所有 OpenAI 兼容格式的中转服务：
-
-```bash
-# New API 示例
-OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_BASE_URL=https://api.new-api.com/v1
-
-# 其他中转服务
-OPENAI_BASE_URL=https://your-proxy-service.com/v1
-```
-
-## 🐳 Docker 部署详情
-
-### 服务架构
-
-- **postgres**: PostgreSQL 18 数据库
-  - 端口: 5432
-  - 数据持久化: `postgres_data` volume
-  - 初始化脚本: `backend/scripts/init_postgres.sql`（自动挂载）
-  - 优化配置: 支持 80-150 并发用户
-
-- **aistoryforge**: 主应用服务
-  - 端口: 8008
-  - 日志目录: `./logs`
-  - 配置挂载: `.env` 文件
-  - 自动等待数据库就绪
-  - 健康检查: 每 30 秒检测一次
-
-### 重要文件说明
-
-| 文件 | 说明 | 是否必需 |
-|------|------|---------|
-| `.env` | 环境配置（API Key、数据库密码等） | ✅ 必需 |
-| `docker-compose.yml` | 服务编排配置 | ✅ 必需 |
-| `backend/scripts/init_postgres.sql` | PostgreSQL 扩展安装脚本 | ✅ 自动挂载 |
-| `backend/embedding/models--*/` | Embedding 模型文件 | ⚠️ 自建需要 |
-
-### 常用命令
-
-```bash
-# 构建并启动服务
-docker-compose build
-docker-compose up -d
-
-# 查看状态
-docker-compose ps
-
-# 查看日志
-docker-compose logs -f
-
-# 停止服务
-docker-compose down
-
-# 重启服务
-docker-compose restart
-
-# 查看资源使用
-docker stats
-```
-
-### 数据持久化
-
-- `./postgres_data` - PostgreSQL 数据库文件
-- `./logs` - 应用日志文件
-
-### 端口配置
-
-修改 `docker-compose.yml` 中的端口映射：
-
-```yaml
-ports:
-  - "8800:8008"  # 宿主机:容器
-```
+> **📌 说明**：HTTPS 部署保持 `SESSION_COOKIE_SECURE=true`（HTTP 部署下浏览器不保存登录 Cookie 时设为 `false`）。如果只有 LinuxDO 登录不可达，优先设置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`；它不影响 AI、SMTP 和数据库调用，Docker 容器内需使用宿主机在 Docker 网络中的地址。本地和 Docker 内网 LLM 端点默认被拒（SSRF 防护），可用 `ALLOW_PRIVATE_AI_ENDPOINTS=true` 开启，或把主机名加入 `ALLOWED_AI_HOSTS`；链路本地地址仍然会被拒绝。
 
 ## 📁 项目结构
 
 ```
 AIFictionForge/
-├── backend/                 # 后端服务
-│   ├── app/
-│   │   ├── api/            # API 路由
-│   │   ├── models/         # 数据模型
-│   │   ├── services/       # 业务逻辑
-│   │   ├── middleware/     # 中间件
-│   │   ├── database.py     # 数据库连接
-│   │   └── main.py         # 应用入口
-│   ├── scripts/            # 工具脚本
-│   └── requirements.txt    # Python 依赖
-├── frontend/               # 前端应用
-│   ├── src/
-│   │   ├── pages/         # 页面组件
-│   │   ├── components/    # 通用组件
-│   │   ├── services/      # API 服务
-│   │   └── store/         # 状态管理
+├── backend/                 # FastAPI 服务
+│   ├── app/                # api/, models/, services/, skills/, middleware/
+│   ├── embedding/          # Embedding 模型文件
+│   └── requirements.txt
+├── frontend/               # React + TypeScript 应用
+│   ├── src/                # pages/, components/, services/, store/
 │   └── package.json
-├── docker-compose.yml      # Docker Compose 配置
-├── Dockerfile             # Docker 镜像构建
+├── docs/                   # 文档
+├── docker-compose.yml
+├── Dockerfile
 └── README.md
 ```
 
 ## 🛠️ 技术栈
 
-**后端**: FastAPI • PostgreSQL • SQLAlchemy • OpenAI/Claude/Gemini SDK
+**后端**：FastAPI • PostgreSQL • SQLAlchemy • OpenAI / Claude / Gemini SDK
 
-**前端**: React 18 • TypeScript • Ant Design • Zustand • Vite
+**前端**：React 18 • TypeScript • Ant Design • Zustand • Vite
 
 ## 📖 使用指南
 
-1. **登录系统** - 使用本地账户或 LinuxDO 账户
-2. **创建项目** - 选择"使用向导创建"
-3. **AI 生成** - 输入基本信息，AI 自动生成大纲和角色
-4. **编辑完善** - 管理角色关系，生成和编辑章节
+1. **登录系统**：使用本地账户或 LinuxDO 账户。
+2. **创建项目**：选择「使用向导创建」，让 AI 起草大纲、角色和世界观。
+3. **完善设定**：管理角色、组织、关系、职业等级和世界观。
+4. **生成与编辑章节**：生成、重新生成或润色章节，并设置目标字数。
+5. **分析**：运行拆书、章节分析和一致性检查，追踪伏笔。
+6. **扩展**：安装写作技能、接入 MCP 插件，或为代理执行器批准多步计划。
 
 ### API 文档
 
-- Swagger UI: `http://localhost:8008/docs`
-- ReDoc: `http://localhost:8008/redoc`
+- Swagger UI：`http://localhost:8008/docs`
+- ReDoc：`http://localhost:8008/redoc`
 
 ## 📝 许可证
 
-本项目采用 [GNU General Public License v3.0](LICENSE)
+本项目采用 [GNU General Public License v3.0](LICENSE)。
 
-**GPL v3 意味着：**
-- ✅ 可自由使用、修改和分发
-- ✅ 可用于商业目的
-- 📝 必须开源修改版本
-- 📝 必须保留原作者版权
-- 📝 衍生作品必须使用 GPL v3 协议
+**GPL v3 意味着**：可自由使用、修改和分发；可用于商业目的；修改版本与衍生作品必须以 GPL v3 保持开源，并保留原作者版权。
 
 ## 🙏 致谢
 
@@ -507,3 +193,10 @@ AIFictionForge/
 - [React](https://react.dev/) - 前端框架
 - [Ant Design](https://ant.design/) - UI 组件库
 - [PostgreSQL](https://www.postgresql.org/) - 数据库
+
+## 📚 更多文档
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) - 如何参与贡献
+- [docs/i18n.md](docs/i18n.md) - 国际化指南
+- [docs/model-requirements.md](docs/model-requirements.md) - 上下文窗口实测与盲区
+- [docs/plan-runner-semantics.md](docs/plan-runner-semantics.md) - 计划执行器的并发、时序与中断
