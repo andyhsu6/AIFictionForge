@@ -28,6 +28,7 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # `npm run lint` carries `--max-warnings 0`, so any warning fails this job.
       - name: Run ESLint
         working-directory: frontend
         run: npm run lint
