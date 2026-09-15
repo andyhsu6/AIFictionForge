@@ -5,7 +5,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
-from datetime import datetime
 import sys
 
 from app.config import settings as config_settings
@@ -90,13 +89,15 @@ async def _sweep_interrupted_tasks(engine=None) -> int:
     from app.models.analysis_task import AnalysisTask
     from app.models.background_task import BackgroundTask
     from app.models.batch_generation_task import BatchGenerationTask
+    from app.models.project_agent import _naive_utc_now
     from sqlalchemy import select as sql_select
     from sqlalchemy import text
     from sqlalchemy import update as sql_update
 
     if engine is None:
         engine = await get_engine("system")
-    interrupted_at = datetime.now()
+    # naive UTC：三张表的 created_at 都是 server_default=func.now()(UTC)，收尾戳必须同基准。
+    interrupted_at = _naive_utc_now()
     async with engine.begin() as conn:
         # 仅创建 background_tasks 表（如果不存在），不影响其他表
         await conn.run_sync(

@@ -2,6 +2,7 @@
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,26 @@ async def test_interrupted_plan_row_carries_readable_note(session_factory):
     assert details["steps_done"] == 2                       # 写方（PR-2b）的键必须原样保留
     assert details["steps_total"] == 5
     assert details["stage"] == "running"                    # 不给 PR-3 的枚举渲染造新值
+
+
+@pytest.mark.anyio
+async def test_interrupted_row_timestamps_are_naive_utc(session_factory):
+    """#120：启动期收尾写的 completed_at/updated_at 必须与 created_at 同基准(UTC)。"""
+    row = _plan_row()
+    await _seed(session_factory, row)
+
+    await _sweep_interrupted_tasks(engine=session_factory.kw["bind"])
+    reference = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    saved = await _fetch(session_factory, row.id)
+    for column in ("completed_at", "updated_at"):
+        stamp = getattr(saved, column)
+        assert stamp is not None and stamp.tzinfo is None, f"{column} 未按 naive UTC 写入"
+        drift = abs((stamp - reference).total_seconds())
+        assert drift <= 60, (
+            f"{column}={stamp} 与真实 UTC 相差 {drift:.0f}s ⇒ 启动期收尾落的是本地墙钟"
+        )
+    assert abs((saved.completed_at - saved.created_at).total_seconds()) <= 60
 
 
 @pytest.mark.anyio
