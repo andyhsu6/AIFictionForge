@@ -332,6 +332,9 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.plugin_server_type_unsupported": ("不支持的服务器类型: {{server_type}}", 400),
     "validation.plugin_server_url_required": ("{{plugin_type}}类型插件必须提供server_url", 400),
     "validation.plugin_transport_fields_required": ("Stdio类型插件必须提供command字段", 400),
+    # 需求 #64：请求体里的 per-call provider 只能指向用户自己配置的那一家。
+    # 指向别家时既没有该用户的凭据、也不许借服务器全局 env key ⇒ 明确拒绝。
+    "validation.provider_not_configured": ("未配置提供商 {{provider}}，无法使用该提供商发起请求", 400),
     "validation.polish_new_content_empty": ("新内容不能为空", 400),
     "validation.polish_position_invalid": ("位置参数无效", 400),
     "validation.polish_range_out_of_bounds": ("位置超出内容范围", 400),

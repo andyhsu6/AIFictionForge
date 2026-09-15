@@ -330,6 +330,7 @@
     "polish_start_before_end": "Start position must be less than the end position",
     "preset_active_delete_blocked": "Cannot delete the active preset; please activate another preset first",
     "preset_changed": "The preset changed while it was being checked; please activate it again",
+    "provider_not_configured": "Provider {{provider}} is not configured; requests cannot be sent with it",
     "qq_smtp_host": "QQ Mail SMTP host must be smtp.qq.com",
     "relationship_type_name_empty": "Relationship type name cannot be empty",
     "required_fields": "name and prompt_content are required fields",

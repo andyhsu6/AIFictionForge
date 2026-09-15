@@ -306,14 +306,15 @@ class AIService:
         self._gemini_provider: Optional[GeminiProvider] = None
         
         # 初始化 OpenAI 兼容接口
+        # #64：只给**用户自己配置的** active provider 装槽位，并且缺用户 key 时只
+        # 回落到该家自己的 env 默认 key。非 active 的 provider 不再借 app_settings
+        # 的服务器全局 key —— 否则请求体里的 per-call provider 覆盖就能让任意登录
+        # 用户花运维的额度发自己的内容。
         openai_key = None
         openai_base_url = None
         if self.api_provider == "openai":
             openai_key = api_key or app_settings.openai_api_key
             openai_base_url = api_base_url or app_settings.openai_base_url
-        else:
-            openai_key = app_settings.openai_api_key
-            openai_base_url = app_settings.openai_base_url
 
         if openai_key:
             # 关闭思考: vLLM 标准写法, 不支持该字段的 OpenAI 兼容服务端会忽略
@@ -324,8 +325,8 @@ class AIService:
             client = OpenAIClient(openai_key, openai_base_url or "https://api.openai.com/v1", self.config, extra_body=openai_extra_body)
             self._openai_provider = OpenAIProvider(client)
         
-        # 初始化 Anthropic
-        anthropic_key = api_key if self.api_provider == "anthropic" else app_settings.anthropic_api_key
+        # 初始化 Anthropic（同 #64：非 active 时不装槽位，也不登记全局 key）
+        anthropic_key = api_key if self.api_provider == "anthropic" else None
         anthropic_base_url = api_base_url if self.api_provider == "anthropic" else app_settings.anthropic_base_url
         if anthropic_key:
             client = AnthropicClient(anthropic_key, anthropic_base_url, self.config)
@@ -382,9 +383,28 @@ class AIService:
         self._tools_loaded = False
         logger.debug(f"🔧 MCP工具状态已重置: enable_mcp={self._enable_mcp}, _tools_loaded=False")
     
+    def _assert_provider_configured(self, p: Optional[str]) -> None:
+        """请求的 provider 必须是**用户自己配置的**那一家，否则明确拒绝（#64）。
+
+        构造期只为 active provider 装槽位：`api_key` 就是该家的用户凭据，缺省时回落
+        到该家自己的 env 默认 key。请求体里的 per-call `provider` 指向别家时，别家既
+        没有用户凭据、也不许借 `app_settings.<provider>_api_key`（服务器全局/运维
+        key）⇒ 在这里、在选槽位与判门禁之前就拒，避免任何一次拿运维 key 的发包。
+        """
+        if p != self.api_provider:
+            raise ApiError(
+                code="validation.provider_not_configured",
+                params={"provider": p},
+                raw=(
+                    f"requested provider={p!r} is not the configured provider "
+                    f"{self.api_provider!r}"
+                ),
+            )
+
     def _get_provider(self, provider: Optional[str] = None) -> BaseAIProvider:
         """获取对应的 Provider"""
         p = normalize_provider(provider or self.api_provider)
+        self._assert_provider_configured(p)
         if p == "openai" and self._openai_provider:
             return self._openai_provider
         if p == "anthropic" and self._anthropic_provider:
@@ -405,8 +425,12 @@ class AIService:
         `api/polish.py` 的 `request.provider`），而窗口是 **(provider, base_url, model)
         三元组的属性**，不是模型名的属性。用实例自己的网关去判定、却把请求发给别家
         ＝ 门禁给一个它没量过的 host 开合格证。
+
+        #64：非 active provider 在这里先被 `_assert_provider_configured` 拒掉 —— 门禁
+        补测也会拿 provider 三元组里的 key 发包，所以拒绝必须发生在读三元组之前。
         """
         p = normalize_provider(provider or self.api_provider)
+        self._assert_provider_configured(p)
         entry = self._provider_endpoints.get(p or "")
         if entry is None:
             # 未知 provider 名（`_get_provider` 同样会抛 ValueError）：没有槽位就没有

@@ -576,17 +576,6 @@ def _qualified_entry(tokens=1_048_576, *, source=SOURCE_PROBE, checked_at=None):
     }
 
 
-def _unqualified_entry(tokens=128_000):
-    return {
-        "result": VERDICT_UNQUALIFIED,
-        "source": SOURCE_PROBE,
-        "context_window_tokens": tokens,
-        "tier": TIER_MAX_TOKENS_BOUND,
-        "detail": "seeded",
-        "checked_at": _now_iso(),
-    }
-
-
 @pytest.fixture
 async def db_factory():
     db_path = f"/tmp/test_ctxwin_{uuid.uuid4().hex}.db"
@@ -714,28 +703,28 @@ async def test_per_request_small_model_is_rejected_at_dispatch(db_factory, servi
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("entry", AI_ENTRIES)
-async def test_per_call_provider_override_is_judged_on_the_dispatched_triple(
+async def test_per_call_provider_override_to_an_unconfigured_provider_is_refused(
     db_factory, service_factory, entry, gateway, monkeypatch
 ):
-    """门禁判定的是**本次实发**的三元组，不是用户保存的那家网关（#55 审核项）。
+    """#64：`provider` 取自请求体，但只能指向用户自己配置的那家，别家一律拒绝。
 
-    `provider` 与 `model` 一样取自请求体（outlines/wizard_stream/polish 都传
-    `data.get("provider")` / `request.provider`），最终喂给 `_get_provider(provider)`。
-    修复前 `_require_model` 只看实例自己的 (api_provider, base_url, api_key) ⇒ 拿用户的
-    合格网关给**另一个 host** 开合格证（wrong-host admit）。窗口是 (provider, base_url,
-    model) 三元组的属性，不是模型名的属性 —— 所以两半都种成**同一个模型名**：
-    只有键不同，才测得出「门禁查的是哪一把键」。
+    provider 与 model 一样取自请求体（outlines/wizard_stream/polish 都传
+    `data.get("provider")` / `request.provider`）。#55 时这里钉的是「门禁判定实发
+    三元组」；#64 之后更强的边界是：跨 provider 覆盖根本不允许发生 —— 修复前
+    `AIService.__init__` 会用 `app_settings.<provider>_api_key`（服务器全局 key）给
+    别家建槽位，于是门禁/派发都拿运维的 key 去别家 host 发包。拒绝必须发生在
+    读三元组（进而任何探测/派发）之前，所以缓存里有没有别家结论都不改变结论。
     """
     monkeypatch.setattr(
         "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
     )
-    own = triple_key("openai", GATEWAY, QUALIFIED_MODEL)          # 用户保存的网关
-    dispatched = triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL)  # 本次真正会发的 host
+    own = triple_key("openai", GATEWAY, QUALIFIED_MODEL)                  # 用户配置的网关
+    dispatched = triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL)  # 本次想覆盖去的别家
 
-    # 实发三元组不合格 ⇒ 必须被拦（哪怕保存的那条合格）
-    user_id = f"u-override-bad-{entry}"
+    # 就算别家的合格结论已在缓存里，也不能借它放行
+    user_id = f"u-override-refused-{entry}"
     await seed_settings(db_factory, user_id, preferences={
-        PREFERENCES_KEY: {own: _qualified_entry(), dispatched: _unqualified_entry()}
+        PREFERENCES_KEY: {own: _qualified_entry(), dispatched: _qualified_entry()}
     })
     async with db_factory() as session:
         svc, own_stub = service_factory(user_id, session)
@@ -744,44 +733,31 @@ async def test_per_call_provider_override_is_judged_on_the_dispatched_triple(
         with pytest.raises(ApiError) as exc_info:
             await _dispatch(svc, entry, provider="anthropic")
 
-    assert exc_info.value.code == BELOW_MINIMUM
-    assert exc_info.value.params["model"] == QUALIFIED_MODEL
-    assert other_stub.calls == [] and own_stub.calls == [], f"{entry}: 别家的不合格模型真的发出去了"
-    assert gateway.total_calls == 0, "两个三元组都已有结论 ⇒ 派发路径不该打任何网络"
+    assert exc_info.value.code == "validation.provider_not_configured"
+    assert exc_info.value.params["provider"] == "anthropic"
+    assert other_stub.calls == [] and own_stub.calls == [], f"{entry}: 被拒的覆盖仍然发了请求"
+    assert gateway.total_calls == 0, "被拒的覆盖不该打任何网络（更不该用运维 key 探测别家 host）"
 
-    # 反向对照：只有实发三元组换成合格才放行，且请求确实落在别家槽位
-    # （门禁若仍按保存的三元组判定，这一步会被误拒 ⇒ 两半合起来才钉住「同一把键」）
-    user_id = f"u-override-ok-{entry}"
-    await seed_settings(db_factory, user_id, preferences={
-        PREFERENCES_KEY: {own: _unqualified_entry(), dispatched: _qualified_entry()}
-    })
+    # 对照：覆盖值就是用户自己那家时不被误伤，且仍命中缓存零网络
     async with db_factory() as session:
         svc, own_stub = service_factory(user_id, session)
-        other_stub = _RecordingProvider()
-        svc._anthropic_provider = other_stub
-        await _dispatch(svc, entry, provider="anthropic")
+        await _dispatch(svc, entry, provider="openai")
 
-    assert other_stub.calls and other_stub.calls[0]["model"] == QUALIFIED_MODEL, f"{entry}: 没派发到别家槽位"
-    assert own_stub.calls == [], f"{entry}: 请求发给了保存的 provider"
+    assert own_stub.calls and own_stub.calls[0]["model"] == QUALIFIED_MODEL, f"{entry}: active provider 被误伤"
     assert gateway.total_calls == 0, "命中缓存还去探测 ⇒ 门禁算的不是实发三元组"
 
 
 @pytest.mark.anyio
-async def test_per_call_provider_override_probes_and_caches_the_dispatched_triple(
+async def test_refused_override_never_probes_or_caches_the_other_provider(
     db_factory, service_factory, gateway, monkeypatch
 ):
-    """别家三元组**从未有过结论** ⇒ 同步补测必须打在别家 host 上，结论也按别家的键落缓存。
-
-    钉住「键算错」的另一半：修复前探测与写键都用用户自己的 (openai, gw.test) ⇒
-    一个从没被量过的 host 白拿合格证。这里让别家在 ① 档自报 128K（同一个模型名在
-    用户自己的网关上是合格的），于是「探了谁家」直接由 URL 与缓存键可观察。
-    """
+    """#64：被拒的覆盖连补测都不许发生 —— 修复前它会拿运维 key 打别家 host 并落结论。"""
     monkeypatch.setattr(
         "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
     )
     gateway.metadata_status = 200
     gateway.metadata_body = {"context_length": 128_000}
-    user_id = "u-override-probe"
+    user_id = "u-override-refused-probe"
     await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
     async with db_factory() as session:
         svc, own_stub = service_factory(user_id, session)
@@ -790,28 +766,27 @@ async def test_per_call_provider_override_probes_and_caches_the_dispatched_tripl
         with pytest.raises(ApiError) as exc_info:
             await svc.generate_text(prompt=NEUTRAL_PROMPT, provider="anthropic")
 
-    assert exc_info.value.code == BELOW_MINIMUM
+    assert exc_info.value.code == "validation.provider_not_configured"
     assert own_stub.calls == [] and other_stub.calls == []
-    assert gateway.metadata_calls == 1 and gateway.bound_calls == 0, "未见过的三元组必须同步补测 ①②"
-    assert [c["url"] for c in gateway.calls] == [f"{OTHER_GATEWAY}/v1/models/{QUALIFIED_MODEL}"], (
-        "补测打到了用户自己的网关 ⇒ 门禁量的不是本次实发的 host"
+    assert gateway.metadata_calls == 0 and gateway.bound_calls == 0, (
+        "被拒的覆盖仍然用运维 key 打了别家 host"
     )
     async with db_factory() as check:
         row = (await check.execute(select(Settings).where(Settings.user_id == user_id))).scalar_one()
         blob = json.loads(row.preferences)
-        stored = blob[PREFERENCES_KEY]
-        assert stored[triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL)]["result"] == VERDICT_UNQUALIFIED
-        assert triple_key("openai", GATEWAY, QUALIFIED_MODEL) not in stored, "结论被写到了保存的三元组上"
+        assert PREFERENCES_KEY not in blob, "被拒的覆盖仍把结论写到了别家三元组上"
         assert blob["theme_seed"] == 7, "缓存写入抹掉了无关的偏好键"
 
 
 @pytest.mark.anyio
-async def test_full_book_budget_follows_the_dispatched_provider(db_factory, service_factory, monkeypatch):
-    """预算换算同样按**实发三元组**读窗口：两家都合格但窗口不同 ⇒ 数字必须跟着覆盖走。"""
+async def test_full_book_budget_refuses_a_provider_the_user_did_not_configure(
+    db_factory, service_factory, monkeypatch
+):
+    """#64：预算路径同样按用户自己那家取窗口；跨 provider 覆盖被拒而非借运维 key 换算。"""
     monkeypatch.setattr(
         "app.services.ai_service.app_settings.anthropic_base_url", OTHER_GATEWAY, raising=False
     )
-    user_id = "u-override-budget"
+    user_id = "u-override-budget-refused"
     await seed_settings(db_factory, user_id, preferences={PREFERENCES_KEY: {
         triple_key("openai", GATEWAY, QUALIFIED_MODEL): _qualified_entry(tokens=1_048_576),
         triple_key("anthropic", OTHER_GATEWAY, QUALIFIED_MODEL): _qualified_entry(tokens=2_000_000),
@@ -819,11 +794,12 @@ async def test_full_book_budget_follows_the_dispatched_provider(db_factory, serv
     async with db_factory() as session:
         svc, _ = service_factory(user_id, session)
         own_budget = await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL)
-        override_budget = await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL, "anthropic")
+        with pytest.raises(ApiError) as exc_info:
+            await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL, "anthropic")
 
-    assert own_budget == int(1_048_576 * _FULL_BOOK_BUDGET_RATIO)
-    assert override_budget == int(2_000_000 * _FULL_BOOK_BUDGET_RATIO), (
-        "预算按保存的三元组读 ⇒ 窗口量错了 host"
+    assert exc_info.value.code == "validation.provider_not_configured"
+    assert own_budget == int(1_048_576 * _FULL_BOOK_BUDGET_RATIO), (
+        "用户自己那家的预算被误伤"
     )
 
 
