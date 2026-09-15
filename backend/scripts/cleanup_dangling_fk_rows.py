@@ -6,10 +6,14 @@
 可检出）。本脚本按固定策略清理这些行：
 
 - 整行删除：character_relationship_type_links / story_memories / plot_analysis /
-  analysis_tasks / regeneration_tasks / project_default_styles；
+  analysis_tasks / regeneration_tasks / project_default_styles /
+  relationship_types（project_id 悬空）/ organization_members（有条件的，
+  见 plan_actions 注释）；
 - 置空外键（对应声明的 SET NULL）：chapters.outline_id 指向已删除大纲；
   generation_history.chapter_id 指向已删除章节；
-- 其余表（含 chapters 本身与 agent_* 表）一律不动。
+  organizations.parent_org_id 指向已删除父组织（自引用）；
+- 其余表（含 organizations 本身与 agent_* 表）一律不动：organizations 行永不删除，
+  组织自身悬空时其成员关系只报告不删除，交人工判断。
 
 默认 dry-run（只打印计划，不写入）；`--apply` 才写入，且整个写入在单个事务内
 完成，运行前后各打印一次 `PRAGMA foreign_key_check` 汇总。
@@ -28,7 +32,13 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = BACKEND_DIR / "data" / "mumuai_novel.db"
 
-# 整行删除策略：这些表的悬空行直接删除
+# 整行删除策略：这些表的悬空行直接删除。
+# - relationship_types：project_id 悬空 = 所属项目已不存在，项目级定义无法再被
+#   任何项目读取（系统预置的 project_id 为 NULL，永不悬空），属明确垃圾。
+# - organization_members：仅在“缺失父行是 characters”时删除（成员角色已被删除、
+#   组织仍在，成员关系无意义）。若缺失父行是 organizations，或该成员所属组织自身
+#   悬空，则转 unhandled 交人工判断 —— organizations 行永不删除，不能因为组织缺失
+#   就静默抹掉成员证据。该条件在 plan_actions 中实现。
 DELETE_TABLES = frozenset(
     {
         "character_relationship_type_links",
@@ -37,14 +47,19 @@ DELETE_TABLES = frozenset(
         "analysis_tasks",
         "regeneration_tasks",
         "project_default_styles",
+        "relationship_types",
+        "organization_members",
     }
 )
 
-# 置空外键策略：(子表, 父表) -> (子表, 外键列)。仅处理 chapters.outline_id 与
-# generation_history.chapter_id；chapters 行永不删除。
+# 置空外键策略：(子表, 父表) -> (子表, 外键列)。处理 chapters.outline_id、
+# generation_history.chapter_id，以及 organizations 的自引用 parent_org_id
+# （声明的 SET NULL：父组织已删除时子组织保留、仅断开指针）；chapters 与
+# organizations 行永不删除。
 NULL_POLICY = {
     ("chapters", "outlines"): ("chapters", "outline_id"),
     ("generation_history", "chapters"): ("generation_history", "chapter_id"),
+    ("organizations", "organizations"): ("organizations", "parent_org_id"),
 }
 
 
@@ -70,13 +85,61 @@ def collect_dangling(conn: sqlite3.Connection) -> list[tuple]:
     return conn.execute("PRAGMA foreign_key_check").fetchall()
 
 
-def plan_actions(rows: list[tuple]) -> tuple[dict, dict, Counter]:
-    """把悬空行分组为删除计划、置空计划与忽略计数（不触碰策略外内容）。"""
+def _dangling_organization_ids(conn: sqlite3.Connection, rows: list[tuple]) -> set[str]:
+    """返回 foreign_key_check 中自身悬空的 organizations 行的业务 id。"""
+    rowids = [rowid for table, rowid, _parent, _fkid in rows if table == "organizations"]
+    if not rowids:
+        return set()
+    placeholders = ",".join("?" * len(rowids))
+    return {
+        row[0]
+        for row in conn.execute(
+            f'SELECT id FROM organizations WHERE rowid IN ({placeholders})',
+            tuple(rowids),
+        )
+    }
+
+
+def _member_rowids_of_organizations(
+    conn: sqlite3.Connection, organization_ids: set[str]
+) -> set:
+    """返回属于给定组织的 organization_members 行 rowid（用于保守地转 unhandled）。"""
+    if not organization_ids:
+        return set()
+    placeholders = ",".join("?" * len(organization_ids))
+    return {
+        row[0]
+        for row in conn.execute(
+            f'SELECT rowid FROM organization_members WHERE organization_id IN ({placeholders})',
+            tuple(organization_ids),
+        )
+    }
+
+
+def plan_actions(conn: sqlite3.Connection, rows: list[tuple]) -> tuple[dict, dict, Counter]:
+    """把悬空行分组为删除计划、置空计划与忽略计数（不触碰策略外内容）。
+
+    `organization_members` 的删除是条件式的：只有“缺失父行是 characters 且
+    所属组织自身未悬空”才视为明确垃圾；其余情况（组织缺失、组织自身悬空）
+    一律计入 unhandled，交人工判断。
+    """
     deletes: dict[str, set] = defaultdict(set)
     nulls: dict[tuple, set] = defaultdict(set)
     unhandled: Counter = Counter()
+    guarded_member_rowids = _member_rowids_of_organizations(
+        conn, _dangling_organization_ids(conn, rows)
+    )
+    for rowid in guarded_member_rowids:
+        unhandled["organization_members"] += 1
     for table, rowid, parent, _fkid in rows:
-        if table in DELETE_TABLES:
+        if table == "organization_members":
+            if rowid in guarded_member_rowids:
+                continue
+            if parent != "characters":
+                unhandled[table] += 1
+            else:
+                deletes[table].add(rowid)
+        elif table in DELETE_TABLES:
             deletes[table].add(rowid)
         elif (table, parent) in NULL_POLICY:
             nulls[NULL_POLICY[(table, parent)]].add(rowid)
@@ -115,7 +178,7 @@ def run(db_path: str, apply: bool) -> dict:
 
         before_rows = collect_dangling(conn)
         before_counts = Counter(row[0] for row in before_rows)
-        deletes, nulls, unhandled = plan_actions(before_rows)
+        deletes, nulls, unhandled = plan_actions(conn, before_rows)
         planned = sum(len(v) for v in deletes.values()) + sum(len(v) for v in nulls.values())
 
         _print_counts("[before] foreign_key_check 检出悬空行（按子表）", before_counts)
@@ -129,6 +192,7 @@ def run(db_path: str, apply: bool) -> dict:
             "applied": 0,
             "before": dict(before_counts),
             "after": {},
+            "unhandled": dict(unhandled),
         }
         if not apply:
             print(f"[dry-run] 共计划 {planned} 处改动，未写入。使用 --apply 执行。")

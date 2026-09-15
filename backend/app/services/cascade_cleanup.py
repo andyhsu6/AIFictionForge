@@ -20,7 +20,13 @@ from app.models.generation_history import GenerationHistory
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.project_default_style import ProjectDefaultStyle
 from app.models.regeneration_task import RegenerationTask
-from app.models.relationship import CharacterRelationship, RelationshipTypeLink
+from app.models.relationship import (
+    CharacterRelationship,
+    Organization,
+    OrganizationMember,
+    RelationshipType,
+    RelationshipTypeLink,
+)
 
 
 def _dedupe_ids(values: Optional[Iterable[str]]) -> list[str]:
@@ -31,6 +37,17 @@ def _dedupe_ids(values: Optional[Iterable[str]]) -> list[str]:
     for value in values:
         if value:
             seen[str(value)] = None
+    return list(seen)
+
+
+def _dedupe_ints(values: Optional[Iterable[int]]) -> list[int]:
+    """去重并过滤空值（整数主键，保持类型避免 PostgreSQL 文本绑定）。"""
+    if not values:
+        return []
+    seen: dict[int, None] = {}
+    for value in values:
+        if value is not None:
+            seen[int(value)] = None
     return list(seen)
 
 
@@ -49,6 +66,103 @@ async def delete_relationship_links(
     return await _delete_by_ids(
         db, RelationshipTypeLink, RelationshipTypeLink.relationship_id, ids
     )
+
+
+async def delete_relationship_type_links(
+    db: AsyncSession, relationship_type_ids: Optional[Iterable[int]]
+) -> int:
+    """删除指向给定关系类型的多对多关联行。
+
+    用于 `relationship_types` 行本身被删除时（例如删除项目级关系类型）：
+    `character_relationship_type_links.relationship_type_id` 声明的 CASCADE 在
+    SQLite 上不生效，必须先显式删除关联行（含历史遗留的悬空链接），否则会留下
+    指向已删除类型的悬空外键。调用方负责事务边界。
+    """
+    ids = _dedupe_ints(relationship_type_ids)
+    if not ids:
+        return 0
+    return await _delete_by_ids(
+        db, RelationshipTypeLink, RelationshipTypeLink.relationship_type_id, ids
+    )
+
+
+async def delete_organization_children(
+    db: AsyncSession, organization_ids: Optional[Iterable[str]]
+) -> dict[str, int]:
+    """清理给定组织的子行，并断开自引用外键（SET NULL 语义）。
+
+    - 删除这些组织的 organization_members（`organization_id` 命中）；
+    - 子组织的 `parent_org_id` 按声明的 SET NULL 置空（子组织本身保留）；
+    - 绝不删除 organizations 行本身：调用方负责删除组织行。
+
+    调用方负责事务边界。
+    """
+    ids = _dedupe_ids(organization_ids)
+    counts = {"organization_members": 0, "child_organizations_unlinked": 0}
+    if not ids:
+        return counts
+
+    counts["organization_members"] = await _delete_by_ids(
+        db, OrganizationMember, OrganizationMember.organization_id, ids
+    )
+    counts["child_organizations_unlinked"] = (
+        await db.execute(
+            update(Organization)
+            .where(Organization.parent_org_id.in_(ids))
+            .values(parent_org_id=None)
+        )
+    ).rowcount or 0
+    return counts
+
+
+async def delete_character_owned_organizations(
+    db: AsyncSession, character_ids: Optional[Iterable[str]]
+) -> dict[str, int]:
+    """删除角色拥有的组织及其成员关系，并断开自引用外键。
+
+    角色删除时 `organizations.character_id` 声明的 CASCADE 在 SQLite 上不生效，
+    必须显式清理：
+    - 删除这些角色拥有的 organization_members（组织内部的成员关系）；
+    - 删除这些角色在他人组织中的成员关系（`organization_members.character_id` 命中）；
+    - 子组织 `parent_org_id` 置空（SET NULL 语义，子组织本身保留）；
+    - 删除这些角色拥有的 organizations 行。
+
+    调用方负责事务边界。
+    """
+    ids = _dedupe_ids(character_ids)
+    counts = {
+        "owned_organizations": 0,
+        "organization_members": 0,
+        "memberships": 0,
+        "child_organizations_unlinked": 0,
+    }
+    if not ids:
+        return counts
+
+    owned_org_ids = (
+        await db.execute(
+            select(Organization.id).where(Organization.character_id.in_(ids))
+        )
+    ).scalars().all()
+    if owned_org_ids:
+        owned = _dedupe_ids(owned_org_ids)
+        counts["organization_members"] = await _delete_by_ids(
+            db, OrganizationMember, OrganizationMember.organization_id, owned
+        )
+        counts["child_organizations_unlinked"] = (
+            await db.execute(
+                update(Organization)
+                .where(Organization.parent_org_id.in_(owned))
+                .values(parent_org_id=None)
+            )
+        ).rowcount or 0
+        counts["owned_organizations"] = await _delete_by_ids(
+            db, Organization, Organization.id, owned
+        )
+    counts["memberships"] = await _delete_by_ids(
+        db, OrganizationMember, OrganizationMember.character_id, ids
+    )
+    return counts
 
 
 async def delete_chapter_children(
@@ -161,3 +275,19 @@ async def delete_project_children(
         db, relationship_ids
     )
     return counts
+
+
+async def delete_project_relationship_types(db: AsyncSession, project_id: str) -> int:
+    """删除项目级关系类型定义（`project_id` 命中）。
+
+    - 只删除项目自有的类型；`project_id IS NULL` 的系统预置类型永不删除；
+    - 必须在 `character_relationships` 及其类型关联行删除之后调用：SQLite 未启用
+      外键，删除顺序是唯一保护，否则会留下指向已删除关系类型的悬空链接。
+
+    调用方负责事务边界。
+    """
+    if not project_id:
+        return 0
+    return await _delete_by_ids(
+        db, RelationshipType, RelationshipType.project_id, [project_id]
+    )

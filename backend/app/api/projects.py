@@ -19,7 +19,10 @@ from app.models.foreshadow import Foreshadow
 from app.models.career import Career, CharacterCareer
 from app.models.analysis_task import AnalysisTask
 from app.models.batch_generation_task import BatchGenerationTask
-from app.services.cascade_cleanup import delete_project_children
+from app.services.cascade_cleanup import (
+    delete_project_children,
+    delete_project_relationship_types,
+)
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
@@ -252,8 +255,15 @@ async def delete_project(
             delete(CharacterRelationship).where(CharacterRelationship.project_id == project_id)
         )
         logger.debug(f"删除角色关系数: {relationships_result.rowcount}")
-        
+
+        # 1.5 删除项目级关系类型定义（系统预置 project_id IS NULL 保留；
+        #     必须在角色关系及其类型关联行删除之后执行，顺序是唯一保护）
+        relationship_types_result = await delete_project_relationship_types(db, project_id)
+        logger.debug(f"删除项目级关系类型数: {relationship_types_result}")
+
         # 2. 删除组织成员和组织
+        #    （本项目所有组织一并删除，自引用 parent_org_id 不存在幸存者；
+        #      成员按组织逐个显式删除，因为 CASCADE 在 SQLite 上不生效）
         orgs_result = await db.execute(
             select(Organization).where(Organization.project_id == project_id)
         )
