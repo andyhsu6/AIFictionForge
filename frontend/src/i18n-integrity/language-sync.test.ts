@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import i18n from '../i18n';
-import { markManualLanguageChoice, parseServerLanguage, syncLanguageWithServer } from '../utils/languageSync';
+import { parseServerLanguage, syncLanguageWithServer } from '../utils/languageSync';
 
 const updatePreferences = vi.fn(async () => ({}));
 const getSettings = vi.fn(async () => ({ preferences: null as string | null }));

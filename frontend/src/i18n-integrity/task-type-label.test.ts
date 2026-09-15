@@ -41,7 +41,7 @@ const EXPECTED_TASK_TYPES = [
 
 /** 从 getTaskTypeLabel 的函数体里抠出 case 标签与它 return 的 t() 键。 */
 function labelSwitchCases(source: string): Map<string, string> {
-  const body = source.match(/const getTaskTypeLabel = [\s\S]*?\n  \};/);
+  const body = source.match(/const getTaskTypeLabel = [\s\S]*?\n {2}\};/);
   if (!body) throw new Error('FloatingTaskPanel.tsx 里找不到 getTaskTypeLabel');
   const cases = new Map<string, string>();
   for (const one of body[0].matchAll(/case '([^']+)':\s*return t\('([^']+)'\)/g)) {
