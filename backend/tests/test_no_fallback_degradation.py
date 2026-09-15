@@ -51,6 +51,8 @@ from app.services.model_capability_probe import (
 
 NOT_CONFIGURED = "validation.ai_model_not_configured"
 BELOW_MINIMUM = "validation.ai_model_below_minimum"
+# 需求 #61：qualified 但缺数字是独立失败模式，绝不能被 1M 下限顶替。
+CAPABILITY_INCOMPLETE = "validation.ai_model_capability_incomplete"
 QUALIFIED_MODEL = "needle-model"        # **未登记**在 _KNOWN_CONTEXT_WINDOWS 里：
                                         # 预算若还查静态表就不可能得出 1M 结论
 SMALL_MODEL = "gpt-4o-mini"
@@ -304,6 +306,31 @@ async def test_unqualified_verdict_raises_instead_of_a_small_budget(
 
     assert exc_info.value.code == BELOW_MINIMUM
     assert provider.calls == []
+
+
+@pytest.mark.anyio
+async def test_qualified_without_number_raises_instead_of_a_budget(
+    db_factory, service_factory, probe_gateway
+):
+    """需求 #61：合格证缺数字 ⇒ 预算路径抛「结论不完整」，绝不借 1M 下限顶替，也不补测。
+
+    `seed_verdict(..., tokens=None)` 正是「qualified 但无数字」的存量形状：门禁
+    (`ensure_model_allowed`) 只看 verdict 会放行，所以下游取窗口必须在这里炸掉，
+    否则会拿一个凭空的 1M 去算预算（`0 = 禁用` 的镜像失效形态）。
+    """
+    user_id = f"u-nonumber-{uuid.uuid4().hex[:8]}"
+    await seed_verdict(db_factory, user_id, QUALIFIED_MODEL, tokens=None)
+    async with db_factory() as session:
+        svc, provider = service_factory(user_id, session)
+        with pytest.raises(ApiError) as exc_info:
+            await svc.resolve_full_book_budget_chars(QUALIFIED_MODEL)
+
+    assert exc_info.value.code == CAPABILITY_INCOMPLETE
+    assert exc_info.value.code != BELOW_MINIMUM, (
+        "「结论数据不完整」与「实测低于下限」是两种失败模式，不能共用同一个码"
+    )
+    assert provider.calls == [], "缺数字绝不能触发一次 AI 请求"
+    assert probe_gateway == [], "已有合格结论（哪怕是脏数据）不得自动复测"
 
 
 @pytest.mark.anyio

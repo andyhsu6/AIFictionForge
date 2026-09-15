@@ -1473,6 +1473,7 @@ export default interface Resources {
       "agent_plan_step_selection": "勾选的计划步骤无效，请重新选择",
       "ai_config_missing": "请先在「设置 → 文本模型配置」中配置模型",
       "ai_model_below_minimum": "模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型",
+      "ai_model_capability_incomplete": "模型 {{model}} 的上下文窗口结论缺少有效数值（缓存数据不完整），请重新探测该模型后再试",
       "ai_model_not_configured": "尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称",
       "book_import_extract_mode": "extract_mode 仅支持 tail 或 full",
       "book_import_mode": "import_mode 仅支持 append 或 overwrite",
