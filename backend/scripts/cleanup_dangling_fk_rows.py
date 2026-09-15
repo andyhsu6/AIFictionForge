@@ -12,6 +12,9 @@
 - 置空外键（对应声明的 SET NULL）：chapters.outline_id 指向已删除大纲；
   generation_history.chapter_id 指向已删除章节；
   organizations.parent_org_id 指向已删除父组织（自引用）；
+  character_relationships.relationship_type_id 指向将删除的孤立关系类型
+  （该列可空且未声明 ondelete，必须先置空再删类型，否则在
+  `PRAGMA foreign_keys=ON` 下整个 `--apply` 事务会被 FK 错误中止）；
 - 其余表（含 organizations 本身与 agent_* 表）一律不动：organizations 行永不删除，
   组织自身悬空时其成员关系只报告不删除，交人工判断。
 
@@ -116,6 +119,38 @@ def _member_rowids_of_organizations(
     }
 
 
+def _dangling_relationship_type_ids(
+    conn: sqlite3.Connection, rowids: set
+) -> set[int]:
+    """把 relationship_types 的 rowid 集合解析为业务 id。"""
+    if not rowids:
+        return set()
+    placeholders = ",".join("?" * len(rowids))
+    return {
+        row[0]
+        for row in conn.execute(
+            f"SELECT id FROM relationship_types WHERE rowid IN ({placeholders})",
+            tuple(rowids),
+        )
+    }
+
+
+def _relationship_rowids_using_type_ids(
+    conn: sqlite3.Connection, type_ids: set[int]
+) -> set:
+    """返回 relationship_type_id 命中给定类型 id 的 character_relationships rowid。"""
+    if not type_ids:
+        return set()
+    placeholders = ",".join("?" * len(type_ids))
+    return {
+        row[0]
+        for row in conn.execute(
+            f"SELECT rowid FROM character_relationships WHERE relationship_type_id IN ({placeholders})",
+            tuple(type_ids),
+        )
+    }
+
+
 def plan_actions(conn: sqlite3.Connection, rows: list[tuple]) -> tuple[dict, dict, Counter]:
     """把悬空行分组为删除计划、置空计划与忽略计数（不触碰策略外内容）。
 
@@ -148,21 +183,38 @@ def plan_actions(conn: sqlite3.Connection, rows: list[tuple]) -> tuple[dict, dic
             unhandled["organization_members"] += 1
         else:
             deletes["organization_members"].add(rowid)
+
+    # 孤立 relationship_types 可能仍被活的 character_relationships 引用（该列可空、
+    # 未声明 ondelete，不会出现在 foreign_key_check 中）。删除类型前先置空引用，
+    # 否则 PRAGMA foreign_keys=ON 下整个事务会被 FK 错误中止。
+    orphan_type_ids = _dangling_relationship_type_ids(
+        conn, deletes.get("relationship_types", set())
+    )
+    orphan_rel_rowids = _relationship_rowids_using_type_ids(conn, orphan_type_ids)
+    if orphan_rel_rowids:
+        nulls[("character_relationships", "relationship_type_id")].update(
+            orphan_rel_rowids
+        )
     return deletes, nulls, unhandled
 
 
 def apply_actions(conn: sqlite3.Connection, deletes: dict, nulls: dict) -> Counter:
-    """在调用方开启的事务内执行计划，返回每表改动行数。"""
+    """在调用方开启的事务内执行计划，返回每表改动行数。
+
+    先置空、再删除：`character_relationships.relationship_type_id` 的置空必须早于
+    `relationship_types` 删除（该列未声明 ondelete，PRAGMA foreign_keys=ON 下类型行
+    先删会触发 FK 错误并中止整个事务）。其余置空策略先执行同样安全。
+    """
     changes: Counter = Counter()
-    for table, rowids in deletes.items():
-        for rowid in rowids:
-            cur = conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
-            changes[table] += cur.rowcount
     for (table, column), rowids in nulls.items():
         for rowid in rowids:
             cur = conn.execute(
                 f'UPDATE "{table}" SET "{column}" = NULL WHERE rowid = ?', (rowid,)
             )
+            changes[table] += cur.rowcount
+    for table, rowids in deletes.items():
+        for rowid in rowids:
+            cur = conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
             changes[table] += cur.rowcount
     return changes
 
