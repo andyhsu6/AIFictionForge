@@ -42,7 +42,7 @@
 - 🧠 **Story memory and consistency**: long-term story memories per project, plus a data-consistency check and repair.
 - 🛠️ **Skills and MCP plugins**: bundled writing skills (scan, analyze, write, deslop) and MCP plugin management.
 - 🧭 **Plan runner**: approve a multi-step plan, then the server runs it. See [plan runner semantics](docs/plan-runner-semantics.md).
-- 🔍 **Search**: full-text search across a project's content.
+- 🔍 **Memory search**: semantic search across a project's story memories.
 - 🌍 **Internationalization**: zh/en UI, with `content_language` controlling the language of AI output.
 - 🔐 **Login**: local account or LinuxDO OAuth (with automatic account creation).
 - 📦 **Import / export**: project data plus character and organization cards, for cross-project sharing.
