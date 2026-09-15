@@ -31,7 +31,7 @@ from app.models.project_default_style import ProjectDefaultStyle
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
 from app.models.settings import Settings
 from app.models.writing_style import WritingStyle
-from app.services.cascade_cleanup import delete_project_children
+from app.services.cascade_cleanup import delete_organization_children, delete_project_children
 from app.schemas.book_import import (
     BookImportApplyRequest,
     BookImportApplyResponse,
@@ -1121,6 +1121,15 @@ class BookImportService:
         char_ids = [row[0] for row in char_ids_result.fetchall()]
 
         await db.execute(delete(CharacterRelationship).where(CharacterRelationship.project_id == project_id))
+        # 组织子行：共享助手按 organization_id 删除成员，并把幸存跨项目子组织的
+        # parent_org_id 置空（CASCADE / SET NULL 在 SQLite 上都不生效）；
+        # organizations 行本身由下一行 delete 删除
+        org_ids_result = await db.execute(
+            select(Organization.id).where(Organization.project_id == project_id)
+        )
+        org_ids = [row[0] for row in org_ids_result.fetchall()]
+        await delete_organization_children(db, org_ids)
+        # 按本项目角色 id 删除其在其它项目组织中的成员关系（镜像 delete_character）
         await db.execute(delete(OrganizationMember).where(OrganizationMember.character_id.in_(char_ids)))
         await db.execute(delete(Organization).where(Organization.project_id == project_id))
         await db.execute(delete(CharacterCareer).where(CharacterCareer.character_id.in_(char_ids)))
