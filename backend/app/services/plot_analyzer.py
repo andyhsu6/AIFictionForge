@@ -589,14 +589,3 @@ class PlotAnalyzer:
         except Exception as e:
             logger.error(f"❌ 生成摘要失败: {str(e)}")
             return "分析摘要生成失败"
-
-
-# 创建全局实例(需要时手动初始化)
-_plot_analyzer_instance = None
-
-def get_plot_analyzer(ai_service: AIService) -> PlotAnalyzer:
-    """获取剧情分析器实例"""
-    global _plot_analyzer_instance
-    if _plot_analyzer_instance is None:
-        _plot_analyzer_instance = PlotAnalyzer(ai_service)
-    return _plot_analyzer_instance

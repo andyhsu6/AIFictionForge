@@ -9,7 +9,7 @@ from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.chapter import Chapter
 from app.models.project import Project
 from app.services.memory_service import memory_service
-from app.services.plot_analyzer import get_plot_analyzer
+from app.services.plot_analyzer import PlotAnalyzer
 from app.services.foreshadow_service import foreshadow_service
 from app.services.ai_service import create_user_ai_service
 from app.models.settings import Settings
@@ -88,7 +88,7 @@ async def analyze_chapter(
         logger.info(f"📋 已获取{len(existing_foreshadows)}个已埋入伏笔用于分析匹配")
         
         # 执行剧情分析（传入已有伏笔列表）
-        analyzer = get_plot_analyzer(ai_service)
+        analyzer = PlotAnalyzer(ai_service)
         analysis_result = await analyzer.analyze_chapter(
             chapter_number=chapter.chapter_number,
             title=chapter.title,
