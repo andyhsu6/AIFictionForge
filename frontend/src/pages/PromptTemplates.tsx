@@ -7,7 +7,7 @@ import {
   Modal,
   Input,
   Tag,
-  message,
+  App,
   Space,
   Typography,
   Row,
@@ -75,6 +75,7 @@ const CATEGORY_KEYS: Record<string, string> = {
 };
 
 export default function PromptTemplates() {
+  const { message } = App.useApp();
   const { t } = useTranslation('promptTemplates');
   const tCategory = t as (key: string, opts?: Record<string, unknown>) => string;
   const categoryLabel = (name: string) => {
