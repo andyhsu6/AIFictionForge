@@ -1,11 +1,11 @@
 """后台任务管理服务 - 管理长时间运行的AI生成任务"""
 import asyncio
-from datetime import datetime
 from typing import Dict, Any, Optional, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import case, select, update
 from app.database import get_engine
 from app.models.background_task import BackgroundTask
+from app.models.project_agent import _naive_utc_now
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +39,7 @@ class TaskProgressTracker:
                         return
                     for key, value in kwargs.items():
                         setattr(task, key, value)
-                    task.updated_at = datetime.now()
+                    task.updated_at = _naive_utc_now()
                     await session.commit()
         except Exception as e:
             logger.error(f"❌ 更新任务进度失败: {e}")
@@ -49,7 +49,7 @@ class TaskProgressTracker:
         msg = message or f"开始生成{self.task_name}..."
         await self._update_task(
             status="running", progress=0, status_message=msg,
-            started_at=datetime.now(),
+            started_at=_naive_utc_now(),
             progress_details={"stage": "init", "message": msg}
         )
 
@@ -143,7 +143,7 @@ class TaskProgressTracker:
         msg = message or f"{self.task_name}生成完成!"
         update_kwargs: Dict[str, Any] = dict(
             status="completed", progress=100, status_message=msg,
-            completed_at=datetime.now(),
+            completed_at=_naive_utc_now(),
             progress_details={"stage": "complete", "message": msg}
         )
         if code:
@@ -162,7 +162,7 @@ class TaskProgressTracker:
         update_kwargs: Dict[str, Any] = dict(
             status="failed", error_message=error_message,
             status_message=f"失败: {error_message}",
-            completed_at=datetime.now(),
+            completed_at=_naive_utc_now(),
             progress_details={"stage": "error", "message": error_message}
         )
         if error_code:
@@ -296,7 +296,7 @@ class BackgroundTaskService:
                                     # （诊断原文保留在 error_message 列）。
                                     task.status_code = "task.failed"
                                     task.status_params = {}
-                                    task.completed_at = datetime.now()
+                                    task.completed_at = _naive_utc_now()
                                     await session.commit()
                         except Exception as update_err:
                             logger.error(f"❌ 更新失败任务状态失败: {update_err}")
@@ -414,7 +414,7 @@ class BackgroundTaskService:
         # i18n todo13 part 2：同一行写入结构化码（registry task.cancelled）。
         task.status_code = "task.cancelled"
         task.status_params = {}
-        task.completed_at = datetime.now()
+        task.completed_at = _naive_utc_now()
         await db.commit()
         logger.info(f"🚫 取消任务: {task_id[:8]}")
         return True
@@ -424,7 +424,7 @@ class BackgroundTaskService:
         """清理旧任务记录"""
         from sqlalchemy import delete as sql_delete
         from datetime import timedelta
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = _naive_utc_now() - timedelta(days=days)
         result = await db.execute(
             sql_delete(BackgroundTask).where(
                 BackgroundTask.user_id == user_id,
@@ -485,7 +485,7 @@ class BackgroundTaskService:
                     else:
                         task.status_message = "即将开始执行..."
                     task.progress_details = {"stage": "queued", "queue_size": tasks_ahead}
-                    task.updated_at = datetime.now()
+                    task.updated_at = _naive_utc_now()
                     await session.commit()
         except Exception as e:
             logger.error(f"更新队列位置信息失败: {e}")

@@ -253,7 +253,10 @@ async def _write_plan_row(
     cancel_task(:377-399) 会立刻把 status 置成 cancelled ⇒ 一旦走 tracker，取消后的
     最终步数永远写不进计划行。直接 UPDATE 既绕过冻结，也绕过身份映射。
     """
-    now = datetime.now()
+    # naive UTC：created_at/updated_at 的 server_default=func.now() 是 UTC（PG 由
+    # database.py 钉定 session TimeZone）；用 datetime.now()（本地墙钟）会让同一行
+    # 的 created_at 与 started_at/completed_at 差一个时区偏移（issue #120）。
+    now = _naive_utc_now()
     values: dict[str, Any] = {"updated_at": now}
     if status is not None:
         values["status"] = status

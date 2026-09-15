@@ -19,6 +19,7 @@ from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.project import Project
+from app.models.project_agent import _naive_utc_now
 from app.models.project_default_style import ProjectDefaultStyle
 from app.models.regeneration_task import RegenerationTask
 from app.models.writing_style import WritingStyle
@@ -755,7 +756,7 @@ class ProjectAgentOperationalTools:
         if hasattr(task, "status_message"):
             task.status_message = "任务已取消"
         if hasattr(task, "completed_at"):
-            task.completed_at = datetime.now()
+            task.completed_at = _naive_utc_now()
         return task.id, {"status": "cancelled"}, f"已取消后台任务 {task.id[:8]}"
 
     async def _consistency_plan(self, action: str) -> dict[str, Any]:
