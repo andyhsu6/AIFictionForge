@@ -119,9 +119,11 @@ def _member_rowids_of_organizations(
 def plan_actions(conn: sqlite3.Connection, rows: list[tuple]) -> tuple[dict, dict, Counter]:
     """把悬空行分组为删除计划、置空计划与忽略计数（不触碰策略外内容）。
 
-    `organization_members` 的删除是条件式的：只有“缺失父行是 characters 且
-    所属组织自身未悬空”才视为明确垃圾；其余情况（组织缺失、组织自身悬空）
-    一律计入 unhandled，交人工判断。
+    `organization_members` 的删除是条件式的：只有“缺失父行包含 characters 且
+    所属组织未自身悬空”才视为明确垃圾；组织自身悬空、或仅缺失 organizations
+    的行一律计入 unhandled 保留。注意一行可能在 `foreign_key_check` 中出现多次
+    （同时悬空于 organizations 与 characters），本函数按 rowid 归并，保证每行
+    只进一个桶（此前同一行会既计入 unhandled 又被删除，属报告不一致）。
     """
     deletes: dict[str, set] = defaultdict(set)
     nulls: dict[tuple, set] = defaultdict(set)
@@ -129,22 +131,23 @@ def plan_actions(conn: sqlite3.Connection, rows: list[tuple]) -> tuple[dict, dic
     guarded_member_rowids = _member_rowids_of_organizations(
         conn, _dangling_organization_ids(conn, rows)
     )
-    for rowid in guarded_member_rowids:
-        unhandled["organization_members"] += 1
+    member_parents: dict = defaultdict(set)
     for table, rowid, parent, _fkid in rows:
         if table == "organization_members":
-            if rowid in guarded_member_rowids:
-                continue
-            if parent != "characters":
-                unhandled[table] += 1
-            else:
-                deletes[table].add(rowid)
+            member_parents[rowid].add(parent)
         elif table in DELETE_TABLES:
             deletes[table].add(rowid)
         elif (table, parent) in NULL_POLICY:
             nulls[NULL_POLICY[(table, parent)]].add(rowid)
         else:
             unhandled[table] += 1
+
+    # 被“存在但自身悬空的组织”保护的行，即使未出现在 foreign_key_check 中也要计数
+    for rowid in set(member_parents) | guarded_member_rowids:
+        if rowid in guarded_member_rowids or "characters" not in member_parents.get(rowid, set()):
+            unhandled["organization_members"] += 1
+        else:
+            deletes["organization_members"].add(rowid)
     return deletes, nulls, unhandled
 
 
