@@ -324,7 +324,7 @@ async def _patch_step(
     content: str | None = None,
     detail: dict[str, Any] | None = None,
 ) -> None:
-    values: dict[str, Any] = {"updated_at": datetime.now()}   # 对齐 _update_step:1234
+    values: dict[str, Any] = {"updated_at": _naive_utc_now()}   # 对齐 _update_step:1234
     if status is not None:
         values["status"] = status
     if content is not None:
@@ -365,7 +365,7 @@ async def _finalize_tool_call(
                 status=status,
                 result=result,
                 error_message=error_message,
-                executed_at=datetime.now(),
+                executed_at=_naive_utc_now(),
             )
         )
         await session.commit()
@@ -626,7 +626,7 @@ async def _insert_plan_summary_message(
         _limit("agent_plan_summary_max_chars", SUMMARY_MAX_CHARS),
     )
     before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
-    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
+    conversation_now = _naive_utc_now()  # last_message_at 全库基准 = naive UTC，与 message.created_at 同基准
     async with session_factory() as session:
         existing = (await session.execute(
             select(AgentMessage.id)
@@ -671,7 +671,7 @@ async def _insert_plan_assistant_message(
     if not content or not content.strip():
         return None
     before = _naive_utc_now()          # AgentMessage.created_at 基准 = naive UTC
-    conversation_now = datetime.now()  # last_message_at 全库基准 = 本地墙钟
+    conversation_now = _naive_utc_now()  # last_message_at 全库基准 = naive UTC，与 message.created_at 同基准
     async with session_factory() as session:
         message = AgentMessage(
             conversation_id=conversation_id,
