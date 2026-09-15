@@ -98,28 +98,40 @@ class WizardProgressTracker:
             return config.end
         return config.start + int((config.end - config.start) * sub_progress)
     
-    async def start(self, message: str = None) -> str:
-        """开始阶段"""
+    async def start(self, message: str = None, code: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
+        """开始阶段。
+
+        code 缺省且未传自定义 message 时，自动走 `progress.wizard.start`
+        （stage 作为参数，中文只在 zh 模板里插入）。
+        """
         self.current_stage = ProgressStage.INIT
         self.current_progress = 0
         msg = message or f"开始生成{self.task_name}..."
-        return await SSEResponse.send_progress(msg, 0, "processing")
+        if code is None and message is None:
+            code, params = "progress.wizard.start", {"stage": self.task_name}
+        return await SSEResponse.send_progress(
+            msg, 0, "processing", code=code, params=params, raw=msg if code else None
+        )
     
-    async def loading(self, message: str = None, sub_progress: float = 0.5) -> str:
+    async def loading(self, message: str = None, sub_progress: float = 0.5, code: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """加载数据阶段"""
         self.current_stage = ProgressStage.LOADING
         progress = self._get_stage_progress(ProgressStage.LOADING, sub_progress)
         self.current_progress = progress
         msg = message or STAGE_CONFIGS[ProgressStage.LOADING].default_message
-        return await SSEResponse.send_progress(msg, progress, "processing")
+        return await SSEResponse.send_progress(
+            msg, progress, "processing", code=code, params=params, raw=msg if code else None
+        )
     
-    async def preparing(self, message: str = None) -> str:
+    async def preparing(self, message: str = None, code: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """准备提示词阶段"""
         self.current_stage = ProgressStage.PREPARING
         progress = self._get_stage_progress(ProgressStage.PREPARING, 0.5)
         self.current_progress = progress
         msg = message or STAGE_CONFIGS[ProgressStage.PREPARING].default_message
-        return await SSEResponse.send_progress(msg, progress, "processing")
+        return await SSEResponse.send_progress(
+            msg, progress, "processing", code=code, params=params, raw=msg if code else None
+        )
     
     async def generating(
         self,
@@ -127,17 +139,15 @@ class WizardProgressTracker:
         estimated_total: int = 5000,
         message: str = None,
         retry_count: int = 0,
-        max_retries: int = 3
+        max_retries: int = 3,
+        code: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         AI生成阶段进度更新
         
-        Args:
-            current_chars: 当前已生成字符数
-            estimated_total: 预估总字符数
-            message: 自定义消息
-            retry_count: 当前重试次数
-            max_retries: 最大重试次数
+        code 缺省且未传自定义 message 时，自动走 `progress.wizard.generating`
+        （stage/current_chars 作为参数）。
         """
         self.current_stage = ProgressStage.GENERATING
         
@@ -160,27 +170,39 @@ class WizardProgressTracker:
         else:
             msg = f"生成{self.task_name}中... ({current_chars}字符){retry_suffix}"
         
-        return await SSEResponse.send_progress(msg, progress, "processing")
+        if code is None and message is None:
+            code, params = "progress.wizard.generating", {"stage": self.task_name, "current_chars": current_chars}
+        if code is not None:
+            # 重试后缀只进 zh 模板（en 模板不含该参数），保证 zh 渲染逐字节不变
+            params = {**(params or {}), "retry_suffix": retry_suffix}
+        
+        return await SSEResponse.send_progress(
+            msg, progress, "processing", code=code, params=params, raw=msg if code else None
+        )
     
     async def generating_chunk(self, chunk: str) -> str:
         """发送生成的内容块"""
         return await SSEResponse.send_chunk(chunk)
     
-    async def parsing(self, message: str = None, sub_progress: float = 0.5) -> str:
+    async def parsing(self, message: str = None, sub_progress: float = 0.5, code: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """解析数据阶段"""
         self.current_stage = ProgressStage.PARSING
         progress = self._get_stage_progress(ProgressStage.PARSING, sub_progress)
         self.current_progress = progress
         msg = message or f"解析{self.task_name}数据..."
-        return await SSEResponse.send_progress(msg, progress, "processing")
+        return await SSEResponse.send_progress(
+            msg, progress, "processing", code=code, params=params, raw=msg if code else None
+        )
     
-    async def saving(self, message: str = None, sub_progress: float = 0.5) -> str:
+    async def saving(self, message: str = None, sub_progress: float = 0.5, code: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """保存数据阶段"""
         self.current_stage = ProgressStage.SAVING
         progress = self._get_stage_progress(ProgressStage.SAVING, sub_progress)
         self.current_progress = progress
         msg = message or f"保存{self.task_name}到数据库..."
-        return await SSEResponse.send_progress(msg, progress, "processing")
+        return await SSEResponse.send_progress(
+            msg, progress, "processing", code=code, params=params, raw=msg if code else None
+        )
     
     async def complete(
         self,
@@ -192,10 +214,13 @@ class WizardProgressTracker:
 
         task i18n todo13：code 设置时走结构化通道（message_code/message_params），
         旧 message 文案字节不变；缺省时 payload 形状与旧版完全一致。
+        code 缺省且未传自定义 message 时自动走 `progress.wizard.complete`。
         """
         self.current_stage = ProgressStage.COMPLETE
         self.current_progress = 100
         msg = message or f"{self.task_name}生成完成!"
+        if code is None and message is None:
+            code, params = "progress.wizard.complete", {"stage": self.task_name}
         return await SSEResponse.send_progress(
             msg, 100, "success", code=code, params=params, raw=msg if code else None
         )

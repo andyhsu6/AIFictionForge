@@ -66,6 +66,17 @@ describe('mapErrorPayload (display policy anchors)', () => {
   it('no code (legacy row) -> detail verbatim — the only detail escape', () => {
     expect(mapErrorPayload({ detail: 'legacy raw text' })).toBe('legacy raw text');
   });
+
+  // issue #33 Category 2: book-import task rows now carry error_code/error_params;
+  // BookImport.tsx renders mapErrorPayload over them (raw only when no code).
+  it('book-import task error: import.task.* code -> localized template', () => {
+    expect(
+      mapErrorPayload({
+        code: 'import.task.noChaptersDetected',
+        detail: '未能识别到有效章节，请检查TXT内容',
+      })
+    ).toBe('Could not detect any valid chapters. Please check the TXT content');
+  });
 });
 
 describe('mapSSEError', () => {

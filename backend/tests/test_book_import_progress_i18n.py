@@ -156,6 +156,15 @@ def test_apply_stream_notify_with_code_forwards_structured_channel(monkeypatch):
     assert data_call["code"] is None
     assert data_call["params"] is None
 
+    # issue #33：失败步骤 payload 保留稳定 step_name 键（前端据此本地化标签），
+    # step_label 仍随包下发中文原文，仅作未知步骤键兜底。
+    failures = json.loads(data_call["message"])["failed_steps"]
+    assert [f["step_name"] for f in failures] == ["career_system"]
+    assert failures[0]["step_label"] == "职业体系生成"
+    # 上游诊断（RuntimeError）无码：error_code 为 None，前端回退原始 error 文本
+    assert failures[0]["error_code"] is None
+    assert "error_params" in failures[0]
+
 
 def test_retry_stream_notify_with_code_forwards_structured_channel(monkeypatch):
     """retry 流 _notify 同样透传 code/params。"""

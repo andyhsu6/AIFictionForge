@@ -209,6 +209,10 @@ class _StepFailure:
     step_label: str         # 步骤中文名
     error_message: str      # 错误详情
     retry_count: int = 0    # 已重试次数
+    # i18n 双通道（issue #33）：上游诊断（AI/网络）无码，error 原文照旧；自家
+    # ApiError（如模型守卫）带码，前端据此本地化 error。
+    error_code: Optional[str] = None
+    error_params: Optional[dict] = None
 
 
 @dataclass
@@ -240,6 +244,10 @@ class _BookImportTask:
     # None 表示纯旧通道，状态响应形状与旧版完全一致）
     status_code: Optional[str] = None
     status_params: Optional[dict] = None
+    # i18n 双通道：任务 error 文本最近一次结构化码/参数（issue #33）。有码时前端
+    # 本地化 error；无码（上游诊断原文）时前端回退原始 error 文本。
+    error_code: Optional[str] = None
+    error_params: Optional[dict] = None
 
 
 class BookImportService:
@@ -302,11 +310,16 @@ class BookImportService:
     async def cancel_task(self, *, task_id: str, user_id: str) -> dict:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         if task.status in {"completed", "failed", "cancelled"}:
-            return {"success": True, "message": f"任务已是终态：{task.status}"}
+            return {
+                "success": True,
+                "message": f"任务已是终态：{task.status}",
+                "code": "task.already_terminal",
+                "params": {"status": task.status},
+            }
 
         task.cancelled = True
         self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消", code="task.cancelled")
-        return {"success": True, "message": "取消成功"}
+        return {"success": True, "message": "取消成功", "code": "task.cancel_success", "params": {}}
 
     async def apply_import(
         self,
@@ -535,6 +548,8 @@ class BookImportService:
                     step_name="world_building",
                     step_label="世界观生成",
                     error_message=str(exc),
+                    error_code=getattr(exc, "code", None),
+                    error_params=getattr(exc, "params", None) or None,
                 ))
                 await _notify(
                     f"⚠️ 世界观生成失败：{str(exc)[:80]}，将继续后续步骤", 40, "warning",
@@ -567,6 +582,8 @@ class BookImportService:
                     step_name="career_system",
                     step_label="职业体系生成",
                     error_message=str(exc),
+                    error_code=getattr(exc, "code", None),
+                    error_params=getattr(exc, "params", None) or None,
                 ))
                 await _notify(
                     f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
@@ -600,6 +617,8 @@ class BookImportService:
                     step_name="characters",
                     step_label="角色与组织生成",
                     error_message=str(exc),
+                    error_code=getattr(exc, "code", None),
+                    error_params=getattr(exc, "params", None) or None,
                 ))
                 await _notify(
                     f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning",
@@ -633,6 +652,8 @@ class BookImportService:
                     step_name="relationship_extraction",
                     step_label="原文关系抽取",
                     error_message=str(exc),
+                    error_code=getattr(exc, "code", None),
+                    error_params=getattr(exc, "params", None) or None,
                 ))
                 await _notify(
                     f"⚠️ 原文关系抽取失败：{str(exc)[:80]}，将继续后续步骤", 95, "warning",
@@ -657,7 +678,10 @@ class BookImportService:
             # 如果有步骤失败，通过 SSE 推送失败步骤详情
             if failed_steps:
                 failed_info = [
-                    {"step_name": f.step_name, "step_label": f.step_label, "error": f.error_message}
+                    {
+                        "step_name": f.step_name, "step_label": f.step_label, "error": f.error_message,
+                        "error_code": f.error_code, "error_params": f.error_params,
+                    }
                     for f in failed_steps
                 ]
                 await _notify(
@@ -783,6 +807,8 @@ class BookImportService:
                             step_label="世界观生成",
                             error_message=str(exc),
                             retry_count=retry_count,
+                            error_code=getattr(exc, "code", None),
+                            error_params=getattr(exc, "params", None) or None,
                         ))
                         await _notify(
                             f"⚠️ 世界观重试失败：{str(exc)[:80]}", step_end_pct, "warning",
@@ -830,6 +856,8 @@ class BookImportService:
                             step_label="职业体系生成",
                             error_message=str(exc),
                             retry_count=retry_count,
+                            error_code=getattr(exc, "code", None),
+                            error_params=getattr(exc, "params", None) or None,
                         ))
                         await _notify(
                             f"⚠️ 职业体系重试失败：{str(exc)[:80]}", step_end_pct, "warning",
@@ -864,6 +892,8 @@ class BookImportService:
                             step_label="角色与组织生成",
                             error_message=str(exc),
                             retry_count=retry_count,
+                            error_code=getattr(exc, "code", None),
+                            error_params=getattr(exc, "params", None) or None,
                         ))
                         await _notify(
                             f"⚠️ 角色/组织重试失败：{str(exc)[:80]}", step_end_pct, "warning",
@@ -904,6 +934,8 @@ class BookImportService:
                             step_label="原文关系抽取",
                             error_message=str(exc),
                             retry_count=retry_count,
+                            error_code=getattr(exc, "code", None),
+                            error_params=getattr(exc, "params", None) or None,
                         ))
                         await _notify(
                             f"⚠️ 原文关系抽取重试失败：{str(exc)[:80]}", step_end_pct, "warning",
@@ -921,7 +953,10 @@ class BookImportService:
 
             if still_failed:
                 failed_info = [
-                    {"step_name": f.step_name, "step_label": f.step_label, "error": f.error_message, "retry_count": f.retry_count}
+                    {
+                        "step_name": f.step_name, "step_label": f.step_label, "error": f.error_message,
+                        "retry_count": f.retry_count, "error_code": f.error_code, "error_params": f.error_params,
+                    }
                     for f in still_failed
                 ]
                 if progress_callback:
@@ -936,7 +971,10 @@ class BookImportService:
                 "project_id": project_id,
                 "retry_results": retry_results,
                 "still_failed": [
-                    {"step_name": f.step_name, "step_label": f.step_label, "error": f.error_message, "retry_count": f.retry_count}
+                    {
+                        "step_name": f.step_name, "step_label": f.step_label, "error": f.error_message,
+                        "retry_count": f.retry_count, "error_code": f.error_code, "error_params": f.error_params,
+                    }
                     for f in still_failed
                 ],
             }
@@ -971,7 +1009,7 @@ class BookImportService:
 
             chapters_data = txt_parser_service.split_chapters(cleaned)
             if not chapters_data:
-                raise ValueError("未能识别到有效章节，请检查TXT内容")
+                raise ApiError(code="import.task.noChaptersDetected")
 
             self._set_task_state(
                 task, status="running", progress=15,
@@ -1000,8 +1038,10 @@ class BookImportService:
                 status="failed",
                 progress=task.progress,
                 message="解析失败",
-                error=str(exc),
+                error=getattr(exc, "detail", None) or str(exc),
                 code="import.task.parseFailed",
+                error_code=getattr(exc, "code", None),
+                error_params=getattr(exc, "params", None) or None,
             )
 
     async def _prepare_project(
@@ -3176,6 +3216,8 @@ class BookImportService:
             error=task.error,
             status_code=task.status_code,
             status_params=task.status_params,
+            error_code=task.error_code,
+            error_params=task.error_params,
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
@@ -3190,12 +3232,15 @@ class BookImportService:
         error: Optional[str] = None,
         code: Optional[str] = None,
         params: Optional[dict] = None,
+        error_code: Optional[str] = None,
+        error_params: Optional[dict] = None,
     ) -> None:
         """写入任务状态。
 
         i18n 双通道：code/params 设置时随任务状态记录结构化码（task.status_code/
-        status_params），message 原文案字节不变；缺省（None）时两字段清空，
-        与旧版行为完全一致。
+        status_params），message 原文案字节不变；error_code/error_params 同理记录
+        error 文本的结构化码（issue #33）。缺省（None）时各字段清空，与旧版行为
+        完全一致。
         """
         task.status = status
         task.progress = max(0, min(100, progress))
@@ -3203,6 +3248,8 @@ class BookImportService:
         task.error = error
         task.status_code = code
         task.status_params = params
+        task.error_code = error_code
+        task.error_params = error_params
         task.updated_at = datetime.utcnow()
 
     def _check_cancelled(self, task: _BookImportTask) -> None:
