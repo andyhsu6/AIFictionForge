@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from typing import List
 import json
 from urllib.parse import quote
@@ -20,8 +20,10 @@ from app.models.career import Career, CharacterCareer
 from app.models.analysis_task import AnalysisTask
 from app.models.batch_generation_task import BatchGenerationTask
 from app.services.cascade_cleanup import (
+    delete_organization_children,
     delete_project_children,
     delete_project_relationship_types,
+    delete_relationship_links,
 )
 from app.schemas.project import (
     ProjectCreate,
@@ -245,12 +247,39 @@ async def delete_project(
         
         # === 删除所有关联数据（SQLite默认不启用外键约束，需要显式删除）===
         
+        # 本项目角色 id：关系/组织清理需要按角色 id 兜底，覆盖接口层未校验
+        # 同项目归属而产生的跨项目行
+        characters_query = await db.execute(
+            select(Character.id).where(Character.project_id == project_id)
+        )
+        character_ids = [row[0] for row in characters_query.fetchall()]
+        
         # 0. 项目维度子行：默认风格、分析/记忆/再生成任务、关系类型关联
         #    （外键 CASCADE 在 SQLite 上不生效，必须在删除父行前显式清理）
         project_cleanup = await delete_project_children(db, project_id)
         logger.debug(f"项目维度子行清理: {project_cleanup}")
         
-        # 1. 删除角色关系
+        # 1. 删除角色关系：项目维度，外加以本项目角色为端点的跨项目关系
+        #    （镜像 delete_character；跨项目关系的 project_id 属于其它项目，
+        #      但两端角色即将被删除，不清理会留下悬空行）
+        if character_ids:
+            cross_relationship_ids = (
+                await db.execute(
+                    select(CharacterRelationship.id).where(
+                        or_(
+                            CharacterRelationship.character_from_id.in_(character_ids),
+                            CharacterRelationship.character_to_id.in_(character_ids),
+                        )
+                    )
+                )
+            ).scalars().all()
+            await delete_relationship_links(db, cross_relationship_ids)
+            if cross_relationship_ids:
+                await db.execute(
+                    delete(CharacterRelationship).where(
+                        CharacterRelationship.id.in_(cross_relationship_ids)
+                    )
+                )
         relationships_result = await db.execute(
             delete(CharacterRelationship).where(CharacterRelationship.project_id == project_id)
         )
@@ -262,19 +291,23 @@ async def delete_project(
         logger.debug(f"删除项目级关系类型数: {relationship_types_result}")
 
         # 2. 删除组织成员和组织
-        #    （本项目所有组织一并删除，自引用 parent_org_id 不存在幸存者；
-        #      成员按组织逐个显式删除，因为 CASCADE 在 SQLite 上不生效）
+        #    （本项目所有组织一并删除；共享助手先按 organization_id 删除成员，
+        #      并把幸存跨项目子组织的 parent_org_id 置空 —— SET NULL 语义；
+        #      再按本项目角色 id 删除其在其它项目组织中的成员关系，镜像
+        #      delete_character。CASCADE / SET NULL 在 SQLite 上都不生效）
         orgs_result = await db.execute(
-            select(Organization).where(Organization.project_id == project_id)
+            select(Organization.id).where(Organization.project_id == project_id)
         )
-        orgs = orgs_result.scalars().all()
-        org_member_count = 0
-        for org in orgs:
-            members_result = await db.execute(
-                delete(OrganizationMember).where(OrganizationMember.organization_id == org.id)
+        org_ids = [row[0] for row in orgs_result.fetchall()]
+        org_cleanup = await delete_organization_children(db, org_ids)
+        logger.debug(f"项目组织子行清理: {org_cleanup}")
+        if character_ids:
+            memberships_result = await db.execute(
+                delete(OrganizationMember).where(
+                    OrganizationMember.character_id.in_(character_ids)
+                )
             )
-            org_member_count += members_result.rowcount
-        logger.debug(f"删除组织成员数: {org_member_count}")
+            logger.debug(f"删除跨项目组织成员数: {memberships_result.rowcount}")
         
         organizations_result = await db.execute(
             delete(Organization).where(Organization.project_id == project_id)
@@ -299,12 +332,7 @@ async def delete_project(
         )
         logger.debug(f"删除批量生成任务数: {batch_tasks_result.rowcount}")
         
-        # 6. 删除角色职业关联（先获取角色ID列表）
-        characters_query = await db.execute(
-            select(Character.id).where(Character.project_id == project_id)
-        )
-        character_ids = [row[0] for row in characters_query.fetchall()]
-        
+        # 6. 删除角色职业关联（character_ids 已在清理开始时获取）
         if character_ids:
             character_careers_result = await db.execute(
                 delete(CharacterCareer).where(CharacterCareer.character_id.in_(character_ids))
