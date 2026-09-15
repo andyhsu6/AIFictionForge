@@ -10,7 +10,7 @@
     "i18n:extract:ci": "i18next-cli extract --ci",
     "i18n:types": "i18next-cli types",
     "i18n:types:ci": "i18next-cli types --ci",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",
     "test": "node --test src/i18n/normalize.test.mjs src/services/errorMapper.test.mjs && vitest run",
     "test:coverage": "vitest run --coverage"

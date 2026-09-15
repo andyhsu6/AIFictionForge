@@ -23,7 +23,6 @@ const createProxy = <K extends keyof AppApi>(key: K): AppApi[K] =>
     get(_target, prop) {
       if (!appApi) {
         // Pre-injection call (should not happen: bridge mounts before user interaction).
-        // eslint-disable-next-line no-console
         console.warn(`[antdApp] App not ready - ${String(key)}.${String(prop)} ignored`);
         return () => undefined;
       }

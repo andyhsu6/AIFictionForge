@@ -146,7 +146,7 @@ const ChapterReader: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [chapterId]);
+  }, [chapterId, t]);
 
   useEffect(() => {
     if (chapterId) {

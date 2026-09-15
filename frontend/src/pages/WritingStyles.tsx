@@ -86,7 +86,7 @@ export default function WritingStyles() {
     } finally {
       setLoading(false);
     }
-  }, [currentProject?.id]);
+  }, [currentProject?.id, message, t]);
 
   const handleCreate = async (values: { name: string; description?: string; prompt_content: string }) => {
     try {

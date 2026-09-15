@@ -189,7 +189,7 @@ const Inspiration: React.FC = () => {
       clearCache();
       return false;
     }
-  }, [clearCache]);
+  }, [clearCache, message, t]);
 
   // ==================== 组件挂载时恢复缓存 ====================
 

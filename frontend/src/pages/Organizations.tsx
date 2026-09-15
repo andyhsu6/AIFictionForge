@@ -73,6 +73,16 @@ export default function Organizations() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  const loadMembers = useCallback(async (orgId: string) => {
+    try {
+      const res = await axios.get(`/api/organizations/${orgId}/members`);
+      setMembers(res.data);
+    } catch (error) {
+      message.error(t('toast.loadMembersFailed'));
+      console.error(error);
+    }
+  }, [message, t]);
+
   const loadOrganizations = useCallback(async () => {
     setLoading(true);
     try {
@@ -119,17 +129,7 @@ export default function Organizations() {
     };
     eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
     return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
-  }, [loadCharacters, loadOrganizations, projectId, selectedOrg?.id]);
-
-  const loadMembers = async (orgId: string) => {
-    try {
-      const res = await axios.get(`/api/organizations/${orgId}/members`);
-      setMembers(res.data);
-    } catch (error) {
-      message.error(t('toast.loadMembersFailed'));
-      console.error(error);
-    }
-  };
+  }, [loadCharacters, loadOrganizations, projectId, selectedOrg?.id, loadMembers]);
 
   const handleSelectOrganization = (org: Organization) => {
     setSelectedOrg(org);

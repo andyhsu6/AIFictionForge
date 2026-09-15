@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button, Table, Modal, Form, Input, Tag, Space, App, Popconfirm, Card, theme, Empty, Badge, Tooltip, Select } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -66,7 +66,7 @@ export default function SkillManage() {
   const [viewingContent, setViewingContent] = useState('');
 
   // 加载 Skill 列表
-  const loadSkills = async () => {
+  const loadSkills = useCallback(async () => {
     setLoading(true);
     try {
       const response = await fetch('/api/skills/list');
@@ -79,11 +79,11 @@ export default function SkillManage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [message, t]);
 
   useEffect(() => {
     loadSkills();
-  }, []);
+  }, [loadSkills]);
 
   // 打开编辑弹窗
   const handleEdit = async (skill: SkillItem) => {

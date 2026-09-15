@@ -70,7 +70,7 @@ export default function ExpansionPlanEditor({
     } finally {
       setLoadingCharacters(false);
     }
-  }, [projectId]);
+  }, [projectId, message, t]);
 
   useEffect(() => {
     if (visible && projectId) {

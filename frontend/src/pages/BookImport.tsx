@@ -227,7 +227,7 @@ export default function BookImport() {
       }
     }
     setCacheReady(true);
-  }, []);
+  }, [message, t]);
 
   useEffect(() => {
     if (!cacheReady) return;
@@ -304,7 +304,7 @@ export default function BookImport() {
     }, 1500);
 
     return () => clearInterval(timer);
-  }, [taskId, isTaskTerminal]);
+  }, [taskId, isTaskTerminal, message, t]);
 
   useEffect(() => {
     const fetchPreview = async () => {
@@ -336,7 +336,7 @@ export default function BookImport() {
     };
 
     fetchPreview();
-  }, [taskId, taskStatus, preview]);
+  }, [taskId, taskStatus, preview, message, t]);
 
   const startTask = async () => {
     if (!file) {
@@ -545,7 +545,7 @@ export default function BookImport() {
       message.error(t('toast.retryRequestFailed'));
       setRetrying(false);
     }
-  }, [taskId, failedSteps, navigate]);
+  }, [taskId, failedSteps, navigate, message, t]);
 
   const skipFailedSteps = useCallback(() => {
     setFailedSteps([]);
@@ -555,7 +555,7 @@ export default function BookImport() {
       message.info(t('toast.skippedSteps'));
       navigate(`/project/${projectId}/chapters`);
     }
-  }, [navigate]);
+  }, [navigate, message, t]);
 
   const restartImport = useCallback(() => {
     clearBookImportCache();
@@ -582,7 +582,7 @@ export default function BookImport() {
     setTailChapterCount(10);
 
     message.success(t('toast.restarted'));
-  }, []);
+  }, [message, t]);
 
   const updateChapter = (index: number, patch: Partial<BookImportPreview['chapters'][number]>) => {
     setPreview(prev => {

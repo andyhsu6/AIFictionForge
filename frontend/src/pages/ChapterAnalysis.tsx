@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, List, Button, Space, Empty, Tag, Spin, Alert, Switch, Drawer, App, theme } from 'antd';
 import {
   EyeOutlined,
@@ -93,6 +93,29 @@ const ChapterAnalysis: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 加载章节内容和标注
+  const loadChapterContent = useCallback(async (chapterId: string) => {
+    try {
+      setContentLoading(true);
+      
+      const [chapterResponse, annotationsResponse, navigationResponse] = await Promise.all([
+        api.get(`/chapters/${chapterId}`),
+        api.get(`/chapters/${chapterId}/annotations`).catch(() => null),
+        api.get(`/chapters/${chapterId}/navigation`).catch(() => null),
+      ]);
+
+      // 提取 data 属性
+      setSelectedChapter(chapterResponse.data || chapterResponse);
+      setAnnotationsData(annotationsResponse ? (annotationsResponse.data || annotationsResponse) : null);
+      setNavigation(navigationResponse ? (navigationResponse.data || navigationResponse) : null);
+    } catch (error) {
+      console.error('加载章节内容失败:', error);
+      message.error(t('toast.loadContentFailed'));
+    } finally {
+      setContentLoading(false);
+    }
+  }, [message, t]);
+
   // 加载章节列表
   useEffect(() => {
     const loadChapters = async () => {
@@ -120,30 +143,7 @@ const ChapterAnalysis: React.FC = () => {
     };
 
     loadChapters();
-  }, [projectId]);
-
-  // 加载章节内容和标注
-  const loadChapterContent = async (chapterId: string) => {
-    try {
-      setContentLoading(true);
-      
-      const [chapterResponse, annotationsResponse, navigationResponse] = await Promise.all([
-        api.get(`/chapters/${chapterId}`),
-        api.get(`/chapters/${chapterId}/annotations`).catch(() => null),
-        api.get(`/chapters/${chapterId}/navigation`).catch(() => null),
-      ]);
-
-      // 提取 data 属性
-      setSelectedChapter(chapterResponse.data || chapterResponse);
-      setAnnotationsData(annotationsResponse ? (annotationsResponse.data || annotationsResponse) : null);
-      setNavigation(navigationResponse ? (navigationResponse.data || navigationResponse) : null);
-    } catch (error) {
-      console.error('加载章节内容失败:', error);
-      message.error(t('toast.loadContentFailed'));
-    } finally {
-      setContentLoading(false);
-    }
-  };
+  }, [projectId, loadChapterContent, message, t]);
 
   useEffect(() => {
     const handleTaskSettled = (payload?: unknown) => {
@@ -156,7 +156,7 @@ const ChapterAnalysis: React.FC = () => {
     };
     eventBus.on(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
     return () => eventBus.off(EventNames.BACKGROUND_TASK_SETTLED, handleTaskSettled);
-  }, [projectId, selectedChapter?.id]);
+  }, [projectId, selectedChapter?.id, loadChapterContent]);
 
   const handleChapterSelect = (chapterId: string) => {
     loadChapterContent(chapterId);

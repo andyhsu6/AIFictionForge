@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, Input, Button, Tag, List, Typography, Space, Spin, App, Tooltip, Tabs, theme } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import axios from 'axios';
@@ -38,15 +38,7 @@ const SkillChat: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    fetchSkills();
-  }, []);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  const fetchSkills = async () => {
+  const fetchSkills = useCallback(async () => {
     try {
       const response = await axios.get('/api/skills/list');
       setSkills(response.data);
@@ -58,7 +50,15 @@ const SkillChat: React.FC = () => {
     } finally {
       setSkillsLoading(false);
     }
-  };
+  }, [message, t]);
+
+  useEffect(() => {
+    fetchSkills();
+  }, [fetchSkills]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

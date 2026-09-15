@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Card,
   Tabs,
@@ -93,7 +93,7 @@ export default function PromptTemplates() {
   const isMobile = window.innerWidth <= 768;
 
   // 加载模板数据
-  const loadTemplates = async () => {
+  const loadTemplates = useCallback(async () => {
     try {
       setLoading(true);
       const response = await axios.get<CategoryGroup[]>('/api/prompt-templates/categories');
@@ -104,11 +104,11 @@ export default function PromptTemplates() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [message, t]);
 
   useEffect(() => {
     loadTemplates();
-  }, []);
+  }, [loadTemplates]);
 
   // 获取当前分类的模板
   const getCurrentTemplates = (): PromptTemplate[] => {

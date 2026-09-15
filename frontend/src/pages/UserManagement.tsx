@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Table,
@@ -147,7 +147,7 @@ export default function UserManagement() {
   }, [filteredUsers, sortField, sortOrder]);
 
   // 加载用户列表
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     setLoading(true);
     try {
       const res = await adminApi.getUsers();
@@ -158,11 +158,11 @@ export default function UserManagement() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [message, t]);
 
   useEffect(() => {
     loadUsers();
-  }, []);
+  }, [loadUsers]);
 
   // 添加用户
   interface CreateUserValues {
