@@ -1107,9 +1107,10 @@ class BookImportService:
         return project
 
     async def _clear_project_data(self, *, db: AsyncSession, project_id: str) -> None:
-        # 项目维度子行（默认风格、章节分析/记忆/任务、关系类型关联）
-        # SQLite 外键 CASCADE 不生效，覆盖导入前必须显式清理
-        await delete_project_children(db, project_id)
+        # 项目维度子行（章节分析/记忆/任务、关系类型关联）
+        # SQLite 外键 CASCADE 不生效，覆盖导入前必须显式清理；
+        # 项目在覆盖导入后仍存活，其默认写作风格必须保留（include_default_styles=False）
+        await delete_project_children(db, project_id, include_default_styles=False)
 
         await db.execute(delete(Foreshadow).where(Foreshadow.project_id == project_id))
         await db.execute(delete(Chapter).where(Chapter.project_id == project_id))
