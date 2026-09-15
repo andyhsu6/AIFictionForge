@@ -270,6 +270,7 @@
     "agent_plan_step_selection": "The selected plan steps are invalid. Please choose again",
     "ai_config_missing": "Configure a model first in Settings → Text Model Config",
     "ai_model_below_minimum": "The context window of model {{model}} is below the required {{min_window}} tokens. Pick a compliant model in Settings → Text Model Config",
+    "ai_model_capability_incomplete": "The context window verdict for model {{model}} is missing a valid value (incomplete cached data). Re-probe the model and try again",
     "ai_model_not_configured": "No AI model is configured yet. Enter a model name in Settings → Text Model Config",
     "book_import_extract_mode": "extract_mode only supports tail or full",
     "book_import_mode": "import_mode only supports append or overwrite",

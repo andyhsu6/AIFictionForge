@@ -75,6 +75,8 @@ from app.services.model_capability_probe import (
 )
 
 BELOW_MINIMUM = "validation.ai_model_below_minimum"
+# 需求 #61：合格证缺数字是独立失败模式，不能用 below_minimum 顶替。
+CAPABILITY_INCOMPLETE = "validation.ai_model_capability_incomplete"
 QUALIFIED_MODEL = "big-model"
 SMALL_MODEL = "gpt-4o-mini"          # 真实 128K 级模型（登记表内 128000）
 UNKNOWN_MODEL = "mystery-model"      # 未登记，且 ①② 都判不出
@@ -1043,6 +1045,30 @@ async def test_effective_window_returns_cached_qualified_number(db_factory):
     })
     async with db_factory() as session:
         assert await get_effective_context_window(user_id, QUALIFIED_MODEL, session) == 1_048_576
+
+
+@pytest.mark.anyio
+async def test_effective_window_rejects_qualified_without_number(db_factory, gateway):
+    """需求 #61：qualified 只断言 verdict；缺数字的合格证必须报「结论不完整」，不得借 1M 下限。
+
+    存量/手改缓存可以有 `"result": "qualified"` 却没有正数 token（`_dict_to_outcome`
+    把缺失/非正数落 None）。修复前这里返回 `MIN_CONTEXT_WINDOW_TOKENS`，等于凭空发一张
+    1M 能力证明；本用例在旧代码上必红。
+    """
+    user_id = "u-effective-nonumber"
+    await seed_settings(db_factory, user_id, preferences={
+        PREFERENCES_KEY: {triple_key("openai", GATEWAY, QUALIFIED_MODEL): _qualified_entry(None)}
+    })
+    async with db_factory() as session:
+        with pytest.raises(ApiError) as exc_info:
+            await get_effective_context_window(user_id, QUALIFIED_MODEL, session)
+
+    assert exc_info.value.code == CAPABILITY_INCOMPLETE
+    assert exc_info.value.code != BELOW_MINIMUM, (
+        "「结论数据不完整」与「实测低于下限」是两种失败模式，不能共用同一个码"
+    )
+    assert exc_info.value.params.get("model") == QUALIFIED_MODEL
+    assert gateway.total_calls == 0, "访问器只读缓存，不得为补数字自己发探测"
 
 
 # ========== 保存路径：硬拦与显式声明 ==========

@@ -282,6 +282,9 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     # ai_model_below_minimum：实发模型上下文窗口不足下限（参数化码，raise 时须显式
     # 传原文案 detail 以保证旧客户端 byte-identity）。
     "validation.ai_model_below_minimum": ("模型 {{model}} 的上下文窗口不足 {{min_window}} tokens，请在「设置 → 文本模型配置」改用满足要求的模型", 400),
+    # 需求 #61：缓存结论声称 qualified 却没有有效窗口数值（存量/手改脏数据）时，
+    # 绝不借用 1M 下限顶替；按「数据不完整」明确报错，用户到设置页重新探测即可修复。
+    "validation.ai_model_capability_incomplete": ("模型 {{model}} 的上下文窗口结论缺少有效数值（缓存数据不完整），请重新探测该模型后再试", 400),
     "validation.ai_model_not_configured": ("尚未配置 AI 模型，请先在「设置 → 文本模型配置」中填写模型名称", 400),
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),

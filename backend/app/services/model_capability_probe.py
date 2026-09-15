@@ -960,6 +960,9 @@ def _all_verdicts(blob: Dict[str, Any]) -> List[Tuple[str, ProbeOutcome]]:
 
 # ========== 失败契约 ==========
 BELOW_MINIMUM_CODE = "validation.ai_model_below_minimum"
+# qualified 但没有正数窗口（存量/手改缓存）是**另一种**失败模式：模型不是低于下限，
+# 是这条结论本身不完整。用独立码，绝不把它折进 below_minimum，也绝不补一个猜测值。
+CAPABILITY_INCOMPLETE_CODE = "validation.ai_model_capability_incomplete"
 
 
 def gate_state_payload(model: str, outcome: ProbeOutcome) -> Dict[str, Any]:
@@ -1211,6 +1214,12 @@ async def get_effective_context_window(
     本仓库里 `0` 已有真实语义（=禁用全书注入，计划 §4b），返回 0 等于把功能静默关掉，
     正是这个需求要根除的失效形态。
 
+    合格证本身也可能不完整：`qualified` 只断言 verdict 字符串，存量/手改缓存可以带
+    qualified 却没有正数窗口（`_dict_to_outcome` 把缺失/非正数一律落 None）。这种数据
+    必须按 `CAPABILITY_INCOMPLETE_CODE` 明确报错——**绝不**回退到 `MIN_CONTEXT_WINDOW_TOKENS`
+    顶替一个数字：那等于凭空给模型发一张 1M 的能力证明，静默污染 prompt 预算。本访问器
+    按设计零网络、零复测，补不出这个数字，所以只能拒绝（重新探测在别处触发）。
+
     `provider`/`base_url` 建议显式传入（三元组精确命中）；省略时按模型名在缓存里找，
     命中 0 个或多于 1 个都抛错——那是「不确定」，不是「可以猜」。
     """
@@ -1240,7 +1249,18 @@ async def get_effective_context_window(
 
     if outcome is None or not outcome.is_qualified:
         raise _below_minimum_error(model, outcome or _inconclusive("no verdict on file"))
-    return int(outcome.context_window_tokens or MIN_CONTEXT_WINDOW_TOKENS)
+    tokens = outcome.context_window_tokens
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+        raise ApiError(
+            code=CAPABILITY_INCOMPLETE_CODE,
+            detail=(
+                f"模型 {model} 的上下文窗口结论缺少有效数值（缓存数据不完整），"
+                "请重新探测该模型后再试"
+            ),
+            params={"model": model, "min_window": MIN_CONTEXT_WINDOW_TOKENS},
+            raw=f"qualified verdict without positive context_window_tokens: {tokens!r}",
+        )
+    return tokens
 
 
 # ========== 步骤 5：存量用户收口（只读缓存，供表单渲染） ==========
