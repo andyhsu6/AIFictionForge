@@ -1702,42 +1702,32 @@ async def test_budget_reads_the_same_triple_the_gate_writes(
 
 
 @pytest.mark.anyio
-async def test_budget_follows_a_per_call_provider_override(
+async def test_a_per_call_provider_override_to_an_unconfigured_provider_is_refused(
     db_factory, probe_spy, monkeypatch
 ):
-    """D2 今天唯一**可复现**的分叉形态：实发网关 ≠ 实例默认网关。
+    """#64：预算路径也不接受跨 provider 覆盖 —— 别家没有该用户的凭据。
 
-    实例走 openai/GATEWAY，本次 per-call `provider="anthropic"` ⇒ 门禁量的是
-    anthropic 槽位（`app_settings.anthropic_base_url`）。旧口径从实例字段拼，
-    会拿到 ("openai", GATEWAY) 并在那里落结论 —— 于是派发那一刻仍然没有结论。
+    实例走 openai/GATEWAY，本次 per-call `provider="anthropic"`。#55 时这里钉的是
+    「预算按实发 host 换算」；#64 之后该场景结构上不存在：`AIService` 不再用
+    `app_settings.anthropic_api_key`（服务器全局 key）给别家建槽位，覆盖必须在
+    `_dispatch_endpoint` 这一步被拒 ⇒ 既没有别家窗口结论，也不会拿运维 key 探测。
     """
     monkeypatch.setattr(
         "app.services.ai_service.app_settings.anthropic_base_url",
         OTHER_GATEWAY, raising=False,
     )
-    user_id = f"u-percall-{uuid.uuid4().hex[:8]}"
+    user_id = f"u-percall-refused-{uuid.uuid4().hex[:8]}"
     await seed_settings(db_factory, user_id, preferences={"theme_seed": 7})
     async with db_factory() as session:
         ai = bound_ai_service(session, user_id, monkeypatch)   # openai + GATEWAY
-        budget = await resolve_history_budget_chars(ai_service=ai, provider="anthropic")
-        gate_provider, gate_base_url, gate_key = ai._dispatch_endpoint("anthropic")
+        with pytest.raises(ApiError) as exc_info:
+            await resolve_history_budget_chars(ai_service=ai, provider="anthropic")
 
-        assert (gate_provider, gate_base_url) == ("anthropic", OTHER_GATEWAY), (
-            "前置失效：派发槽位本身没算成别家 host ⇒ 本用例什么都没测"
+        assert exc_info.value.code == "validation.provider_not_configured"
+        assert probe_spy.calls == [], "被拒的覆盖仍然拿运维 key 去别家 host 探测"
+        assert await stored_verdicts(db_factory, user_id) == {}, (
+            "被拒的覆盖仍把结论写到了别家三元组上"
         )
-        probed = probe_spy.calls[0]
-        assert (probed["provider"], probed["base_url"], probed["api_key"]) == (
-            gate_provider, gate_base_url, gate_key
-        ), "预算按实例默认网关取窗口 ⇒ 给一个它没量过的 host 换算预算"
-        assert len(probe_spy.calls) == 1
-        probe_module.memo_clear()
-        await ai._require_model(provider="anthropic")
-        assert len(probe_spy.calls) == 1, "门禁与预算落在两把键上（误拒/重复探测）"
-        assert triple_key("openai", GATEWAY, BIG_MODEL) not in await stored_verdicts(
-            db_factory, user_id
-        ), "窗口结论被写到了没派发的默认网关上"
-
-    assert budget == 300_000
 
 
 @pytest.mark.anyio

@@ -330,6 +330,7 @@
     "polish_start_before_end": "起始位置必须小于结束位置",
     "preset_active_delete_blocked": "无法删除激活中的预设，请先激活其他预设",
     "preset_changed": "预设内容在激活校验期间已发生变化，请重新激活",
+    "provider_not_configured": "未配置提供商 {{provider}}，无法使用该提供商发起请求",
     "qq_smtp_host": "QQ 邮箱 SMTP 主机必须为 smtp.qq.com",
     "relationship_type_name_empty": "关系类型名称不能为空",
     "required_fields": "name 和 prompt_content 是必填字段",
