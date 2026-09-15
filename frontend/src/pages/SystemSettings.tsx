@@ -108,7 +108,7 @@ export default function SystemSettingsPage({ embedded = false }: { embedded?: bo
     } finally {
       setTesting(false);
     }
-  }, [testTargetEmail]);
+  }, [testTargetEmail, message, t]);
 
   if (initialLoading) {
     return (

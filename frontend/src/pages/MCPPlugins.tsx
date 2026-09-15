@@ -165,7 +165,7 @@ export default function MCPPluginsPage() {
       }
     };
     initPage();
-  }, [modal]);
+  }, [modal, message, t]);
 
   const loadPlugins = async () => {
     try {

@@ -399,7 +399,7 @@ export default function Chapters() {
         analysisPollingInFlightRef.current = false;
       }
     }
-  }, [clearAnalysisPollingIfIdle, t]);
+  }, [clearAnalysisPollingIfIdle, t, message]);
 
   const ensureAnalysisPolling = useCallback(() => {
     if (analysisPollingIntervalRef.current) return;

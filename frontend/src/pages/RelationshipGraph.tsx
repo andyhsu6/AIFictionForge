@@ -1020,6 +1020,8 @@ export default function RelationshipGraph() {
     token.colorTextBase,
     token.colorTextSecondary,
     token.colorWarning,
+    message,
+    t,
   ]);
 
   // 当 relationshipTypes 加载完成后再加载图数据

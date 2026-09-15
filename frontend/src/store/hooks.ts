@@ -46,7 +46,7 @@ export function useProjectSync() {
     } finally {
       setLoading(false);
     }
-  }, [setProjects, setLoading]);
+  }, [setProjects, setLoading, message]);
 
   // 创建项目（带同步）
   const createProject = useCallback(async (data: ProjectCreate) => {
@@ -113,7 +113,7 @@ export function useCharacterSync() {
       message.error('刷新角色列表失败');
       return [];
     }
-  }, [currentProject?.id, setCharacters]);
+  }, [currentProject?.id, setCharacters, message]);
 
   // 删除角色（带同步）
   const deleteCharacter = useCallback(async (id: string) => {
@@ -167,7 +167,7 @@ export function useOutlineSync() {
       message.error('刷新大纲列表失败');
       return [];
     }
-  }, [currentProject?.id, setOutlines]); // 添加 currentProject?.id 到依赖数组
+  }, [currentProject?.id, setOutlines, message]); // 添加 currentProject?.id 到依赖数组
 
   // 创建大纲（带同步）
   const createOutline = useCallback(async (data: OutlineCreate) => {
@@ -248,7 +248,7 @@ export function useChapterSync() {
       message.error('刷新章节列表失败');
       return [];
     }
-  }, [currentProject?.id, setChapters]); // 添加 currentProject?.id 到依赖数组
+  }, [currentProject?.id, setChapters, message]); // 添加 currentProject?.id 到依赖数组
 
   // 创建章节（带同步）
   const createChapter = useCallback(async (data: ChapterCreate) => {
