@@ -165,6 +165,103 @@ def _count_remaining_chars(history: list["AgentMessage"], reversed_index: int) -
     return sum(len(m.content or "") for m in remaining)
 
 
+async def save_tool_response(
+    db: AsyncSession,
+    *,
+    conversation_id: str,
+    tool_call_id: str,
+    tool_name: str,
+    result: Any,
+    error: str | None = None,
+) -> AgentMessage:
+    """落一条 role="tool" 结果行（content = JSON{tool,error,result}，带行长上限）。
+
+    提到模块级：确认端点没有 `ProjectAgentService` 实例，但必须复用与 in-loop
+    完全相同的落库形态（issue #68），不能各自抄一份消息构造。
+    """
+    content = json.dumps({
+        "tool": tool_name,
+        "error": error,
+        "result": result,
+    }, ensure_ascii=False, default=str)[: ProjectAgentService.TOOL_RESULT_PERSIST_MAX_CHARS]
+    tool_msg = AgentMessage(
+        conversation_id=conversation_id,
+        role="tool",
+        content=content,
+        tool_call_id=tool_call_id,
+    )
+    db.add(tool_msg)
+    await db.flush()
+    return tool_msg
+
+
+def _tool_call_id_in_message(
+    message: AgentMessage | None,
+    tool_name: str,
+    wanted_arguments: dict[str, Any],
+) -> str | None:
+    """从一条消息的 `tool_calls` JSON 里取与 (工具名, 归一化参数) 匹配的 provider id。"""
+    if message is None or not message.tool_calls:
+        return None
+    try:
+        calls = json.loads(message.tool_calls)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(calls, list):
+        return None
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        try:
+            name, arguments = ProjectAgentService._parse_tool_call(call)
+        except ValueError:
+            continue
+        if name != tool_name or arguments != wanted_arguments:
+            continue
+        call_id = call.get("id")
+        if call_id:
+            return call_id
+    return None
+
+
+async def resolve_provider_tool_call_id(
+    db: AsyncSession, tool_call: AgentToolCall
+) -> str:
+    """找回待确认调用在 provider 侧的 `tool_call.id`。
+
+    `AgentToolCall` 行不持久化 provider id，但**提案那条 assistant 消息**的
+    `tool_calls` JSON 里有；下一轮的 `_serialize_tool_response` 只认这个 id
+    （`agent_messages.tool_call_id`），拿行主键去写就是一条永远配不上对的孤儿行
+    （issue #68 的失效形态）。
+
+    解析顺序：① `message_id` 指向的那条消息（最精确）；② 会话里
+    assistant(tool_calls) 消息按时间倒序扫；③ 行主键 —— 与 in-loop 的
+    `raw_call.get("id") or record.id` 同一不变量。②③ 不可省：确认型调用的
+    `message_id` 指向回合收口的散文 assistant（无 `tool_calls`），① 落空时必须回退，
+    否则退回行主键就又造出孤儿行。
+    """
+    wanted = normalize_tool_arguments(tool_call.arguments or {})
+    if tool_call.message_id:
+        pointed = await db.get(AgentMessage, tool_call.message_id)
+        call_id = _tool_call_id_in_message(pointed, tool_call.tool_name, wanted)
+        if call_id:
+            return call_id
+    messages = (await db.execute(
+        select(AgentMessage)
+        .where(
+            AgentMessage.conversation_id == tool_call.conversation_id,
+            AgentMessage.role == "assistant",
+            AgentMessage.tool_calls.isnot(None),
+        )
+        .order_by(AgentMessage.created_at.desc())
+    )).scalars().all()
+    for message in messages:
+        call_id = _tool_call_id_in_message(message, tool_call.tool_name, wanted)
+        if call_id:
+            return call_id
+    return tool_call.id
+
+
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
     # 架构计划 §1 定案：产出校验失败最多重问 2 次（同一回合至多 3 次规划请求），
@@ -1816,20 +1913,14 @@ class ProjectAgentService:
         error: str | None = None,
     ) -> AgentMessage:
         """把工具执行结果保存为 role=tool 消息；不提交，由调用方统一 commit。"""
-        content = json.dumps({
-            "tool": tool_name,
-            "error": error,
-            "result": result,
-        }, ensure_ascii=False, default=str)[: self.TOOL_RESULT_PERSIST_MAX_CHARS]
-        tool_msg = AgentMessage(
+        return await save_tool_response(
+            self.db,
             conversation_id=conversation.id,
-            role="tool",
-            content=content,
             tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            result=result,
+            error=error,
         )
-        self.db.add(tool_msg)
-        await self.db.flush()
-        return tool_msg
 
     @staticmethod
     def _parse_tool_call(raw_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:

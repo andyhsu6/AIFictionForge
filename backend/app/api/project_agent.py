@@ -54,6 +54,8 @@ from app.services.project_agent_service import (
     ProjectAgentService,
     build_mcp_tool_preview,
     execute_mcp_tool_call,
+    resolve_provider_tool_call_id,
+    save_tool_response,
 )
 from app.services.project_agent_tools import ProjectAgentToolRegistry, normalize_tool_preview
 from app.services.import_export_service import ImportExportService
@@ -469,6 +471,17 @@ async def confirm_tool_call(
         )
         result_message = result.get("message") or (
             "MCP 工具已确认并执行。" if is_mcp else "修改已确认并执行。"
+        )
+        # issue #68：确认路径此前只落 assistant 散文行，下一轮历史里提案那条
+        # assistant(tool_calls) 永远配不到结果行 ⇒ 用户批准的写入结果对模型不可见。
+        # 复用 in-loop 的落库形态补一条配对行；id 必须取自提案消息里的 provider id，
+        # 拿行主键去写就是一条永远配不上对的孤儿行。
+        await save_tool_response(
+            db,
+            conversation_id=tool_call.conversation_id,
+            tool_call_id=await resolve_provider_tool_call_id(db, tool_call),
+            tool_name=tool_call.tool_name,
+            result=result,
         )
         message = AgentMessage(
             conversation_id=tool_call.conversation_id,
