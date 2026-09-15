@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Spin, Alert, Button, Space, Switch, Drawer, message, Progress, theme } from 'antd';
+import { Card, Spin, Alert, Button, Space, Switch, Drawer, App, Progress, theme } from 'antd';
 import {
   ArrowLeftOutlined,
   EyeOutlined,
@@ -70,6 +70,7 @@ const ANALYSIS_POLL_TIMEOUT_MS = 11 * 60 * 1000;
  * 展示带有记忆标注的章节内容
  */
 const ChapterReader: React.FC = () => {
+  const { message } = App.useApp();
   const { t } = useTranslation('chapterReader');
   const { chapterId } = useParams<{ chapterId: string }>();
   const navigate = useNavigate();

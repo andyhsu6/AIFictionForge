@@ -15,7 +15,7 @@ import {
   Tabs,
   Tag,
   Typography,
-  message,
+  App,
   theme,
 } from 'antd';
 import {
@@ -70,6 +70,7 @@ interface ResetPasswordValues {
 }
 
 export default function Login() {
+  const { message } = App.useApp();
   const { t, i18n } = useTranslation('login');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();

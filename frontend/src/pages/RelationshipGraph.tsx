@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Card, Tag, Button, Space, message, Typography, theme, Modal, Descriptions } from 'antd';
+import { Card, Tag, Button, Space, App, Typography, theme, Modal, Descriptions } from 'antd';
 import {
   ArrowLeftOutlined,
   ApartmentOutlined,
@@ -558,6 +558,7 @@ const InfoField = ({
 };
 
 export default function RelationshipGraph() {
+  const { message } = App.useApp();
   const { t } = useTranslation('relationships');
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();

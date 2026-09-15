@@ -1,4 +1,4 @@
-import { Card, Descriptions, Empty, Typography, Button, Modal, Form, Input, message, Flex, InputNumber, Select, theme } from 'antd';
+import { Card, Descriptions, Empty, Typography, Button, Modal, Form, Input, App, Flex, InputNumber, Select, theme } from 'antd';
 import { GlobalOutlined, EditOutlined, SyncOutlined, FormOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useStore } from '../store';
@@ -11,6 +11,7 @@ const { Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
 export default function WorldSetting() {
+  const { message } = App.useApp();
   const { t } = useTranslation('worldSetting');
   const { currentProject, setCurrentProject } = useStore();
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);

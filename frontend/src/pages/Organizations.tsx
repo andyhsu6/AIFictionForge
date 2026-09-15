@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer, theme } from 'antd';
+import { Card, Table, Tag, Button, Space, App, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer, theme } from 'antd';
 import { PlusOutlined, UserOutlined, EditOutlined, DeleteOutlined, UnorderedListOutlined, BankOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
@@ -42,6 +42,7 @@ interface Character {
 }
 
 export default function Organizations() {
+  const { message } = App.useApp();
   const { t } = useTranslation('organizations');
   const { projectId } = useParams<{ projectId: string }>();
   const { currentProject } = useStore();

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, Slider, Input, Tabs, theme } from 'antd';
+import { Card, Table, Tag, Button, Space, App, Modal, Form, Select, Slider, Input, Tabs, theme } from 'antd';
 import { PlusOutlined, ApartmentOutlined, UserOutlined, EditOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import axios from 'axios';
@@ -39,6 +39,7 @@ interface Character {
 }
 
 export default function Relationships() {
+  const { message } = App.useApp();
   const { t } = useTranslation('relationships');
   const { projectId } = useParams<{ projectId: string }>();
   const { currentProject } = useStore();

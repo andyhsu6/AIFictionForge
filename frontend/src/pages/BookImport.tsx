@@ -10,7 +10,7 @@ import {
   Input,
   InputNumber,
   List,
-  message,
+  App,
   Popconfirm,
   Progress,
   Row,
@@ -114,6 +114,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 export default function BookImport() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const { t } = useTranslation('bookImport');
   const { token } = theme.useToken();

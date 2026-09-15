@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Card, Button, Modal, message, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme } from 'antd';
+import { Card, Button, Modal, App, Spin, Space, Tag, Typography, Upload, Checkbox, Tooltip, Drawer, Menu, theme } from 'antd';
 import { EditOutlined, BookOutlined, CalendarOutlined, FileTextOutlined, TrophyOutlined, SettingOutlined, UploadOutlined, ApiOutlined, FileSearchOutlined, MenuUnfoldOutlined, MenuFoldOutlined, BulbOutlined, MoonOutlined, DesktopOutlined, MailOutlined } from '@ant-design/icons';
 import { authApi, changelogApi, projectApi } from '../services/api';
 import { hasSeenChangelogInSession, markChangelogSeenInSession } from '../services/changelogService';
@@ -55,6 +55,7 @@ const parseViewFromSearch = (search: string): ProjectListView => {
 };
 
 export default function ProjectList() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const { projects, loading } = useStore();

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, List, Button, Space, Empty, Tag, Spin, Alert, Switch, Drawer, message, theme } from 'antd';
+import { Card, List, Button, Space, Empty, Tag, Spin, Alert, Switch, Drawer, App, theme } from 'antd';
 import {
   EyeOutlined,
   EyeInvisibleOutlined,
@@ -64,6 +64,7 @@ interface NavigationData {
  * 显示章节列表和带标注的章节内容
  */
 const ChapterAnalysis: React.FC = () => {
+  const { message } = App.useApp();
   const { t } = useTranslation('chapterAnalysis');
   const { projectId } = useParams<{ projectId: string }>();
   
