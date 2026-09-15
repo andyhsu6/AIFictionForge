@@ -91,11 +91,16 @@ async def delete_chapter_children(
     return counts
 
 
-async def delete_project_children(db: AsyncSession, project_id: str) -> dict[str, int]:
+async def delete_project_children(
+    db: AsyncSession, project_id: str, *, include_default_styles: bool = True
+) -> dict[str, int]:
     """清理项目维度的子行（项目删除与覆盖导入共用）。
 
-    - 删除 project_default_styles / plot_analysis / story_memories /
-      analysis_tasks / regeneration_tasks（按 project_id）；
+    - 删除 plot_analysis / story_memories / analysis_tasks / regeneration_tasks
+      （按 project_id）；
+    - `include_default_styles=True`（默认，项目删除）时一并删除
+      project_default_styles；覆盖导入传入 `False`，因为项目仍然存活，
+      其默认写作风格不是悬空行，必须保留；
     - `generation_history.chapter_id` 置空（该项目所有章节即将被删除）；
     - 删除项目下所有角色关系对应的类型关联行。
     """
@@ -111,11 +116,12 @@ async def delete_project_children(db: AsyncSession, project_id: str) -> dict[str
     if not project_id:
         return counts
 
-    counts["project_default_styles"] = (
-        await db.execute(
-            delete(ProjectDefaultStyle).where(ProjectDefaultStyle.project_id == project_id)
-        )
-    ).rowcount or 0
+    if include_default_styles:
+        counts["project_default_styles"] = (
+            await db.execute(
+                delete(ProjectDefaultStyle).where(ProjectDefaultStyle.project_id == project_id)
+            )
+        ).rowcount or 0
     counts["plot_analysis"] = (
         await db.execute(
             delete(PlotAnalysis).where(PlotAnalysis.project_id == project_id)
