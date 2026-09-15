@@ -672,10 +672,18 @@ class ProjectAgentService:
                         status="completed",
                     )
                     yield {"type": "step_update", "data": self._step_data(thought)}
+                    failed = await self._record_failed_tool_call(
+                        conversation,
+                        tool_records,
+                        tool_name=str(
+                            raw_call.get("function", {}).get("name") or "unknown"
+                        ),
+                        error=str(exc),
+                    )
                     await self._save_tool_response(
                         conversation,
-                        raw_call.get("id", ""),
-                        str(raw_call.get("function", {}).get("name") or "unknown"),
+                        raw_call.get("id") or failed.id,
+                        failed.tool_name,
                         None,
                         error=str(exc),
                     )
@@ -683,9 +691,16 @@ class ProjectAgentService:
                 if tool is None and name not in {
                     item.get("function", {}).get("name") for item in self.mcp_tools
                 }:
+                    failed = await self._record_failed_tool_call(
+                        conversation,
+                        tool_records,
+                        tool_name=name,
+                        arguments=arguments,
+                        error="工具未启用或未注册",
+                    )
                     await self._save_tool_response(
                         conversation,
-                        raw_call.get("id", ""),
+                        raw_call.get("id") or failed.id,
                         name,
                         None,
                         error="工具未启用或未注册",
@@ -1759,6 +1774,37 @@ class ProjectAgentService:
         self.db.add(assistant)
         await self.db.flush()
         return assistant
+
+    async def _record_failed_tool_call(
+        self,
+        conversation: AgentConversation,
+        tool_records: list[AgentToolCall],
+        *,
+        tool_name: str,
+        error: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> AgentToolCall:
+        """为「参数校验失败 / 工具未注册」两条错误分支先建 AgentToolCall 失败行。
+
+        这两条分支此前在行建立之前就回写 role=tool 响应，只能传
+        `raw_call.get("id", "")`；provider 省略 id 时会落下 `tool_call_id=""`
+        的孤儿 tool 行（issue #69），下一轮的 `_serialize_tool_response` 永远
+        配不上对。先建行后回写，调用方用 `raw_call.get("id") or record.id`
+        兜底 —— 与正常工具路径同一不变量。
+        """
+        record = AgentToolCall(
+            conversation_id=conversation.id,
+            user_id=self.user_id,
+            project_id=self.project.id,
+            tool_name=tool_name,
+            arguments=arguments if arguments is not None else {},
+            status="failed",
+            error_message=error,
+        )
+        self.db.add(record)
+        await self.db.flush()
+        tool_records.append(record)
+        return record
 
     async def _save_tool_response(
         self,

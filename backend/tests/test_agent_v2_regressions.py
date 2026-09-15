@@ -535,3 +535,125 @@ async def test_history_limit_keeps_bounded_recent_tail(db_session):
         "TOOL_RESULT_MAX_CHARS 不再小于落库侧 TOOL_RESULT_PERSIST_MAX_CHARS"
         " ⇒ 截断分支成为死路，单条工具结果仍可吃光 60000 历史预算"
     )
+
+
+# ---- issue #69：错误工具分支不得落下 tool_call_id 为空的孤儿 role=tool 行 ----
+#
+# 触发形态：模型发来一个 tool_call，provider 未带 `id`，且该调用要么参数校验失败、
+# 要么工具未注册/未启用。原实现先回写 role=tool 响应再（根本不）建 AgentToolCall
+# 行，传的是 `raw_call.get("id", "")` ⇒ 落下 `tool_call_id=""` 的孤儿行，
+# `_serialize_tool_response` 永远配不上对，污染下一轮历史。修法：先建失败行，
+# 用 `raw_call.get("id") or record.id`（与正常工具路径同一兜底）。
+# 断言走**下一轮真实 prompt**，而不是直调私有序列化函数 —— 那才是下一轮会看到的东西。
+
+
+def tool_call_without_id(name: str, arguments) -> dict:
+    """provider 省略 tool_call.id 的响应：issue #69 的触发形态。"""
+    return {
+        "content": "我先调用工具。",
+        "tool_calls": [{"function": {"name": name, "arguments": arguments}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+
+async def tool_rows_and_records(db, conversation_id: str):
+    """本会话的 role=tool 消息行 + AgentToolCall 行（顺序无关）。"""
+    tool_rows = [m for m in await persisted_messages(db, conversation_id)
+                 if m.role == "tool"]
+    records = list((await db.execute(
+        select(AgentToolCall).where(AgentToolCall.conversation_id == conversation_id)
+    )).scalars().all())
+    return tool_rows, records
+
+
+@pytest.mark.anyio
+async def test_invalid_arguments_without_provider_id_persists_no_orphan_tool_row(
+    db_session,
+):
+    """参数校验失败分支：provider 未给 id 时不得落 tool_call_id="" 的孤儿 tool 行。"""
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    calls: list[dict] = []
+    install_fake_model(
+        svc,
+        [tool_call_without_id("reg_read", "not-json"), answer("已修正")],
+        calls,
+    )
+
+    _ = [e async for e in svc.stream_chat(
+        conversation_id=conversation.id, message="坏参数",
+        page_context={"route": "/project/1"}, auto_approve=False)]
+
+    tool_rows, records = await tool_rows_and_records(db_session, conversation.id)
+    assert len(tool_rows) == 1
+    assert tool_rows[0].tool_call_id, (
+        "参数校验失败分支落下了空 tool_call_id 的孤儿 role=tool 行（issue #69）"
+    )
+    assert len(records) == 1, "失败的工具调用没有落 AgentToolCall 行"
+    assert records[0].status == "failed"
+    assert "参数" in (records[0].error_message or "")
+    assert tool_rows[0].tool_call_id == records[0].id, (
+        "tool 行的 tool_call_id 没有兜到刚落的失败行 id"
+    )
+    # 下一轮真实序列化：空 id 不得出现，且必须配得上刚落的失败行。
+    assert len(calls) == 2
+    prompt = calls[1]["prompt"]
+    assert "<tool_call_id></tool_call_id>" not in prompt
+    assert f"<tool_call_id>{records[0].id}</tool_call_id>" in prompt
+
+
+@pytest.mark.anyio
+async def test_unregistered_tool_without_provider_id_persists_no_orphan_tool_row(
+    db_session,
+):
+    """未注册/未启用工具分支：provider 未给 id 时同样不得落孤儿 tool 行。"""
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    calls: list[dict] = []
+    install_fake_model(
+        svc,
+        [tool_call_without_id("definitely_not_registered", {}), answer("已修正")],
+        calls,
+    )
+
+    _ = [e async for e in svc.stream_chat(
+        conversation_id=conversation.id, message="未注册工具",
+        page_context={"route": "/project/1"}, auto_approve=False)]
+
+    tool_rows, records = await tool_rows_and_records(db_session, conversation.id)
+    assert len(tool_rows) == 1
+    assert tool_rows[0].tool_call_id, (
+        "未注册工具分支落下了空 tool_call_id 的孤儿 role=tool 行（issue #69）"
+    )
+    assert len(records) == 1
+    assert records[0].status == "failed"
+    assert "未启用或未注册" in (records[0].error_message or "")
+    assert tool_rows[0].tool_call_id == records[0].id
+    assert len(calls) == 2
+    prompt = calls[1]["prompt"]
+    assert "<tool_call_id></tool_call_id>" not in prompt
+    assert f"<tool_call_id>{records[0].id}</tool_call_id>" in prompt
+
+
+@pytest.mark.anyio
+async def test_tool_error_row_keeps_provider_supplied_call_id(db_session):
+    """正向守卫：provider 给了 id 时，失败分支必须原样保留，不得被兜底值顶替。"""
+    conversation = await make_conversation(db_session)
+    svc = make_service(db_session)
+    calls: list[dict] = []
+    install_fake_model(
+        svc,
+        [tool_call("definitely_not_registered", {}, call_id="call_explicit_1"),
+         answer("已修正")],
+        calls,
+    )
+
+    _ = [e async for e in svc.stream_chat(
+        conversation_id=conversation.id, message="未注册工具",
+        page_context={"route": "/project/1"}, auto_approve=False)]
+
+    tool_rows, records = await tool_rows_and_records(db_session, conversation.id)
+    assert len(records) == 1
+    assert len(tool_rows) == 1
+    assert tool_rows[0].tool_call_id == "call_explicit_1"
+    assert "<tool_call_id>call_explicit_1</tool_call_id>" in calls[1]["prompt"]
