@@ -1232,6 +1232,9 @@ export interface BookImportTask {
   /** i18n 结构化状态码（issue #27）：null/缺省 = 旧行，message 原样展示（last-state 语义） */
   status_code?: string | null;
   status_params?: Record<string, unknown> | null;
+  /** 任务错误结构化码/参数（issue #33）：有码时前端本地化，无码回退原始诊断 */
+  error_code?: string | null;
+  error_params?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -1271,10 +1274,12 @@ export interface BookImportResult {
 }
 
 export interface BookImportStepFailure {
-  step_name: string;       // world_building / career_system / characters
-  step_label: string;      // 中文名
+  step_name: string;       // world_building / career_system / characters / relationship_extraction
+  step_label: string;      // 后端中文名（未知 step_name 的兜底）
   error: string;           // 错误详情
   retry_count?: number;    // 已重试次数
+  error_code?: string | null;                        // 自家错误的本地化码（issue #33）
+  error_params?: Record<string, unknown> | null;
 }
 
 export interface BookImportRetryResult {

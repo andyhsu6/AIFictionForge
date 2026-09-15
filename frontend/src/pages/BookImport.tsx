@@ -26,8 +26,9 @@ import {
 import type { UploadFile } from 'antd/es/upload/interface';
 import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined } from '@ant-design/icons';
 import { bookImportApi } from '../services/api';
-import { mapTaskStatusMessage } from '../services/errorMapper';
+import { mapErrorPayload, mapTaskStatusMessage } from '../services/errorMapper';
 import { resolveImportWarningText } from '../utils/importWarnings';
+import { resolveStepLabel } from '../utils/importStepLabels';
 import type {
   BookImportApplyPayload,
   BookImportExtractMode,
@@ -835,7 +836,16 @@ export default function BookImport() {
             </div>
 
             {taskStatus?.error && (
-              <Alert type="error" message={taskStatus.error} showIcon style={{ marginTop: 16, textAlign: 'left' }} />
+              <Alert
+                type="error"
+                message={mapErrorPayload({
+                  code: taskStatus.error_code,
+                  params: taskStatus.error_params,
+                  detail: taskStatus.error,
+                })}
+                showIcon
+                style={{ marginTop: 16, textAlign: 'left' }}
+              />
             )}
 
             <Space style={{ marginTop: 24 }}>
@@ -1080,27 +1090,34 @@ export default function BookImport() {
                       size="small"
                       bordered
                       dataSource={failedSteps}
-                      renderItem={(item) => (
-                        <List.Item
-                          style={{ padding: '8px 12px' }}
-                        >
-                          <List.Item.Meta
-                            title={
-                              <Space>
-                                <Tag color="error">{item.step_label}</Tag>
-                                {(item.retry_count ?? 0) > 0 && (
-                                  <Tag color="orange">{t('progress.retriedCount', { count: item.retry_count ?? 0 })}</Tag>
-                                )}
-                              </Space>
-                            }
-                            description={
-                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                {item.error.length > 120 ? item.error.slice(0, 120) + '...' : item.error}
-                              </Typography.Text>
-                            }
-                          />
-                        </List.Item>
-                      )}
+                      renderItem={(item) => {
+                        const errorText = mapErrorPayload({
+                          code: item.error_code,
+                          params: item.error_params,
+                          detail: item.error,
+                        });
+                        return (
+                          <List.Item
+                            style={{ padding: '8px 12px' }}
+                          >
+                            <List.Item.Meta
+                              title={
+                                <Space>
+                                  <Tag color="error">{resolveStepLabel(t, item)}</Tag>
+                                  {(item.retry_count ?? 0) > 0 && (
+                                    <Tag color="orange">{t('progress.retriedCount', { count: item.retry_count ?? 0 })}</Tag>
+                                  )}
+                                </Space>
+                              }
+                              description={
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                  {errorText.length > 120 ? errorText.slice(0, 120) + '...' : errorText}
+                                </Typography.Text>
+                              }
+                            />
+                          </List.Item>
+                        );
+                      }}
                     />
                     <Space style={{ marginTop: 16, display: 'flex', justifyContent: 'center' }}>
                       <Button

@@ -74,6 +74,12 @@
     "retryDesc": "The following AI generation steps could not complete, but the base data (chapters, outline) was imported successfully. You can choose to retry or skip them.",
     "retrying": "Retrying...",
     "skip": "Skip and Go to Project",
+    "stepLabel": {
+      "career_system": "Career System Generation",
+      "characters": "Characters & Organizations",
+      "relationship_extraction": "Relationship Extraction",
+      "world_building": "Worldview Generation"
+    },
     "titleGenerating": "Generating and importing project content for you",
     "titlePartialRetry": "Import complete, some steps need retry",
     "titleRetrying": "Retrying failed generation steps"

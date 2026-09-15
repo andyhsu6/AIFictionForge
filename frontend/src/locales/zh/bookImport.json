@@ -68,6 +68,12 @@
     "retryDesc": "以下AI生成步骤未能完成，但基础数据（章节、大纲）已成功导入。您可以选择重试或跳过。",
     "retrying": "正在重试...",
     "skip": "跳过，直接进入项目",
+    "stepLabel": {
+      "career_system": "职业体系生成",
+      "characters": "角色与组织生成",
+      "relationship_extraction": "原文关系抽取",
+      "world_building": "世界观生成"
+    },
     "titleGenerating": "正在为您生成并导入项目内容",
     "titlePartialRetry": "导入完成，部分步骤需要重试",
     "titleRetrying": "正在重试失败的生成步骤"
