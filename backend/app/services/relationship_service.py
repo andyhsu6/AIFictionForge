@@ -292,9 +292,13 @@ async def ensure_relationship_type_not_in_use(
     """删除项目类型前检查是否仍被关系引用。返回 True 表示仍在使用。"""
     row = (
         await db.execute(
-            select(RelationshipTypeLink.id).where(
-                RelationshipTypeLink.relationship_type_id == relationship_type_id
-            ).limit(1)
+            select(RelationshipTypeLink.id)
+            .join(
+                CharacterRelationship,
+                CharacterRelationship.id == RelationshipTypeLink.relationship_id,
+            )
+            .where(RelationshipTypeLink.relationship_type_id == relationship_type_id)
+            .limit(1)
         )
     ).scalar_one_or_none()
     if row:

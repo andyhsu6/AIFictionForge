@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete, or_
 import json
 from typing import AsyncGenerator
 
@@ -31,6 +31,7 @@ from app.services.relationship_service import (
     resolve_relationship_type_ids,
     sync_relationship_links,
 )
+from app.services.cascade_cleanup import delete_relationship_links
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
@@ -630,6 +631,23 @@ async def delete_character(
     for relation in career_relations:
         await db.delete(relation)
         logger.info(f"删除角色职业关联：character_id={character_id}, career_id={relation.career_id}, type={relation.career_type}")
+    
+    # 清理角色参与的关系及其类型关联（SQLite 外键 CASCADE 不生效）
+    relationship_ids = (
+        await db.execute(
+            select(CharacterRelationship.id).where(
+                or_(
+                    CharacterRelationship.character_from_id == character_id,
+                    CharacterRelationship.character_to_id == character_id,
+                )
+            )
+        )
+    ).scalars().all()
+    await delete_relationship_links(db, relationship_ids)
+    if relationship_ids:
+        await db.execute(
+            delete(CharacterRelationship).where(CharacterRelationship.id.in_(relationship_ids))
+        )
     
     # 删除角色
     await db.delete(character)

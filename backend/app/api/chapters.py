@@ -33,6 +33,7 @@ from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
+from app.services.cascade_cleanup import delete_chapter_children
 from app.schemas.chapter import (
     ChapterCreate,
     ChapterUpdate,
@@ -399,29 +400,9 @@ async def update_chapter(
             if not chapter.content or chapter.content.strip() == "":
                 chapter.status = "draft"
                 
-                # 清理分析任务
-                analysis_tasks_result = await db.execute(
-                    select(AnalysisTask).where(AnalysisTask.chapter_id == chapter_id)
-                )
-                analysis_tasks = analysis_tasks_result.scalars().all()
-                for task in analysis_tasks:
-                    await db.delete(task)
-                
-                # 清理分析结果
-                plot_analysis_result = await db.execute(
-                    select(PlotAnalysis).where(PlotAnalysis.chapter_id == chapter_id)
-                )
-                plot_analyses = plot_analysis_result.scalars().all()
-                for analysis in plot_analyses:
-                    await db.delete(analysis)
-                
-                # 清理故事记忆（关系数据库）
-                story_memories_result = await db.execute(
-                    select(StoryMemory).where(StoryMemory.chapter_id == chapter_id)
-                )
-                story_memories = story_memories_result.scalars().all()
-                for memory in story_memories:
-                    await db.delete(memory)
+                # 清理章节子行（分析任务/分析结果/故事记忆/再生成任务），并断开生成历史的章节外键
+                cleanup_counts = await delete_chapter_children(db, [chapter_id])
+                logger.info(f"🗑️ 章节 {chapter_id[:8]} 子行清理: {cleanup_counts}")
                 
                 # 清理向量数据库中的记忆数据
                 try:
@@ -538,7 +519,10 @@ async def delete_chapter(
         logger.warning(f"⚠️ 清理伏笔数据失败: {str(e)}")
         # 不阻断删除流程，继续执行
     
-    # 删除章节（关系数据库中的记忆会被级联删除）
+    # 显式清理章节子行（SQLite 未启用 PRAGMA foreign_keys，CASCADE 不生效）
+    await delete_chapter_children(db, [chapter_id])
+    
+    # 删除章节
     await db.delete(chapter)
     await db.commit()
     

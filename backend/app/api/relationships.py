@@ -36,6 +36,7 @@ from app.services.relationship_service import (
     relationship_display_names,
     ensure_relationship_type_not_in_use,
 )
+from app.services.cascade_cleanup import delete_relationship_links
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
 logger = get_logger(__name__)
@@ -430,6 +431,9 @@ async def delete_relationship(
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(db_rel.project_id, user_id, db)
+    
+    # 先清理多对多类型关联行（SQLite 外键 CASCADE 不生效）
+    await delete_relationship_links(db, [relationship_id])
     
     await db.delete(db_rel)
     await db.commit()

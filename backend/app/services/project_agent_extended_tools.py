@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.career import Career, CharacterCareer
@@ -21,6 +21,7 @@ from app.models.relationship import (
     RelationshipType,
 )
 from app.services.relationship_service import relationship_display_names, resolve_relationship_type_ids, sync_relationship_links
+from app.services.cascade_cleanup import delete_chapter_children, delete_relationship_links
 from app.services.project_agent_selectors import (
     clean_identifier,
     find_career,
@@ -588,6 +589,7 @@ class ProjectAgentExtendedTools:
             chapter_query = chapter_query.where(Chapter.outline_id == row.id)
         chapters = (await self.db.execute(chapter_query)).scalars().all()
         deleted_words = sum(chapter.word_count or 0 for chapter in chapters)
+        await delete_chapter_children(self.db, [chapter.id for chapter in chapters])
         for chapter in chapters:
             try:
                 from app.services.memory_service import memory_service
@@ -698,6 +700,24 @@ class ProjectAgentExtendedTools:
     async def _manage_character_delete(self, arguments: dict[str, Any]):
         row = await self._find_character(arguments)
         entity_id, label = row.id, f"{'组织' if row.is_organization else '角色'}《{row.name}》"
+        await self.db.execute(
+            delete(CharacterCareer).where(CharacterCareer.character_id == row.id)
+        )
+        relationship_ids = (
+            await self.db.execute(
+                select(CharacterRelationship.id).where(
+                    or_(
+                        CharacterRelationship.character_from_id == row.id,
+                        CharacterRelationship.character_to_id == row.id,
+                    )
+                )
+            )
+        ).scalars().all()
+        await delete_relationship_links(self.db, relationship_ids)
+        if relationship_ids:
+            await self.db.execute(
+                delete(CharacterRelationship).where(CharacterRelationship.id.in_(relationship_ids))
+            )
         await self.db.delete(row)
         return entity_id, {}, f"已删除{label}"
 
@@ -752,6 +772,7 @@ class ProjectAgentExtendedTools:
             )
         except Exception:
             pass
+        await delete_chapter_children(self.db, [row.id])
         await self.db.delete(row)
         return entity_id, {}, f"已删除{label}"
 
@@ -848,6 +869,7 @@ class ProjectAgentExtendedTools:
     async def _manage_relationship_delete(self, arguments: dict[str, Any]):
         row = await self._find_relationship(arguments.get("relationship_id"))
         entity_id = row.id
+        await delete_relationship_links(self.db, [row.id])
         await self.db.delete(row)
         return entity_id, {}, "已删除角色关系"
 
