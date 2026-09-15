@@ -40,6 +40,7 @@ from app.models.relationship import (
     RelationshipTypeLink,
 )
 from app.models.writing_style import WritingStyle
+from app.services.book_import_service import BookImportService
 from scripts.cleanup_dangling_fk_rows import run as cleanup_run
 
 USER_ID = "user-1"
@@ -161,6 +162,55 @@ async def test_delete_project_cleans_all_project_children(db_session):
     assert await count_where(db_session, RelationshipTypeLink,
                              RelationshipTypeLink.relationship_id, seed["relationship"].id) == 0
     assert await fk_violations(db_session, CHAPTER_CHILD_TABLES | {"character_relationship_type_links"}) == []
+
+
+@pytest.mark.anyio
+async def test_overwrite_clear_preserves_existing_default_style(db_session):
+    """覆盖导入清空数据后，项目已选定的默认写作风格不得被重置为首个全局预设。"""
+    project = Project(id="project-a", user_id=USER_ID, title="Project A")
+    preset_first = WritingStyle(id=1, user_id=None, name="Preset First",
+                                style_type="preset", prompt_content="p", order_index=1)
+    preset_chosen = WritingStyle(id=2, user_id=None, name="Preset Chosen",
+                                 style_type="preset", prompt_content="p", order_index=2)
+    chosen = ProjectDefaultStyle(project_id=project.id, style_id=preset_chosen.id)
+    db_session.add_all([project, preset_first, preset_chosen, chosen])
+    await db_session.commit()
+
+    svc = BookImportService()
+    await svc._clear_project_data(db=db_session, project_id=project.id)
+    await svc._ensure_project_default_style(db=db_session, project_id=project.id)
+    await db_session.commit()
+
+    rows = (
+        await db_session.execute(
+            select(ProjectDefaultStyle).where(ProjectDefaultStyle.project_id == project.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].style_id == preset_chosen.id
+
+
+@pytest.mark.anyio
+async def test_overwrite_clear_seeds_default_style_when_missing(db_session):
+    """无默认风格的项目在覆盖导入清空后，仍应自动种子化为首个全局预设。"""
+    project = Project(id="project-a", user_id=USER_ID, title="Project A")
+    preset = WritingStyle(id=1, user_id=None, name="Preset First",
+                          style_type="preset", prompt_content="p", order_index=1)
+    db_session.add_all([project, preset])
+    await db_session.commit()
+
+    svc = BookImportService()
+    await svc._clear_project_data(db=db_session, project_id=project.id)
+    await svc._ensure_project_default_style(db=db_session, project_id=project.id)
+    await db_session.commit()
+
+    rows = (
+        await db_session.execute(
+            select(ProjectDefaultStyle).where(ProjectDefaultStyle.project_id == project.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].style_id == preset.id
 
 
 @pytest.mark.anyio
