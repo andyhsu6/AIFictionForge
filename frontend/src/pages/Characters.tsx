@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
+import { Button, Modal, Form, Input, Select, App, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
 import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
@@ -95,6 +95,7 @@ interface CharacterUpdateData {
 }
 
 export default function Characters() {
+  const { message } = App.useApp();
   const { t } = useTranslation('characters');
   const { token } = theme.useToken();
   const { currentProject, characters } = useStore();
