@@ -19,6 +19,7 @@ from app.models.foreshadow import Foreshadow
 from app.models.career import Career, CharacterCareer
 from app.models.analysis_task import AnalysisTask
 from app.models.batch_generation_task import BatchGenerationTask
+from app.services.cascade_cleanup import delete_project_children
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
@@ -241,6 +242,11 @@ async def delete_project(
         
         # === 删除所有关联数据（SQLite默认不启用外键约束，需要显式删除）===
         
+        # 0. 项目维度子行：默认风格、分析/记忆/再生成任务、关系类型关联
+        #    （外键 CASCADE 在 SQLite 上不生效，必须在删除父行前显式清理）
+        project_cleanup = await delete_project_children(db, project_id)
+        logger.debug(f"项目维度子行清理: {project_cleanup}")
+        
         # 1. 删除角色关系
         relationships_result = await db.execute(
             delete(CharacterRelationship).where(CharacterRelationship.project_id == project_id)
@@ -307,7 +313,7 @@ async def delete_project(
         )
         logger.debug(f"删除故事记忆数: {story_memories_result.rowcount}")
         
-        # 9. 删除章节（会级联删除 PlotAnalysis）
+        # 9. 删除章节（子行已由 delete_project_children 显式清理，CASCADE 不会生效）
         chapters_result = await db.execute(
             delete(Chapter).where(Chapter.project_id == project_id)
         )

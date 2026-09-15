@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""清理 SQLite 中的悬空外键行（事务性、幂等、默认 dry-run）。
+
+背景：应用未启用 `PRAGMA foreign_keys=ON`，模型里声明的 CASCADE/SET NULL
+在运行时不会生效，历史删除操作可能留下悬空外键行（`PRAGMA foreign_key_check`
+可检出）。本脚本按固定策略清理这些行：
+
+- 整行删除：character_relationship_type_links / story_memories / plot_analysis /
+  analysis_tasks / regeneration_tasks / project_default_styles；
+- 置空外键（对应声明的 SET NULL）：chapters.outline_id 指向已删除大纲；
+  generation_history.chapter_id 指向已删除章节；
+- 其余表（含 chapters 本身与 agent_* 表）一律不动。
+
+默认 dry-run（只打印计划，不写入）；`--apply` 才写入，且整个写入在单个事务内
+完成，运行前后各打印一次 `PRAGMA foreign_key_check` 汇总。
+
+用法（从项目根目录或 backend/ 目录运行均可）：
+    python backend/scripts/cleanup_dangling_fk_rows.py            # dry-run
+    python backend/scripts/cleanup_dangling_fk_rows.py --apply
+    python backend/scripts/cleanup_dangling_fk_rows.py --db /path/to.db --apply
+"""
+import argparse
+import sqlite3
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_DB_PATH = BACKEND_DIR / "data" / "mumuai_novel.db"
+
+# 整行删除策略：这些表的悬空行直接删除
+DELETE_TABLES = frozenset(
+    {
+        "character_relationship_type_links",
+        "story_memories",
+        "plot_analysis",
+        "analysis_tasks",
+        "regeneration_tasks",
+        "project_default_styles",
+    }
+)
+
+# 置空外键策略：(子表, 父表) -> (子表, 外键列)。仅处理 chapters.outline_id 与
+# generation_history.chapter_id；chapters 行永不删除。
+NULL_POLICY = {
+    ("chapters", "outlines"): ("chapters", "outline_id"),
+    ("generation_history", "chapters"): ("generation_history", "chapter_id"),
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="清理 SQLite 悬空外键行（默认 dry-run，--apply 才写入）"
+    )
+    parser.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"SQLite 数据库路径（默认 {DEFAULT_DB_PATH}）",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="实际写入清理结果（缺省仅打印计划）",
+    )
+    return parser
+
+
+def collect_dangling(conn: sqlite3.Connection) -> list[tuple]:
+    """返回 PRAGMA foreign_key_check 的原始行：(table, rowid, parent, fkid)。"""
+    return conn.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def plan_actions(rows: list[tuple]) -> tuple[dict, dict, Counter]:
+    """把悬空行分组为删除计划、置空计划与忽略计数（不触碰策略外内容）。"""
+    deletes: dict[str, set] = defaultdict(set)
+    nulls: dict[tuple, set] = defaultdict(set)
+    unhandled: Counter = Counter()
+    for table, rowid, parent, _fkid in rows:
+        if table in DELETE_TABLES:
+            deletes[table].add(rowid)
+        elif (table, parent) in NULL_POLICY:
+            nulls[NULL_POLICY[(table, parent)]].add(rowid)
+        else:
+            unhandled[table] += 1
+    return deletes, nulls, unhandled
+
+
+def apply_actions(conn: sqlite3.Connection, deletes: dict, nulls: dict) -> Counter:
+    """在调用方开启的事务内执行计划，返回每表改动行数。"""
+    changes: Counter = Counter()
+    for table, rowids in deletes.items():
+        for rowid in rowids:
+            cur = conn.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (rowid,))
+            changes[table] += cur.rowcount
+    for (table, column), rowids in nulls.items():
+        for rowid in rowids:
+            cur = conn.execute(
+                f'UPDATE "{table}" SET "{column}" = NULL WHERE rowid = ?', (rowid,)
+            )
+            changes[table] += cur.rowcount
+    return changes
+
+
+def _print_counts(title: str, counts: Counter) -> None:
+    print(f"{title}: {sum(counts.values())} 行")
+    for table in sorted(counts):
+        print(f"  - {table}: {counts[table]}")
+
+
+def run(db_path: str, apply: bool) -> dict:
+    """执行一次清理；返回 {planned, applied, before, after} 计数。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        before_rows = collect_dangling(conn)
+        before_counts = Counter(row[0] for row in before_rows)
+        deletes, nulls, unhandled = plan_actions(before_rows)
+        planned = sum(len(v) for v in deletes.values()) + sum(len(v) for v in nulls.values())
+
+        _print_counts("[before] foreign_key_check 检出悬空行（按子表）", before_counts)
+        _print_counts("[plan] 将删除的行（按表）", Counter({k: len(v) for k, v in deletes.items()}))
+        _print_counts("[plan] 将置空外键的行（按表）", Counter({k[0]: len(v) for k, v in nulls.items()}))
+        if unhandled:
+            _print_counts("[plan] 策略外、忽略的悬空行（按表）", unhandled)
+
+        result = {
+            "planned": planned,
+            "applied": 0,
+            "before": dict(before_counts),
+            "after": {},
+        }
+        if not apply:
+            print(f"[dry-run] 共计划 {planned} 处改动，未写入。使用 --apply 执行。")
+            return result
+
+        conn.execute("BEGIN")
+        changes = apply_actions(conn, deletes, nulls)
+        conn.commit()
+        result["applied"] = sum(changes.values())
+
+        after_counts = Counter(row[0] for row in collect_dangling(conn))
+        result["after"] = dict(after_counts)
+        _print_counts("[apply] 实际改动行数（按表）", changes)
+        _print_counts("[after] foreign_key_check 检出悬空行（按子表）", after_counts)
+        return result
+    finally:
+        conn.close()
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"错误：数据库文件不存在：{db_path}", file=sys.stderr)
+        return 1
+    try:
+        run(str(db_path), args.apply)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

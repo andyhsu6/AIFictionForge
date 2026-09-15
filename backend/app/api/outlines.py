@@ -36,6 +36,7 @@ from app.services.plot_expansion_service import PlotExpansionService
 from app.services.foreshadow_service import foreshadow_service
 from app.services.relationship_service import relationship_display_name
 from app.services.memory_service import memory_service
+from app.services.cascade_cleanup import delete_chapter_children
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
@@ -326,6 +327,9 @@ async def delete_outline(
             except Exception as e:
                 logger.warning(f"⚠️ 清理章节 {chapter.id[:8]} 伏笔数据失败: {str(e)}")
         
+        # 清理章节子行（SQLite 外键 CASCADE 不生效）
+        await delete_chapter_children(db, [ch.id for ch in chapters_to_delete])
+        
         # 删除章节
         delete_result = await db.execute(
             delete(Chapter).where(
@@ -369,6 +373,9 @@ async def delete_outline(
                     logger.info(f"🔮 已清理章节 {chapter.id[:8]} 的 {foreshadow_result['deleted_count']} 个伏笔数据")
             except Exception as e:
                 logger.warning(f"⚠️ 清理章节 {chapter.id[:8]} 伏笔数据失败: {str(e)}")
+        
+        # 清理章节子行（SQLite 外键 CASCADE 不生效）
+        await delete_chapter_children(db, [ch.id for ch in chapters_to_delete])
         
         # 删除章节
         delete_result = await db.execute(
@@ -1266,6 +1273,9 @@ async def new_outline_generator(
             except Exception as e:
                 logger.warning(f"⚠️ 清理向量数据库失败（不影响主流程）: {str(e)}")
         
+        # 清理旧章节的所有子行（分析任务/再生成任务等）并断开生成历史外键
+        await delete_chapter_children(db, old_chapter_ids)
+        
         # 6. 删除所有旧章节
         delete_chapters_result = await db.execute(
             sql_delete(Chapter).where(Chapter.project_id == project_id)
@@ -2022,6 +2032,7 @@ async def _run_new_outline_bg(
     except Exception as fs_err:
         logger.warning(f"⚠️ 清理伏笔失败（继续重建大纲）: {fs_err}")
 
+    await delete_chapter_children(db, old_chapter_ids)
     await db.execute(sql_delete(PlotAnalysis).where(PlotAnalysis.project_id == project_id))
     await db.execute(sql_delete(StoryMemory).where(StoryMemory.project_id == project_id))
     await db.execute(sql_delete(Chapter).where(Chapter.project_id == project_id))

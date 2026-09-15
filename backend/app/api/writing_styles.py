@@ -293,7 +293,9 @@ async def get_writing_style(
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）
     result = await db.execute(
-        select(ProjectDefaultStyle).where(ProjectDefaultStyle.style_id == style_id)
+        select(ProjectDefaultStyle)
+        .join(Project, Project.id == ProjectDefaultStyle.project_id)
+        .where(ProjectDefaultStyle.style_id == style_id)
     )
     is_default = result.scalars().first() is not None
     
@@ -359,7 +361,9 @@ async def update_writing_style(
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）
     result = await db.execute(
-        select(ProjectDefaultStyle).where(ProjectDefaultStyle.style_id == style_id)
+        select(ProjectDefaultStyle)
+        .join(Project, Project.id == ProjectDefaultStyle.project_id)
+        .where(ProjectDefaultStyle.style_id == style_id)
     )
     is_default = result.scalars().first() is not None
     
@@ -413,7 +417,9 @@ async def delete_writing_style(
     
     # 检查是否有项目将其设置为默认风格（一个风格可能被多个项目使用，使用 first() 避免 MultipleResultsFound）
     result = await db.execute(
-        select(ProjectDefaultStyle).where(ProjectDefaultStyle.style_id == style_id)
+        select(ProjectDefaultStyle)
+        .join(Project, Project.id == ProjectDefaultStyle.project_id)
+        .where(ProjectDefaultStyle.style_id == style_id)
     )
     default_relation = result.scalars().first()
     if default_relation:
