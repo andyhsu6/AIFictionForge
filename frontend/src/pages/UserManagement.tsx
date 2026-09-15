@@ -10,7 +10,7 @@ import {
   Space,
   Tag,
   Popconfirm,
-  message,
+  App,
   Card,
   Typography,
   Badge,
@@ -58,6 +58,7 @@ type SortField =
 type SortOrder = 'ascend' | 'descend' | null;
 
 export default function UserManagement() {
+  const { message } = App.useApp();
   const { t } = useTranslation('userManagement');
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserWithStatus[]>([]);

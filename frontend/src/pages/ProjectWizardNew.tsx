@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Form, Input, InputNumber, Select, Button, Card,
-  Row, Col, Typography, Space, message, Radio, theme
+  Row, Col, Typography, Space, App, Radio, theme
 } from 'antd';
 import {
   RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined
@@ -15,6 +15,7 @@ const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
 
 export default function ProjectWizardNew() {
+  const { message } = App.useApp();
   const { t } = useTranslation('projectWizard');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();

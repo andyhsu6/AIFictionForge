@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Card, Table, Button, Tag, Space, Modal, Form, Input, Select,
-  InputNumber, Switch, message, Tooltip, Popconfirm, Statistic,
+  InputNumber, Switch, App, Tooltip, Popconfirm, Statistic,
   Row, Col, Empty, Divider, Badge, Alert, Pagination, Dropdown, theme
 } from 'antd';
 import type { MenuProps } from 'antd';
@@ -24,6 +24,7 @@ const { TextArea } = Input;
 const { Option } = Select;
 
 export default function Foreshadows() {
+  const { message } = App.useApp();
   const { t, i18n } = useTranslation('foreshadows');
   const sortLocale = i18n.language?.startsWith('en') ? 'en' : 'zh-CN';
   const { projectId } = useParams<{ projectId: string }>();

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Spin, Result, Button, Modal, Input, message, theme } from 'antd';
+import { Spin, Result, Button, Modal, Input, App, theme } from 'antd';
 import { authApi } from '../services/api';
 import { syncLanguageWithServer } from '../utils/languageSync';
 import { useTranslation } from 'react-i18next';
 
 export default function AuthCallback() {
+  const { message } = App.useApp();
   const { t } = useTranslation('authCallback');
   const navigate = useNavigate();
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');

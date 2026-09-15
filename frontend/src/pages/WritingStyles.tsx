@@ -4,7 +4,7 @@ import {
   Modal,
   Form,
   Input,
-  message,
+  App,
   Card,
   Space,
   Tag,
@@ -31,6 +31,7 @@ const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
 
 export default function WritingStyles() {
+  const { message } = App.useApp();
   const { t } = useTranslation('writingStyles');
   const { currentProject } = useStore();
   const [styles, setStyles] = useState<WritingStyle[]>([]);

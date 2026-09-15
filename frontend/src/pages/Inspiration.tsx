@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Card, Input, Button, Space, Typography, message, Spin, Modal, theme } from 'antd';
+import { Card, Input, Button, Space, Typography, App, Spin, Modal, theme } from 'antd';
 import { SendOutlined, ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { inspirationApi } from '../services/api';
 import { AIProjectGenerator, type GenerationConfig } from '../components/AIProjectGenerator';
@@ -53,6 +53,7 @@ const CACHE_KEY = 'inspiration_conversation_cache';
 const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
 const Inspiration: React.FC = () => {
+  const { message } = App.useApp();
   const { t } = useTranslation('inspiration');
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<Step>('idea');

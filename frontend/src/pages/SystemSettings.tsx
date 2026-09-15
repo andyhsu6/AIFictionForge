@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Spin, Switch, Typography, message, theme } from 'antd';
+import { Alert, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Spin, Switch, Typography, App, theme } from 'antd';
 import { CheckCircleOutlined, ReloadOutlined, SaveOutlined, SendOutlined, SettingOutlined } from '@ant-design/icons';
 import { authApi, settingsApi } from '../services/api';
 import type { SystemSMTPSettings, SystemSMTPSettingsUpdate, User } from '../types';
@@ -17,6 +17,7 @@ const qqDefaults: Pick<SystemSMTPSettings, 'smtp_provider' | 'smtp_host' | 'smtp
 };
 
 export default function SystemSettingsPage({ embedded = false }: { embedded?: boolean }) {
+  const { message } = App.useApp();
   const { t } = useTranslation('systemSettings');
   const { token } = theme.useToken();
   const [form] = Form.useForm<SystemSMTPSettingsUpdate>();

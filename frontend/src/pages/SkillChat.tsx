@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, Input, Button, Tag, List, Typography, Space, Spin, message, Tooltip, Tabs, theme } from 'antd';
+import { Card, Input, Button, Tag, List, Typography, Space, Spin, App, Tooltip, Tabs, theme } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useTranslation } from 'react-i18next';
@@ -25,6 +25,7 @@ interface ChatMessage {
 }
 
 const SkillChat: React.FC = () => {
+  const { message } = App.useApp();
   const { t } = useTranslation('skillChat');
   const { token } = theme.useToken();
   const [skills, setSkills] = useState<Skill[]>([]);

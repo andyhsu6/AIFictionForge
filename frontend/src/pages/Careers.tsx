@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Card, Tag, Space, Divider, Typography, InputNumber } from 'antd';
+import { Button, Modal, Form, Input, Select, App, Row, Col, Empty, Tabs, Card, Tag, Space, Divider, Typography, InputNumber } from 'antd';
 import { ThunderboltOutlined, PlusOutlined, EditOutlined, DeleteOutlined, TrophyOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
 import api from '../services/api';
@@ -32,6 +32,7 @@ interface Career {
 }
 
 export default function Careers() {
+    const { message } = App.useApp();
     const { t } = useTranslation('careers');
     const { projectId } = useParams<{ projectId: string }>();
     const [mainCareers, setMainCareers] = useState<Career[]>([]);
