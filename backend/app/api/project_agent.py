@@ -1,6 +1,5 @@
 """项目管理页智能体 API。"""
 import asyncio
-from datetime import datetime
 import json
 from typing import AsyncGenerator
 from urllib.parse import quote
@@ -19,6 +18,7 @@ from app.models.project_agent import (
     AgentExecutionStep,
     AgentMessage,
     AgentToolCall,
+    _naive_utc_now,
 )
 from app.models.chapter import Chapter
 from app.models.character import Character
@@ -333,7 +333,7 @@ async def _claim_tool_call(
     claimed_status: str,
 ) -> AgentToolCall:
     """通过条件 UPDATE 原子抢占请求，兼容 SQLite 不支持行锁的情况。"""
-    now = datetime.now()
+    now = _naive_utc_now()
     result = await db.execute(
         update(AgentToolCall)
         .where(
@@ -454,20 +454,20 @@ async def confirm_tool_call(
         tool_call.before_snapshot = result.get("before")
         tool_call.after_snapshot = result.get("after")
         tool_call.error_message = None
-        tool_call.executed_at = datetime.now()
+        tool_call.executed_at = _naive_utc_now()
         await db.execute(
             update(AgentExecutionStep)
             .where(AgentExecutionStep.tool_call_id == tool_call.id)
             .values(
                 status="completed",
                 content="修改已由用户确认并执行。",
-                updated_at=datetime.now(),
+                updated_at=_naive_utc_now(),
             )
         )
         await db.execute(
             update(AgentConversation)
             .where(AgentConversation.id == tool_call.conversation_id)
-            .values(last_message_at=datetime.now())
+            .values(last_message_at=_naive_utc_now())
         )
         result_message = result.get("message") or (
             "MCP 工具已确认并执行。" if is_mcp else "修改已确认并执行。"
@@ -606,13 +606,13 @@ async def approve_plan(
         .values(
             status="completed",
             content="计划已批准，正在交给后台执行器逐步执行。",
-            updated_at=datetime.now(),
+            updated_at=_naive_utc_now(),
         )
     )
     await db.execute(
         update(AgentConversation)
         .where(AgentConversation.id == tool_call.conversation_id)
-        .values(last_message_at=datetime.now())
+        .values(last_message_at=_naive_utc_now())
     )
     await db.commit()
 
@@ -689,13 +689,13 @@ async def reject_tool_call(
         .values(
             status="rejected",
             content="用户已取消本次修改，项目数据没有变化。",
-            updated_at=datetime.now(),
+            updated_at=_naive_utc_now(),
         )
     )
     await db.execute(
         update(AgentConversation)
         .where(AgentConversation.id == tool_call.conversation_id)
-        .values(last_message_at=datetime.now())
+        .values(last_message_at=_naive_utc_now())
     )
     message = AgentMessage(
         conversation_id=tool_call.conversation_id,

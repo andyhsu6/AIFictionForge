@@ -180,11 +180,12 @@ class BlockingClosingAIService:
         }
 
 
-def _assert_local_last_message_at(stamp: datetime) -> None:
-    assert abs((stamp - datetime.now()).total_seconds()) < 120
+def _assert_utc_last_message_at(stamp: datetime) -> None:
+    """last_message_at 必须与 AgentMessage.created_at 同基准（naive UTC）。"""
+    assert abs((stamp - _naive_utc_now()).total_seconds()) < 120
     offset = datetime.now().astimezone().utcoffset()
     if offset is not None and abs(offset.total_seconds()) > 120:
-        assert abs((stamp - _naive_utc_now()).total_seconds()) >= 120
+        assert abs((stamp - datetime.now()).total_seconds()) >= 120
 
 
 async def _conversation_roles(session_factory, conversation_id: str) -> list[str]:
@@ -683,8 +684,10 @@ async def test_llm_calls_stay_one_regardless_of_step_count(session_factory):
 
 
 @pytest.mark.anyio
-async def test_writers_stamp_last_message_at_in_local_time(session_factory, handle_with_steps):
-    """last_message_at 全库用本地墙钟；收尾两个 writer 不得写 UTC（否则会话列表晚 8h）。"""
+async def test_writers_stamp_last_message_at_in_naive_utc(session_factory, handle_with_steps):
+    """issue #67：last_message_at 全库基准是 naive UTC（与列自身的 server_default 及
+    AgentMessage.created_at 一致）；收尾两个 writer 不得回退到本地墙钟，否则会话列表
+    的 ORDER BY last_message_at 在非 UTC 机器上与 server_default 行混基准、排序颠倒。"""
     async with session_factory() as db:
         db.add(AgentConversation(
             id=handle_with_steps.conversation_id, user_id="u-1", project_id="p-1",
@@ -697,14 +700,14 @@ async def test_writers_stamp_last_message_at_in_local_time(session_factory, hand
     )
     async with session_factory() as db:
         conversation = await db.get(AgentConversation, handle_with_steps.conversation_id)
-    _assert_local_last_message_at(conversation.last_message_at)
+    _assert_utc_last_message_at(conversation.last_message_at)
     await runner._insert_plan_assistant_message(
         session_factory, conversation_id=handle_with_steps.conversation_id,
         content="closing summary", model=None, prompt_tokens=0, completion_tokens=0,
     )
     async with session_factory() as db:
         conversation = await db.get(AgentConversation, handle_with_steps.conversation_id)
-    _assert_local_last_message_at(conversation.last_message_at)
+    _assert_utc_last_message_at(conversation.last_message_at)
 
 
 @pytest.mark.anyio

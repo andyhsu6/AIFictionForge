@@ -1,7 +1,6 @@
 """灵创创作助手会话编排、工具循环和持久化。"""
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from typing import Any, AsyncGenerator, Optional
 
@@ -17,6 +16,7 @@ from app.models.project_agent import (
     AgentExecutionStep,
     AgentMessage,
     AgentToolCall,
+    _naive_utc_now,
 )
 from app.services.agent_plan_dispatch import (
     PLAN_RUNNER_UNAVAILABLE_CODE,
@@ -449,7 +449,7 @@ class ProjectAgentService:
             content=message.strip(),
         )
         self.db.add(user_message)
-        conversation.last_message_at = datetime.now()
+        conversation.last_message_at = _naive_utc_now()
         await self.db.commit()
 
         yield {
@@ -1005,8 +1005,8 @@ class ProjectAgentService:
                         record.status = "executed" if succeeded else "failed"
                         record.result = mcp_result
                         record.error_message = mcp_result.get("error")
-                        record.confirmed_at = datetime.now() if record.requires_confirmation else None
-                        record.executed_at = datetime.now()
+                        record.confirmed_at = _naive_utc_now() if record.requires_confirmation else None
+                        record.executed_at = _naive_utc_now()
                         if succeeded:
                             await self._save_tool_response(conversation, call_id, name, mcp_result)
                         else:
@@ -1073,8 +1073,8 @@ class ProjectAgentService:
                             record.result = auto_result
                             record.before_snapshot = auto_result.get("before")
                             record.after_snapshot = auto_result.get("after")
-                            record.confirmed_at = datetime.now()
-                            record.executed_at = datetime.now()
+                            record.confirmed_at = _naive_utc_now()
+                            record.executed_at = _naive_utc_now()
                             await self._save_tool_response(
                                 conversation, call_id, name, auto_result
                             )
@@ -1139,7 +1139,7 @@ class ProjectAgentService:
                     record.result = executed_result
                     record.before_snapshot = executed_result.get("before")
                     record.after_snapshot = executed_result.get("after")
-                    record.executed_at = datetime.now()
+                    record.executed_at = _naive_utc_now()
                     await self._save_tool_response(conversation, call_id, name, executed_result)
                     await self._update_step(
                         tool_step,
@@ -1295,7 +1295,7 @@ class ProjectAgentService:
                 "在对应步骤的 note 里写清不确定项，然后调用 propose_plan。"
             ),
         ))
-        conversation.last_message_at = datetime.now()
+        conversation.last_message_at = _naive_utc_now()
         await self.db.flush()
 
     async def _finish_without_plan(
@@ -1426,7 +1426,7 @@ class ProjectAgentService:
             yield {"type": "step_update", "data": self._step_data(tool_step)}
         else:
             record.status = "executing"
-            record.confirmed_at = datetime.now()
+            record.confirmed_at = _naive_utc_now()
             plan_task = await create_plan_task(
                 self.db,
                 project_id=self.project.id,
@@ -1527,7 +1527,7 @@ class ProjectAgentService:
             if step.status == "running":
                 step.status = final_status
                 step.content = final_content
-                step.updated_at = datetime.now()
+                step.updated_at = _naive_utc_now()
 
         assistant = await self._save_assistant(
             conversation, final_content, 0, 0, commit=False
@@ -1627,7 +1627,7 @@ class ProjectAgentService:
             step.detail = detail
         # 显式更新时间，避免依赖数据库 onupdate 后该属性被 ORM 标记为过期，
         # 随后的 SSE 序列化在 AsyncSession 中触发隐式 IO。
-        step.updated_at = datetime.now()
+        step.updated_at = _naive_utc_now()
         await self.db.flush()
 
     async def _attach_steps(
@@ -1844,7 +1844,7 @@ class ProjectAgentService:
             completion_tokens=completion_tokens or None,
         )
         self.db.add(assistant)
-        conversation.last_message_at = datetime.now()
+        conversation.last_message_at = _naive_utc_now()
         await self.db.flush()
         if commit:
             await self.db.commit()
