@@ -21,6 +21,7 @@ from app.database import Base
 from app.core.errors import ApiError
 from app.api.characters import delete_character
 from app.api.chapters import delete_chapter
+from app.api.organizations import delete_organization
 from app.api.outlines import delete_outline
 from app.api.projects import delete_project
 from app.api.relationships import delete_relationship, delete_relationship_type
@@ -36,11 +37,14 @@ from app.models.project_default_style import ProjectDefaultStyle
 from app.models.regeneration_task import RegenerationTask
 from app.models.relationship import (
     CharacterRelationship,
+    Organization,
+    OrganizationMember,
     RelationshipType,
     RelationshipTypeLink,
 )
 from app.models.writing_style import WritingStyle
 from app.services.book_import_service import BookImportService
+from app.services.project_agent_extended_tools import ProjectAgentExtendedTools
 from scripts.cleanup_dangling_fk_rows import run as cleanup_run
 
 USER_ID = "user-1"
@@ -352,6 +356,164 @@ async def test_delete_writing_style_still_blocked_by_live_default(db_session):
     assert exc_info.value.code == "validation.style_default_delete_blocked"
 
 
+async def _seed_organization_graph(db_session, *, project_id: str = "project-a"):
+    """种子：项目 A + 角色 X/Y/Z + 组织 One/Two（Two 是 One 的子组织）+ 成员关系。"""
+    project = Project(id=project_id, user_id=USER_ID, title="Project A")
+    char_x = Character(id="char-x", project_id=project_id, name="Character X")
+    char_y = Character(id="char-y", project_id=project_id, name="Character Y")
+    char_z = Character(id="char-z", project_id=project_id, name="Character Z")
+    org_one = Organization(id="org-1", project_id=project_id, character_id=char_x.id)
+    org_two = Organization(id="org-2", project_id=project_id, character_id=char_y.id,
+                           parent_org_id=org_one.id)
+    members = [
+        OrganizationMember(id="member-owner", organization_id=org_one.id,
+                           character_id=char_x.id, position="Leader"),
+        OrganizationMember(id="member-inner", organization_id=org_one.id,
+                           character_id=char_z.id, position="Member"),
+        OrganizationMember(id="member-cross", organization_id=org_two.id,
+                           character_id=char_x.id, position="Advisor"),
+        OrganizationMember(id="member-kept", organization_id=org_two.id,
+                           character_id=char_z.id, position="Member"),
+    ]
+    db_session.add_all([project, char_x, char_y, char_z, org_one, org_two, *members])
+    await db_session.commit()
+    return {"project": project, "char_x": char_x, "char_y": char_y, "char_z": char_z,
+            "org_one": org_one, "org_two": org_two}
+
+
+async def _assert_org_graph_after_org_one_delete(db_session) -> None:
+    org_two = (
+        await db_session.execute(select(Organization).where(Organization.id == "org-2"))
+    ).scalar_one_or_none()
+    assert org_two is not None
+    assert org_two.parent_org_id is None
+    assert await count_where(db_session, Organization, Organization.id, "org-1") == 0
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.organization_id, "org-1") == 0
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.id, "member-kept") == 1
+    assert await fk_violations(db_session, {"organizations", "organization_members"}) == []
+
+
+@pytest.mark.anyio
+async def test_delete_character_cleans_organizations_and_memberships(db_session):
+    await _seed_organization_graph(db_session)
+
+    await delete_character("char-x", make_request(), db_session)
+
+    assert await count_where(db_session, Character, Character.id, "char-x") == 0
+    assert await count_where(db_session, Character, Character.id, "char-y") == 1
+    assert await count_where(db_session, Character, Character.id, "char-z") == 1
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.character_id, "char-x") == 0
+    await _assert_org_graph_after_org_one_delete(db_session)
+
+
+@pytest.mark.anyio
+async def test_delete_organization_cleans_members_and_child_parent(db_session):
+    await _seed_organization_graph(db_session)
+
+    await delete_organization("org-1", make_request(), db_session)
+
+    await _assert_org_graph_after_org_one_delete(db_session)
+
+
+@pytest.mark.anyio
+async def test_agent_organization_delete_cleans_members_and_child_parent(db_session):
+    seed = await _seed_organization_graph(db_session)
+    tools = ProjectAgentExtendedTools(seed["project"], db_session)
+
+    entity_id, _before, _summary = await tools._manage_organization_delete(
+        {"organization_id": "org-1"}
+    )
+    await db_session.commit()
+
+    assert entity_id == "org-1"
+    await _assert_org_graph_after_org_one_delete(db_session)
+
+
+@pytest.mark.anyio
+async def test_agent_character_delete_cleans_owned_organizations(db_session):
+    seed = await _seed_organization_graph(db_session)
+    tools = ProjectAgentExtendedTools(seed["project"], db_session)
+
+    await tools._manage_character_delete({"character_id": "char-x"})
+    await db_session.commit()
+
+    assert await count_where(db_session, Character, Character.id, "char-x") == 0
+    assert await count_where(db_session, OrganizationMember,
+                             OrganizationMember.character_id, "char-x") == 0
+    await _assert_org_graph_after_org_one_delete(db_session)
+
+
+@pytest.mark.anyio
+async def test_delete_project_removes_project_relationship_types_keeps_presets(db_session):
+    seed = await _seed_project(db_session)
+    project_id = seed["project"].id
+    preset = RelationshipType(id=2, project_id=None, name="Preset Type",
+                              category="social", is_system=True)
+    db_session.add(preset)
+    await db_session.commit()
+
+    await delete_project(project_id, make_request(), db_session)
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.project_id, project_id) == 0
+    assert await count_where(db_session, RelationshipType, RelationshipType.id, preset.id) == 1
+    assert await fk_violations(
+        db_session, {"relationship_types", "character_relationship_type_links"}
+    ) == []
+
+
+@pytest.mark.anyio
+async def test_overwrite_import_retains_project_relationship_types(db_session):
+    """覆盖导入保留项目级关系类型定义（#132 边界：项目配置不随覆盖导入清空）。"""
+    project = Project(id="project-a", user_id=USER_ID, title="Project A")
+    char_x = Character(id="char-x", project_id=project.id, name="Character X")
+    rel_type = RelationshipType(id=1, project_id=project.id, name="Type A", category="social")
+    preset = RelationshipType(id=2, project_id=None, name="Preset Type",
+                              category="social", is_system=True)
+    relationship = CharacterRelationship(
+        id="rel-1", project_id=project.id,
+        character_from_id=char_x.id, character_to_id="char-y",
+        relationship_type_id=rel_type.id,
+    )
+    link = RelationshipTypeLink(relationship_id=relationship.id,
+                                relationship_type_id=rel_type.id)
+    db_session.add_all([project, char_x, rel_type, preset, relationship, link])
+    await db_session.commit()
+
+    svc = BookImportService()
+    await svc._clear_project_data(db=db_session, project_id=project.id)
+    await db_session.commit()
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.project_id, project.id) == 1
+    assert await count_where(db_session, RelationshipType, RelationshipType.id, preset.id) == 1
+    assert await count_where(db_session, CharacterRelationship,
+                             CharacterRelationship.project_id, project.id) == 0
+    assert await fk_violations(db_session, {"character_relationship_type_links"}) == []
+
+
+@pytest.mark.anyio
+async def test_delete_relationship_type_cleans_dangling_links(db_session):
+    project = Project(id="project-a", user_id=USER_ID, title="Project A")
+    rel_type = RelationshipType(id=1, project_id=project.id, name="Type A",
+                                category="social", is_system=False)
+    dangling = RelationshipTypeLink(relationship_id="ghost-rel",
+                                    relationship_type_id=rel_type.id)
+    db_session.add_all([project, rel_type, dangling])
+    await db_session.commit()
+
+    await delete_relationship_type(rel_type.id, make_request(), db_session)
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.id, rel_type.id) == 0
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, dangling.id) == 0
+    assert await fk_violations(db_session, {"character_relationship_type_links"}) == []
+
+
 def _create_cleanup_db(path: str) -> None:
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
@@ -435,6 +597,81 @@ async def test_cleanup_script_dry_run_apply_idempotent(tmp_path):
     assert chapter[0] is None
     assert _count_table(db_path, "generation_history") == 1
     assert history[0] is None
+
+    second = cleanup_run(db_path, apply=True)
+    assert second["planned"] == 0
+    assert second["applied"] == 0
+
+
+def _seed_cleanup_organization_orphans(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO projects (id, user_id, title, outline_mode, current_words, cover_status)
+                VALUES ('project-a', 'user-1', 'Project A', 'one-to-many', 0, 'none');
+            INSERT INTO characters (id, project_id, name) VALUES ('char-x', 'project-a', 'Character X');
+            INSERT INTO characters (id, project_id, name) VALUES ('char-y', 'project-a', 'Character Y');
+            INSERT INTO characters (id, project_id, name) VALUES ('char-z', 'project-a', 'Character Z');
+            INSERT INTO organizations (id, character_id, project_id)
+                VALUES ('org-ok', 'char-x', 'project-a');
+            INSERT INTO organizations (id, character_id, project_id, parent_org_id)
+                VALUES ('org-self-dangling', 'char-z', 'project-a', 'ghost-org');
+            INSERT INTO organizations (id, character_id, project_id)
+                VALUES ('org-owner-missing', 'ghost-char', 'project-a');
+            INSERT INTO organization_members (id, organization_id, character_id, position)
+                VALUES ('member-char-missing', 'org-ok', 'ghost-char', 'Member');
+            INSERT INTO organization_members (id, organization_id, character_id, position)
+                VALUES ('member-org-missing', 'ghost-org', 'char-x', 'Member');
+            INSERT INTO organization_members (id, organization_id, character_id, position)
+                VALUES ('member-guarded', 'org-owner-missing', 'char-x', 'Member');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (1, 'ghost-project', 'Type Orphan', 'social');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (2, NULL, 'Type Preset', 'social');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (3, 'project-a', 'Type Live', 'social');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.anyio
+async def test_cleanup_script_handles_organization_and_relationship_type_orphans(tmp_path):
+    db_path = str(tmp_path / "cleanup-org.db")
+    _create_cleanup_db(db_path)
+    _seed_cleanup_organization_orphans(db_path)
+
+    dry = cleanup_run(db_path, apply=False)
+    assert dry["applied"] == 0
+    assert dry["planned"] == 3
+    assert dry["unhandled"].get("organization_members") == 2
+    assert dry["unhandled"].get("organizations") == 1
+
+    applied = cleanup_run(db_path, apply=True)
+    assert applied["applied"] == applied["planned"] == 3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        org_count = conn.execute("SELECT COUNT(*) FROM organizations").fetchone()[0]
+        self_parent = conn.execute(
+            "SELECT parent_org_id FROM organizations WHERE id = 'org-self-dangling'"
+        ).fetchone()[0]
+        type_ids = {row[0] for row in conn.execute("SELECT id FROM relationship_types")}
+        member_ids = {row[0] for row in conn.execute("SELECT id FROM organization_members")}
+    finally:
+        conn.close()
+
+    # organizations 行永不删除；自引用悬空仅断开指针（SET NULL）
+    assert org_count == 3
+    assert self_parent is None
+    # 明确垃圾：悬空 project_id 的关系类型；系统预置与健康类型保留
+    assert type_ids == {2, 3}
+    # 明确垃圾：角色缺失的成员关系；组织缺失/组织悬空的成员关系转 unhandled 保留
+    assert "member-char-missing" not in member_ids
+    assert {"member-org-missing", "member-guarded"} <= member_ids
 
     second = cleanup_run(db_path, apply=True)
     assert second["planned"] == 0

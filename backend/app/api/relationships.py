@@ -36,7 +36,10 @@ from app.services.relationship_service import (
     relationship_display_names,
     ensure_relationship_type_not_in_use,
 )
-from app.services.cascade_cleanup import delete_relationship_links
+from app.services.cascade_cleanup import (
+    delete_relationship_links,
+    delete_relationship_type_links,
+)
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
 logger = get_logger(__name__)
@@ -155,6 +158,8 @@ async def delete_relationship_type(
     await verify_project_access(rt.project_id, user_id, db)
     if await ensure_relationship_type_not_in_use(db, rt.project_id, rt.id):
         raise ApiError(code="conflict.relationship_type_in_use")
+    # 先清理指向该类型的多对多关联行（含历史遗留的悬空链接；CASCADE 在 SQLite 上不生效）
+    await delete_relationship_type_links(db, [rt.id])
     await db.delete(rt)
     await db.commit()
     return {"message": "关系类型删除成功", "id": type_id}

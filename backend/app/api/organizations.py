@@ -28,6 +28,7 @@ from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.language_resolver import resolve_user_generation_language
+from app.services.cascade_cleanup import delete_organization_children
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
 from app.api.common import verify_project_access
@@ -209,6 +210,9 @@ async def delete_organization(
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(db_org.project_id, user_id, db)
     
+    # 先清理组织成员并断开子组织的 parent_org_id（CASCADE/SET NULL 在 SQLite 上不生效）
+    await delete_organization_children(db, [org_id])
+
     await db.delete(db_org)
     await db.commit()
     

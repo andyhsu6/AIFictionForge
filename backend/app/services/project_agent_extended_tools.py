@@ -21,7 +21,12 @@ from app.models.relationship import (
     RelationshipType,
 )
 from app.services.relationship_service import relationship_display_names, resolve_relationship_type_ids, sync_relationship_links
-from app.services.cascade_cleanup import delete_chapter_children, delete_relationship_links
+from app.services.cascade_cleanup import (
+    delete_chapter_children,
+    delete_character_owned_organizations,
+    delete_organization_children,
+    delete_relationship_links,
+)
 from app.services.project_agent_selectors import (
     clean_identifier,
     find_career,
@@ -718,6 +723,8 @@ class ProjectAgentExtendedTools:
             await self.db.execute(
                 delete(CharacterRelationship).where(CharacterRelationship.id.in_(relationship_ids))
             )
+        # 角色拥有的组织与成员关系；CASCADE 在 SQLite 上不生效
+        await delete_character_owned_organizations(self.db, [row.id])
         await self.db.delete(row)
         return entity_id, {}, f"已删除{label}"
 
@@ -961,6 +968,8 @@ class ProjectAgentExtendedTools:
     async def _manage_organization_delete(self, arguments: dict[str, Any]):
         row, char = await self._find_organization(arguments)
         entity_id, name = row.id, char.name
+        # 先清理成员并断开子组织的 parent_org_id（CASCADE/SET NULL 在 SQLite 上不生效）
+        await delete_organization_children(self.db, [row.id])
         await self.db.delete(row)
         return entity_id, {}, f"已删除组织详情《{name}》"
 

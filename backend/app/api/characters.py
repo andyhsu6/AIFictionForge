@@ -31,7 +31,10 @@ from app.services.relationship_service import (
     resolve_relationship_type_ids,
     sync_relationship_links,
 )
-from app.services.cascade_cleanup import delete_relationship_links
+from app.services.cascade_cleanup import (
+    delete_character_owned_organizations,
+    delete_relationship_links,
+)
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
@@ -648,7 +651,11 @@ async def delete_character(
         await db.execute(
             delete(CharacterRelationship).where(CharacterRelationship.id.in_(relationship_ids))
         )
-    
+
+    # 清理角色拥有的组织、组织成员关系，以及角色在他人组织中的成员关系
+    # （organizations / organization_members 的 CASCADE 在 SQLite 上不生效）
+    await delete_character_owned_organizations(db, [character_id])
+
     # 删除角色
     await db.delete(character)
     await db.commit()
