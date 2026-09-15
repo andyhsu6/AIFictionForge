@@ -9,7 +9,7 @@ import {
   Input,
   Switch,
   Select,
-  message,
+  App,
   Tag,
   Spin,
   Empty,
@@ -39,6 +39,7 @@ const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
 
 export default function MCPPluginsPage() {
+  const { message } = App.useApp();
   const { t } = useTranslation('mcpPlugins');
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [form] = Form.useForm();

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Button, Table, Modal, Form, Input, Tag, Space, message, Popconfirm, Card, theme, Empty, Badge, Tooltip, Select } from 'antd';
+import { Button, Table, Modal, Form, Input, Tag, Space, App, Popconfirm, Card, theme, Empty, Badge, Tooltip, Select } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 
@@ -51,6 +51,7 @@ const normalizeCategory = (value: string | string[]) => (
 );
 
 export default function SkillManage() {
+  const { message } = App.useApp();
   const { t } = useTranslation('skillManage');
   const { token } = theme.useToken();
   const [skills, setSkills] = useState<SkillItem[]>([]);
