@@ -51,7 +51,9 @@ def _dedupe_ints(values: Optional[Iterable[int]]) -> list[int]:
     return list(seen)
 
 
-async def _delete_by_ids(db: AsyncSession, model, column, ids: list[str]) -> int:
+async def _delete_by_ids(
+    db: AsyncSession, model, column, ids: list[str] | list[int]
+) -> int:
     result = await db.execute(delete(model).where(column.in_(ids)))
     return result.rowcount or 0
 
@@ -280,14 +282,36 @@ async def delete_project_children(
 async def delete_project_relationship_types(db: AsyncSession, project_id: str) -> int:
     """删除项目级关系类型定义（`project_id` 命中）。
 
-    - 只删除项目自有的类型；`project_id IS NULL` 的系统预置类型永不删除；
-    - 必须在 `character_relationships` 及其类型关联行删除之后调用：SQLite 未启用
-      外键，删除顺序是唯一保护，否则会留下指向已删除关系类型的悬空链接。
+    删除顺序是唯一保护（SQLite 未启用外键，声明的 CASCADE 不生效）：
 
-    调用方负责事务边界。
+    1. 选出项目自有的类型 id（`project_id` 命中；`project_id IS NULL` 的系统
+       预置类型永不进入该集合，因此永不被删除）；
+    2. 先断开 `character_relationships.relationship_type_id` 缓存列：历史数据可能
+       有跨项目关系指向本项目类型（API 未做同项目校验），不置空会留下悬空外键；
+    3. 删除多对多关联行 —— 复用 `delete_relationship_type_links`，它会按
+       `relationship_type_id` 清理，包括 `relationship_id` 已不存在的历史悬空链接
+       （`delete_project_children` 只按仍存在的 relationship_id 删除，看不到它们）；
+    4. 最后删除类型行本身。
+
+    必须在 `character_relationships` 及其类型关联行删除之后调用。调用方负责事务边界。
     """
     if not project_id:
         return 0
+    type_ids = (
+        await db.execute(
+            select(RelationshipType.id).where(
+                RelationshipType.project_id == project_id
+            )
+        )
+    ).scalars().all()
+    if not type_ids:
+        return 0
+    await db.execute(
+        update(CharacterRelationship)
+        .where(CharacterRelationship.relationship_type_id.in_(type_ids))
+        .values(relationship_type_id=None)
+    )
+    await delete_relationship_type_links(db, type_ids)
     return await _delete_by_ids(
         db, RelationshipType, RelationshipType.project_id, [project_id]
     )

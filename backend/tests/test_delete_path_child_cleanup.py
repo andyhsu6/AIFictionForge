@@ -466,6 +466,120 @@ async def test_delete_project_removes_project_relationship_types_keeps_presets(d
 
 
 @pytest.mark.anyio
+async def test_delete_project_cleans_legacy_dangling_type_link(db_session):
+    """(a) 历史悬空链接（relationship_id 已不存在）指向项目级类型：删项目后不得残留。"""
+    project = Project(id="project-a", user_id=USER_ID, title="Project A")
+    rel_type = RelationshipType(id=1, project_id=project.id, name="Type T", category="social")
+    dangling = RelationshipTypeLink(relationship_id="ghost-rel",
+                                    relationship_type_id=rel_type.id)
+    db_session.add_all([project, rel_type, dangling])
+    await db_session.commit()
+
+    await delete_project(project.id, make_request(), db_session)
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.id, rel_type.id) == 0
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, dangling.id) == 0
+    assert await fk_violations(
+        db_session, {"character_relationship_type_links", "character_relationships"}
+    ) == []
+
+
+@pytest.mark.anyio
+async def test_delete_project_nulls_cross_project_type_reference(db_session):
+    """(b) 跨项目引用：项目 B 的关系指向项目 A 的类型，删 A 后 B 的缓存列置空、链接删除。"""
+    project_a = Project(id="project-a", user_id=USER_ID, title="Project A")
+    project_b = Project(id="project-b", user_id=USER_ID, title="Project B")
+    char_x = Character(id="char-x", project_id=project_b.id, name="Character X")
+    char_y = Character(id="char-y", project_id=project_b.id, name="Character Y")
+    type_t = RelationshipType(id=1, project_id=project_a.id, name="Type T", category="social")
+    rel_b = CharacterRelationship(
+        id="rel-b", project_id=project_b.id,
+        character_from_id=char_x.id, character_to_id=char_y.id,
+        relationship_type_id=type_t.id,
+    )
+    link_b = RelationshipTypeLink(relationship_id=rel_b.id, relationship_type_id=type_t.id)
+    db_session.add_all([project_a, project_b, char_x, char_y, type_t, rel_b, link_b])
+    await db_session.commit()
+
+    await delete_project(project_a.id, make_request(), db_session)
+
+    rel = (
+        await db_session.execute(
+            select(CharacterRelationship).where(CharacterRelationship.id == rel_b.id)
+        )
+    ).scalar_one()
+    assert rel.relationship_type_id is None
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, link_b.id) == 0
+    assert await count_where(db_session, Project, Project.id, project_b.id) == 1
+    assert await fk_violations(
+        db_session, {"character_relationship_type_links", "character_relationships"}
+    ) == []
+
+
+@pytest.mark.anyio
+async def test_delete_project_keeps_system_relationship_type_presets(db_session):
+    """系统预置（project_id IS NULL）不随项目删除，且被其它项目引用时保持引用完整。"""
+    project_a = Project(id="project-a", user_id=USER_ID, title="Project A")
+    project_b = Project(id="project-b", user_id=USER_ID, title="Project B")
+    char_x = Character(id="char-x", project_id=project_b.id, name="Character X")
+    char_y = Character(id="char-y", project_id=project_b.id, name="Character Y")
+    preset = RelationshipType(id=1, project_id=None, name="Type T",
+                              category="social", is_system=True)
+    project_type = RelationshipType(id=2, project_id=project_a.id,
+                                    name="Type A", category="social")
+    rel_b = CharacterRelationship(
+        id="rel-b", project_id=project_b.id,
+        character_from_id=char_x.id, character_to_id=char_y.id,
+        relationship_type_id=preset.id,
+    )
+    link_b = RelationshipTypeLink(relationship_id=rel_b.id,
+                                  relationship_type_id=preset.id)
+    db_session.add_all([project_a, project_b, char_x, char_y, preset,
+                        project_type, rel_b, link_b])
+    await db_session.commit()
+
+    await delete_project(project_a.id, make_request(), db_session)
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.id, preset.id) == 1
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.id, project_type.id) == 0
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, link_b.id) == 1
+    rel = (
+        await db_session.execute(
+            select(CharacterRelationship).where(CharacterRelationship.id == rel_b.id)
+        )
+    ).scalar_one()
+    assert rel.relationship_type_id == preset.id
+    assert await fk_violations(
+        db_session, {"character_relationship_type_links", "character_relationships"}
+    ) == []
+
+
+@pytest.mark.anyio
+async def test_delete_project_still_removes_same_project_relationship_types(db_session):
+    """回归：正常的同项目关系类型仍随项目删除（不能因先置空缓存列而漏删）。"""
+    seed = await _seed_project(db_session)
+    project_id = seed["project"].id
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.project_id, project_id) == 1
+
+    await delete_project(project_id, make_request(), db_session)
+
+    assert await count_where(db_session, RelationshipType,
+                             RelationshipType.project_id, project_id) == 0
+    assert await count_where(db_session, RelationshipTypeLink,
+                             RelationshipTypeLink.id, seed["link"].id) == 0
+    assert await fk_violations(
+        db_session, {"character_relationship_type_links", "character_relationships"}
+    ) == []
+
+
+@pytest.mark.anyio
 async def test_overwrite_import_retains_project_relationship_types(db_session):
     """覆盖导入保留项目级关系类型定义（#132 边界：项目配置不随覆盖导入清空）。"""
     project = Project(id="project-a", user_id=USER_ID, title="Project A")
@@ -676,3 +790,51 @@ async def test_cleanup_script_handles_organization_and_relationship_type_orphans
     second = cleanup_run(db_path, apply=True)
     assert second["planned"] == 0
     assert second["applied"] == 0
+
+
+def _seed_cleanup_relationship_type_orphan_link(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (1, 'ghost-project', 'Type Orphan', 'social');
+            INSERT INTO relationship_types (id, project_id, name, category)
+                VALUES (2, NULL, 'Type Preset', 'social');
+            INSERT INTO character_relationship_type_links (relationship_id, relationship_type_id)
+                VALUES ('ghost-rel', 1);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.anyio
+async def test_cleanup_script_cleans_links_of_orphan_relationship_type(tmp_path):
+    """悬空 relationship_type 的 link 行必须被清理，脚本结束后无外键违规残留。"""
+    db_path = str(tmp_path / "cleanup-reltype.db")
+    _create_cleanup_db(db_path)
+    _seed_cleanup_relationship_type_orphan_link(db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        conn.close()
+
+    cleanup_run(db_path, apply=True)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        type_ids = {row[0] for row in conn.execute("SELECT id FROM relationship_types")}
+        link_count = conn.execute(
+            "SELECT COUNT(*) FROM character_relationship_type_links"
+        ).fetchone()[0]
+        after = conn.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        conn.close()
+
+    assert type_ids == {2}
+    assert link_count == 0
+    assert after == []
