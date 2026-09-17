@@ -1643,3 +1643,49 @@ async def test_window_settles_from_metadata_without_touching_the_generating_tier
 
     assert outcome.verdict == VERDICT_QUALIFIED
     assert ("POST", "/v1/chat/completions") not in seen, "窗口已由元数据定论，不该再打生成档"
+
+
+# ========== ① 档列表回退的两条边界（#148 收尾）==========
+
+
+@pytest.mark.anyio
+async def test_tier_one_is_not_wired_by_the_probe_default_even_for_manual_trigger(gateway):
+    """③ 档未接线 ⇒ 显式点名 ③ 的探测不得顺带跑 ①②（否则 ① 会用元数据抢着定论）。
+
+    钉住的是「接线 ③ 之前，③ 单独被点名时一次请求都不发」：② 会打生成端点，
+    ① 会给出一个 ③ 本应承担的判据所不能给出的合格证。
+    """
+    outcome = await probe_model_context_window(
+        provider="openai",
+        base_url=GATEWAY,
+        api_key=API_KEY,
+        model=QUALIFIED_MODEL,
+        tiers=(TIER_NEEDLE,),
+        trigger=TRIGGER_MANUAL,
+    )
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE
+    assert gateway.total_calls == 0, "未接线的 ③ 档被单独点名时，探测必须一次请求都不发"
+
+
+@pytest.mark.anyio
+async def test_a_collection_answer_from_the_single_model_endpoint_is_not_scanned():
+    """`GET /models/<id>` 用整个列表作答（catch-all 路由的常见形态）时不得扫它定论。
+
+    列表里没有一条属于本次探测的模型 ⇒ 谁的身份都对不上。早先 `_extract_window_tokens`
+    会 breadth-first 扫到这个集合、取到邻居模型的窗口，于是给一个从没报过窗口的模型
+    发了一张 1M 合格证。
+    """
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"object": "list", "data": [{"context_length": 1_048_576}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await probe_module.probe_metadata_tier(
+            provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, client=client
+        )
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE
+    assert len(requests) == 2, "① 档仍应把两个端点都问一遍，而不是问一次就定论"
