@@ -68,6 +68,7 @@ from app.core.db_write_lock import get_db_write_lock
 from app.core.errors import ApiError
 from app.logger import get_logger
 from app.models.settings import Settings
+from app.services.ai_clients.output_caps import learn_output_ceiling
 
 logger = get_logger(__name__)
 
@@ -584,6 +585,16 @@ async def probe_max_tokens_bound_tier(
                         body = (await response.aread()).decode("utf-8", errors="replace")[:500]
                     except Exception:  # 读不到 body 也别抛：判不出而已
                         pass
+                    # ② 档本来就是那条「廉价的、会拿到输出上限」的请求：顺手把网关自己
+                    # 报出的上限教给生成路径（issue #147）。判据不变（#65：输出上限不
+                    # 构成窗口证据），学的只是数字。
+                    if response.status_code in (400, 422):
+                        learn_output_ceiling(
+                            base_url=base_url,
+                            model=model,
+                            body=body,
+                            requested_max_tokens=value,
+                        )
                     evidence = (
                         _classify_bound_rejection(body)
                         if response.status_code in (400, 422)
