@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 import httpx
 
 from app.logger import get_logger, safe_preview
+from app.services.ai_clients.output_caps import learn_output_ceiling
 from app.services.ai_config import AIClientConfig, default_config
 from app.utils.reasoning_text import split_content_and_reasoning, strip_think_tags
 
@@ -416,6 +417,7 @@ class BaseAIClient(ABC):
             await asyncio.sleep(rate_cfg.request_delay)
 
             for attempt in range(retry_cfg.max_retries):
+                _retry_without_delay = False
                 try:
                     if attempt > 0:
                         delay = min(
@@ -423,7 +425,8 @@ class BaseAIClient(ABC):
                             retry_cfg.max_delay,
                         )
                         logger.warning(f"⚠️ 重试 {attempt + 1}/{retry_cfg.max_retries}，等待 {delay}s")
-                        await asyncio.sleep(delay)
+                        if not _retry_without_delay:
+                            await asyncio.sleep(delay)
 
                     if stream:
                         return self.http_client.stream(method, url, headers=headers, json=payload)
@@ -472,8 +475,30 @@ class BaseAIClient(ABC):
                     )
                     if e.response is not None:
                         _log_raw_response_body(e.response, "http_status_error")
+                    # 上游点名了「单次输出」上限（issue #147）：按它钳制后在本次调用内
+                    # 重发。只改本地副本，绝不写回调用方的 payload。
+                    # 流式请求到不了这里（_request_with_retry 在读到状态码前就把
+                    # context manager 交给了调用方），那一侧在 openai_client 里记。
+                    _output_cap_corrected = False
+                    if status_code == 400 and not stream and e.response is not None:
+                        _requested_budget = payload.get("max_tokens")
+                        if isinstance(_requested_budget, int) and _requested_budget > 0:
+                            try:
+                                _learned = learn_output_ceiling(
+                                    base_url=self.base_url,
+                                    model=payload.get("model"),
+                                    body=e.response.text,
+                                    requested_max_tokens=_requested_budget,
+                                )
+                            except Exception:  # 报错形态千奇百怪，读不出就不钳
+                                _learned = None
+                            if _learned is not None:
+                                payload = {**payload, "max_tokens": _learned}
+                                _output_cap_corrected = True
                     if status_code in retry_cfg.non_retryable_status_codes:
                         raise await _enrich_http_status_error(e) from e
+                    if _output_cap_corrected and attempt < retry_cfg.max_retries - 1:
+                        _retry_without_delay = True
                     if attempt == retry_cfg.max_retries - 1:
                         raise await _enrich_http_status_error(e) from e
                 except (httpx.ConnectError, httpx.TimeoutException):

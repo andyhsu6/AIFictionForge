@@ -68,6 +68,7 @@ from app.core.db_write_lock import get_db_write_lock
 from app.core.errors import ApiError
 from app.logger import get_logger
 from app.models.settings import Settings
+from app.services.ai_clients.output_caps import learn_output_ceiling
 
 logger = get_logger(__name__)
 
@@ -307,6 +308,18 @@ def _metadata_url(provider: str, base_url: str, model: str) -> str:
     return f"{base}/models/{model}"
 
 
+def _metadata_list_url(provider: str, base_url: str) -> str:
+    """① 档的回退落点：`GET /models` 列表。
+
+    不少兼容网关（实测量到过一个）公布逐模型元数据的方式只有列表：单模型端点直接
+    404，但列表里每个条目都带 `context_length`。
+    """
+    base = (base_url or "").rstrip("/")
+    if (provider or "").lower() == "anthropic":
+        return f"{base}/v1/models"
+    return f"{base}/models"
+
+
 def _bound_probe_request(
     provider: str, base_url: str, model: str, probe_value: int
 ) -> Tuple[str, Dict[str, Any]]:
@@ -367,33 +380,29 @@ def _extract_window_tokens(payload: Any) -> Optional[int]:
     return None
 
 
-async def probe_metadata_tier(
-    *,
-    provider: str,
-    base_url: str,
-    api_key: Optional[str],
-    model: str,
-    client: httpx.AsyncClient,
-) -> ProbeOutcome:
-    """① 档：GET /models/<id> 读 `context_length`。一次 GET、0 token，多数网关不返回。"""
-    try:
-        response = await client.get(
-            _metadata_url(provider, base_url, model), headers=_auth_headers(provider, api_key)
-        )
-    except Exception as exc:  # 网络/超时/非法 URL：判不出，不是「不合格」
-        return _inconclusive(f"metadata tier request failed: {type(exc).__name__}: {exc}", TIER_METADATA)
+def _list_entry_window_tokens(payload: Any, model: str) -> Optional[int]:
+    """从 `GET /models` 列表里取**本模型自己那条**记录的窗口。
 
-    if response.status_code >= 400:
-        return _inconclusive(f"metadata tier HTTP {response.status_code}", TIER_METADATA)
+    绝不把整个列表丢给 `_extract_window_tokens`：那会 breadth-first 扫到邻居模型的窗口，
+    等于拿别人家的合格证给本模型盖章（列表里有 1M 级模型是常态）。
+    """
+    entries = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        return None
+    wanted = (model or "").strip()
+    if not wanted:
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("id") or entry.get("model") or "").strip() != wanted:
+            continue
+        return _extract_window_tokens(entry)
+    return None
 
-    try:
-        payload = response.json()
-    except ValueError:
-        return _inconclusive("metadata tier response is not JSON", TIER_METADATA)
 
-    tokens = _extract_window_tokens(payload)
-    if tokens is None:
-        return _inconclusive("metadata tier found no context-length field", TIER_METADATA)
+def _verdict_from_metadata_tokens(tokens: int) -> ProbeOutcome:
+    """网关报出的窗口数字 ⇒ 三态里的两态（判不出的路不走这里）。"""
     if tokens >= MIN_CONTEXT_WINDOW_TOKENS:
         return ProbeOutcome(
             verdict=VERDICT_QUALIFIED,
@@ -407,6 +416,55 @@ async def probe_metadata_tier(
         tier=TIER_METADATA,
         detail=f"metadata reported {tokens} tokens, below {MIN_CONTEXT_WINDOW_TOKENS}",
     )
+
+
+async def probe_metadata_tier(
+    *,
+    provider: str,
+    base_url: str,
+    api_key: Optional[str],
+    model: str,
+    client: httpx.AsyncClient,
+) -> ProbeOutcome:
+    """① 档：读网关公布的窗口元数据。0 token，最多两次 GET。
+
+    先问 `GET /models/<id>`（各家实现的规范形状，也是唯一能区分「本模型的数字」与
+    「邻居模型的数字」的地方）；它答不出时回退 `GET /models` 列表里本模型自己那条
+    （issue #148：实测量到一类网关只公布列表，单模型端点一律 404，于是白拿的元数据
+    用不上，定论被迫推给唯一会打生成端点的 ② 档）。
+    """
+    no_field_detail = "metadata tier found no context-length field"
+    for url, list_shaped in (
+        (_metadata_url(provider, base_url, model), False),
+        (_metadata_list_url(provider, base_url), True),
+    ):
+        try:
+            response = await client.get(url, headers=_auth_headers(provider, api_key))
+        except Exception as exc:  # 网络/超时/非法 URL：判不出，不是「不合格」
+            # 连不上就到此为止：第二发只会让黑洞网关再占一个连接超时
+            return _inconclusive(f"metadata tier request failed: {type(exc).__name__}: {exc}", TIER_METADATA)
+
+        if response.status_code >= 400:
+            no_field_detail = f"metadata tier HTTP {response.status_code}"
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            no_field_detail = "metadata tier response is not JSON"
+            continue
+
+        tokens = (
+            _list_entry_window_tokens(payload, model)
+            if list_shaped
+            else _extract_window_tokens(payload)
+        )
+        if tokens is None:
+            no_field_detail = "metadata tier found no context-length field"
+            continue
+        return _verdict_from_metadata_tokens(tokens)
+
+    return _inconclusive(no_field_detail, TIER_METADATA)
 
 
 # ========== ② 档拒绝路径的证据判据（#65：没测到的不许记录） ==========
@@ -584,6 +642,16 @@ async def probe_max_tokens_bound_tier(
                         body = (await response.aread()).decode("utf-8", errors="replace")[:500]
                     except Exception:  # 读不到 body 也别抛：判不出而已
                         pass
+                    # ② 档本来就是那条「廉价的、会拿到输出上限」的请求：顺手把网关自己
+                    # 报出的上限教给生成路径（issue #147）。判据不变（#65：输出上限不
+                    # 构成窗口证据），学的只是数字。
+                    if response.status_code in (400, 422):
+                        learn_output_ceiling(
+                            base_url=base_url,
+                            model=model,
+                            body=body,
+                            requested_max_tokens=value,
+                        )
                     evidence = (
                         _classify_bound_rejection(body)
                         if response.status_code in (400, 422)

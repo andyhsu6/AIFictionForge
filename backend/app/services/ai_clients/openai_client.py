@@ -5,6 +5,10 @@ from typing import Any, AsyncGenerator, Dict, Optional
 import httpx
 
 from app.logger import get_logger, summarize_log_value
+from app.services.ai_clients.output_caps import (
+    clamp_to_known_ceiling,
+    learn_output_ceiling,
+)
 from app.services.ai_config import AIClientConfig
 from app.utils.reasoning_text import (
     split_content_and_reasoning,
@@ -91,10 +95,10 @@ class OpenAIClient(BaseAIClient):
         stream: bool = False,
         response_format: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        # Command Code Provider API 网关限制单次输出 max_tokens 上限（对齐 models.dev 中
-        # DeepSeek V4 Flash 的 limit.output=384000，小于网关硬上限 393216）
-        if "commandcode.ai" in self.base_url:
-            max_tokens = min(max_tokens, 384000)
+        # 输出上限按 (网关, 模型) 钳制，且只用网关自己报出的数字（issue #147）。
+        # 这里曾是一个按网关写死的 384000：同一网关不同模型的输出上限并不相同，
+        # 于是「换一个模型就每个请求吃 400」。
+        max_tokens = clamp_to_known_ceiling(self.base_url, model, max_tokens)
         payload = {
             "model": model,
             "messages": messages,
@@ -204,7 +208,16 @@ class OpenAIClient(BaseAIClient):
                     response.raise_for_status()
                 except httpx.HTTPStatusError as e:
                     # 必须在流上下文内 await 读取 body，退出 async with 后将无法再读取
-                    raise await _enrich_http_status_error(e) from e
+                    enriched = await _enrich_http_status_error(e)
+                    # 流已经打开，本次无法原地重发；但学到的上限会让下一次调用
+                    # （含 call_with_json_retry 自带重试）直接落在网关接受的预算内。
+                    learn_output_ceiling(
+                        base_url=self.base_url,
+                        model=model,
+                        body=str(enriched),
+                        requested_max_tokens=payload["max_tokens"],
+                    )
+                    raise enriched from e
                 try:
                     async for line in response.aiter_lines():
                         data_str = sse_data_payload(line)
