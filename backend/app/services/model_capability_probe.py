@@ -380,6 +380,17 @@ def _extract_window_tokens(payload: Any) -> Optional[int]:
     return None
 
 
+def _looks_like_model_collection(payload: Any) -> bool:
+    """响应是不是「一串模型」而不是「本次那一个模型」。
+
+    catch-all 路由会让 `GET /models/<id>` 直接用整个列表作答。那种集合里没有一条
+    声明自己是本次探测的模型，扫它取窗口等于拿邻居的合格证盖章。
+    """
+    if isinstance(payload, list):
+        return True
+    return isinstance(payload, dict) and isinstance(payload.get("data"), list)
+
+
 def _list_entry_window_tokens(payload: Any, model: str) -> Optional[int]:
     """从 `GET /models` 列表里取**本模型自己那条**记录的窗口。
 
@@ -452,6 +463,11 @@ async def probe_metadata_tier(
             payload = response.json()
         except ValueError:
             no_field_detail = "metadata tier response is not JSON"
+            continue
+
+        if not list_shaped and _looks_like_model_collection(payload):
+            # 单模型端点答成了集合 ⇒ 这份数据无法归属，交给列表那一发按 id 认领
+            no_field_detail = "metadata tier got a collection from the single-model endpoint"
             continue
 
         tokens = (
