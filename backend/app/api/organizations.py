@@ -148,6 +148,16 @@ async def create_organization(
     )
     if existing.scalar_one_or_none():
         raise ApiError(code="validation.organization_detail_exists")
+
+    if organization.parent_org_id:
+        parent = (await db.execute(
+            select(Organization).where(
+                Organization.id == organization.parent_org_id,
+                Organization.project_id == organization.project_id,
+            )
+        )).scalar_one_or_none()
+        if not parent:
+            raise ApiError(code="validation.organization_not_in_project")
     
     # 创建组织
     db_org = Organization(**organization.model_dump())
@@ -181,6 +191,15 @@ async def update_organization(
     
     # 更新 Organization 表字段
     update_data = organization.model_dump(exclude_unset=True)
+    if update_data.get("parent_org_id"):
+        parent = (await db.execute(
+            select(Organization).where(
+                Organization.id == update_data["parent_org_id"],
+                Organization.project_id == db_org.project_id,
+            )
+        )).scalar_one_or_none()
+        if not parent:
+            raise ApiError(code="validation.organization_not_in_project")
     for field, value in update_data.items():
         setattr(db_org, field, value)
     
@@ -314,6 +333,8 @@ async def add_organization_member(
         raise ApiError(code="not_found.character")
     if char.is_organization:
         raise ApiError(code="validation.organization_type_required", detail="不能将组织添加为成员")
+    if char.project_id != org.project_id:
+        raise ApiError(code="validation.character_not_in_project")
     
     # 检查是否已存在
     existing = await db.execute(

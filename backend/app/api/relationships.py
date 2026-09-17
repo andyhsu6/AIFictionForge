@@ -35,6 +35,7 @@ from app.services.relationship_service import (
     relationship_display_name,
     relationship_display_names,
     ensure_relationship_type_not_in_use,
+    ensure_relationship_types_in_project,
 )
 from app.services.cascade_cleanup import (
     delete_relationship_links,
@@ -316,27 +317,36 @@ async def create_relationship(
         select(Character).where(Character.id == relationship.character_to_id)
     )
     
-    if not char_from.scalar_one_or_none():
+    char_from_obj = char_from.scalar_one_or_none()
+    char_to_obj = char_to.scalar_one_or_none()
+
+    if not char_from_obj:
         raise ApiError(
             code="not_found.relationship_character",
             detail=f"角色A（ID: {relationship.character_from_id}）不存在",
             params={"character_id": relationship.character_from_id},
         )
-    if not char_to.scalar_one_or_none():
+    if not char_to_obj:
         raise ApiError(
             code="not_found.relationship_character",
             detail=f"角色B（ID: {relationship.character_to_id}）不存在",
             params={"character_id": relationship.character_to_id},
         )
-    
+    if char_from_obj.project_id != relationship.project_id:
+        raise ApiError(code="validation.character_not_in_project")
+    if char_to_obj.project_id != relationship.project_id:
+        raise ApiError(code="validation.character_not_in_project")
+
+    type_ids = list(relationship.relationship_type_ids or [])
+    if relationship.relationship_type_id and relationship.relationship_type_id not in type_ids:
+        type_ids.insert(0, relationship.relationship_type_id)
+    await ensure_relationship_types_in_project(db, relationship.project_id, type_ids)
+
     # 创建关系
     create_data = relationship.model_dump(exclude={"relationship_type_ids", "relationship_type_names"})
     db_relationship = CharacterRelationship(**create_data, source="manual")
     db.add(db_relationship)
     await db.flush()
-    type_ids = list(relationship.relationship_type_ids or [])
-    if relationship.relationship_type_id and relationship.relationship_type_id not in type_ids:
-        type_ids.insert(0, relationship.relationship_type_id)
     if relationship.relationship_type_names:
         type_ids.extend(
             await resolve_relationship_type_ids(
