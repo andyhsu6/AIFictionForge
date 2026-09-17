@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApiError
 from app.models.relationship import (
     CharacterRelationship,
     RelationshipType,
@@ -181,6 +182,33 @@ async def resolve_relationship_type_ids(
         existing[name] = rt.id
         project_type_count += 1
     return ids
+
+
+async def ensure_relationship_types_in_project(
+    db: AsyncSession,
+    project_id: str,
+    type_ids: Optional[Iterable[int]],
+) -> None:
+    """校验关系类型 ID 均为系统预置（project_id 为 NULL）或属于该项目。
+
+    系统预置类型可跨项目复用；项目级类型只能被同项目关系引用。
+    """
+    ids = list(dict.fromkeys(int(x) for x in (type_ids or [])))
+    if not ids:
+        return
+    found = set(
+        (
+            await db.execute(
+                select(RelationshipType.id).where(
+                    RelationshipType.id.in_(ids),
+                    (RelationshipType.project_id == project_id)
+                    | (RelationshipType.project_id.is_(None)),
+                )
+            )
+        ).scalars().all()
+    )
+    if found != set(ids):
+        raise ApiError(code="validation.relationship_type_not_in_project")
 
 
 async def sync_relationship_links(

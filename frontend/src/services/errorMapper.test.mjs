@@ -133,10 +133,28 @@ const cases = [
   // than yield a blank diagnostic — this is why the chain uses `||` not `??`.
   () => assert.equal(getErrorDiagnostic({ raw: '', detail: 'x' }), 'x'),
   () => assert.equal(getErrorDiagnostic({ raw: '', detail: '' }), ''),
+  // issue #136 part B: cross-project reference codes render their own localized
+  // template (not the generic fallback), and the backend detail never leaks.
+  () => assert.equal(
+    mapErrorPayload({ code: 'validation.character_not_in_project', detail: '原始后端文案', status: 400 }),
+    zhErrors.validation.character_not_in_project
+  ),
+  () => assert.equal(
+    mapErrorPayload({ code: 'validation.relationship_type_not_in_project', detail: '原始后端文案', status: 400 }),
+    zhErrors.validation.relationship_type_not_in_project
+  ),
+  () => assert.equal(
+    mapErrorPayload({ code: 'validation.organization_not_in_project', detail: '原始后端文案', status: 400 }),
+    zhErrors.validation.organization_not_in_project
+  ),
   // English locale switch
   async () => {
     await i18next.changeLanguage('en');
     assert.equal(mapErrorPayload({ code: 'auth.unauthorized', status: 401 }), 'Not logged in');
+    assert.equal(
+      mapErrorPayload({ code: 'validation.character_not_in_project', status: 400 }),
+      enErrors.validation.character_not_in_project
+    );
     // unregistered code → en generic, never the backend raw text
     const shown = mapErrorPayload({ code: 'weird.x', detail: 'raw chinese kept', status: 400 });
     assert.ok(!shown.includes('raw chinese kept'), `en unregistered code leaked detail: ${shown}`);
