@@ -116,18 +116,27 @@ class _Gateway:
         *,
         metadata_status=404,
         metadata_body=None,
+        models_list_status=404,
+        models_list_body=None,
         bound_status=400,
         bound_body=_BOUND_REJECTION_BODY,
     ):
         self.calls = []
         self.metadata_status = metadata_status
         self.metadata_body = metadata_body
+        self.models_list_status = models_list_status
+        self.models_list_body = models_list_body
         self.bound_status = bound_status
         self.bound_body = bound_body
 
     @property
     def metadata_calls(self):
         return sum(1 for c in self.calls if "/models/" in c["path"])
+
+    @property
+    def list_metadata_calls(self):
+        """① 档的列表回退（issue #148）：`GET /models`，与单模型端点是两发。"""
+        return sum(1 for c in self.calls if c["path"].rstrip("/") == "/v1/models")
 
     @property
     def bound_calls(self):
@@ -149,6 +158,13 @@ class _Gateway:
             if self.metadata_status >= 400:
                 return httpx.Response(self.metadata_status, json={"error": {"message": "no such endpoint"}})
             return httpx.Response(200, json=self.metadata_body or {})
+
+        if request.url.path.rstrip("/") == "/v1/models":
+            if self.models_list_status >= 400:
+                return httpx.Response(self.models_list_status, json={"error": {"message": "no list endpoint"}})
+            return httpx.Response(
+                200, json=self.models_list_body or {"object": "list", "data": []}
+            )
 
         if request.url.path.endswith("/chat/completions"):
             if self.bound_status >= 400:
@@ -442,9 +458,10 @@ async def test_probe_issues_exactly_one_attempt_per_tier(gateway):
         provider="openai", base_url=GATEWAY, api_key=API_KEY, model=SMALL_MODEL
     )
 
-    assert gateway.metadata_calls == 1
+    assert gateway.metadata_calls == 1, "① 档单模型端点被重发了"
+    assert gateway.list_metadata_calls == 1, "① 档列表回退被重发了"
     assert gateway.bound_calls == 1, f"② 档被重发了 {gateway.bound_calls} 次，重试没绕开"
-    assert gateway.total_calls == 2, "探测总请求数超出 ①+② 各一次"
+    assert gateway.total_calls == 3, "探测总请求数超出 ①(两发 GET) + ②(一发) 各一次"
 
 
 @pytest.mark.anyio
@@ -816,7 +833,7 @@ async def test_legacy_user_without_any_verdict_is_probed_then_rejected(db_factor
             await svc.generate_text(prompt=NEUTRAL_PROMPT)
 
     assert exc_info.value.code == BELOW_MINIMUM
-    assert gateway.total_calls == 2, "首次定论必须同步跑完 ①②"
+    assert gateway.total_calls == 3, "首次定论必须同步跑完 ①②"
     assert provider.calls == []
     async with db_factory() as check:
         row = (await check.execute(select(Settings).where(Settings.user_id == user_id))).scalar_one()
@@ -887,11 +904,12 @@ async def test_settled_qualified_verdict_is_never_reprobed(db_factory, service_f
 
 @pytest.mark.anyio
 async def test_concurrent_dispatch_reprobes_are_deduplicated(db_factory, service_factory, gateway):
-    """R3：同一三元组 8 个并发派发，对外请求 <= 2（占坑先于 await；串行用例证不了）。
+    """R3：同一三元组 8 个并发派发，对外请求 <= 3（占坑先于 await；串行用例证不了）。
 
     网关 ① 档不可用 + ② 档 401 ⇒ 每个派发都「判不出」。没有占坑，8 个请求各自打 ①②
-    （=16 次出网）；冷却把同一 tick 的并发收敛成一次探测。把冷却的写入挪到探测返回
-    **之后**，同一条断言就会红（这正是 issue #62 的突发形态）。
+    （=24 次出网，一次探测 = 两发元数据 GET + 一发 POST）；冷却把同一 tick 的并发收敛成
+    一次探测。把冷却的写入挪到探测返回**之后**，同一条断言就会红（这正是 issue #62 的
+    突发形态）。
     """
     assert DISPATCH_REPROBE_COOLDOWN_SECONDS > 0, "冷却窗必须为正，否则 R3 无意义"
     user_id = "u-burst"
@@ -911,7 +929,7 @@ async def test_concurrent_dispatch_reprobes_are_deduplicated(db_factory, service
     errors = await asyncio.gather(*[one_dispatch() for _ in range(8)])
 
     assert all(error.code == BELOW_MINIMUM for error in errors)
-    assert gateway.total_calls <= 2, (
+    assert gateway.total_calls <= 3, (
         f"并发派发重测没去重：出网 {gateway.total_calls} 次（占坑必须发生在 await 之前）"
     )
 
@@ -1513,3 +1531,115 @@ def test_gate_reuses_the_registered_error_code_only():
     assert not any(code.startswith("warning.") for code in ERROR_REGISTRY)
     source = inspect.getsource(probe_module)
     assert "ApiError(code=" in source
+
+
+# ========== ① 档列表端点回退（issue #148）==========
+# 真机形状：commandcode 在 `GET /models` 里逐个模型公布 `context_length`
+# （LongCat-2.0 = 1,048,576，实测），但 `GET /models/<id>` 一律 404。
+# 白拿的元数据读不到，就会被推去动用唯一会真正打生成端点的 ② 档。
+
+
+def _list_only_transport(entries, *, requests, per_model_status=404):
+    """只实现列表端点、不实现单模型端点的网关。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.rstrip("/").endswith("/models"):
+            return httpx.Response(200, json={"object": "list", "data": entries})
+        return httpx.Response(per_model_status, json={"error": {"message": "no such endpoint"}})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.anyio
+async def test_metadata_tier_reads_the_window_the_list_endpoint_publishes():
+    requests = []
+    async with httpx.AsyncClient(
+        transport=_list_only_transport(
+            [
+                {"id": "somebody-else", "context_length": 16_000},
+                {"id": QUALIFIED_MODEL, "context_length": 1_048_576},
+            ],
+            requests=requests,
+        )
+    ) as client:
+        outcome = await probe_module.probe_metadata_tier(
+            provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, client=client
+        )
+
+    assert outcome.verdict == VERDICT_QUALIFIED
+    assert outcome.context_window_tokens == 1_048_576
+    assert outcome.source == SOURCE_PROBE, "列表元数据仍是网关自己报出的实测证据"
+    # 先试单模型端点（各家实现的规范形状），落空才回退列表
+    assert [r.url.path for r in requests] == [f"/v1/models/{QUALIFIED_MODEL}", "/v1/models"]
+
+
+@pytest.mark.anyio
+async def test_metadata_tier_never_borrows_another_models_window_from_the_list():
+    requests = []
+    async with httpx.AsyncClient(
+        transport=_list_only_transport(
+            [{"id": "somebody-else", "context_length": 1_048_576}], requests=requests
+        )
+    ) as client:
+        outcome = await probe_module.probe_metadata_tier(
+            provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, client=client
+        )
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE
+
+
+@pytest.mark.anyio
+async def test_metadata_tier_reports_the_number_it_read_from_the_list():
+    requests = []
+    async with httpx.AsyncClient(
+        transport=_list_only_transport([{"id": SMALL_MODEL, "context_length": 131_072}], requests=requests)
+    ) as client:
+        outcome = await probe_module.probe_metadata_tier(
+            provider="openai", base_url=GATEWAY, api_key=API_KEY, model=SMALL_MODEL, client=client
+        )
+
+    assert outcome.verdict == VERDICT_UNQUALIFIED
+    assert outcome.context_window_tokens == 131_072
+
+
+@pytest.mark.anyio
+async def test_metadata_tier_still_prefers_the_per_model_endpoint_when_it_answers():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.rstrip("/").endswith("/models"):
+            # 列表与单模型冲突时以单模型为准（列表可能是缓存的旧值）
+            return httpx.Response(200, json={"data": [{"id": QUALIFIED_MODEL, "context_length": 4096}]})
+        return httpx.Response(200, json={"id": QUALIFIED_MODEL, "context_length": 1_048_576})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await probe_module.probe_metadata_tier(
+            provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, client=client
+        )
+
+    assert outcome.context_window_tokens == 1_048_576
+    assert [r.url.path for r in requests] == [f"/v1/models/{QUALIFIED_MODEL}"]
+
+
+@pytest.mark.anyio
+async def test_window_settles_from_metadata_without_touching_the_generating_tier(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.url.path.rstrip("/").endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": QUALIFIED_MODEL, "context_length": 1_048_576}]})
+        return httpx.Response(404, json={"error": {"message": "no such endpoint"}})
+
+    def _factory(transport=None):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(probe_module, "create_probe_client", _factory)
+    outcome = await probe_model_context_window(
+        provider="openai", base_url=GATEWAY, api_key=API_KEY, model=QUALIFIED_MODEL, trigger=TRIGGER_SAVE
+    )
+
+    assert outcome.verdict == VERDICT_QUALIFIED
+    assert ("POST", "/v1/chat/completions") not in seen, "窗口已由元数据定论，不该再打生成档"
