@@ -21,6 +21,7 @@ from app.services.ai_providers.anthropic_provider import AnthropicProvider
 from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
+from app.services.ai_clients.output_caps import resolve_output_ceiling
 from app.services.model_capability_probe import (
     TRIGGER_DISPATCH,
     ensure_model_allowed,
@@ -171,9 +172,11 @@ def detect_context_window(model: Optional[str]) -> Optional[int]:
 # 保守默认输出上限（章内续写 B0：未登记模型按此值推导输出预算）
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
-# 已知模型最大输出 token（模型输出能力注册表；未列出的按保守值处理。
+# 已知模型最大输出 token。**与 #55 对窗口登记表的处理同一条路子：这是「提示」不是
+# 判据** —— 网关自己报过的上限（#147 的 output_caps 记忆）优先于本表，两个方向都优先
+# （见 detect_max_output_tokens）。未登记且未测过的模型才按保守值处理。
 # 思考/推理模型条目不得低于 THINKING_MODEL_DEFAULT_MAX_TOKENS：推理与正文
-# 共享输出预算，登记过低会让续写段正文为空，与修复 #13 的语义一致）
+# 共享输出预算，登记过低会让续写段正文为空，与修复 #13 的语义一致。
 _KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
     "deepseek-v4": 64000,
     "deepseek-v3": 64000,
@@ -195,13 +198,23 @@ _KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
 
 
 def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = None) -> int:
-    """检测模型最大输出 token 数（输出能力注册表，镜像 detect_context_window）。
+    """检测模型最大输出 token 数：实测优先，登记表只当提示（issue #152）。
 
-    按键长度降序匹配已知表（更具体的键优先，如 gpt-4.1 先于 gpt-4），
-    未命中或登记值非正数时返回保守值 _DEFAULT_MAX_OUTPUT_TOKENS，
-    保证返回值恒 > 0。base_url 与 is_thinking_model 保持同签名形态，
-    预留给后续按网关覆盖，当前解析仅依据模型名；对 None/空 model 健壮。
+    顺序：
+    1. **网关为这个 (base_url, model) 报过的上限**（#147 学到并存进进程内记忆）——
+       两个方向都优先：实测比登记表小，按登记表规划分段会被上游拒；实测比登记表大，
+       按登记表规划就是白腰斩容量（实测：未登记的 LongCat 报 131072，却被按保守值
+       8192 规划，长续写容量只剩登记模型的一半）。
+    2. 登记表提示（谁还没被测过时用）。
+    3. 保守默认值。
+
+    返回值恒 > 0。`base_url` 省略时不去查记忆（记忆的键含网关，缺一半就没法归属），
+    退化成「提示 → 默认」；对 None/空 model 健壮。
     """
+    if base_url and model:
+        measured = resolve_output_ceiling(base_url, model)
+        if measured is not None and measured > 0:
+            return measured
     name = (model or "").lower()
     for key, limit in sorted(
         _KNOWN_OUTPUT_LIMITS.items(), key=lambda kv: len(kv[0]), reverse=True
