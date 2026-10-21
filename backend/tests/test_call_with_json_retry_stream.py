@@ -94,3 +94,30 @@ async def test_call_with_json_retry_retries_on_parse_failure():
 
     assert result == {"ok": True}
     assert calls["n"] == 2  # 首次失败 + 一次重试
+
+
+@pytest.mark.anyio
+async def test_array_expectation_skips_json_object_injection():
+    """期望数组时不得注入 json_object。
+
+    修复背景：json_object 的语义是「响应顶层为对象」，与 expected_type="array"
+    直接冲突。注入后模型把数组包成 {"cities": [...]}，三个数组步骤（大纲/角色
+    组织/关系抽取）全部只能报「JSON 解析失败: 期望数组」。
+    """
+    rec = _StreamProvider(chunks=['[{"name": "A"}]'])
+    svc = _make_service(rec)
+
+    await svc.call_with_json_retry(prompt="生成列表", expected_type="array")
+
+    assert rec.calls[0][1]["response_format"] is None
+
+
+@pytest.mark.anyio
+async def test_object_expectation_still_injects_json_object():
+    """对象期望仍注入 json_object（原有 JSON 模式约束不回归）。"""
+    rec = _StreamProvider(chunks=['{"name": "张三"}'])
+    svc = _make_service(rec)
+
+    await svc.call_with_json_retry(prompt="生成对象", expected_type="object")
+
+    assert rec.calls[0][1]["response_format"] == {"type": "json_object"}
