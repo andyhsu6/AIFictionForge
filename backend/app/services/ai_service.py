@@ -1125,7 +1125,8 @@ class AIService:
             validator_max_retries: validator 独立重试上限（不消耗 max_retries），
                 超过后抛 ValueError("校验失败: ...")
             response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）。
-                默认 None 时自动注入 json_object（除非会加载 MCP tools 或非 OpenAI 提供商）
+                默认 None 时自动注入 json_object（除非会加载 MCP tools、期望数组输出
+                或非 OpenAI 提供商）
             
         Returns:
             解析后的JSON数据
@@ -1153,6 +1154,10 @@ class AIService:
                 logger.warning("检测到 MCP tools，跳过 response_format 注入以避免 API 冲突")
             elif normalize_provider(provider or self.api_provider) != "openai":
                 logger.warning("非 OpenAI 提供商不支持 response_format，跳过 JSON 格式约束")
+            elif expected_type == "array":
+                # json_object 语义是「响应顶层为对象」，与期望数组直接冲突：
+                # 注入后模型会把数组包成 {"cities": [...]}，解析必然判「期望数组」失败。
+                logger.warning("期望数组输出，跳过 json_object 注入以避免顶层类型冲突")
             else:
                 response_format = {"type": "json_object"}
         
