@@ -69,18 +69,30 @@ export default function PlanApprovalCard({ projectId, toolCall, onDecided }: Pla
       style={{
         border: `1px solid ${token.colorWarningBorder}`,
         borderRadius: 10,
-        padding: 10,
-        marginTop: 10,
+        padding: '0 10px',
+        marginTop: 4,
         background: token.colorWarningBg,
+        display: 'flex',
+        flexDirection: 'column',
+        flex: '0 1 auto',
+        minHeight: 0,
+        boxSizing: 'border-box',
       }}
     >
-      <Text strong style={{ fontSize: 12 }}>{t('planCardTitle')}</Text>
+      <Text strong style={{ fontSize: 12, flexShrink: 0 }}>{t('planCardTitle')}</Text>
       {payload.objective && (
-        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4, flexShrink: 0 }}>
           {t('planObjective', { objective: payload.objective })}
         </Text>
       )}
-      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* 唯一内滚动区：步骤多时在此滚动，标题/警告/按钮行常驻卡片内可见。 */}
+      <div
+        data-testid="plan-step-list"
+        style={{
+          marginTop: 4, display: 'flex', flexDirection: 'column', gap: 3,
+          flex: '1 1 auto', minHeight: 0, overflowY: 'auto',
+        }}
+      >
         {payload.steps.map((step, index) => {
           const checked = selected.includes(step.id);
           return (
@@ -120,15 +132,15 @@ export default function PlanApprovalCard({ projectId, toolCall, onDecided }: Pla
           );
         })}
       </div>
-      <Text type="secondary" style={{ display: 'block', fontSize: 11, marginTop: 8 }}>
+      <Text type="secondary" style={{ display: 'block', fontSize: 11, marginTop: 2, flexShrink: 0 }}>
         {t('planUnverifiableWarning')}
       </Text>
       {/* G1（架构 §3③，修 H6）：批准前必须披露队列占用后果——计划可跑数十分钟，
           期间用户的手工生成任务排在它后面。文案走 locale，禁止硬编码。 */}
-      <Text type="secondary" data-testid="plan-queue-notice" style={{ display: 'block', fontSize: 11, marginTop: 4 }}>
+      <Text type="secondary" data-testid="plan-queue-notice" style={{ display: 'block', fontSize: 11, marginTop: 0, flexShrink: 0 }}>
         {t('planQueueNotice')}
       </Text>
-      <Space style={{ marginTop: 10 }}>
+      <Space style={{ marginTop: 2, flexShrink: 0 }}>
         <Button
           data-testid="plan-approve"
           type="primary"

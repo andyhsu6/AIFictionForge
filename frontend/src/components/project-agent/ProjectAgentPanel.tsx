@@ -1013,7 +1013,7 @@ export default function ProjectAgentPanel({
   };
 
   const body = (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
       <div style={{
         height: 52, padding: '0 12px', borderBottom: `1px solid ${token.colorBorderSecondary}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
@@ -1040,7 +1040,7 @@ export default function ProjectAgentPanel({
         </Space>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+      <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', padding: 12 }}>
         {loadingHistory ? (
           <div style={{ height: '100%', display: 'grid', placeItems: 'center' }}><Spin /></div>
         ) : messages.length === 0 ? (
@@ -1110,7 +1110,10 @@ export default function ProjectAgentPanel({
       </div>
 
       {awaitingPlanCalls.length > 0 && (
-        <div style={{ padding: '0 12px 10px' }}>
+        <div style={{
+          padding: '0 12px 10px', display: 'flex', flexDirection: 'column',
+          minHeight: 0, maxHeight: '50%', overflow: 'hidden', flexShrink: 1,
+        }}>
           {awaitingPlanCalls.map(toolCall => (
             <PlanApprovalCard
               key={toolCall.id}
@@ -1126,7 +1129,10 @@ export default function ProjectAgentPanel({
       )}
 
       {runningPlans.length > 0 && (
-        <div data-testid="plan-progress" style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div data-testid="plan-progress" style={{
+          padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6,
+          minHeight: 0, maxHeight: '25%', overflowY: 'auto', flexShrink: 1,
+        }}>
           {runningPlans.map(({ toolCall, planTaskId }) => {
             const payload = parsePlanPayload(toolCall);
             const total = payload ? payload.steps.length : 0;
