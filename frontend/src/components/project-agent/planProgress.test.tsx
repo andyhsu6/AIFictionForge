@@ -62,6 +62,11 @@ const orphanStep = {
   updated_at: '2026-09-13T00:00:00',
 };
 
+const planExecutionStep = (overrides: Partial<typeof orphanStep & { tool_call_id: string }> = {}) => ({
+  ...orphanStep,
+  ...overrides,
+});
+
 beforeAll(() => {
   // jsdom ships no scrollIntoView; the panel auto-scrolls on every message/step
   // update (same shim as planSettleRefresh.test.tsx).
@@ -127,5 +132,41 @@ describe('running plan progress', () => {
     const view = render(<MemoryRouter><AntdApp><ProjectAgentPanel projectId="proj-1" mobile={false} mobileOpen={false} onMobileClose={() => {}} /></AntdApp></MemoryRouter>);
     await waitFor(() => expect(view.queryByTestId('plan-steps')).toBeTruthy());
     expect(view.getAllByText('analyze chapter one')).toHaveLength(1);
+  });
+
+  it('shows only the running plan steps, not failed steps from an older plan', async () => {
+    vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+      id: 'conv-1', user_id: 'u', project_id: 'proj-1', title: 't', status: 'active',
+      last_message_at: '2026-09-13T00:00:00', created_at: '2026-09-13T00:00:00', updated_at: '2026-09-13T00:00:00',
+      messages: [{ id: 'm-assistant', conversation_id: 'conv-1', role: 'assistant', content: '', created_at: '2026-09-13T00:00:00' }],
+      tool_calls: [runningPlan],
+      execution_steps: [
+        planExecutionStep({ id: 'old-step', tool_call_id: 'tc-old', title: '计划第 1/12 步：manage_organization', status: 'failed' }),
+        planExecutionStep({ id: 'current-step', tool_call_id: 'tc-plan', title: '本次计划步骤', status: 'running' }),
+      ],
+    });
+
+    const view = render(<MemoryRouter><AntdApp><ProjectAgentPanel projectId="proj-1" mobile={false} mobileOpen={false} onMobileClose={() => {}} /></AntdApp></MemoryRouter>);
+    const steps = await waitFor(() => view.getByTestId('plan-steps'));
+    expect(steps.textContent).toContain('本次计划步骤');
+    expect(steps.textContent).not.toContain('manage_organization');
+  });
+
+  it('counts completed steps from the current plan only', async () => {
+    vi.mocked(projectAgentApi.getConversation).mockResolvedValue({
+      id: 'conv-1', user_id: 'u', project_id: 'proj-1', title: 't', status: 'active',
+      last_message_at: '2026-09-13T00:00:00', created_at: '2026-09-13T00:00:00', updated_at: '2026-09-13T00:00:00',
+      messages: [{ id: 'm-assistant', conversation_id: 'conv-1', role: 'assistant', content: '', created_at: '2026-09-13T00:00:00' }],
+      tool_calls: [runningPlan],
+      execution_steps: [
+        planExecutionStep({ id: 'current-completed', tool_call_id: 'tc-plan', title: '已完成步骤', status: 'completed' }),
+        planExecutionStep({ id: 'current-running', tool_call_id: 'tc-plan', title: '执行中步骤', status: 'running' }),
+        planExecutionStep({ id: 'old-failed', tool_call_id: 'tc-old', title: '历史失败步骤', status: 'failed' }),
+      ],
+    });
+
+    const view = render(<MemoryRouter><AntdApp><ProjectAgentPanel projectId="proj-1" mobile={false} mobileOpen={false} onMobileClose={() => {}} /></AntdApp></MemoryRouter>);
+    await waitFor(() => expect(view.getByText('第 1 / 2 步')).toBeTruthy());
+    expect(view.queryByText('第 2 / 2 步')).toBeNull();
   });
 });
