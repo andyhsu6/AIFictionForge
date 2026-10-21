@@ -1,4 +1,4 @@
-import type { AgentToolCall } from '../../types';
+import type { AgentExecutionStep, AgentToolCall } from '../../types';
 
 export const PLAN_TOOL_NAME = 'propose_plan';
 export const PLAN_TASK_TYPE = 'agent_plan';
@@ -35,6 +35,15 @@ export interface PlanProgressView {
 
 export function isPlanToolCall(toolCall: AgentToolCall): boolean {
   return toolCall.tool_name === PLAN_TOOL_NAME;
+}
+
+/** 某个运行中计划自己的进度步骤：只保留无消息归属、且属于该计划（或历史遗留无 tool_call_id）的行。 */
+export function planProgressSteps(steps: AgentExecutionStep[], toolCallId: string): AgentExecutionStep[] {
+  return steps.filter(step => (
+    !step.assistant_message_id
+    && !step.user_message_id
+    && (step.tool_call_id == null || step.tool_call_id === toolCallId)
+  ));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

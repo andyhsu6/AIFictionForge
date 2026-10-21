@@ -228,6 +228,10 @@ class ProjectAgentExtendedTools:
     }
     ORGANIZATION_FIELDS = {"parent_org_id", "level", "power_level", "location", "motto", "color"}
     MEMBER_FIELDS = {"position", "rank", "status", "joined_at", "left_at", "loyalty", "contribution", "notes"}
+    # 添加成员时 position 缺省值：挂靠关系本身是用户的真实意图，数据库要求非空
+    # （OrganizationMember.position NOT NULL），而让模型给 12 个成员编 12 个职位反而
+    # 失真；用户后续可在界面改职位。
+    DEFAULT_MEMBER_POSITION = "成员"
     FORESHADOW_FIELDS = {
         "title", "content", "hint_text", "resolution_text", "plant_chapter_number",
         "target_resolve_chapter_number", "status", "is_long_term", "importance",
@@ -660,7 +664,10 @@ class ProjectAgentExtendedTools:
     # --- 角色管理 ---
 
     async def _manage_character_preview_create(self, arguments: dict[str, Any]):
-        data = self._fields(self._data(arguments), self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS)
+        data = self._fields(
+            normalize_data_aliases("manage_character", self._data(arguments)),
+            self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS,
+        )
         self._validate_character_fields(data)
         organization_fields = {key: data[key] for key in data if key in self.ORGANIZATION_FIELDS}
         if organization_fields and not data.get("is_organization"):
@@ -672,7 +679,10 @@ class ProjectAgentExtendedTools:
         return {}, data, f"创建{'组织' if data.get('is_organization') else '角色'}《{name}》"
 
     async def _manage_character_create(self, arguments: dict[str, Any]):
-        data = self._fields(self._data(arguments), self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS)
+        data = self._fields(
+            normalize_data_aliases("manage_character", self._data(arguments)),
+            self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS,
+        )
         self._validate_character_fields(data)
         org_data = {key: data.pop(key) for key in list(data) if key in self.ORGANIZATION_FIELDS}
         await self._validate_organization_fields(org_data)
@@ -976,27 +986,59 @@ class ProjectAgentExtendedTools:
     async def _manage_organization_preview_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
-        character = await self._find_character({"character_id": data.get("character_id")})
+        character = await self._find_character(self._member_character_selector(arguments, data))
         exists = (await self.db.execute(select(OrganizationMember.id).where(OrganizationMember.organization_id == org.id, OrganizationMember.character_id == character.id))).scalar_one_or_none()
         if exists:
             raise ValueError("该角色已经是组织成员")
-        fields = self._fields({key: value for key, value in data.items() if key != "character_id"}, self.MEMBER_FIELDS)
-        if not str(fields.get("position") or "").strip():
-            raise ValueError("添加成员需要 position")
+        fields = self._member_fields(data)
         self._validate_member_fields(fields)
         return {}, {"character_id": character.id, "character_name": character.name, **fields}, f"向组织《{org_char.name}》添加成员《{character.name}》"
 
     async def _manage_organization_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
-        character = await self._find_character({"character_id": data.get("character_id")})
-        fields = self._fields({key: value for key, value in data.items() if key != "character_id"}, self.MEMBER_FIELDS)
+        character = await self._find_character(self._member_character_selector(arguments, data))
+        fields = self._member_fields(data)
         self._validate_member_fields(fields)
         row = OrganizationMember(organization_id=org.id, character_id=character.id, source="manual", **fields)
         self.db.add(row)
         org.member_count = (org.member_count or 0) + 1
         await self.db.flush()
         return row.id, _snapshot(row, self.MEMBER_FIELDS | {"id", "character_id"}), f"已向组织《{org_char.name}》添加成员《{character.name}》"
+
+    @staticmethod
+    def _member_character_selector(arguments: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """add_member 的角色选择器：按序回退，兼容真实失败形状（issue #160）。
+
+        模型把「要加入的角色 ID」写进顶层 member_id、data 整个缺失；member_id 在
+        add_member 上没有「成员关系 ID」语义（那是 update_member/remove_member 的键），
+        因此作为最后回退不会产生歧义。
+        """
+        for key, source in (
+            ("character_id", data),
+            ("character_name", data),
+            ("character_id", arguments),
+            ("character_name", arguments),
+            ("member_id", arguments),
+        ):
+            value = clean_identifier(source.get(key))
+            if value:
+                return {"character_id": value} if key == "member_id" else {key: value}
+        raise ValueError(
+            "添加组织成员需要 data.character_id（角色 ID），也可用顶层 character_id / character_name"
+        )
+
+    def _member_fields(self, data: dict[str, Any]) -> dict[str, Any]:
+        """preview/execute 共用的成员字段集合（含 position 缺省），避免两处漂移。"""
+        # character_id/character_name 是角色选择器，不进 _fields（MEMBER_FIELDS 之外的键
+        # 会被 _fields 当非法字段拒绝）。
+        fields = self._fields(
+            {key: value for key, value in data.items() if key not in {"character_id", "character_name"}},
+            self.MEMBER_FIELDS,
+        )
+        if not str(fields.get("position") or "").strip():
+            fields["position"] = self.DEFAULT_MEMBER_POSITION
+        return fields
 
     async def _manage_organization_preview_update_member(self, arguments: dict[str, Any]):
         row = await self._find_member(arguments.get("member_id"))
@@ -1327,7 +1369,7 @@ FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
     "manage_organization": frozenset(
         ProjectAgentExtendedTools.ORGANIZATION_FIELDS
         | ProjectAgentExtendedTools.MEMBER_FIELDS
-        | {"character_id"}
+        | {"character_id", "character_name"}
     ),
     "manage_foreshadow": frozenset(
         ProjectAgentExtendedTools.FORESHADOW_FIELDS
@@ -1340,12 +1382,59 @@ FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
-# 严格动作的 data 字段集合（issue #112）：这些动作在运行期走 _fields(data, *_FIELDS)，
+# 严格动作的 data 字段集合（issue #112/#160）：这些动作在运行期走 _fields(data, *_FIELDS)，
 # 集合外的键会报错；提案期必须同判，否则用户批准的计划会在执行中途失败。
 # 集合与 handler 传入 _fields 的常量同源引用；未登记的工具/动作视为宽松（fail-open）。
 STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "manage_character": {
+        "create": frozenset(
+            ProjectAgentExtendedTools.CHARACTER_FIELDS
+            | ProjectAgentExtendedTools.ORGANIZATION_FIELDS
+        ),
+    },
+    "manage_relationship": {
+        "create": frozenset(
+            ProjectAgentExtendedTools.RELATIONSHIP_FIELDS
+            | {"character_from_id", "character_to_id"}
+        ),
+        "update": frozenset(ProjectAgentExtendedTools.RELATIONSHIP_FIELDS),
+    },
     "manage_foreshadow": {
         "create": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
         "update": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
     },
+    # create 的 handler 先按 character_id 找既有组织角色，data 再整体过 _fields，
+    # 集合外的键（如 name）一律运行期报错（issue #160）。
+    "manage_organization": {
+        "create": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS | {"character_id"}),
+        "update": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS),
+        "add_member": frozenset(
+            ProjectAgentExtendedTools.MEMBER_FIELDS | {"character_id", "character_name"}
+        ),
+        "update_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS),
+    },
+    "manage_career": {
+        "create": frozenset(ProjectAgentExtendedTools.CAREER_FIELDS),
+        "update": frozenset(ProjectAgentExtendedTools.CAREER_FIELDS),
+    },
 }
+
+# data 键别名（issue #160）：模型对「组织角色」一贯写 type/purpose（只读工具
+# get_organization_detail 也这么输出），而写库字段是 organization_type/organization_purpose。
+# 按工具登记，避免误伤 manage_career 的 type（main/sub 是合法字段）。
+DATA_KEY_ALIASES: dict[str, dict[str, str]] = {
+    "manage_character": {"type": "organization_type", "purpose": "organization_purpose"},
+}
+
+
+def normalize_data_aliases(tool: str, data: dict[str, Any]) -> dict[str, Any]:
+    """返回应用别名后的 data 副本；不改调用方对象，同名字段以规范键为准。"""
+    aliases = DATA_KEY_ALIASES.get(tool)
+    if not aliases or not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    for alias, canonical in aliases.items():
+        if alias in normalized:
+            value = normalized.pop(alias)
+            normalized.setdefault(canonical, value)
+    return normalized
