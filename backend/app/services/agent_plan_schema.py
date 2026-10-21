@@ -42,6 +42,9 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "可同时给组织字段（落库时会一并建组织详情）。"
     "manage_organization 的 create 只给「已存在的组织角色」补详情，必须带 "
     "data.character_id；它不能新建实体。"
+    "manage_organization 的 add_member 用 data.character_id（或顶层 character_id/"
+    "character_name）指定要加入的角色，position 可省略（默认「成员」）；"
+    "member_id 只用于 update_member/remove_member。"
     "start_project_task 的 arguments.data 必须满足对应任务的请求模型，"
     "例如 partial_regenerate_chapter 需要 selected_text/start_position/"
     "end_position/user_instructions。"
@@ -390,6 +393,20 @@ def _step_arguments_error(
         for field, hint in required_data.items():
             if not normalized_data.get(field):
                 return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
+    if tool == "manage_organization" and str(effective.get("action") or "") == "add_member":
+        # 角色选择器有顶层回退（真实失败形状：顶层 member_id 装角色 ID、data 整块缺失），
+        # 无法塞进 _PLAN_REQUIRED_DATA_FIELDS 的「data 内单字段」模型，单独判（issue #160）。
+        payload = normalized_data if isinstance(normalized_data, dict) else {}
+        selectors = (
+            payload.get("character_id"), payload.get("character_name"),
+            effective.get("character_id"), effective.get("character_name"),
+            effective.get("member_id"),
+        )
+        if not any(str(value or "").strip() for value in selectors):
+            return (
+                f"步骤 {step_id} 的 {tool} 参数无效：新增组织成员需要 data.character_id"
+                "（角色 ID），也可用顶层 character_id / character_name"
+            )
     strict_data = _PLAN_STRICT_DATA_FIELDS.get(tool, {}).get(
         str(effective.get("action") or "")
     )

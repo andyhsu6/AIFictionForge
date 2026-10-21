@@ -228,6 +228,10 @@ class ProjectAgentExtendedTools:
     }
     ORGANIZATION_FIELDS = {"parent_org_id", "level", "power_level", "location", "motto", "color"}
     MEMBER_FIELDS = {"position", "rank", "status", "joined_at", "left_at", "loyalty", "contribution", "notes"}
+    # 添加成员时 position 缺省值：挂靠关系本身是用户的真实意图，数据库要求非空
+    # （OrganizationMember.position NOT NULL），而让模型给 12 个成员编 12 个职位反而
+    # 失真；用户后续可在界面改职位。
+    DEFAULT_MEMBER_POSITION = "成员"
     FORESHADOW_FIELDS = {
         "title", "content", "hint_text", "resolution_text", "plant_chapter_number",
         "target_resolve_chapter_number", "status", "is_long_term", "importance",
@@ -982,27 +986,59 @@ class ProjectAgentExtendedTools:
     async def _manage_organization_preview_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
-        character = await self._find_character({"character_id": data.get("character_id")})
+        character = await self._find_character(self._member_character_selector(arguments, data))
         exists = (await self.db.execute(select(OrganizationMember.id).where(OrganizationMember.organization_id == org.id, OrganizationMember.character_id == character.id))).scalar_one_or_none()
         if exists:
             raise ValueError("该角色已经是组织成员")
-        fields = self._fields({key: value for key, value in data.items() if key != "character_id"}, self.MEMBER_FIELDS)
-        if not str(fields.get("position") or "").strip():
-            raise ValueError("添加成员需要 position")
+        fields = self._member_fields(data)
         self._validate_member_fields(fields)
         return {}, {"character_id": character.id, "character_name": character.name, **fields}, f"向组织《{org_char.name}》添加成员《{character.name}》"
 
     async def _manage_organization_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
-        character = await self._find_character({"character_id": data.get("character_id")})
-        fields = self._fields({key: value for key, value in data.items() if key != "character_id"}, self.MEMBER_FIELDS)
+        character = await self._find_character(self._member_character_selector(arguments, data))
+        fields = self._member_fields(data)
         self._validate_member_fields(fields)
         row = OrganizationMember(organization_id=org.id, character_id=character.id, source="manual", **fields)
         self.db.add(row)
         org.member_count = (org.member_count or 0) + 1
         await self.db.flush()
         return row.id, _snapshot(row, self.MEMBER_FIELDS | {"id", "character_id"}), f"已向组织《{org_char.name}》添加成员《{character.name}》"
+
+    @staticmethod
+    def _member_character_selector(arguments: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """add_member 的角色选择器：按序回退，兼容真实失败形状（issue #160）。
+
+        模型把「要加入的角色 ID」写进顶层 member_id、data 整个缺失；member_id 在
+        add_member 上没有「成员关系 ID」语义（那是 update_member/remove_member 的键），
+        因此作为最后回退不会产生歧义。
+        """
+        for key, source in (
+            ("character_id", data),
+            ("character_name", data),
+            ("character_id", arguments),
+            ("character_name", arguments),
+            ("member_id", arguments),
+        ):
+            value = clean_identifier(source.get(key))
+            if value:
+                return {"character_id": value} if key == "member_id" else {key: value}
+        raise ValueError(
+            "添加组织成员需要 data.character_id（角色 ID），也可用顶层 character_id / character_name"
+        )
+
+    def _member_fields(self, data: dict[str, Any]) -> dict[str, Any]:
+        """preview/execute 共用的成员字段集合（含 position 缺省），避免两处漂移。"""
+        # character_id/character_name 是角色选择器，不进 _fields（MEMBER_FIELDS 之外的键
+        # 会被 _fields 当非法字段拒绝）。
+        fields = self._fields(
+            {key: value for key, value in data.items() if key not in {"character_id", "character_name"}},
+            self.MEMBER_FIELDS,
+        )
+        if not str(fields.get("position") or "").strip():
+            fields["position"] = self.DEFAULT_MEMBER_POSITION
+        return fields
 
     async def _manage_organization_preview_update_member(self, arguments: dict[str, Any]):
         row = await self._find_member(arguments.get("member_id"))
@@ -1333,7 +1369,7 @@ FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
     "manage_organization": frozenset(
         ProjectAgentExtendedTools.ORGANIZATION_FIELDS
         | ProjectAgentExtendedTools.MEMBER_FIELDS
-        | {"character_id"}
+        | {"character_id", "character_name"}
     ),
     "manage_foreshadow": frozenset(
         ProjectAgentExtendedTools.FORESHADOW_FIELDS
@@ -1372,7 +1408,9 @@ STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
     "manage_organization": {
         "create": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS | {"character_id"}),
         "update": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS),
-        "add_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS | {"character_id"}),
+        "add_member": frozenset(
+            ProjectAgentExtendedTools.MEMBER_FIELDS | {"character_id", "character_name"}
+        ),
         "update_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS),
     },
     "manage_career": {

@@ -29,12 +29,15 @@ import os
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
 from app.models.chapter import Chapter
+from app.models.character import Character
 from app.models.foreshadow import Foreshadow
 from app.models.project import Project
+from app.models.relationship import Organization, OrganizationMember
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_DESCRIPTION,
     PlanValidationError,
@@ -664,5 +667,178 @@ async def test_character_create_persists_alias_keys_as_organization_fields(seede
     assert row.organization_type == "guild"
     assert row.organization_purpose == "placeholder purpose"
     assert row.name == "placeholder organization"
+
+
+# --- (j) 组织成员 add_member 的角色选择器与 position 缺省（issue #160 追加）------
+#
+# real-machine 形状：12 步全是
+# {"action":"add_member","organization_id":"<org>","member_id":"<character>"}，
+# member_id 装的是**角色 ID**、data 整块缺失（position NOT NULL 随之炸），
+# 计划第 1 步就失败。这里钉死提案期放行 + 运行期落库。
+
+ORG_ID = "d1e2f3a4-b5c6-4d7e-8f90-0000000001a0"
+ORG_ROOT_CHARACTER_ID = "d1e2f3a4-b5c6-4d7e-8f90-0000000001a1"
+ORG_MEMBER_CHARACTER_ID = "d1e2f3a4-b5c6-4d7e-8f90-0000000001a2"
+EXISTING_MEMBER_ID = "d1e2f3a4-b5c6-4d7e-8f90-0000000001a3"
+
+
+@pytest.fixture
+async def org_seeded(db_session):
+    """一个项目：组织角色（含 organization 行）+ 待加入角色 + 一条既有成员关系。"""
+    project = Project(id=PROJECT_ID, user_id="user-1", title="placeholder project")
+    org_char = Character(
+        id=ORG_ROOT_CHARACTER_ID, project_id=PROJECT_ID,
+        name="placeholder organization", is_organization=True,
+    )
+    member_char = Character(
+        id=ORG_MEMBER_CHARACTER_ID, project_id=PROJECT_ID,
+        name="placeholder member character",
+    )
+    org = Organization(
+        id=ORG_ID, project_id=PROJECT_ID, character_id=org_char.id, member_count=1,
+    )
+    existing = OrganizationMember(
+        id=EXISTING_MEMBER_ID, organization_id=ORG_ID,
+        character_id=ORG_ROOT_CHARACTER_ID, position="长老",
+    )
+    db_session.add_all([project, org_char, member_char, org, existing])
+    await db_session.commit()
+    return project, db_session
+
+
+def _add_member_step(step_id: str, arguments: dict) -> dict:
+    return {"id": step_id, "tool": "manage_organization", "arguments": dict(arguments)}
+
+
+async def _organization(db) -> Organization:
+    row = (
+        await db.execute(select(Organization).where(Organization.id == ORG_ID))
+    ).scalar_one()
+    await db.refresh(row)
+    return row
+
+
+def test_validate_plan_accepts_real_machine_add_member_shape():
+    """(j1) 真实形状：顶层 member_id 装角色 ID、无 data，提案期必须放行。"""
+    arguments = {
+        "action": "add_member",
+        "organization_id": ORG_ID,
+        "member_id": ORG_MEMBER_CHARACTER_ID,
+    }
+    plan = validate_plan(
+        _plan([_add_member_step("s1", arguments)]),
+        allowed_tools={"manage_organization"},
+        tool_schemas=_registry_schemas(),
+    )
+    assert plan["steps"][0]["arguments"] == arguments
+
+
+def test_validate_plan_accepts_add_member_data_selector():
+    """(j1b) 规范形状 data.character_id / data.character_name 也必须放行。"""
+    for data in (
+        {"character_id": ORG_MEMBER_CHARACTER_ID, "position": "长老"},
+        {"character_name": "placeholder member character"},
+    ):
+        arguments = {"action": "add_member", "organization_id": ORG_ID, "data": data}
+        plan = validate_plan(
+            _plan([_add_member_step("s1", arguments)]),
+            allowed_tools={"manage_organization"},
+            tool_schemas=_registry_schemas(),
+        )
+        assert plan["steps"][0]["arguments"]["data"] == data
+
+
+def test_validate_plan_rejects_add_member_without_character_selector():
+    """(j2) 只有 organization_id：提案期即拒，消息指名 character_id（运行期必败）。"""
+    arguments = {"action": "add_member", "organization_id": ORG_ID}
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(
+            _plan([_add_member_step("s1", arguments)]),
+            allowed_tools={"manage_organization"},
+            tool_schemas=_registry_schemas(),
+        )
+    message = str(exc_info.value)
+    assert "s1" in message
+    assert "manage_organization" in message
+    assert "character_id" in message
+
+
+@pytest.mark.anyio
+async def test_add_member_accepts_top_level_member_id_and_defaults_position(org_seeded):
+    """(j3) 运行期：顶层 member_id 当角色 ID 用，position 缺省补「成员」，member_count+1。"""
+    project, db = org_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+
+    result = await tools.execute("manage_organization", {
+        "action": "add_member",
+        "organization_id": ORG_ID,
+        "member_id": ORG_MEMBER_CHARACTER_ID,
+    })
+
+    row = (
+        await db.execute(
+            select(OrganizationMember).where(OrganizationMember.id == result["entity_id"])
+        )
+    ).scalar_one()
+    await db.refresh(row)
+    assert row.character_id == ORG_MEMBER_CHARACTER_ID
+    assert row.position == "成员"  # 这一行证明缺省值替代了 NOT NULL 的 position
+    assert result["after"]["position"] == "成员"
+    assert (await _organization(db)).member_count == 2
+
+
+@pytest.mark.anyio
+async def test_add_member_with_explicit_position_is_not_overridden(org_seeded):
+    """(j4) 显式 position 必须保留，不被缺省值覆盖。"""
+    project, db = org_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+
+    result = await tools.execute("manage_organization", {
+        "action": "add_member",
+        "organization_id": ORG_ID,
+        "data": {"character_id": ORG_MEMBER_CHARACTER_ID, "position": "长老"},
+    })
+
+    row = (
+        await db.execute(
+            select(OrganizationMember).where(OrganizationMember.id == result["entity_id"])
+        )
+    ).scalar_one()
+    await db.refresh(row)
+    assert row.position == "长老"
+    assert row.character_id == ORG_MEMBER_CHARACTER_ID
+
+
+@pytest.mark.anyio
+async def test_update_and_remove_member_still_use_member_id(org_seeded):
+    """(j5) 回归：update_member/remove_member 的 member_id 仍是成员关系 ID。"""
+    project, db = org_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+
+    await tools.execute("manage_organization", {
+        "action": "update_member",
+        "member_id": EXISTING_MEMBER_ID,
+        "data": {"position": "首领"},
+    })
+    row = (
+        await db.execute(
+            select(OrganizationMember).where(OrganizationMember.id == EXISTING_MEMBER_ID)
+        )
+    ).scalar_one()
+    await db.refresh(row)
+    assert row.position == "首领"
+    assert row.character_id == ORG_ROOT_CHARACTER_ID
+
+    await tools.execute("manage_organization", {
+        "action": "remove_member",
+        "member_id": EXISTING_MEMBER_ID,
+    })
+    remaining = (
+        await db.execute(
+            select(OrganizationMember).where(OrganizationMember.id == EXISTING_MEMBER_ID)
+        )
+    ).scalar_one_or_none()
+    assert remaining is None
+
 
 
