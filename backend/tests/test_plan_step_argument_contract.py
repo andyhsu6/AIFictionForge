@@ -45,7 +45,7 @@ from app.services.project_agent_extended_tools import (
     ProjectAgentExtendedTools,
 )
 from app.services.project_agent_operational_tools import OPERATIONAL_TOOL_SPECS
-from app.services.project_agent_selectors import find_foreshadow
+from app.services.project_agent_selectors import find_character, find_foreshadow
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 
 PROJECT_ID = "proj-plan-args-1"
@@ -528,4 +528,141 @@ def test_validate_plan_accepts_task_data_satisfying_request_model():
                          tool_schemas=_registry_schemas())
     assert plan["steps"][0]["action"] == "partial_regenerate_chapter"
     assert plan["steps"][0]["arguments"]["data"]["selected_text"] == "placeholder selected text"
+
+
+# --- (i) 写工具 data 契约 + 组织别名（issue #160 追加）------------------------
+
+
+def _character_create_step(step_id: str, data: dict) -> dict:
+    return {
+        "id": step_id, "tool": "manage_character",
+        "arguments": {"action": "create", "data": data},
+    }
+
+
+def _career_create_step(step_id: str, data: dict) -> dict:
+    return {
+        "id": step_id, "tool": "manage_career",
+        "arguments": {"action": "create", "data": data},
+    }
+
+
+def test_validate_plan_accepts_organization_character_alias_keys():
+    """(i1) real-machine 形状：组织角色 create 写 type/purpose，提案期必须放行。
+
+    别名只影响校验与落库字段，raw arguments 原样透传（执行期再归一）。
+    """
+    step = _character_create_step("s1", {
+        "name": "placeholder organization", "is_organization": True,
+        "type": "guild", "purpose": "placeholder purpose",
+        "level": 2, "location": "placeholder location",
+    })
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_character"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"]["type"] == "guild"
+
+
+def test_validate_plan_rejects_character_create_without_name():
+    """(i2) 运行期报「创建角色需要 name」，提案期必须先拒且提示字段。"""
+    step = _character_create_step("s2", {
+        "is_organization": True, "type": "guild",
+    })
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_character"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s2" in message
+    assert "name" in message
+
+
+def test_validate_plan_rejects_character_create_with_unknown_data_key():
+    """(i3) 真正非法键：拒绝并给出可用字段，模型一次重试即可改对。"""
+    step = _character_create_step("s3", {
+        "name": "placeholder organization", "is_organization": True, "foo": "bar",
+    })
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_character"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "data.foo" in message
+    assert "可用字段" in message
+    assert "organization_type" in message
+
+
+def test_validate_plan_rejects_career_create_without_stages():
+    """(i4) 运行期报「创建职业需要 name、type 和 stages」，提案期同判。"""
+    step = _career_create_step("s4", {"name": "placeholder career", "type": "main"})
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_career"},
+                      tool_schemas=_registry_schemas())
+    assert "stages" in str(exc_info.value)
+
+
+def test_validate_plan_accepts_relationship_create_and_rejects_unknown_key():
+    """(i5) 关系 create 的 character_from_id/character_to_id 合法；data.foo 拒绝。"""
+    step = {
+        "id": "s5", "tool": "manage_relationship",
+        "arguments": {
+            "action": "create",
+            "data": {
+                "character_from_id": "placeholder-character-a",
+                "character_to_id": "placeholder-character-b",
+                "status": "active",
+            },
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_relationship"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"]["character_from_id"] == "placeholder-character-a"
+
+    bad_step = {
+        "id": "s6", "tool": "manage_relationship",
+        "arguments": {
+            "action": "create",
+            "data": {
+                "character_from_id": "placeholder-character-a",
+                "character_to_id": "placeholder-character-b",
+                "foo": "bar",
+            },
+        },
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([bad_step]), allowed_tools={"manage_relationship"},
+                      tool_schemas=_registry_schemas())
+    assert "data.foo" in str(exc_info.value)
+
+
+def test_career_type_is_not_treated_as_organization_alias():
+    """(i7) 回归：manage_career 的 type=main 是合法字段，不得被组织别名改写。"""
+    step = _career_create_step("s7", {
+        "name": "placeholder career", "type": "main",
+        "stages": [{"name": "placeholder stage", "level": 1}],
+    })
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_career"},
+                         tool_schemas=_registry_schemas())
+    data = plan["steps"][0]["arguments"]["data"]
+    assert data["type"] == "main"
+    assert "organization_type" not in data
+
+
+@pytest.mark.anyio
+async def test_character_create_persists_alias_keys_as_organization_fields(seeded):
+    """(i6) 运行期别名真的落库：type/purpose -> organization_type/organization_purpose。"""
+    project, db = seeded
+    tools = ProjectAgentExtendedTools(project, db)
+
+    result = await tools.execute("manage_character", {
+        "action": "create",
+        "data": {
+            "name": "placeholder organization", "is_organization": True,
+            "type": "guild", "purpose": "placeholder purpose",
+        },
+    })
+
+    row = await find_character(db, PROJECT_ID, {"character_id": result["entity_id"]})
+    await db.refresh(row)
+    assert row.organization_type == "guild"
+    assert row.organization_purpose == "placeholder purpose"
+    assert row.name == "placeholder organization"
+
 

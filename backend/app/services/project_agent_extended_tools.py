@@ -660,7 +660,10 @@ class ProjectAgentExtendedTools:
     # --- 角色管理 ---
 
     async def _manage_character_preview_create(self, arguments: dict[str, Any]):
-        data = self._fields(self._data(arguments), self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS)
+        data = self._fields(
+            normalize_data_aliases("manage_character", self._data(arguments)),
+            self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS,
+        )
         self._validate_character_fields(data)
         organization_fields = {key: data[key] for key in data if key in self.ORGANIZATION_FIELDS}
         if organization_fields and not data.get("is_organization"):
@@ -672,7 +675,10 @@ class ProjectAgentExtendedTools:
         return {}, data, f"创建{'组织' if data.get('is_organization') else '角色'}《{name}》"
 
     async def _manage_character_create(self, arguments: dict[str, Any]):
-        data = self._fields(self._data(arguments), self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS)
+        data = self._fields(
+            normalize_data_aliases("manage_character", self._data(arguments)),
+            self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS,
+        )
         self._validate_character_fields(data)
         org_data = {key: data.pop(key) for key in list(data) if key in self.ORGANIZATION_FIELDS}
         await self._validate_organization_fields(org_data)
@@ -1340,17 +1346,57 @@ FLAT_DATA_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
-# 严格动作的 data 字段集合（issue #112）：这些动作在运行期走 _fields(data, *_FIELDS)，
+# 严格动作的 data 字段集合（issue #112/#160）：这些动作在运行期走 _fields(data, *_FIELDS)，
 # 集合外的键会报错；提案期必须同判，否则用户批准的计划会在执行中途失败。
 # 集合与 handler 传入 _fields 的常量同源引用；未登记的工具/动作视为宽松（fail-open）。
 STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "manage_character": {
+        "create": frozenset(
+            ProjectAgentExtendedTools.CHARACTER_FIELDS
+            | ProjectAgentExtendedTools.ORGANIZATION_FIELDS
+        ),
+    },
+    "manage_relationship": {
+        "create": frozenset(
+            ProjectAgentExtendedTools.RELATIONSHIP_FIELDS
+            | {"character_from_id", "character_to_id"}
+        ),
+        "update": frozenset(ProjectAgentExtendedTools.RELATIONSHIP_FIELDS),
+    },
     "manage_foreshadow": {
         "create": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
         "update": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
     },
     # create 的 handler 先按 character_id 找既有组织角色，data 再整体过 _fields，
-    # 集合外的键（如 name）一律运行期报错（issue #160）。update/delete 保持 fail-open。
+    # 集合外的键（如 name）一律运行期报错（issue #160）。
     "manage_organization": {
         "create": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS | {"character_id"}),
+        "update": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS),
+        "add_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS | {"character_id"}),
+        "update_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS),
+    },
+    "manage_career": {
+        "create": frozenset(ProjectAgentExtendedTools.CAREER_FIELDS),
+        "update": frozenset(ProjectAgentExtendedTools.CAREER_FIELDS),
     },
 }
+
+# data 键别名（issue #160）：模型对「组织角色」一贯写 type/purpose（只读工具
+# get_organization_detail 也这么输出），而写库字段是 organization_type/organization_purpose。
+# 按工具登记，避免误伤 manage_career 的 type（main/sub 是合法字段）。
+DATA_KEY_ALIASES: dict[str, dict[str, str]] = {
+    "manage_character": {"type": "organization_type", "purpose": "organization_purpose"},
+}
+
+
+def normalize_data_aliases(tool: str, data: dict[str, Any]) -> dict[str, Any]:
+    """返回应用别名后的 data 副本；不改调用方对象，同名字段以规范键为准。"""
+    aliases = DATA_KEY_ALIASES.get(tool)
+    if not aliases or not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    for alias, canonical in aliases.items():
+        if alias in normalized:
+            value = normalized.pop(alias)
+            normalized.setdefault(canonical, value)
+    return normalized

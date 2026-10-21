@@ -12,6 +12,7 @@ from typing import Any
 from app.services.project_agent_extended_tools import (
     FLAT_DATA_FIELDS as EXTENDED_FLAT_DATA_FIELDS,
     STRICT_DATA_FIELDS as EXTENDED_STRICT_DATA_FIELDS,
+    normalize_data_aliases,
 )
 from app.services.project_agent_operational_tools import (
     FLAT_DATA_FIELDS as OPERATIONAL_FLAT_DATA_FIELDS,
@@ -159,6 +160,13 @@ _PLAN_STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = dict(
 # data 内运行期必填的字段（issue #160）：命中即提案期拒绝，附可读的错误提示。
 # 值是 {字段名: 提示}；未登记的工具/动作保持 fail-open。
 _PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
+    "manage_character": {
+        "create": {
+            "name": (
+                "创建角色需要 data.name；组织实体请同时设置 data.is_organization=true 并给出 data.name"
+            ),
+        },
+    },
     "manage_organization": {
         "create": {
             "character_id": (
@@ -167,7 +175,25 @@ _PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
             ),
         },
     },
+    "manage_career": {
+        "create": {
+            field: "创建职业需要 data.name、data.type（main 或 sub）和 data.stages（非空阶段列表）"
+            for field in ("name", "type", "stages")
+        },
+    },
 }
+
+# 严格集合的「可用字段」提示上限：错误会进过程面板，不能无界堆字段名。
+_AVAILABLE_FIELDS_LIMIT = 24
+
+
+def _available_fields_hint(allowed: frozenset[str]) -> str:
+    names = sorted(allowed)
+    shown = names[:_AVAILABLE_FIELDS_LIMIT]
+    text = ", ".join(shown)
+    if len(names) > len(shown):
+        text = f"{text}, …"
+    return f"；可用字段：{text}"
 
 
 def _json_type_name(value: Any) -> str:
@@ -350,23 +376,31 @@ def _step_arguments_error(
     if unknown:
         return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {', '.join(unknown)}"
     data = effective.get("data")
+    # 别名归一（issue #160）：模型对组织角色写 type/purpose，运行期会归一成
+    # organization_type/organization_purpose；提案期对副本同判，避免误拒。
+    normalized_data = (
+        normalize_data_aliases(tool, data) if isinstance(data, dict) else data
+    )
     # 必填 data 字段先判：缺 character_id 时给的是「该改用哪个工具」，比「不支持的
     # 字段 data.name」更能让模型一次改对（issue #160 的真实失败形状两者同时成立）。
     required_data = _PLAN_REQUIRED_DATA_FIELDS.get(tool, {}).get(
         str(effective.get("action") or "")
     )
-    if required_data and isinstance(data, dict):
+    if required_data and isinstance(normalized_data, dict):
         for field, hint in required_data.items():
-            if not data.get(field):
+            if not normalized_data.get(field):
                 return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
     strict_data = _PLAN_STRICT_DATA_FIELDS.get(tool, {}).get(
         str(effective.get("action") or "")
     )
-    if strict_data is not None and isinstance(data, dict):
-        unknown_data = sorted(key for key in data if key not in strict_data)
+    if strict_data is not None and isinstance(normalized_data, dict):
+        unknown_data = sorted(key for key in normalized_data if key not in strict_data)
         if unknown_data:
             fields = ", ".join(f"data.{key}" for key in unknown_data)
-            return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {fields}"
+            return (
+                f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {fields}"
+                f"{_available_fields_hint(strict_data)}"
+            )
     canonical = {key: value for key, value in effective.items() if key in declared}
     problem = _schema_error(canonical, schema)
     if problem:
