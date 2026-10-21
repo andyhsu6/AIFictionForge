@@ -504,6 +504,17 @@ export const projectApi = {
   },
 };
 
+export type ActiveBookImportTask = {
+  task_id: string;
+  status: BookImportTask['status'];
+  progress: number;
+  filename: string;
+  applied: boolean;
+  has_failed_steps: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export const bookImportApi = {
   createTask: (params: BookImportCreateTaskPayload) => {
     const formData = new FormData();
@@ -521,6 +532,9 @@ export const bookImportApi = {
 
   getTaskStatus: (taskId: string) =>
     api.get<unknown, BookImportTask>(`/book-import/tasks/${taskId}`),
+
+  getActiveTask: () =>
+    api.get<unknown, ActiveBookImportTask | null>('/book-import/tasks/active'),
 
   getPreview: (taskId: string) =>
     api.get<unknown, BookImportPreview>(`/book-import/tasks/${taskId}/preview`),

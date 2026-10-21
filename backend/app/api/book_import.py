@@ -93,6 +93,18 @@ async def create_book_import_task(
     return task
 
 
+@router.get("/tasks/active", summary="查询当前用户未完成的拆书任务")
+async def get_active_book_import_task(request: Request):
+    """返回最近一个未应用（或仍有失败步骤）的导入任务，供前端在丢失本地
+    taskId 后找回进度。必须定义在 /tasks/{task_id} 之前，否则会被路径参数吞掉。
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise ApiError(code="auth.unauthorized")
+
+    return await book_import_service.get_active_task(user_id=user_id)
+
+
 @router.get("/tasks/{task_id}", response_model=BookImportTaskStatusResponse, summary="查询拆书任务状态")
 async def get_book_import_task_status(task_id: str, request: Request):
     user_id = getattr(request.state, "user_id", None)

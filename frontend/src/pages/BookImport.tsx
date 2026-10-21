@@ -59,7 +59,7 @@ type BookImportPageCache = {
 
 function loadBookImportCache(): BookImportPageCache | null {
   try {
-    const raw = sessionStorage.getItem(BOOK_IMPORT_CACHE_KEY);
+    const raw = localStorage.getItem(BOOK_IMPORT_CACHE_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as BookImportPageCache;
   } catch (error) {
@@ -70,7 +70,7 @@ function loadBookImportCache(): BookImportPageCache | null {
 
 function saveBookImportCache(cache: BookImportPageCache) {
   try {
-    sessionStorage.setItem(BOOK_IMPORT_CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(BOOK_IMPORT_CACHE_KEY, JSON.stringify(cache));
   } catch (error) {
     const isQuotaExceeded =
       error instanceof DOMException &&
@@ -83,12 +83,12 @@ function saveBookImportCache(cache: BookImportPageCache) {
           ...cache,
           preview: null,
         };
-        sessionStorage.setItem(BOOK_IMPORT_CACHE_KEY, JSON.stringify(lightweightCache));
+        localStorage.setItem(BOOK_IMPORT_CACHE_KEY, JSON.stringify(lightweightCache));
         return;
       } catch (fallbackError) {
         console.warn('写入轻量拆书页面缓存失败:', fallbackError);
         try {
-          sessionStorage.removeItem(BOOK_IMPORT_CACHE_KEY);
+          localStorage.removeItem(BOOK_IMPORT_CACHE_KEY);
         } catch {
           // ignore
         }
@@ -101,7 +101,7 @@ function saveBookImportCache(cache: BookImportPageCache) {
 
 function clearBookImportCache() {
   try {
-    sessionStorage.removeItem(BOOK_IMPORT_CACHE_KEY);
+    localStorage.removeItem(BOOK_IMPORT_CACHE_KEY);
   } catch (error) {
     console.warn('清理拆书页面缓存失败:', error);
   }
@@ -200,16 +200,13 @@ export default function BookImport() {
   const currentStepText = stepItems[currentStep]?.title || t('step.upload');
 
   useEffect(() => {
-    const cache = loadBookImportCache();
-    if (cache) {
-      const cacheAgeMs = typeof cache.cachedAt === 'number'
-        ? Date.now() - cache.cachedAt
-        : Number.POSITIVE_INFINITY;
+    let cancelled = false;
 
-      // 超过6小时的缓存直接视为失效，避免后端重启后继续使用旧taskId
-      if (cacheAgeMs > 6 * 60 * 60 * 1000) {
-        clearBookImportCache();
-      } else {
+    const restore = async () => {
+      const cache = loadBookImportCache();
+      if (cache) {
+        // 不按时间硬过期：缓存是否仍有效由后端决定（轮询/取预览返回 404 时才清理）。
+        // 以前的 6 小时 TTL 会在长空闲后提前丢掉唯一一份 taskId（issue #155）。
         setTaskId(cache.taskId);
         setTaskStatus(cache.taskStatus);
         setPreview(cache.preview);
@@ -224,9 +221,33 @@ export default function BookImport() {
             : '')
         );
         message.info(t('toast.cacheRestored'));
+      } else {
+        // 本地没有缓存（浏览器重启/新标签页/重新登录）：向后端查询未完成的任务，
+        // 避免已解析并生成好预览的导入被迫重做。
+        try {
+          const active = await bookImportApi.getActiveTask();
+          if (active?.task_id && !cancelled) {
+            setTaskId(active.task_id);
+            if (active.applied) {
+              // 已落库但还有失败步骤：直接进生成结果页，保留重试入口
+              setIsApplyComplete(true);
+              setApplyProgress(100);
+              setApplyMessage(t('msg.importDone'));
+            }
+            message.info(t('toast.cacheRestored'));
+          }
+        } catch (error) {
+          console.warn('查询未完成的拆书任务失败:', error);
+        }
       }
-    }
-    setCacheReady(true);
+
+      if (!cancelled) setCacheReady(true);
+    };
+
+    restore();
+    return () => {
+      cancelled = true;
+    };
   }, [message, t]);
 
   useEffect(() => {
@@ -337,6 +358,15 @@ export default function BookImport() {
 
     fetchPreview();
   }, [taskId, taskStatus, preview, message, t]);
+
+  useEffect(() => {
+    // 页面恢复（刷新/重新登录/换标签）后，失败步骤只存在于后端任务里；
+    // 轮询拿到 status 后补回，用户才能看到重试入口（issue #155）。
+    const restored = taskStatus?.failed_steps;
+    if (restored?.length && failedSteps.length === 0) {
+      setFailedSteps(restored);
+    }
+  }, [taskStatus, failedSteps.length]);
 
   const startTask = async () => {
     if (!file) {

@@ -92,3 +92,66 @@ def test_apply_guards_propagate_api_error_unwrapped(monkeypatch, method_name):
     assert "导入失败" not in exc_info.value.detail
     assert "[not_found." not in exc_info.value.detail
     db.rollback.assert_awaited()  # 守卫先 rollback 再 raise
+
+def _make_task(task_id: str, *, user_id: str = "u1", status: str = "completed", applied: bool = False, failed: bool = False, created_at=None):
+    from datetime import datetime
+    task = _BookImportTask(
+        task_id=task_id,
+        user_id=user_id,
+        filename=f"{task_id}.txt",
+        project_id=None,
+        create_new_project=True,
+        import_mode="new",
+        status=status,
+        applied=applied,
+    )
+    if failed:
+        from app.services.book_import_service import _StepFailure
+        task.failed_steps = [_StepFailure(step_name="characters", step_label="角色", error_message="boom")]
+    if created_at is not None:
+        task.created_at = created_at
+    return task
+
+
+def test_get_active_task_returns_latest_unapplied_task():
+    """本地 taskId 丢失后，应能找回最近一个未应用的导入任务（issue #155）。"""
+    from datetime import datetime, timedelta
+
+    svc = BookImportService()
+    now = datetime.utcnow()
+    svc._tasks["old"] = _make_task("old", created_at=now - timedelta(hours=3))
+    svc._tasks["new"] = _make_task("new", created_at=now)
+
+    result = asyncio.run(svc.get_active_task(user_id="u1"))
+
+    assert result["task_id"] == "new"
+    assert result["filename"] == "new.txt"
+    assert "preview" not in result  # 不得回传章节正文
+
+
+def test_get_active_task_skips_applied_without_failures():
+    """已成功应用的导入不再作为可恢复任务返回。"""
+    svc = BookImportService()
+    svc._tasks["done"] = _make_task("done", applied=True)
+
+    assert asyncio.run(svc.get_active_task(user_id="u1")) is None
+
+
+def test_get_active_task_keeps_applied_with_failed_steps():
+    """已应用但仍有失败步骤的任务要保留，否则用户没有重试入口。"""
+    svc = BookImportService()
+    svc._tasks["partial"] = _make_task("partial", applied=True, failed=True)
+
+    result = asyncio.run(svc.get_active_task(user_id="u1"))
+
+    assert result["task_id"] == "partial"
+    assert result["has_failed_steps"] is True
+
+
+def test_get_active_task_ignores_other_users_and_terminal_states():
+    svc = BookImportService()
+    svc._tasks["other"] = _make_task("other", user_id="u2")
+    svc._tasks["cancelled"] = _make_task("cancelled", status="cancelled")
+    svc._tasks["failed"] = _make_task("failed", status="failed")
+
+    assert asyncio.run(svc.get_active_task(user_id="u1")) is None

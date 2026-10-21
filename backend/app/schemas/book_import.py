@@ -66,6 +66,16 @@ class BookImportTaskCreateResponse(BaseModel):
     status: TaskStatus
 
 
+class BookImportFailedStep(BaseModel):
+    """已落库但生成失败的步骤（供页面恢复后继续展示重试入口）"""
+    step_name: str
+    step_label: str
+    error: str
+    retry_count: int = 0
+    error_code: Optional[str] = None
+    error_params: Optional[dict] = None
+
+
 class BookImportTaskStatusResponse(BaseModel):
     """任务状态响应"""
     task_id: str
@@ -85,6 +95,7 @@ class BookImportTaskStatusResponse(BaseModel):
     # 前端按 code 本地化 error；缺省 None 时 error 为上游诊断原文，前端原样展示。
     error_code: Optional[str] = None
     error_params: Optional[dict] = None
+    failed_steps: list[BookImportFailedStep] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

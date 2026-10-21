@@ -37,6 +37,7 @@ from app.schemas.book_import import (
     BookImportApplyResponse,
     BookImportChapter,
     BookImportExtractMode,
+    BookImportFailedStep,
     BookImportOutline,
     BookImportPreviewResponse,
     BookImportTaskCreateResponse,
@@ -249,6 +250,8 @@ class _BookImportTask:
     # 本地化 error；无码（上游诊断原文）时前端回退原始 error 文本。
     error_code: Optional[str] = None
     error_params: Optional[dict] = None
+    # 已成功落库标记：活动任务查询据此过滤，避免把已应用的导入当成可恢复任务
+    applied: bool = False
 
 
 class BookImportService:
@@ -299,6 +302,37 @@ class BookImportService:
     async def get_task_status(self, *, task_id: str, user_id: str) -> BookImportTaskStatusResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         return self._to_status(task)
+
+    async def get_active_task(self, *, user_id: str) -> Optional[dict]:
+        """返回当前用户最近一个「未完成/未应用」的导入任务，供前端在丢失本地
+        taskId 后（浏览器重启、超长空闲、重新登录）找回进度。
+
+        只返回定位用的轻量字段，不含 preview（preview 内嵌章节正文）。
+        已应用的任务仅在仍有失败步骤时返回——那种情况下用户需要重试入口。
+        """
+        async with self._tasks_lock:
+            candidates = [
+                task
+                for task in self._tasks.values()
+                if task.user_id == user_id
+                and task.status in {"pending", "running", "completed"}
+                and (not task.applied or bool(task.failed_steps))
+            ]
+
+        if not candidates:
+            return None
+
+        task = max(candidates, key=lambda t: t.created_at)
+        return {
+            "task_id": task.task_id,
+            "status": task.status,
+            "progress": task.progress,
+            "filename": task.filename,
+            "applied": task.applied,
+            "has_failed_steps": bool(task.failed_steps),
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+        }
 
     async def get_preview(self, *, task_id: str, user_id: str) -> BookImportPreviewResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
@@ -402,6 +436,7 @@ class BookImportService:
             statistics["generated_entities"] = generated_entities
 
             await db.commit()
+            task.applied = True
 
             return BookImportApplyResponse(
                 success=True,
@@ -675,6 +710,7 @@ class BookImportService:
             # 记录失败步骤和项目ID到任务中，供重试使用
             task.imported_project_id = project.id
             task.failed_steps = failed_steps
+            task.applied = True
 
             # 如果有步骤失败，通过 SSE 推送失败步骤详情
             if failed_steps:
@@ -3233,6 +3269,17 @@ class BookImportService:
             status_params=task.status_params,
             error_code=task.error_code,
             error_params=task.error_params,
+            failed_steps=[
+                BookImportFailedStep(
+                    step_name=f.step_name,
+                    step_label=f.step_label,
+                    error=f.error_message,
+                    retry_count=f.retry_count,
+                    error_code=f.error_code,
+                    error_params=f.error_params,
+                )
+                for f in task.failed_steps
+            ],
             created_at=task.created_at,
             updated_at=task.updated_at,
         )

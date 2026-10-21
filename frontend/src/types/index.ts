@@ -1235,6 +1235,8 @@ export interface BookImportTask {
   /** 任务错误结构化码/参数（issue #33）：有码时前端本地化，无码回退原始诊断 */
   error_code?: string | null;
   error_params?: Record<string, unknown> | null;
+  /** 已落库但失败的生成步骤（issue #155）：页面恢复后据此继续展示重试入口 */
+  failed_steps?: BookImportStepFailure[];
   created_at: string;
   updated_at: string;
 }
