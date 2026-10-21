@@ -15,6 +15,7 @@ from app.services.project_agent_extended_tools import (
 )
 from app.services.project_agent_operational_tools import (
     FLAT_DATA_FIELDS as OPERATIONAL_FLAT_DATA_FIELDS,
+    validate_task_request_data,
 )
 from app.services.project_agent_selectors import merge_flat_data_fields
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
@@ -36,6 +37,13 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "（outline_id/title/content/order_index/ordered_ids），action 只有 create/delete/reorder，"
     "要改大纲内容请改用 update_outline；除它以外的 manage_* 工具，字段一律放在 "
     "arguments.data 对象内，不要把 data 字段摊在顶层。"
+    "新建角色/组织实体用 manage_character：组织实体需设 is_organization=true，"
+    "可同时给组织字段（落库时会一并建组织详情）。"
+    "manage_organization 的 create 只给「已存在的组织角色」补详情，必须带 "
+    "data.character_id；它不能新建实体。"
+    "start_project_task 的 arguments.data 必须满足对应任务的请求模型，"
+    "例如 partial_regenerate_chapter 需要 selected_text/start_position/"
+    "end_position/user_instructions。"
     '示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"update",'
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
@@ -147,6 +155,19 @@ _NO_FLAT_DATA_FIELDS: frozenset[str] = frozenset()
 _PLAN_STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = dict(
     EXTENDED_STRICT_DATA_FIELDS
 )
+
+# data 内运行期必填的字段（issue #160）：命中即提案期拒绝，附可读的错误提示。
+# 值是 {字段名: 提示}；未登记的工具/动作保持 fail-open。
+_PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
+    "manage_organization": {
+        "create": {
+            "character_id": (
+                "创建组织需要 data.character_id（指向已存在的组织角色）；"
+                "新建组织请改用 manage_character 并设置 is_organization=true"
+            ),
+        },
+    },
+}
 
 
 def _json_type_name(value: Any) -> str:
@@ -328,10 +349,19 @@ def _step_arguments_error(
     unknown = sorted(set(effective) - declared - moved)
     if unknown:
         return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {', '.join(unknown)}"
+    data = effective.get("data")
+    # 必填 data 字段先判：缺 character_id 时给的是「该改用哪个工具」，比「不支持的
+    # 字段 data.name」更能让模型一次改对（issue #160 的真实失败形状两者同时成立）。
+    required_data = _PLAN_REQUIRED_DATA_FIELDS.get(tool, {}).get(
+        str(effective.get("action") or "")
+    )
+    if required_data and isinstance(data, dict):
+        for field, hint in required_data.items():
+            if not data.get(field):
+                return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
     strict_data = _PLAN_STRICT_DATA_FIELDS.get(tool, {}).get(
         str(effective.get("action") or "")
     )
-    data = effective.get("data")
     if strict_data is not None and isinstance(data, dict):
         unknown_data = sorted(key for key in data if key not in strict_data)
         if unknown_data:
@@ -341,6 +371,13 @@ def _step_arguments_error(
     problem = _schema_error(canonical, schema)
     if problem:
         return f"步骤 {step_id} 的 {tool} 参数无效：{problem}"
+    if tool == "start_project_task":
+        detail = validate_task_request_data(action, data if isinstance(data, dict) else {})
+        if detail:
+            # helper 的 "任务参数无效：" 前缀是给运行期 preview 用的；提案期已带
+            # "参数无效"，去掉前缀避免同一句话里出现两次"参数无效"。
+            detail = detail.removeprefix("任务参数无效：")
+            return f"步骤 {step_id} 的 {tool} 参数无效：{detail}"
     return None
 
 

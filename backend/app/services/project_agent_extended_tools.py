@@ -1348,4 +1348,9 @@ STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
         "create": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
         "update": frozenset(ProjectAgentExtendedTools.FORESHADOW_FIELDS),
     },
+    # create 的 handler 先按 character_id 找既有组织角色，data 再整体过 _fields，
+    # 集合外的键（如 name）一律运行期报错（issue #160）。update/delete 保持 fail-open。
+    "manage_organization": {
+        "create": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS | {"character_id"}),
+    },
 }

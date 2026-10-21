@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import BackgroundTasks, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -272,6 +273,55 @@ def _preview_value(value: Any, limit: int = 800) -> Any:
     if isinstance(value, list):
         return [_preview_value(item, limit) for item in value[:50]]
     return value
+
+
+def validate_task_request_data(
+    action: str, data: dict[str, Any], project_id: str = "plan-validation"
+) -> str | None:
+    """按 action 对应的 pydantic 请求模型校验 data；返回可读错误或 None。
+
+    纯函数（不碰 DB、不需要 self）：运行期 preview 与提案期 validate_plan 共用同一判据，
+    避免提案期放行执行期必败的任务参数（issue #160）。``project_id`` 只注入给需要它的
+    三个生成类 action，占位值即可通过校验。
+    """
+    if set(data) & {"project_id", "user_id", "chapter_id", "outline_id"}:
+        return "data 中不能包含项目或资源标识，请使用工具顶层参数"
+    try:
+        if action == "generate_chapter":
+            from app.schemas.chapter import ChapterGenerateRequest
+            ChapterGenerateRequest(**data)
+        elif action == "batch_generate_chapters":
+            from app.schemas.chapter import BatchGenerateRequest
+            BatchGenerateRequest(**data)
+        elif action == "regenerate_chapter":
+            from app.schemas.regeneration import ChapterRegenerateRequest
+            ChapterRegenerateRequest(**data)
+        elif action == "partial_regenerate_chapter":
+            from app.schemas.chapter import PartialRegenerateRequest
+            PartialRegenerateRequest(**data)
+        elif action == "generate_character":
+            from app.schemas.character import CharacterGenerateRequest
+            CharacterGenerateRequest(project_id=project_id, **data)
+        elif action == "generate_organization":
+            from app.api.organizations import OrganizationGenerateRequest
+            OrganizationGenerateRequest(project_id=project_id, **data)
+        elif action == "generate_careers":
+            from app.schemas.career import CareerGenerateRequest
+            CareerGenerateRequest(project_id=project_id, **data)
+    except ValidationError as exc:
+        # pydantic 的原始报错是多行英文 + 文档链接，进不了用户可见消息，也给不了模型
+        # 直接可改的指令。纯缺字段时压成一行（issue #160 的真实失败就是这一类）。
+        missing = [
+            str(err.get("loc", ("",))[-1])
+            for err in exc.errors()
+            if err.get("type") == "missing"
+        ]
+        if missing and len(missing) == len(exc.errors()):
+            return f"任务参数无效：缺少必填字段 {', '.join(missing)}"
+        return f"任务参数无效：{exc}"
+    except (TypeError, ValueError) as exc:
+        return f"任务参数无效：{exc}"
+    return None
 
 
 class ProjectAgentOperationalTools:
@@ -1094,32 +1144,9 @@ class ProjectAgentOperationalTools:
 
     async def _task_preview(self, arguments: dict[str, Any], action: str):
         data = self._data(arguments)
-        if set(data) & {"project_id", "user_id", "chapter_id", "outline_id"}:
-            raise ValueError("data 中不能包含项目或资源标识，请使用工具顶层参数")
-        try:
-            if action == "generate_chapter":
-                from app.schemas.chapter import ChapterGenerateRequest
-                ChapterGenerateRequest(**data)
-            elif action == "batch_generate_chapters":
-                from app.schemas.chapter import BatchGenerateRequest
-                BatchGenerateRequest(**data)
-            elif action == "regenerate_chapter":
-                from app.schemas.regeneration import ChapterRegenerateRequest
-                ChapterRegenerateRequest(**data)
-            elif action == "partial_regenerate_chapter":
-                from app.schemas.chapter import PartialRegenerateRequest
-                PartialRegenerateRequest(**data)
-            elif action == "generate_character":
-                from app.schemas.character import CharacterGenerateRequest
-                CharacterGenerateRequest(project_id=self.project.id, **data)
-            elif action == "generate_organization":
-                from app.api.organizations import OrganizationGenerateRequest
-                OrganizationGenerateRequest(project_id=self.project.id, **data)
-            elif action == "generate_careers":
-                from app.schemas.career import CareerGenerateRequest
-                CareerGenerateRequest(project_id=self.project.id, **data)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"任务参数无效：{exc}") from exc
+        problem = validate_task_request_data(action, data, self.project.id)
+        if problem:
+            raise ValueError(problem)
         target: dict[str, Any] = {"action": action, "parameters": data}
         entity_id: str | None = self.project.id
         if action in {"expand_outline"}:

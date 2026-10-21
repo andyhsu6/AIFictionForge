@@ -459,3 +459,73 @@ async def test_foreshadow_resolve_data_is_lenient(seeded):
                          tool_schemas=_registry_schemas())
     assert plan["steps"][0]["arguments"]["action"] == "resolve"
 
+
+# --- (h) 计划步骤按真实执行契约校验（issue #160）-------------------------------
+
+ORG_CHARACTER_ID = "a1b2c3d4-e5f6-4a7b-8c9d-000000000160"
+
+
+def _org_create_step(step_id: str, data: dict) -> dict:
+    return {
+        "id": step_id, "tool": "manage_organization",
+        "arguments": {"action": "create", "data": data},
+    }
+
+
+def _task_step(step_id: str, action: str, data: dict) -> dict:
+    return {
+        "id": step_id, "tool": "start_project_task", "action": action,
+        "arguments": {"data": data},
+    }
+
+
+def test_validate_plan_rejects_organization_create_without_character_id():
+    """(h1) 旧缺陷：create 缺 character_id 提案期放行，批准后第 1 步必败。"""
+    step = _org_create_step("s1", {"level": 2, "location": "placeholder location"})
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_organization"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s1" in message
+    assert "manage_organization" in message
+    assert "character_id" in message
+    assert "manage_character" in message
+
+
+def test_validate_plan_rejects_organization_create_with_unsupported_data_key():
+    """(h2) 严格集合外的 data 键（如 name）提案期即拒，指名 data.name。"""
+    step = _org_create_step("s2", {"character_id": "placeholder-character", "name": "placeholder organization"})
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_organization"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s2" in message
+    assert "data.name" in message
+
+
+def test_validate_plan_rejects_task_data_missing_request_fields():
+    """(h3) task 的 data 必须满足请求模型：只给 instruction 时提案期就拒。"""
+    step = _task_step("s3", "partial_regenerate_chapter",
+                      {"instruction": "placeholder instruction"})
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"start_project_task"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s3" in message
+    assert "start_project_task" in message
+    assert "selected_text" in message or "start_position" in message
+
+
+def test_validate_plan_accepts_task_data_satisfying_request_model():
+    """(h4) 反向守卫：给全 PartialRegenerateRequest 必填字段必须通过。"""
+    step = _task_step("s4", "partial_regenerate_chapter", {
+        "selected_text": "placeholder selected text",
+        "start_position": 0,
+        "end_position": 5,
+        "user_instructions": "placeholder instruction",
+    })
+    plan = validate_plan(_plan([step]), allowed_tools={"start_project_task"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["action"] == "partial_regenerate_chapter"
+    assert plan["steps"][0]["arguments"]["data"]["selected_text"] == "placeholder selected text"
+

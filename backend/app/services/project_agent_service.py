@@ -1933,7 +1933,20 @@ class ProjectAgentService:
             try:
                 arguments = json.loads(arguments or "{}")
             except json.JSONDecodeError as exc:
-                raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
+                # issue #160：解析失败时原始文本只留在内存里，落库的 arguments 是
+                # `{}`、异常文案也不能带原文（会进用户可见的步骤内容），于是事后
+                # 无法区分「模型生成了畸形 JSON」与「网关/客户端把 arguments 截断」。
+                # 结尾 160 字符的 repr 足以看出是否截断在半句或半个转义符处：
+                # 结尾是完整的 `}`/词尾多半是畸形，停在 `"`、`\`、`,` 之后多半是截断。
+                # 原始文本只进日志（不进用户可见错误），异常消息仅补长度。
+                logger.warning(
+                    "工具调用参数 JSON 解析失败｜工具名称=%s｜参数长度=%s｜参数结尾=%r"
+                    "｜异常=%s",
+                    name, len(arguments), arguments[-160:], exc,
+                )
+                raise ValueError(
+                    f"工具 {name} 的参数不是有效 JSON（参数长度 {len(arguments)} 字符）"
+                ) from exc
         if not isinstance(arguments, dict):
             raise ValueError(f"工具 {name} 的参数必须是对象")
         return name, normalize_tool_arguments(arguments)

@@ -194,10 +194,12 @@ class ProjectAgentToolRegistry:
             ),
             ProjectAgentTool(
                 "list_chapters",
-                "查询当前项目章节列表和摘要，不返回完整正文。",
+                "查询当前项目章节列表和摘要，不返回完整正文。可按 offset 分页，limit 上限 100；"
+                "响应含 total（项目内匹配章节总数）/returned/offset。",
                 _object_schema({
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "offset": {"type": "integer", "minimum": 0},
                 }),
             ),
             ProjectAgentTool(
@@ -219,12 +221,15 @@ class ProjectAgentToolRegistry:
                 "查询当前项目伏笔，可按状态筛选；limit 上限 500，默认 50，offset 默认 0。"
                 "台账大（数百条）时用 compact=true 配合 offset 分页逐页读：compact 的 items 是数组，"
                 "字段顺序为 [id, title, status, 埋入章节号, 计划回收章节号, 实际回收章节号]，尾部 null 省略；"
-                "响应含 total/returned/offset。非 compact 仍返回完整条目。",
+                "响应含 total/returned/offset。非 compact 仍返回完整条目。"
+                "overdue=true 只返回已超期条目（status=planted 且目标回收章早于当前章节），"
+                "可与 status/offset/compact 同时使用。",
                 _object_schema({
                     "status": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                     "offset": {"type": "integer", "minimum": 0},
                     "compact": {"type": "boolean"},
+                    "overdue": {"type": "boolean"},
                 }),
             ),
             ProjectAgentTool(
@@ -619,13 +624,22 @@ class ProjectAgentToolRegistry:
 
     async def _list_chapters(self, arguments: dict[str, Any]) -> dict[str, Any]:
         limit = min(max(int(arguments.get("limit", 50)), 1), 100)
-        query = select(Chapter).where(Chapter.project_id == self.project.id)
+        offset = max(int(arguments.get("offset", 0) or 0), 0)
+        conditions = [Chapter.project_id == self.project.id]
         keyword = str(arguments.get("query") or "").strip()
         if keyword:
             pattern = f"%{keyword}%"
-            query = query.where(or_(Chapter.title.ilike(pattern), Chapter.summary.ilike(pattern)))
-        rows = (await self.db.execute(query.order_by(Chapter.chapter_number).limit(limit))).scalars().all()
-        return {"total": len(rows), "items": [
+            conditions.append(or_(Chapter.title.ilike(pattern), Chapter.summary.ilike(pattern)))
+        # total 是过滤后的全量（不是本页条数），否则分页调用方的「还有多少」全是错的。
+        total = (await self.db.execute(
+            select(func.count(Chapter.id)).where(*conditions)
+        )).scalar_one()
+        rows = (await self.db.execute(
+            select(Chapter).where(*conditions)
+            .order_by(Chapter.chapter_number)
+            .limit(limit).offset(offset)
+        )).scalars().all()
+        return {"total": total, "returned": len(rows), "offset": offset, "items": [
             {"id": row.id, "chapter_number": row.chapter_number, "title": row.title,
              "summary": row.summary, "status": row.status, "word_count": row.word_count}
             for row in rows
@@ -666,26 +680,43 @@ class ProjectAgentToolRegistry:
         limit = min(max(int(arguments.get("limit", 50)), 1), 500)
         offset = max(int(arguments.get("offset", 0) or 0), 0)
         compact = arguments.get("compact") is True
+        overdue_only = arguments.get("overdue") is True
         conditions = [Foreshadow.project_id == self.project.id]
         if arguments.get("status"):
             conditions.append(Foreshadow.status == arguments["status"])
-        # created_at 在批量导入下会撞值，加主键做稳定排序，offset 分页才可能不重不漏。
-        rows = (await self.db.execute(
-            select(Foreshadow).where(*conditions)
-            .order_by(Foreshadow.created_at, Foreshadow.id)
-            .limit(limit).offset(offset)
-        )).scalars().all()
+        if overdue_only:
+            # 超期判据只走模型方法：get_urgency_level 还含未到期/已回收等分支，
+            # 在 SQL 里复刻一份比较逻辑必然与 get_foreshadow_stats 漂移。
+            # 台账规模数百条，全量取回后过滤可接受。
+            rows = (await self.db.execute(
+                select(Foreshadow).where(*conditions)
+                .order_by(Foreshadow.created_at, Foreshadow.id)
+            )).scalars().all()
+            current_chapter = (await self.db.execute(
+                select(func.max(Chapter.chapter_number))
+                .where(Chapter.project_id == self.project.id)
+            )).scalar() or 0
+            rows = [row for row in rows if row.get_urgency_level(current_chapter) == 3]
+            total = len(rows)
+            rows = rows[offset:offset + limit]
+        else:
+            total = (await self.db.execute(
+                select(func.count(Foreshadow.id)).where(*conditions)
+            )).scalar_one()
+            # created_at 在批量导入下会撞值，加主键做稳定排序，offset 分页才可能不重不漏。
+            rows = (await self.db.execute(
+                select(Foreshadow).where(*conditions)
+                .order_by(Foreshadow.created_at, Foreshadow.id)
+                .limit(limit).offset(offset)
+            )).scalars().all()
         if not compact:
-            # 非 compact 保持旧输出（键与条目字段不变），老调用方逐字节兼容。
-            return {"total": len(rows), "items": [
+            # 非 compact 保持旧输出形状（键与条目字段不变），老调用方逐字节兼容。
+            return {"total": total, "items": [
                 {"id": row.id, "title": row.title, "content": row.content,
                  "status": row.status, "importance": row.importance,
                  "target_resolve_chapter_number": row.target_resolve_chapter_number}
                 for row in rows
             ]}
-        total = (await self.db.execute(
-            select(func.count(Foreshadow.id)).where(*conditions)
-        )).scalar_one()
         return {
             "total": total,
             "returned": len(rows),
