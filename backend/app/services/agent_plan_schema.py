@@ -12,15 +12,17 @@ from typing import Any
 from app.services.project_agent_extended_tools import (
     FLAT_DATA_FIELDS as EXTENDED_FLAT_DATA_FIELDS,
     STRICT_DATA_FIELDS as EXTENDED_STRICT_DATA_FIELDS,
+    normalize_data_aliases,
 )
 from app.services.project_agent_operational_tools import (
     FLAT_DATA_FIELDS as OPERATIONAL_FLAT_DATA_FIELDS,
+    validate_task_request_data,
 )
 from app.services.project_agent_selectors import merge_flat_data_fields
 from app.services.task_resources import AGENT_TASK_ACTION_TYPES
 
 PROPOSE_PLAN_TOOL_NAME = "propose_plan"
-MAX_PLAN_STEPS = 12
+MAX_PLAN_STEPS = 40
 
 PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "提交一份多步执行计划并结束本轮回答。这是终止型规划工具：调用它不会执行任何步骤，"
@@ -36,6 +38,18 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "（outline_id/title/content/order_index/ordered_ids），action 只有 create/delete/reorder，"
     "要改大纲内容请改用 update_outline；除它以外的 manage_* 工具，字段一律放在 "
     "arguments.data 对象内，不要把 data 字段摊在顶层。"
+    "新建角色/组织实体用 manage_character：组织实体需设 is_organization=true，"
+    "可同时给组织字段（落库时会一并建组织详情）。"
+    "manage_organization 的 create 只给「已存在的组织角色」补详情，必须带 "
+    "data.character_id；它不能新建实体。"
+    "manage_organization 的 add_member 可单条（data.character_id + data.position）"
+    "或批量（data.members 数组，每项必须给 position）；同一家组织的多名成员应一步"
+    "批量提交，不要拆成多步。若已从 note 或只读工具结果里识别出该角色的职能"
+    "（庄主/大弟子/宫主等），必须写进 position，不能只写在 note 里；"
+    "member_id 只用于 update_member/remove_member。"
+    "start_project_task 的 arguments.data 必须满足对应任务的请求模型，"
+    "例如 partial_regenerate_chapter 需要 selected_text/start_position/"
+    "end_position/user_instructions。"
     '示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"update",'
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
@@ -147,6 +161,50 @@ _NO_FLAT_DATA_FIELDS: frozenset[str] = frozenset()
 _PLAN_STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = dict(
     EXTENDED_STRICT_DATA_FIELDS
 )
+
+# data 内运行期必填的字段（issue #160）：命中即提案期拒绝，附可读的错误提示。
+# 值是 {字段名: 提示}；未登记的工具/动作保持 fail-open。
+_PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
+    "manage_character": {
+        "create": {
+            "name": (
+                "创建角色需要 data.name；组织实体请同时设置 data.is_organization=true 并给出 data.name"
+            ),
+        },
+    },
+    "manage_organization": {
+        "create": {
+            "character_id": (
+                "创建组织需要 data.character_id（指向已存在的组织角色）；"
+                "新建组织请改用 manage_character 并设置 is_organization=true"
+            ),
+        },
+    },
+    "manage_career": {
+        "create": {
+            field: "创建职业需要 data.name、data.type（main 或 sub）和 data.stages（非空阶段列表）"
+            for field in ("name", "type", "stages")
+        },
+    },
+}
+
+# 严格集合的「可用字段」提示上限：错误会进过程面板，不能无界堆字段名。
+_AVAILABLE_FIELDS_LIMIT = 24
+
+# 批量 add_member 每一项的合法键：与运行期 _member_fields 的 _fields(..., MEMBER_FIELDS)
+# 同源（严格集合去掉批量的 members 键），避免提案期放过执行期必败的元素字段。
+_ADD_MEMBER_ITEM_FIELDS = frozenset(
+    EXTENDED_STRICT_DATA_FIELDS["manage_organization"]["add_member"] - {"members"}
+)
+
+
+def _available_fields_hint(allowed: frozenset[str]) -> str:
+    names = sorted(allowed)
+    shown = names[:_AVAILABLE_FIELDS_LIMIT]
+    text = ", ".join(shown)
+    if len(names) > len(shown):
+        text = f"{text}, …"
+    return f"；可用字段：{text}"
 
 
 def _json_type_name(value: Any) -> str:
@@ -310,6 +368,61 @@ def _schema_error(value: Any, schema: Any, path: str = "") -> str | None:
     return None
 
 
+def _add_member_batch_error(
+    step_id: str,
+    tool: str,
+    effective: dict[str, Any],
+    payload: dict[str, Any],
+) -> str | None:
+    """批量 add_member（data.members）的提案期校验，逐项给出可操作消息。
+
+    与运行期 ``_resolve_add_member_batch`` 同序：先判形状与互斥，再逐项判选择器/
+    position/字段白名单。命中即返回（第一个坏项就是模型要改的那一项）。
+    """
+    prefix = f"步骤 {step_id} 的 {tool} 参数无效："
+    conflicts = [
+        f"data.{key}" for key in ("character_id", "character_name")
+        if str(payload.get(key) or "").strip()
+    ] + [
+        key for key in ("character_id", "character_name", "member_id")
+        if str(effective.get(key) or "").strip()
+    ]
+    if conflicts:
+        return (
+            f"{prefix}data.members（批量）与单条角色选择器（{', '.join(conflicts)}）"
+            "不能同时出现，二选一：批量请把角色全部写进 data.members，"
+            "单条请只留一个角色选择器"
+        )
+    raw_members = payload.get("members")
+    if not isinstance(raw_members, list) or not raw_members:
+        return (
+            f'{prefix}data.members 必须是非空数组，每项形如 '
+            '{"character_id": "<角色ID>", "position": "<职位>"}'
+        )
+    for index, item in enumerate(raw_members, start=1):
+        if not isinstance(item, dict):
+            return f"{prefix}data.members 第 {index} 项必须是对象"
+        if not any(str(item.get(key) or "").strip()
+                   for key in ("character_id", "character_name")):
+            return (
+                f"{prefix}data.members 第 {index} 项缺少角色选择器："
+                "请给 character_id（角色 ID）或 character_name（角色名）"
+            )
+        if not str(item.get("position") or "").strip():
+            return (
+                f"{prefix}data.members 第 {index} 项必须给 position（职位，如「庄主」"
+                "「大弟子」「宫主」）；已识别出的角色职能请写入 position，不要只写在 note"
+            )
+        unknown_item = sorted(key for key in item if key not in _ADD_MEMBER_ITEM_FIELDS)
+        if unknown_item:
+            fields = ", ".join(f"第 {index} 项的 data.{key}" for key in unknown_item)
+            return (
+                f"{prefix}不支持的字段 {fields}"
+                f"{_available_fields_hint(_ADD_MEMBER_ITEM_FIELDS)}"
+            )
+    return None
+
+
 def _step_arguments_error(
     step_id: str,
     tool: str,
@@ -328,19 +441,70 @@ def _step_arguments_error(
     unknown = sorted(set(effective) - declared - moved)
     if unknown:
         return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {', '.join(unknown)}"
+    data = effective.get("data")
+    # 别名归一（issue #160）：模型对组织角色写 type/purpose，运行期会归一成
+    # organization_type/organization_purpose；提案期对副本同判，避免误拒。
+    normalized_data = (
+        normalize_data_aliases(tool, data) if isinstance(data, dict) else data
+    )
+    # 必填 data 字段先判：缺 character_id 时给的是「该改用哪个工具」，比「不支持的
+    # 字段 data.name」更能让模型一次改对（issue #160 的真实失败形状两者同时成立）。
+    required_data = _PLAN_REQUIRED_DATA_FIELDS.get(tool, {}).get(
+        str(effective.get("action") or "")
+    )
+    if required_data and isinstance(normalized_data, dict):
+        for field, hint in required_data.items():
+            if not normalized_data.get(field):
+                return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
+    if tool == "manage_organization" and str(effective.get("action") or "") == "add_member":
+        # 角色选择器有顶层回退（真实失败形状：顶层 member_id 装角色 ID、data 整块缺失），
+        # 无法塞进 _PLAN_REQUIRED_DATA_FIELDS 的「data 内单字段」模型，单独判（issue #160）。
+        payload = normalized_data if isinstance(normalized_data, dict) else {}
+        if "members" in payload:
+            # 批量形状（一个组织的多名成员一步挂靠）：与单条选择器互斥，逐项校验。
+            # 不早退：形状通过后仍要走下面的 strict_data/schema 校验（顺带拦住
+            # 与 members 并列的多余 data 键）。
+            batch_problem = _add_member_batch_error(step_id, tool, effective, payload)
+            if batch_problem:
+                return batch_problem
+        else:
+            selectors = (
+                payload.get("character_id"), payload.get("character_name"),
+                effective.get("character_id"), effective.get("character_name"),
+                effective.get("member_id"),
+            )
+            if not any(str(value or "").strip() for value in selectors):
+                return (
+                    f"步骤 {step_id} 的 {tool} 参数无效：新增组织成员需要 data.character_id"
+                    "（角色 ID），也可用顶层 character_id / character_name"
+                )
+            if not str(payload.get("position") or "").strip():
+                return (
+                    f"步骤 {step_id} 的 {tool} 参数无效：新增组织成员必须给 data.position（职位），"
+                    "如「庄主」「大弟子」「宫主」；已识别出的角色职能请写入 data.position，不要只写在 note"
+                )
     strict_data = _PLAN_STRICT_DATA_FIELDS.get(tool, {}).get(
         str(effective.get("action") or "")
     )
-    data = effective.get("data")
-    if strict_data is not None and isinstance(data, dict):
-        unknown_data = sorted(key for key in data if key not in strict_data)
+    if strict_data is not None and isinstance(normalized_data, dict):
+        unknown_data = sorted(key for key in normalized_data if key not in strict_data)
         if unknown_data:
             fields = ", ".join(f"data.{key}" for key in unknown_data)
-            return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {fields}"
+            return (
+                f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {fields}"
+                f"{_available_fields_hint(strict_data)}"
+            )
     canonical = {key: value for key, value in effective.items() if key in declared}
     problem = _schema_error(canonical, schema)
     if problem:
         return f"步骤 {step_id} 的 {tool} 参数无效：{problem}"
+    if tool == "start_project_task":
+        detail = validate_task_request_data(action, data if isinstance(data, dict) else {})
+        if detail:
+            # helper 的 "任务参数无效：" 前缀是给运行期 preview 用的；提案期已带
+            # "参数无效"，去掉前缀避免同一句话里出现两次"参数无效"。
+            detail = detail.removeprefix("任务参数无效：")
+            return f"步骤 {step_id} 的 {tool} 参数无效：{detail}"
     return None
 
 

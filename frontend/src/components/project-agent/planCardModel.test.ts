@@ -9,13 +9,14 @@ import {
   decideSettleRefresh,
   isPlanToolCall,
   parsePlanPayload,
+  planProgressSteps,
   planTaskIdOf,
   readPlanProgress,
   shouldPollRunningPlan,
   toggleStepSelection,
   type AgentPlanStep,
 } from './planCardModel';
-import type { AgentToolCall } from '../../types';
+import type { AgentExecutionStep, AgentToolCall } from '../../types';
 
 const step = (id: string, action: string): AgentPlanStep => ({
   id,
@@ -39,10 +40,39 @@ function planToolCall(overrides: Partial<AgentToolCall> = {}): AgentToolCall {
   };
 }
 
+function executionStep(overrides: Partial<AgentExecutionStep> = {}): AgentExecutionStep {
+  return {
+    id: 'step-1',
+    conversation_id: 'conv-1',
+    sequence: 1,
+    step_type: 'tool',
+    category: 'project',
+    title: 'step title',
+    status: 'running',
+    created_at: '2026-09-13T00:00:00',
+    updated_at: '2026-09-13T00:00:00',
+    ...overrides,
+  };
+}
+
 describe('isPlanToolCall', () => {
   it('accepts only propose_plan', () => {
     expect(isPlanToolCall(planToolCall())).toBe(true);
     expect(isPlanToolCall(planToolCall({ tool_name: 'start_project_task' }))).toBe(false);
+  });
+});
+
+describe('planProgressSteps', () => {
+  it('keeps this plan and legacy rows without an id, but excludes other plans and message-owned rows', () => {
+    const currentPlanStep = executionStep({ id: 'current', tool_call_id: 'tc-plan' });
+    const legacyStep = executionStep({ id: 'legacy' });
+    const otherPlanStep = executionStep({ id: 'other', tool_call_id: 'tc-other' });
+    const messageOwnedStep = executionStep({ id: 'message-owned', assistant_message_id: 'm-assistant' });
+
+    expect(planProgressSteps(
+      [currentPlanStep, legacyStep, otherPlanStep, messageOwnedStep],
+      'tc-plan',
+    )).toEqual([currentPlanStep, legacyStep]);
   });
 });
 
@@ -101,8 +131,8 @@ describe('parsePlanPayload', () => {
 
   it('caps steps at the approval gate so the card never offers an unapprovable plan', () => {
     const steps = (count: number) => Array.from({ length: count }, (_, index) => step(`s${index + 1}`, 'generate_chapter'));
-    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(12) } }))?.steps).toHaveLength(12);
-    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(13) } }))).toBeNull();
+    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(40) } }))?.steps).toHaveLength(40);
+    expect(parsePlanPayload(planToolCall({ arguments: { objective: 'x', steps: steps(41) } }))).toBeNull();
   });
 });
 

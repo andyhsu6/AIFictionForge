@@ -125,6 +125,18 @@ describe('PlanApprovalCard', () => {
     expect(screen.getAllByText(/覆盖既有/).length).toBeGreaterThanOrEqual(1);
   });
 
+  // issue #158：长计划曾把卡片顶出面板，批准按钮落到视口外且页面无可滚区域。
+  // 结构约束：步骤列表是唯一的内滚动区，批准按钮不在其中（永远常驻可见）。
+  it('keeps the step list as the only inner scroll region so the actions stay visible', () => {
+    renderCard(planCall(12));
+    const list = screen.getByTestId('plan-step-list');
+    expect(list.style.overflowY).toBe('auto');
+    expect(list.style.minHeight).toBe('0');
+    expect(list.contains(screen.getByTestId('plan-approve'))).toBe(false);
+    expect(list.contains(screen.getByTestId('plan-reject'))).toBe(false);
+    expect(list.querySelectorAll('[data-testid^="plan-step-toggle-"]')).toHaveLength(12);
+  });
+
   it('renders nothing when the payload cannot be parsed', () => {
     const broken = { ...planCall(), arguments: { objective: 'x' } as unknown as Record<string, unknown> };
     // component={false}: antd <App> otherwise always renders its own `ant-app`

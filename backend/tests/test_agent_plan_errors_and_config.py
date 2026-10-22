@@ -38,7 +38,7 @@ def test_cancelled_plan_keeps_task_cancelled_code():
 def test_settings_expose_all_pr2c_plan_keys():
     from app.config import settings
 
-    assert settings.agent_plan_max_steps == 30
+    assert settings.agent_plan_max_steps == 40
     assert settings.agent_plan_wall_clock_seconds == 7200.0
     assert settings.agent_plan_step_poll_timeout_seconds == 900.0
     assert settings.agent_plan_poll_interval_seconds == 2.0

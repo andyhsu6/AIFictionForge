@@ -57,7 +57,7 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 # 常量在 PR-2c 换成 settings 读取（键名保持同名）。下面 5 个预算常量测试会 monkeypatch，
 # 所以下游一律"用时读模块全局"，禁止写成函数默认值（默认值在 def 时求值，patch 不掉）；
 # CANCEL_SETTLE_TIMEOUT_SECONDS 不在此列（没有用例 patch 它）。
-MAX_PLAN_STEPS = 30
+MAX_PLAN_STEPS = 40
 PLAN_WALL_CLOCK_SECONDS = 7200.0
 STEP_POLL_TIMEOUT_SECONDS = 900.0
 POLL_INTERVAL_SECONDS = 2.0

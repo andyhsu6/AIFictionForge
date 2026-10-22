@@ -92,7 +92,7 @@ class Settings(BaseSettings):
 
     # 计划执行器预算（架构计划 A §3 / PR-2c）——默认值必须与
     # app/services/agent_plan_runner.py 的模块常量逐字一致，两者不一致时以常量优先规则生效。
-    agent_plan_max_steps: int = 30                 # 一份计划最多步数
+    agent_plan_max_steps: int = 40                 # 一份计划最多步数
     agent_plan_wall_clock_seconds: float = 7200.0  # 计划级总时长上限（秒）
     agent_plan_step_poll_timeout_seconds: float = 900.0   # 单步等子任务终态上限
     agent_plan_poll_interval_seconds: float = 2.0         # 子任务轮询间隔

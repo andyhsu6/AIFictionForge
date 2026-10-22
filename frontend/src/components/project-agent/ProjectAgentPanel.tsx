@@ -48,7 +48,7 @@ import type {
 } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
 import PlanApprovalCard from './PlanApprovalCard';
-import { decideSettleRefresh, isPlanSummaryMessage, isPlanToolCall, parsePlanPayload, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
+import { decideSettleRefresh, isPlanSummaryMessage, isPlanToolCall, parsePlanPayload, planProgressSteps, planTaskIdOf, shouldPollRunningPlan } from './planCardModel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -732,10 +732,6 @@ export default function ProjectAgentPanel({
     .map(toolCall => ({ toolCall, planTaskId: planTaskIdOf(toolCall) }))
     .filter((item): item is { toolCall: AgentToolCall; planTaskId: string } => Boolean(item.planTaskId)), [toolCalls]);
 
-  const orphanPlanSteps = useMemo(() => executionSteps.filter(step => (
-    !step.assistant_message_id && !step.user_message_id
-  )), [executionSteps]);
-
   const stopPlan = useCallback(async (planTaskId: string) => {
     try {
       await projectAgentApi.cancelPlan(projectId, planTaskId);
@@ -1013,7 +1009,7 @@ export default function ProjectAgentPanel({
   };
 
   const body = (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
       <div style={{
         height: 52, padding: '0 12px', borderBottom: `1px solid ${token.colorBorderSecondary}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
@@ -1040,7 +1036,7 @@ export default function ProjectAgentPanel({
         </Space>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+      <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', padding: 12 }}>
         {loadingHistory ? (
           <div style={{ height: '100%', display: 'grid', placeItems: 'center' }}><Spin /></div>
         ) : messages.length === 0 ? (
@@ -1110,7 +1106,10 @@ export default function ProjectAgentPanel({
       </div>
 
       {awaitingPlanCalls.length > 0 && (
-        <div style={{ padding: '0 12px 10px' }}>
+        <div style={{
+          padding: '0 12px 10px', display: 'flex', flexDirection: 'column',
+          minHeight: 0, maxHeight: '50%', overflow: 'hidden', flexShrink: 1,
+        }}>
           {awaitingPlanCalls.map(toolCall => (
             <PlanApprovalCard
               key={toolCall.id}
@@ -1126,11 +1125,15 @@ export default function ProjectAgentPanel({
       )}
 
       {runningPlans.length > 0 && (
-        <div data-testid="plan-progress" style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div data-testid="plan-progress" style={{
+          padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 6,
+          minHeight: 0, maxHeight: '25%', overflowY: 'auto', flexShrink: 1,
+        }}>
           {runningPlans.map(({ toolCall, planTaskId }) => {
             const payload = parsePlanPayload(toolCall);
             const total = payload ? payload.steps.length : 0;
-            const done = orphanPlanSteps.filter(step => step.status === 'completed' || step.status === 'failed').length;
+            const steps = planProgressSteps(executionSteps, toolCall.id);
+            const done = steps.filter(step => step.status === 'completed' || step.status === 'failed').length;
             return (
               <div key={toolCall.id} style={{
                 border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 10, padding: 10,
@@ -1143,7 +1146,7 @@ export default function ProjectAgentPanel({
                   </Text>
                 </Space>
                 <div data-testid="plan-steps" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {orphanPlanSteps.map(step => (
+                  {steps.map(step => (
                     <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       {renderStepIcon(step)}
                       <Text style={{ fontSize: 12, flex: 1 }}>{step.title}</Text>
