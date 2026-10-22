@@ -41,6 +41,7 @@ from app.models.relationship import Organization, OrganizationMember
 from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_DESCRIPTION,
     PlanValidationError,
+    plannable_tool_names,
     validate_plan,
 )
 from app.services.project_agent_extended_tools import (
@@ -371,6 +372,99 @@ def test_propose_plan_description_exempts_flat_parameter_manage_tools():
     assert "顶层参数" in description
     assert "create/delete/reorder" in description
     assert "update_outline" in description
+
+
+def _update_tool_names() -> set[str]:
+    """registry 的 update_* 工具名（构造不查库，与 _registry_definitions 同源）。"""
+    registry = ProjectAgentToolRegistry(SimpleNamespace(id="p1"), None)
+    return {
+        item["function"]["name"]
+        for item in registry.definitions()
+        if item["function"]["name"].startswith("update_")
+    }
+
+
+def _partial_action_manage_tools() -> list[tuple[str, str]]:
+    """action 枚举缺 update、但存在 update_* 兄弟的 manage_* 工具。
+
+    这类工具把「增删」和「改」拆成两个工具，计划描述必须逐个点名更新入口，
+    否则模型只能看到 action 枚举而推断「不支持修改」。
+    """
+    update_tools = _update_tool_names()
+    pairs = []
+    for spec in (*EXTENDED_TOOL_SPECS, *OPERATIONAL_TOOL_SPECS):
+        name = spec["name"]
+        if not name.startswith("manage_"):
+            continue
+        properties = (spec.get("parameters") or {}).get("properties") or {}
+        enum = (properties.get("action") or {}).get("enum") or []
+        if "update" in enum:
+            continue
+        sibling = f"update_{name.removeprefix('manage_')}"
+        if sibling in update_tools:
+            pairs.append((name, sibling))
+    return sorted(pairs)
+
+
+def test_propose_plan_description_names_update_sibling_for_partial_manage_tools():
+    """(f3) 缺 update 动作的 manage_* 必须在描述里点名其 update_* 兄弟（issue #110 复发）。
+
+    real-machine 证据：计划步骤写 manage_character + action=update，被 validate_plan
+    拒为「action 必须是 create, delete 之一」；据此把「修正角色字段」从计划中移除，
+    而 update_character 一直可用。旧描述只写了 manage_outline 这一个例外，
+    模型看到 manage_character 的枚举缺 update 便推断角色不支持修改。
+
+    这里从 spec 反推该集合，避免描述再次漏写某个例外。
+    """
+    description = PROPOSE_PLAN_TOOL_DESCRIPTION
+    pairs = _partial_action_manage_tools()
+
+    assert [name for name, _ in pairs] == [
+        "manage_chapter", "manage_character", "manage_outline",
+    ], (
+        "「action 枚举缺 update 且存在 update_* 兄弟」的工具集合变了；描述的例外说明需要同步"
+    )
+    for manage_name, sibling in pairs:
+        assert sibling in description, f"描述未点名 {manage_name} 的更新入口 {sibling}"
+
+
+def test_update_character_is_plannable_and_accepts_flat_personality():
+    """(f4) 反向守卫：update_character 进计划白名单，扁平 personality 步骤提案期通过。"""
+    registry = ProjectAgentToolRegistry(SimpleNamespace(id="p1"), None)
+    definitions = registry.definitions()
+    schemas = {item["function"]["name"]: item["function"]["parameters"] for item in definitions}
+
+    assert "update_character" in plannable_tool_names(definitions)
+    assert "data" not in schemas["update_character"]["properties"]
+
+    step = {
+        "id": "s1", "tool": "update_character",
+        "arguments": {
+            "character_name": "placeholder character",
+            "personality": "placeholder personality",
+        },
+    }
+    plan = validate_plan(
+        _plan([step]), allowed_tools=plannable_tool_names(definitions), tool_schemas=schemas,
+    )
+    assert plan["steps"][0]["arguments"]["personality"] == "placeholder personality"
+
+
+def test_validate_plan_rejects_manage_character_update_action():
+    """(f5) 证据链闭合：manage_character 不接受 update，消息须给出可用枚举。"""
+    step = {
+        "id": "s1", "tool": "manage_character",
+        "arguments": {
+            "action": "update",
+            "character_id": "placeholder-character",
+            "data": {"personality": "placeholder personality"},
+        },
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_character"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "create" in message and "delete" in message
 
 
 # --- (g) data 字段运行期契约前移到提案期（issue #112）-------------------------
