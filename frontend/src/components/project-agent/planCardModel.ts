@@ -2,11 +2,11 @@ import type { AgentExecutionStep, AgentToolCall } from '../../types';
 
 export const PLAN_TOOL_NAME = 'propose_plan';
 export const PLAN_TASK_TYPE = 'agent_plan';
-/** 上限 = 批准闸门，不是展示裁剪：批准路径的 validate_plan 拒绝 >12 步
- *  （agent_plan_schema.py:14,115）；运行器的 30 步（agent_plan_runner.py:58）只是
- *  runner 自身护栏。超过 12 步的 payload 一律不解析，否则卡片会给出一个点下去
+/** 上限 = 批准闸门，不是展示裁剪：批准路径的 validate_plan 拒绝 >40 步
+ *  （agent_plan_schema.py:25）；运行器读取同一个 40 步上限
+ *  （agent_plan_runner.py:60）。超过 40 步的 payload 一律不解析，否则卡片会给出一个点下去
  *  必然被后端拒收的批准入口。 */
-export const PLAN_MAX_STEPS = 12;
+export const PLAN_MAX_STEPS = 40;
 
 export interface AgentPlanStep {
   id: string;

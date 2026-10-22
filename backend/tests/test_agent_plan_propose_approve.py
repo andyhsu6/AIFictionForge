@@ -171,7 +171,7 @@ def test_empty_or_oversized_plan_rejected():
     with pytest.raises(PlanValidationError):
         validate_plan(_plan([]), allowed_tools=ALLOWED)
     with pytest.raises(PlanValidationError, match="上限"):
-        validate_plan(_plan([{"id": f"s{i}", "tool": "list_outlines"} for i in range(13)]),
+        validate_plan(_plan([{"id": f"s{i}", "tool": "list_outlines"} for i in range(41)]),
                       allowed_tools=ALLOWED)
 
 

@@ -154,7 +154,7 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "manage_organization",
-        "description": "创建、更新、删除结构化组织，或管理组织成员；执行前必须确认。",
+        "description": "创建、更新、删除结构化组织，或管理组织成员；执行前必须确认。add_member 可单条（data.character_id + data.position）或批量（data.members 数组，每项必须给 position）；同一家组织的多名成员应一步批量提交，不要拆成多步。",
         "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "add_member", "update_member", "remove_member"]}, "organization_id": ID, "member_id": ID, "data": DATA}, ["action"]),
         "risk_level": 2,
         "resources": ("organizations", "characters"),
@@ -228,10 +228,6 @@ class ProjectAgentExtendedTools:
     }
     ORGANIZATION_FIELDS = {"parent_org_id", "level", "power_level", "location", "motto", "color"}
     MEMBER_FIELDS = {"position", "rank", "status", "joined_at", "left_at", "loyalty", "contribution", "notes"}
-    # 添加成员时 position 缺省值：挂靠关系本身是用户的真实意图，数据库要求非空
-    # （OrganizationMember.position NOT NULL），而让模型给 12 个成员编 12 个职位反而
-    # 失真；用户后续可在界面改职位。
-    DEFAULT_MEMBER_POSITION = "成员"
     FORESHADOW_FIELDS = {
         "title", "content", "hint_text", "resolution_text", "plant_chapter_number",
         "target_resolve_chapter_number", "status", "is_long_term", "importance",
@@ -986,6 +982,15 @@ class ProjectAgentExtendedTools:
     async def _manage_organization_preview_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
+        if "members" in data:
+            resolved = await self._resolve_add_member_batch(org, arguments, data)
+            members = [
+                {"character_id": character.id, "character_name": character.name, **fields}
+                for character, fields in resolved
+            ]
+            return {}, {"members": members, "count": len(members)}, (
+                f"向组织《{org_char.name}》添加成员 {len(members)} 人"
+            )
         character = await self._find_character(self._member_character_selector(arguments, data))
         exists = (await self.db.execute(select(OrganizationMember.id).where(OrganizationMember.organization_id == org.id, OrganizationMember.character_id == character.id))).scalar_one_or_none()
         if exists:
@@ -997,6 +1002,26 @@ class ProjectAgentExtendedTools:
     async def _manage_organization_add_member(self, arguments: dict[str, Any]):
         org, org_char = await self._find_organization(arguments)
         data = self._data(arguments)
+        if "members" in data:
+            # 全量解析 + 校验都在这行之内完成，之后才开始写行：任何一条失败都不写。
+            resolved = await self._resolve_add_member_batch(org, arguments, data)
+            members = []
+            for character, fields in resolved:
+                self.db.add(OrganizationMember(
+                    organization_id=org.id, character_id=character.id,
+                    source="manual", **fields,
+                ))
+                members.append({
+                    "character_id": character.id, "character_name": character.name, **fields,
+                })
+            org.member_count = (org.member_count or 0) + len(members)
+            await self.db.flush()
+            # 批量没有「唯一新增行」可当标识：用组织 ID。它与 preview 的 entity_id
+            # 同源（extended.preview 从 arguments.organization_id 取值），执行期
+            # 也没有跨步引用这里 entity_id 的消费方（runner 只把它转成字符串回填）。
+            return org.id, {"members": members, "count": len(members)}, (
+                f"已向组织《{org_char.name}》添加成员 {len(members)} 人"
+            )
         character = await self._find_character(self._member_character_selector(arguments, data))
         fields = self._member_fields(data)
         self._validate_member_fields(fields)
@@ -1005,6 +1030,84 @@ class ProjectAgentExtendedTools:
         org.member_count = (org.member_count or 0) + 1
         await self.db.flush()
         return row.id, _snapshot(row, self.MEMBER_FIELDS | {"id", "character_id"}), f"已向组织《{org_char.name}》添加成员《{character.name}》"
+
+    async def _resolve_add_member_batch(
+        self,
+        org: Organization,
+        arguments: dict[str, Any],
+        data: dict[str, Any],
+    ) -> list[tuple[Character, dict[str, Any]]]:
+        """批量 add_member：解析并校验 data.members 的每一项（preview/execute 共用）。
+
+        只解析不写库：调用方拿到完整列表后才开始写行，因此「全部成功或一条都不写」
+        由调用顺序保证（registry.execute 先跑 preview，正常路径执行期不会再失败）。
+        """
+        raw_members = data.get("members")
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError(
+                "data.members 必须是非空数组，每项形如 "
+                "{\"character_id\": \"<角色ID>\", \"position\": \"<职位>\"}"
+            )
+        single_selectors = [
+            f"data.{key}" for key in ("character_id", "character_name")
+            if str(data.get(key) or "").strip()
+        ] + [
+            key for key in ("character_id", "character_name", "member_id")
+            if str(arguments.get(key) or "").strip()
+        ]
+        if single_selectors:
+            raise ValueError(
+                "add_member 的批量形状（data.members 数组）与单条角色选择器"
+                f"（{', '.join(single_selectors)}）不能同时出现：二选一，"
+                "批量请把角色全部写进 data.members，单条请只留一个角色选择器"
+            )
+        extra_keys = sorted(key for key in data if key != "members")
+        if extra_keys:
+            # 批量形状的 data 只有 members 一个键（字段都在元素内）；其余键静默忽略
+            # 等于悄悄丢掉用户/模型的意图，宁可响亮失败（与 _fields 同判）。
+            raise ValueError(
+                f"批量 add_member 的 data 只支持 members，不支持：{', '.join(extra_keys)}"
+            )
+        resolved: list[tuple[Character, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(raw_members, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"data.members 第 {index} 项必须是对象")
+            selector = self._batch_member_selector(item, index)
+            try:
+                character = await self._find_character(selector)
+            except ValueError as exc:
+                raise ValueError(f"data.members 第 {index} 项：{exc}") from exc
+            if character.id in seen:
+                raise ValueError(
+                    f"data.members 第 {index} 项与前面重复：同一角色不能在一次批量中添加两次"
+                )
+            seen.add(character.id)
+            exists = (await self.db.execute(select(OrganizationMember.id).where(
+                OrganizationMember.organization_id == org.id,
+                OrganizationMember.character_id == character.id,
+            ))).scalar_one_or_none()
+            if exists:
+                raise ValueError(f"data.members 第 {index} 项：该角色已经是组织成员")
+            try:
+                fields = self._member_fields(item)
+            except ValueError as exc:
+                raise ValueError(f"data.members 第 {index} 项：{exc}") from exc
+            self._validate_member_fields(fields)
+            resolved.append((character, fields))
+        return resolved
+
+    @staticmethod
+    def _batch_member_selector(item: dict[str, Any], index: int) -> dict[str, Any]:
+        """批量元素内只认 character_id / character_name（不回退 member_id 等键）。"""
+        for key in ("character_id", "character_name"):
+            value = clean_identifier(item.get(key))
+            if value:
+                return {key: value}
+        raise ValueError(
+            f"data.members 第 {index} 项缺少角色选择器：请给 character_id（角色 ID）"
+            "或 character_name（角色名）"
+        )
 
     @staticmethod
     def _member_character_selector(arguments: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
@@ -1029,7 +1132,10 @@ class ProjectAgentExtendedTools:
         )
 
     def _member_fields(self, data: dict[str, Any]) -> dict[str, Any]:
-        """preview/execute 共用的成员字段集合（含 position 缺省），避免两处漂移。"""
+        """preview/execute 共用的成员字段集合，避免两处漂移。
+
+        position 必填：静默补「成员」会把角色的真实职能（庄主/大弟子/宫主等）抹平。
+        """
         # character_id/character_name 是角色选择器，不进 _fields（MEMBER_FIELDS 之外的键
         # 会被 _fields 当非法字段拒绝）。
         fields = self._fields(
@@ -1037,7 +1143,9 @@ class ProjectAgentExtendedTools:
             self.MEMBER_FIELDS,
         )
         if not str(fields.get("position") or "").strip():
-            fields["position"] = self.DEFAULT_MEMBER_POSITION
+            raise ValueError(
+                "添加组织成员需要 data.position（职位，如「庄主」「大弟子」「宫主」），不能留空"
+            )
         return fields
 
     async def _manage_organization_preview_update_member(self, arguments: dict[str, Any]):
@@ -1409,7 +1517,8 @@ STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
         "create": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS | {"character_id"}),
         "update": frozenset(ProjectAgentExtendedTools.ORGANIZATION_FIELDS),
         "add_member": frozenset(
-            ProjectAgentExtendedTools.MEMBER_FIELDS | {"character_id", "character_name"}
+            ProjectAgentExtendedTools.MEMBER_FIELDS
+            | {"character_id", "character_name", "members"}
         ),
         "update_member": frozenset(ProjectAgentExtendedTools.MEMBER_FIELDS),
     },

@@ -718,34 +718,54 @@ async def _organization(db) -> Organization:
     return row
 
 
-def test_validate_plan_accepts_real_machine_add_member_shape():
-    """(j1) 真实形状：顶层 member_id 装角色 ID、无 data，提案期必须放行。"""
+def test_validate_plan_rejects_add_member_top_level_member_id_without_position():
+    """(j1) 顶层 member_id 装角色 ID、无 data：选择器回退仍被识别，但缺 position 必须拒绝。"""
     arguments = {
         "action": "add_member",
         "organization_id": ORG_ID,
         "member_id": ORG_MEMBER_CHARACTER_ID,
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(
+            _plan([_add_member_step("s1", arguments)]),
+            allowed_tools={"manage_organization"},
+            tool_schemas=_registry_schemas(),
+        )
+    message = str(exc_info.value)
+    assert "position" in message
+    assert "s1" in message
+
+
+def test_validate_plan_accepts_add_member_data_selector():
+    """(j1b) 规范形状 data.character_id / data.character_name + 必填 position 放行。"""
+    arguments = {
+        "action": "add_member",
+        "organization_id": ORG_ID,
+        "data": {"character_name": "placeholder member character", "position": "长老"},
     }
     plan = validate_plan(
         _plan([_add_member_step("s1", arguments)]),
         allowed_tools={"manage_organization"},
         tool_schemas=_registry_schemas(),
     )
-    assert plan["steps"][0]["arguments"] == arguments
+    assert plan["steps"][0]["arguments"]["data"] == arguments["data"]
 
 
-def test_validate_plan_accepts_add_member_data_selector():
-    """(j1b) 规范形状 data.character_id / data.character_name 也必须放行。"""
+def test_validate_plan_rejects_add_member_data_selector_without_position():
+    """(j1c) 选择器齐全但缺 data.position：提案期即拒（运行期不再补默认「成员」）。"""
     for data in (
-        {"character_id": ORG_MEMBER_CHARACTER_ID, "position": "长老"},
+        {"character_id": ORG_MEMBER_CHARACTER_ID},
         {"character_name": "placeholder member character"},
+        {"character_id": ORG_MEMBER_CHARACTER_ID, "position": "   "},
     ):
         arguments = {"action": "add_member", "organization_id": ORG_ID, "data": data}
-        plan = validate_plan(
-            _plan([_add_member_step("s1", arguments)]),
-            allowed_tools={"manage_organization"},
-            tool_schemas=_registry_schemas(),
-        )
-        assert plan["steps"][0]["arguments"]["data"] == data
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_plan(
+                _plan([_add_member_step("s1", arguments)]),
+                allowed_tools={"manage_organization"},
+                tool_schemas=_registry_schemas(),
+            )
+        assert "position" in str(exc_info.value)
 
 
 def test_validate_plan_rejects_add_member_without_character_selector():
@@ -764,27 +784,37 @@ def test_validate_plan_rejects_add_member_without_character_selector():
 
 
 @pytest.mark.anyio
-async def test_add_member_accepts_top_level_member_id_and_defaults_position(org_seeded):
-    """(j3) 运行期：顶层 member_id 当角色 ID 用，position 缺省补「成员」，member_count+1。"""
+async def test_add_member_without_position_raises_and_writes_nothing(org_seeded):
+    """(j3) 运行期：缺 data.position（含顶层 member_id 形状、纯空白）直接 ValueError，不落库。"""
     project, db = org_seeded
     tools = ProjectAgentExtendedTools(project, db)
 
-    result = await tools.execute("manage_organization", {
-        "action": "add_member",
-        "organization_id": ORG_ID,
-        "member_id": ORG_MEMBER_CHARACTER_ID,
-    })
+    for arguments in (
+        {
+            "action": "add_member",
+            "organization_id": ORG_ID,
+            "member_id": ORG_MEMBER_CHARACTER_ID,
+        },
+        {
+            "action": "add_member",
+            "organization_id": ORG_ID,
+            "data": {"character_id": ORG_MEMBER_CHARACTER_ID, "position": "   "},
+        },
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            await tools.execute("manage_organization", arguments)
+        assert "position" in str(exc_info.value)
 
-    row = (
+    rows = (
         await db.execute(
-            select(OrganizationMember).where(OrganizationMember.id == result["entity_id"])
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == ORG_ID,
+                OrganizationMember.character_id == ORG_MEMBER_CHARACTER_ID,
+            )
         )
-    ).scalar_one()
-    await db.refresh(row)
-    assert row.character_id == ORG_MEMBER_CHARACTER_ID
-    assert row.position == "成员"  # 这一行证明缺省值替代了 NOT NULL 的 position
-    assert result["after"]["position"] == "成员"
-    assert (await _organization(db)).member_count == 2
+    ).scalars().all()
+    assert rows == []
+    assert (await _organization(db)).member_count == 1
 
 
 @pytest.mark.anyio
@@ -842,3 +872,255 @@ async def test_update_and_remove_member_still_use_member_id(org_seeded):
 
 
 
+
+
+# --- (k) add_member 批量形状（一个组织多名成员一步挂靠）------------------------
+#
+# 背景：提案期上限 12 步 + 一次 add_member 只能加一个成员，33 名成员必然被切成
+# 多批（实测 5 次提案全部恰好 12 步）。这里钉死「一步批量」契约：提案期形状校验、
+# 运行期全部或全无、member_count 增量 = 实际新增人数。
+
+BATCH_CHARACTER_IDS = [
+    "d1e2f3a4-b5c6-4d7e-8f90-0000000001b1",
+    "d1e2f3a4-b5c6-4d7e-8f90-0000000001b2",
+    "d1e2f3a4-b5c6-4d7e-8f90-0000000001b3",
+]
+
+
+@pytest.fixture
+async def org_batch_seeded(org_seeded):
+    """在 org_seeded 之上再加 3 个待挂靠角色（成员/组织/既有成员关系不动）。"""
+    project, db = org_seeded
+    db.add_all([
+        Character(
+            id=character_id, project_id=PROJECT_ID,
+            name=f"placeholder batch member {index}",
+        )
+        for index, character_id in enumerate(BATCH_CHARACTER_IDS, start=1)
+    ])
+    await db.commit()
+    return project, db
+
+
+async def _members_of(db, character_ids: list[str]) -> list[OrganizationMember]:
+    return list((await db.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == ORG_ID,
+            OrganizationMember.character_id.in_(character_ids),
+        )
+    )).scalars().all())
+
+
+def _batch_arguments(members: list[dict]) -> dict:
+    return {"action": "add_member", "organization_id": ORG_ID, "data": {"members": members}}
+
+
+def test_validate_plan_accepts_add_member_batch():
+    """(k1) 3 人批量形状提案期放行，raw arguments 原样透传。"""
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"},
+        {"character_name": "placeholder batch member 2", "position": "弟子"},
+        {"character_id": BATCH_CHARACTER_IDS[2], "position": "客卿"},
+    ])
+    plan = validate_plan(
+        _plan([_add_member_step("s1", arguments)]),
+        allowed_tools={"manage_organization"},
+        tool_schemas=_registry_schemas(),
+    )
+    assert plan["steps"][0]["arguments"]["data"] == arguments["data"]
+
+
+def test_validate_plan_rejects_add_member_batch_item_without_position():
+    """(k2) 第 2 项缺 position：提案期即拒，消息点名「第 2 项」与 position。"""
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"},
+        {"character_id": BATCH_CHARACTER_IDS[1]},
+        {"character_id": BATCH_CHARACTER_IDS[2], "position": "客卿"},
+    ])
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(
+            _plan([_add_member_step("s1", arguments)]),
+            allowed_tools={"manage_organization"},
+            tool_schemas=_registry_schemas(),
+        )
+    message = str(exc_info.value)
+    assert "第 2 项" in message
+    assert "position" in message
+    assert "第 3 项" not in message
+
+
+def test_validate_plan_rejects_add_member_batch_mixed_with_single_selector():
+    """(k3) 批量 + 单条选择器混用：提案期拒绝并说明二选一。"""
+    for arguments in (
+        {
+            "action": "add_member", "organization_id": ORG_ID,
+            "member_id": ORG_MEMBER_CHARACTER_ID,
+            "data": {"members": [{"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"}]},
+        },
+        {
+            "action": "add_member", "organization_id": ORG_ID,
+            "data": {
+                "character_id": ORG_MEMBER_CHARACTER_ID,
+                "members": [{"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"}],
+            },
+        },
+    ):
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_plan(
+                _plan([_add_member_step("s1", arguments)]),
+                allowed_tools={"manage_organization"},
+                tool_schemas=_registry_schemas(),
+            )
+        message = str(exc_info.value)
+        assert "data.members" in message
+        assert "二选一" in message
+
+
+def test_validate_plan_rejects_add_member_batch_item_with_unknown_key():
+    """(k4) 元素内白名单外的键提案期就拒（运行期 _fields 必败），并给可用字段。"""
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老", "foo": "bar"},
+    ])
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(
+            _plan([_add_member_step("s1", arguments)]),
+            allowed_tools={"manage_organization"},
+            tool_schemas=_registry_schemas(),
+        )
+    message = str(exc_info.value)
+    assert "第 1 项" in message
+    assert "data.foo" in message
+
+
+@pytest.mark.anyio
+async def test_add_member_batch_persists_positions_and_member_count(org_batch_seeded):
+    """(k5) 批量 3 人：各自 position 落库、member_count 恰好 +3、after.count==3。"""
+    project, db = org_batch_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    positions = ["长老", "弟子", "客卿"]
+    members = [
+        {"character_id": character_id, "position": position}
+        for character_id, position in zip(BATCH_CHARACTER_IDS, positions)
+    ]
+
+    # preview 先跑完整校验且不写行（before 为空、after 报 count），随后 execute 落库。
+    preview = await tools.preview("manage_organization", _batch_arguments(members))
+    assert preview["changes"]["count"]["after"] == 3
+    assert preview["entity_id"] == ORG_ID
+    assert (await _organization(db)).member_count == 1
+
+    result = await tools.execute("manage_organization", _batch_arguments(members))
+
+    rows = await _members_of(db, BATCH_CHARACTER_IDS)
+    assert {row.character_id: row.position for row in rows} == dict(
+        zip(BATCH_CHARACTER_IDS, positions)
+    )
+    assert result["after"]["count"] == 3
+    assert [item["character_id"] for item in result["after"]["members"]] == BATCH_CHARACTER_IDS
+    assert result["entity_id"] == ORG_ID
+    assert "3 人" in result["message"]
+    assert (await _organization(db)).member_count == 4
+
+
+@pytest.mark.anyio
+async def test_add_member_batch_unknown_character_writes_nothing(org_batch_seeded):
+    """(k6) 第 2 项角色不存在：preview/execute 都 ValueError，零写入、member_count 不变。"""
+    project, db = org_batch_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"},
+        {"character_id": "d1e2f3a4-b5c6-4d7e-8f90-0000000001ff", "position": "弟子"},
+    ])
+
+    with pytest.raises(ValueError, match="第 2 项"):
+        await tools.preview("manage_organization", dict(arguments))
+    with pytest.raises(ValueError, match="第 2 项"):
+        await tools.execute("manage_organization", dict(arguments))
+
+    assert await _members_of(db, BATCH_CHARACTER_IDS) == []
+    assert (await _organization(db)).member_count == 1
+
+
+@pytest.mark.anyio
+async def test_add_member_batch_rejects_duplicate_character(org_batch_seeded):
+    """(k7) 同一角色在批量内重复：拒绝且零写入。"""
+    project, db = org_batch_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"},
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "弟子"},
+    ])
+
+    with pytest.raises(ValueError, match="重复"):
+        await tools.execute("manage_organization", dict(arguments))
+
+    assert await _members_of(db, BATCH_CHARACTER_IDS) == []
+    assert (await _organization(db)).member_count == 1
+
+
+@pytest.mark.anyio
+async def test_add_member_batch_rejects_existing_member(org_batch_seeded):
+    """(k8) 批量里混进已是成员的角色：沿用「该角色已经是组织成员」，且整批不写。"""
+    project, db = org_batch_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+    arguments = _batch_arguments([
+        {"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"},
+        {"character_id": ORG_ROOT_CHARACTER_ID, "position": "首领"},
+    ])
+
+    with pytest.raises(ValueError, match="该角色已经是组织成员"):
+        await tools.execute("manage_organization", dict(arguments))
+
+    assert await _members_of(db, BATCH_CHARACTER_IDS) == []
+    assert (await _organization(db)).member_count == 1
+
+
+@pytest.mark.anyio
+async def test_add_member_batch_rejects_mixed_single_selector_at_runtime(org_batch_seeded):
+    """(k9) 运行期同样拒绝批量 + 单条选择器混用（不静默择一）。"""
+    project, db = org_batch_seeded
+    tools = ProjectAgentExtendedTools(project, db)
+
+    with pytest.raises(ValueError, match="二选一"):
+        await tools.execute("manage_organization", {
+            "action": "add_member", "organization_id": ORG_ID,
+            "member_id": ORG_MEMBER_CHARACTER_ID,
+            "data": {"members": [{"character_id": BATCH_CHARACTER_IDS[0], "position": "长老"}]},
+        })
+
+    assert await _members_of(db, BATCH_CHARACTER_IDS) == []
+    assert (await _organization(db)).member_count == 1
+
+
+# --- (l) 步数上限对齐到 40 -----------------------------------------------------
+
+
+def _steps_with(count: int) -> list[dict]:
+    return [
+        {
+            "id": f"s{index}", "tool": "manage_foreshadow",
+            "arguments": {"action": "update", "foreshadow_id": FORESHADOW_ID},
+        }
+        for index in range(1, count + 1)
+    ]
+
+
+def test_validate_plan_accepts_forty_steps_and_rejects_forty_one():
+    """(l1) 提案期上限 40：40 步通过，41 步拒绝且消息写明上限。"""
+    plan = validate_plan(_plan(_steps_with(40)), allowed_tools={"manage_foreshadow"})
+    assert len(plan["steps"]) == 40
+
+    with pytest.raises(PlanValidationError, match="40"):
+        validate_plan(_plan(_steps_with(41)), allowed_tools={"manage_foreshadow"})
+
+
+def test_plan_step_limit_is_aligned_across_schema_runner_and_settings():
+    """(l2) 三处上限同值：提案期 schema / 执行期 runner / settings 不得各自漂移。"""
+    from app.config import settings
+    from app.services import agent_plan_runner
+    from app.services.agent_plan_schema import MAX_PLAN_STEPS, PLAN_TOOL_PARAMETERS
+
+    assert MAX_PLAN_STEPS == 40
+    assert PLAN_TOOL_PARAMETERS["properties"]["steps"]["maxItems"] == 40
+    assert agent_plan_runner.MAX_PLAN_STEPS == 40
+    assert settings.agent_plan_max_steps == 40
