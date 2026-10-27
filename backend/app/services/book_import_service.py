@@ -77,6 +77,11 @@ FIRST_PERSON_ALIAS_TOKENS = ("我", "咱", "俺", "叙述者")
 # 名称中的括号说明（如"我（男主角）"）——判定别名时整体剥掉，只比对核心名
 _ALIAS_PAREN_RE = re.compile(r"[（(].*?[)）]")
 
+# issue #168：注入生成提示词的原文窗口（每章字符数）。命中内容审核时降级到另一档，
+# 且只缩小原文子集/窗口，不改 count / batch 语义。
+_DEFAULT_EXCERPT_CHARS = 1800
+_DEGRADED_EXCERPT_CHARS = 900
+
 
 def _first_person_core(name: str) -> str:
     """剥掉括号说明后取核心名（'我（男主角）'→'我'）；用于别名判定。"""
@@ -204,6 +209,38 @@ def _resolve_character_by_name_or_alias(
     return char_by_name.get(name) or alias_to_char.get(name)
 
 
+def _is_content_filtered(exc: BaseException) -> bool:
+    """上游内容审核拦截判定（issue #168）。
+
+    `call_with_json_retry` 在 HTTP 200 + finish_reason="content_filter" 且 0 字正文时
+    抛 ApiError(code="ai.content_filtered")。只有这一类异常允许触发拆批降级；
+    其他异常必须继续向上抛，不得被降级逻辑吞掉。
+    """
+    return getattr(exc, "code", None) == "ai.content_filtered"
+
+
+def _append_skipped_chapter(skipped: list[dict[str, Any]], chapter_number: Any, scope: str) -> None:
+    """记录一条因内容审核被跳过的章节（scope: characters / relationships）。"""
+    try:
+        number = int(chapter_number)
+    except (TypeError, ValueError):
+        return
+    skipped.append({"chapter_number": number, "reason": "content_filter", "scope": scope})
+
+
+def _finalize_skipped_chapters(skipped: Optional[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """去重（chapter_number+scope）并按 chapter_number 排序，供响应/统计上报。"""
+    if not skipped:
+        return []
+    unique: dict[tuple[int, str], dict[str, Any]] = {}
+    for entry in skipped:
+        if not isinstance(entry, dict):
+            continue
+        key = (entry.get("chapter_number"), entry.get("scope"))
+        unique.setdefault(key, entry)
+    return sorted(unique.values(), key=lambda e: (e.get("chapter_number") or 0, e.get("scope") or ""))
+
+
 @dataclass
 class _StepFailure:
     """记录某个生成步骤的失败信息"""
@@ -252,6 +289,8 @@ class _BookImportTask:
     error_params: Optional[dict] = None
     # 已成功落库标记：活动任务查询据此过滤，避免把已应用的导入当成可恢复任务
     applied: bool = False
+    # issue #168：因上游内容审核被跳过的章节（任务态响应透出，刷新后不丢）
+    skipped_chapters: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BookImportService:
@@ -423,6 +462,7 @@ class BookImportService:
                 project.current_words = (project.current_words or 0) + words_delta
 
             # 基于基础信息执行"向导前3步"（先生成世界观 -> 生成职业 -> 生成角色/组织），不生成大纲
+            skipped: list[dict[str, Any]] = []
             generated_world, generated_careers, generated_entities = await self._run_post_import_wizard_generation(
                 db=db,
                 user_id=user_id,
@@ -430,10 +470,15 @@ class BookImportService:
                 character_count=max(project.character_count or 0, 8),
                 chapters=chapters_to_import,
                 content_language=task.content_language,
+                skipped_chapters=skipped,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
             statistics["generated_entities"] = generated_entities
+
+            skipped_report = _finalize_skipped_chapters(skipped)
+            statistics["skipped_chapters"] = skipped_report
+            task.skipped_chapters = skipped_report
 
             await db.commit()
             task.applied = True
@@ -443,6 +488,7 @@ class BookImportService:
                 project_id=project.id,
                 statistics=statistics,
                 warnings=warnings,
+                skipped_chapters=skipped_report,
             )
         except (HTTPException, ApiError):
             await db.rollback()
@@ -474,7 +520,7 @@ class BookImportService:
         if task.status != "completed":
             raise ApiError(code="task.not_completed", detail="任务未完成，无法导入")
 
-        statistics: Dict[str, int] = {
+        statistics: Dict[str, Any] = {
             "chapters": 0,
             "outlines": 0,
         }
@@ -562,6 +608,8 @@ class BookImportService:
 
             # -- 步骤4: 生成世界观 (20-40%)
             failed_steps: list[_StepFailure] = []
+            # issue #168：内容审核跳过的章节（characters / relationships 两个 scope 共用）
+            skipped: list[dict[str, Any]] = []
 
             await _notify("🌍 正在生成世界观...", 22, code="import.progress.generatingWorld")
             try:
@@ -640,6 +688,7 @@ class BookImportService:
                     progress_callback=progress_callback,
                     progress_range=(67, 92),
                     content_language=task.content_language,
+                    skipped_chapters=skipped,
                 )
                 statistics["generated_entities"] = generated_entities
                 await _notify(
@@ -676,6 +725,7 @@ class BookImportService:
                 statistics["extracted_relationships"] = extracted["extracted_relationships"]
                 statistics["created_relationship_types"] = extracted["created_types"]
                 statistics["created_imported_characters"] = extracted["created_characters"]
+                skipped.extend(extracted.get("skipped_chapters") or [])
                 await _notify(
                     f"🔗 原文关系抽取完成（{extracted['extracted_relationships']}条关系）",
                     95,
@@ -712,6 +762,11 @@ class BookImportService:
             task.failed_steps = failed_steps
             task.applied = True
 
+            # issue #168：内容审核跳过章节——统计、响应、任务态三处如实上报
+            skipped_report = _finalize_skipped_chapters(skipped)
+            statistics["skipped_chapters"] = skipped_report
+            task.skipped_chapters = skipped_report
+
             # 如果有步骤失败，通过 SSE 推送失败步骤详情
             if failed_steps:
                 failed_info = [
@@ -728,10 +783,13 @@ class BookImportService:
                     code="import.progress.doneWithFailures",
                     params={"failed_count": len(failed_steps)},
                 )
-                # 通过特殊的 progress 消息推送失败步骤列表
+                # 通过特殊的 progress 消息推送失败步骤列表（跳过章节随同一条消息带出）
                 if progress_callback:
                     await progress_callback(
-                        json.dumps({"failed_steps": failed_info}, ensure_ascii=False),
+                        json.dumps(
+                            {"failed_steps": failed_info, "skipped_chapters": skipped_report},
+                            ensure_ascii=False,
+                        ),
                         98,
                         "step_failures",
                     )
@@ -741,6 +799,7 @@ class BookImportService:
                 project_id=project.id,
                 statistics=statistics,
                 warnings=warnings,
+                skipped_chapters=skipped_report,
             )
         except (HTTPException, ApiError):
             await db.rollback()
@@ -2287,6 +2346,7 @@ class BookImportService:
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
         content_language: Optional[str] = None,
+        skipped_chapters: Optional[list[dict[str, Any]]] = None,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -2319,6 +2379,7 @@ class BookImportService:
             project=project,
             count=character_count,
             content_language=content_language,
+            skipped_chapters=skipped_chapters,
         )
 
         # 拆书导入场景不需要继续到大纲，直接标记流程完成，避免项目列表再次跳向导生成大纲
@@ -2559,8 +2620,13 @@ class BookImportService:
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
         content_language: Optional[str] = None,
+        skipped_chapters: Optional[list[dict[str, Any]]] = None,
     ) -> int:
-        """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。"""
+        """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。
+
+        issue #168：原文摘录触发上游内容审核时按 1800/章 → 900/章 → 章节二分
+        阶梯降级；单章仍被拦则跳过并写入 `skipped_chapters`（出参，由调用方上报）。
+        """
 
         async def _notify(
             msg: str,
@@ -2612,14 +2678,6 @@ class BookImportService:
             .order_by(Chapter.chapter_number)
         )
         db_chapters = chapters_result.scalars().all()
-        chapter_excerpt = self._build_chapter_excerpt(db_chapters)
-        if chapter_excerpt:
-            requirements += (
-                "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
-                "请基于其中真实出现的人物、组织与剧情生成角色，"
-                "避免编造与正文不符的内容。\n"
-                + chapter_excerpt
-            )
 
         # 名称来源约束：角色/组织名必须出现在喂给模型的原文中。
         # 用 _build_import_fulltext 构建与模型所见一致的原文（预算内全文 /
@@ -2638,6 +2696,7 @@ class BookImportService:
             "".join((c.content or "") for c in db_chapters)
         )
 
+        careers_context = ""
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
             careers_context += "请为每个非组织角色返回 career_assignment 字段："
@@ -2647,47 +2706,139 @@ class BookImportService:
                 careers_context += "- 可用主职业：" + "、".join([c.name for c in main_careers]) + "\n"
             if sub_careers:
                 careers_context += "- 可用副职业：" + "、".join([c.name for c in sub_careers]) + "\n"
-            requirements += careers_context
 
-        # 分批生成：控制单次 JSON 输出规模（#13 防网关超时）
-        batches = self._split_character_batches(target_count)
-        generated_entities: list = []
-        total_batches = len(batches)
-        for batch_idx, batch_count in enumerate(batches):
-            batch_prompt = PromptService.format_prompt(
-                template,
-                count=batch_count,
-                time_period=project.world_time_period or "未设定",
-                location=project.world_location or "未设定",
-                atmosphere=project.world_atmosphere or "未设定",
-                rules=project.world_rules or "未设定",
-                theme=project.theme or "未设定",
-                genre=project.genre or "未设定",
-                requirements=requirements,
-                content_language=generation_language,
+        def _build_requirements(requirements_chapters: list[Any], per_chapter_chars: int) -> str:
+            """按给定章节子集/单章字数重建 requirements（默认路径 = 1800/章全量）。"""
+            text = requirements
+            excerpt = self._build_chapter_excerpt(
+                requirements_chapters, per_chapter_chars=per_chapter_chars
             )
-            if total_batches > 1:
-                # 非首批时，提示词补充已生成实体，避免重复生成
-                known_names = "、".join(e.get("name", "") for e in generated_entities if isinstance(e, dict))
-                if known_names:
-                    batch_prompt += f"\n\n【已生成实体】请避免与以下名称重复：{known_names}"
+            if excerpt:
+                text += (
+                    "\n\n【章节原文摘录】以下为已导入章节的正文摘录，"
+                    "请基于其中真实出现的人物、组织与剧情生成角色，"
+                    "避免编造与正文不符的内容。\n"
+                    + excerpt
+                )
+            return text + careers_context
 
-            await _notify(
-                f"👥 AI正在生成角色与组织（第 {batch_idx + 1}/{total_batches} 批）...",
-                0.25 + 0.4 * (batch_idx / max(total_batches, 1)),
-                code="import.progress.charactersBatch",
-                params={"batch": batch_idx + 1, "total": total_batches},
+        async def _run_character_round(requirements_text: str) -> tuple[list[Any], bool]:
+            """跑一轮（该 requirements 下的全部角色批次）。
+
+            Returns:
+                (实体列表, 是否至少有一个批次被内容审核拦截)。非审核类异常照旧上抛；
+                被拦批次的结果作废，其余批次结果保留。
+            """
+            round_entities: list[Any] = []
+            blocked = False
+            batches = self._split_character_batches(target_count)
+            total_batches = len(batches)
+            for batch_idx, batch_count in enumerate(batches):
+                batch_prompt = PromptService.format_prompt(
+                    template,
+                    count=batch_count,
+                    time_period=project.world_time_period or "未设定",
+                    location=project.world_location or "未设定",
+                    atmosphere=project.world_atmosphere or "未设定",
+                    rules=project.world_rules or "未设定",
+                    theme=project.theme or "未设定",
+                    genre=project.genre or "未设定",
+                    requirements=requirements_text,
+                    content_language=generation_language,
+                )
+                if total_batches > 1:
+                    # 非首批时，提示词补充已生成实体，避免重复生成
+                    known_names = "、".join(e.get("name", "") for e in round_entities if isinstance(e, dict))
+                    if known_names:
+                        batch_prompt += f"\n\n【已生成实体】请避免与以下名称重复：{known_names}"
+
+                await _notify(
+                    f"👥 AI正在生成角色与组织（第 {batch_idx + 1}/{total_batches} 批）...",
+                    0.25 + 0.4 * (batch_idx / max(total_batches, 1)),
+                    code="import.progress.charactersBatch",
+                    params={"batch": batch_idx + 1, "total": total_batches},
+                )
+                try:
+                    batch_data = await ai_service.call_with_json_retry(
+                        prompt=batch_prompt,
+                        max_retries=3,
+                        expected_type="array",
+                        validator=validate_characters_batch,
+                    )
+                except Exception as exc:
+                    if not _is_content_filtered(exc):
+                        raise
+                    logger.warning("拆书导入：角色/组织生成批次触发内容审核，将降级重试")
+                    blocked = True
+                    continue
+                if isinstance(batch_data, dict):
+                    round_entities.append(batch_data)
+                elif isinstance(batch_data, list):
+                    round_entities.extend(batch_data)
+            return round_entities, blocked
+
+        skipped: list[dict[str, Any]] = (
+            skipped_chapters if skipped_chapters is not None else []
+        )
+
+        async def _generate_by_chapter_subsets(subset: list[Any]) -> list[Any]:
+            """按章二分降级：子集用 900 字/章重建摘录；单章仍被拦 → 跳过并记入 skipped。"""
+            round_entities, round_blocked = await _run_character_round(
+                _build_requirements(subset, _DEGRADED_EXCERPT_CHARS)
             )
-            batch_data = await ai_service.call_with_json_retry(
-                prompt=batch_prompt,
-                max_retries=3,
-                expected_type="array",
-                validator=validate_characters_batch,
+            if not round_blocked:
+                return round_entities
+            if len(subset) <= 1:
+                if subset:
+                    logger.warning(
+                        "拆书导入：第 %s 章原文触发内容审核，跳过该章角色生成",
+                        getattr(subset[0], "chapter_number", "?"),
+                    )
+                    _append_skipped_chapter(
+                        skipped, getattr(subset[0], "chapter_number", None), "characters"
+                    )
+                return round_entities
+            mid = len(subset) // 2
+            left = await _generate_by_chapter_subsets(subset[:mid])
+            right = await _generate_by_chapter_subsets(subset[mid:])
+            return left + right
+
+        # 降级阶梯（issue #168）：1800/章 → 900/章 → 二分章节子集（900/章）→ 跳过单章
+        generated_entities: list[Any]
+        if db_chapters:
+            generated_entities, content_filtered = await _run_character_round(
+                _build_requirements(db_chapters, _DEFAULT_EXCERPT_CHARS)
             )
-            if isinstance(batch_data, dict):
-                generated_entities.append(batch_data)
-            elif isinstance(batch_data, list):
-                generated_entities.extend(batch_data)
+            if content_filtered:
+                logger.warning("拆书导入：角色生成命中内容审核，降至 %s 字/章重试", _DEGRADED_EXCERPT_CHARS)
+                generated_entities, content_filtered = await _run_character_round(
+                    _build_requirements(db_chapters, _DEGRADED_EXCERPT_CHARS)
+                )
+            if content_filtered:
+                logger.warning("拆书导入：%s 字/章仍被拦截，按章二分降级", _DEGRADED_EXCERPT_CHARS)
+                mid = len(db_chapters) // 2
+                left_entities = (
+                    await _generate_by_chapter_subsets(db_chapters[:mid]) if mid else []
+                )
+                right_entities = await _generate_by_chapter_subsets(db_chapters[mid:])
+                generated_entities = left_entities + right_entities
+        else:
+            generated_entities, _ = await _run_character_round(_build_requirements([], _DEFAULT_EXCERPT_CHARS))
+
+        # 多子集降级时同一实体可能在多轮里被产出：写库前按 name 去重（保留首次出现）。
+        # 写库 pass 的 existing_names 也会累积已创建名，这里显式去重让 created 计数与
+        # 提示词/日志口径一致。
+        deduped_entities: list[Any] = []
+        seen_entity_names: set[str] = set()
+        for entity in generated_entities:
+            if isinstance(entity, dict):
+                entity_name = (entity.get("name") or "").strip()
+                if entity_name:
+                    if entity_name in seen_entity_names:
+                        continue
+                    seen_entity_names.add(entity_name)
+            deduped_entities.append(entity)
+        generated_entities = deduped_entities
 
         await _notify("👥 正在解析角色数据...", 0.7, code="import.progress.charactersParsing")
 
@@ -3028,6 +3179,75 @@ class BookImportService:
 
         return created
 
+    async def _extract_relationship_batch(
+        self,
+        *,
+        batch: list[Any],
+        template: str,
+        project: Project,
+        ai_service: AIService,
+        generation_language: Optional[str],
+        skipped: list[dict[str, Any]],
+        per_chapter_chars: int = 1800,
+    ) -> list[Any]:
+        """批量关系抽取；命中内容审核时按章二分降级（issue #168）。
+
+        - 成功 → 返回模型输出的 item 列表；
+        - `ai.content_filtered` 且 `len(batch) > 1` → 递归左右两半并按原顺序拼接；
+        - `ai.content_filtered` 且只剩单章 → 跳过该章（记入 skipped），返回空列表；
+        - 其他异常一律向上抛（非审核类错误不得被降级逻辑吞掉）。
+        """
+        chapters_text = "\n\n".join(
+            f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')[:per_chapter_chars]}"
+            for c in batch
+        )
+        prompt = PromptService.format_prompt(
+            template,
+            title=project.title or "未命名",
+            genre=project.genre or "通用",
+            chapters_text=chapters_text,
+            content_language=generation_language,
+        )
+        try:
+            ai_data = await ai_service.call_with_json_retry(
+                prompt=prompt,
+                max_retries=2,
+                expected_type="array",
+                validator=validate_relationships,
+            )
+        except Exception as exc:
+            if not _is_content_filtered(exc):
+                raise
+            if len(batch) <= 1:
+                logger.warning(
+                    "拆书导入：第 %s 章原文触发内容审核，跳过该章关系抽取",
+                    getattr(batch[0], "chapter_number", "?") if batch else "?",
+                )
+                if batch:
+                    _append_skipped_chapter(skipped, getattr(batch[0], "chapter_number", None), "relationships")
+                return []
+            mid = len(batch) // 2
+            left = await self._extract_relationship_batch(
+                batch=batch[:mid],
+                template=template,
+                project=project,
+                ai_service=ai_service,
+                generation_language=generation_language,
+                skipped=skipped,
+                per_chapter_chars=per_chapter_chars,
+            )
+            right = await self._extract_relationship_batch(
+                batch=batch[mid:],
+                template=template,
+                project=project,
+                ai_service=ai_service,
+                generation_language=generation_language,
+                skipped=skipped,
+                per_chapter_chars=per_chapter_chars,
+            )
+            return left + right
+        return ai_data if isinstance(ai_data, list) else []
+
     async def _extract_relationships_from_chapters(
         self,
         *,
@@ -3037,10 +3257,19 @@ class BookImportService:
         chapters: list[Any],
         ai_service: Optional[AIService] = None,
         content_language: Optional[str] = None,
-    ) -> dict[str, int]:
-        """从导入章节原文抽取人物关系，补录项目级类型、自动补角色并落库。"""
+    ) -> dict[str, Any]:
+        """从导入章节原文抽取人物关系，补录项目级类型、自动补角色并落库。
+
+        issue #168：上游内容审核拦截（ai.content_filtered）时按章二分降级，
+        被拦单章跳过并记入返回值的 skipped_chapters；其他异常照旧上抛。
+        """
         if not chapters:
-            return {"extracted_relationships": 0, "created_types": 0, "created_characters": 0}
+            return {
+                "extracted_relationships": 0,
+                "created_types": 0,
+                "created_characters": 0,
+                "skipped_chapters": [],
+            }
 
         ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
         template = await PromptService.get_template("RELATIONSHIP_EXTRACTION", user_id, db)
@@ -3084,28 +3313,19 @@ class BookImportService:
         extracted_count = 0
         created_type_count = 0
         created_char_count = 0
+        skipped: list[dict[str, Any]] = []
         batch_size = 5
 
         for start in range(0, len(chapters), batch_size):
             batch = chapters[start:start + batch_size]
-            chapters_text = "\n\n".join(
-                f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')[:1800]}"
-                for c in batch
+            items = await self._extract_relationship_batch(
+                batch=batch,
+                template=template,
+                project=project,
+                ai_service=ai_service,
+                generation_language=generation_language,
+                skipped=skipped,
             )
-            prompt = PromptService.format_prompt(
-                template,
-                title=project.title or "未命名",
-                genre=project.genre or "通用",
-                chapters_text=chapters_text,
-                content_language=generation_language,
-            )
-            ai_data = await ai_service.call_with_json_retry(
-                prompt=prompt,
-                max_retries=2,
-                expected_type="array",
-                validator=validate_relationships,
-            )
-            items = ai_data if isinstance(ai_data, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -3238,6 +3458,7 @@ class BookImportService:
             "extracted_relationships": extracted_count,
             "created_types": created_type_count,
             "created_characters": created_char_count,
+            "skipped_chapters": _finalize_skipped_chapters(skipped),
         }
 
     def _build_summary(self, content: str, max_len: int = 300) -> Optional[str]:
@@ -3280,6 +3501,7 @@ class BookImportService:
                 )
                 for f in task.failed_steps
             ],
+            skipped_chapters=task.skipped_chapters,
             created_at=task.created_at,
             updated_at=task.updated_at,
         )

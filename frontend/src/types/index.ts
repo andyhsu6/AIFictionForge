@@ -1237,6 +1237,8 @@ export interface BookImportTask {
   error_params?: Record<string, unknown> | null;
   /** 已落库但失败的生成步骤（issue #155）：页面恢复后据此继续展示重试入口 */
   failed_steps?: BookImportStepFailure[];
+  /** 被上游内容审核拦截的章节（issue #168）：页面恢复后继续明示跳过范围 */
+  skipped_chapters?: BookImportSkippedChapter[];
   created_at: string;
   updated_at: string;
 }
@@ -1273,6 +1275,17 @@ export interface BookImportResult {
     generated_world_building?: number;
   };
   warnings: BookImportWarning[];
+  /** 被上游内容审核拦截、未参与生成的章节（issue #168） */
+  skipped_chapters?: BookImportSkippedChapter[];
+}
+
+/** 导入时被上游内容审核拦截、未参与生成的章节（issue #168）。仅带章节号，不含原文。 */
+export type BookImportSkippedScope = 'characters' | 'relationships';
+
+export interface BookImportSkippedChapter {
+  chapter_number: number;
+  reason: 'content_filter';
+  scope: BookImportSkippedScope;
 }
 
 export interface BookImportStepFailure {

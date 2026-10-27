@@ -55,8 +55,11 @@ _USER_DEFAULT_PATTERNS = [
 ]
 
 # registry 允许的前缀（既有集合，禁止 warning.）
+# `ai.` 是 2026-10 有意新增的命名空间：承载「上游模型通道层」的失败
+# （如 content_filter 拦截、输出被预算截断），既不是用户输入校验失败
+# （validation.*），也不是本服务自身的内部错误（internal.*）。
 ALLOWED_PREFIXES = (
-    "auth.", "conflict.", "email.", "forbidden.", "import.", "internal.",
+    "ai.", "auth.", "conflict.", "email.", "forbidden.", "import.", "internal.",
     "not_found.", "progress.", "rate_limit.", "security.", "task.", "validation.",
     "dynamic_detail",
 )

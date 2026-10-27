@@ -1136,6 +1136,9 @@ class AIService:
         # 的那个 provider 一致，否则判的是别家网关。
         model = await self._require_model(model, provider)
         last_response = ""
+        # 跨 attempt 保留最近一次的结束原因：空输出分流的判定与失败路径的
+        # metrics.finish 都要用它（否则汇总日志只能写「结束原因=未知」）。
+        last_finish_reason = ""
         aggregate_usage = TokenUsage()
         metrics = self._build_call_metrics(
             request_mode="JSON重试",
@@ -1219,6 +1222,24 @@ class AIService:
                 # 思考型模型可能把 token 预算耗在推理上致正文为空，跳过解析直接重试
                 if not last_response.strip():
                     metrics.json_parse_success = False
+                    finish = str(result.get("finish_reason") or "")
+                    last_finish_reason = finish
+                    if finish == "content_filter":
+                        # 上游内容审核拦截：请求被拒，正文 0 字符。同一 prompt 重试
+                        # 必然同样被拦，重试只是把一次失败放大成 N 次（且掩盖成
+                        # 泛化的「模型输出为空」）——立即失败并暴露真实原因。
+                        # raw 只放诊断元信息，绝不放 prompt 或原文内容。
+                        raise ApiError(
+                            code="ai.content_filtered",
+                            params={"finish_reason": finish},
+                            raw=f"finish_reason={finish} model={model or self.default_model}",
+                        )
+                    if finish == "length":
+                        # 输出被 token 预算截断：同预算重试永远无效，立即失败。
+                        raise ApiError(
+                            code="ai.output_truncated",
+                            params={"finish_reason": finish},
+                        )
                     if attempt < max_retries:
                         logger.warning(
                             "模型输出为空，立即重试 %d/%d: model=%s",
@@ -1270,6 +1291,7 @@ class AIService:
             metrics.finish(
                 success=False,
                 response_length=len(last_response),
+                finish_reason=last_finish_reason or None,
                 usage=aggregate_usage,
                 error=e,
             )

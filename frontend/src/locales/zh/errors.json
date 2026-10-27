@@ -1,4 +1,8 @@
 {
+  "ai": {
+    "content_filtered": "本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容",
+    "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容"
+  },
   "auth": {
     "admin_required": "需要管理员权限",
     "email_already_registered": "该邮箱已注册",

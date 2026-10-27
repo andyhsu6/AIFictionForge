@@ -1,4 +1,8 @@
 {
+  "ai": {
+    "content_filtered": "The upstream provider's content filter blocked this generation. Switch to another model channel or skip this part of the content.",
+    "output_truncated": "The model output was cut off because the token budget ran out. Increase the max output tokens or split the content."
+  },
   "auth": {
     "admin_required": "Administrator privileges required",
     "email_already_registered": "This email is already registered",
