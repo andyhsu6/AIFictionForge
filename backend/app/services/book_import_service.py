@@ -79,8 +79,19 @@ _ALIAS_PAREN_RE = re.compile(r"[（(].*?[)）]")
 
 # issue #168：注入生成提示词的原文窗口（每章字符数）。命中内容审核时降级到另一档，
 # 且只缩小原文子集/窗口，不改 count / batch 语义。
-_DEFAULT_EXCERPT_CHARS = 1800
+# issue #173：1800 只能覆盖长章节的开头，后半程登场的人物/组织被整段漏掉，
+# 故默认窗口提到 3000；降级档仍为 900，降级阶梯（3000 → 900 → 章节二分）不变。
+_DEFAULT_EXCERPT_CHARS = 3000
 _DEGRADED_EXCERPT_CHARS = 900
+
+# issue #173：必填档案字段的生成后完整性阈值。低于该字符数视为「过薄」，
+# 触发同一批最多一次补全调用；仍不达标则记入出参统计（不阻塞落库）。
+_PROFILE_REQUIRED_FIELDS = ("personality", "background", "appearance", "current_state")
+# 组织不参与 current_state 追踪（该列语义是角色当前心理/处境），只查三项。
+_ORG_PROFILE_REQUIRED_FIELDS = ("personality", "background", "appearance")
+_MIN_PROFILE_FIELD_CHARS = 20
+# 占位表述：字段长度可能过阈值但内容不含该实体的具体信息
+_PROFILE_PLACEHOLDER_SNIPPETS = ("同上", "见前文", "见上文", "参见前文", "同前")
 
 
 def _first_person_core(name: str) -> str:
@@ -217,6 +228,53 @@ def _is_content_filtered(exc: BaseException) -> bool:
     其他异常必须继续向上抛，不得被降级逻辑吞掉。
     """
     return getattr(exc, "code", None) == "ai.content_filtered"
+
+
+def _is_output_truncated(exc: BaseException) -> bool:
+    """输出因 token 预算耗尽被截断（`ai.output_truncated`）。
+
+    与内容审核同理：同预算重试必然再次截断，补全调用不得重试（issue #172/#173）。
+    """
+    return getattr(exc, "code", None) == "ai.output_truncated"
+
+
+def _profile_field_is_thin(value: Any) -> bool:
+    """档案字段是否为空、过短或只写了占位（issue #173）。"""
+    text = str(value or "").strip()
+    if len(text) < _MIN_PROFILE_FIELD_CHARS:
+        return True
+    return any(snippet in text for snippet in _PROFILE_PLACEHOLDER_SNIPPETS)
+
+
+def _missing_profile_fields(item: dict[str, Any]) -> list[str]:
+    """返回该实体缺失/过薄的必填档案字段名（组织只查三项）。"""
+    fields = (
+        _ORG_PROFILE_REQUIRED_FIELDS if item.get("is_organization") else _PROFILE_REQUIRED_FIELDS
+    )
+    return [field for field in fields if _profile_field_is_thin(item.get(field))]
+
+
+def _validate_membership_repair_batch(data: Any) -> None:
+    """成员关系补全批次：数组，每项含非空 character_name / organization_name。"""
+    if not isinstance(data, list):
+        raise ValueError("成员关系补全结果必须是数组（JSON array）")
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"成员关系补全[{idx}] 必须是对象")
+        for key in ("character_name", "organization_name"):
+            if not str(item.get(key) or "").strip():
+                raise ValueError(f"成员关系补全[{idx}].{key} 必须是非空字符串")
+
+
+def _validate_profile_repair_batch(data: Any) -> None:
+    """档案补全批次：数组，每项含非空 name。"""
+    if not isinstance(data, list):
+        raise ValueError("档案补全结果必须是数组（JSON array）")
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"档案补全[{idx}] 必须是对象")
+        if not str(item.get("name") or "").strip():
+            raise ValueError(f"档案补全[{idx}].name 必须是非空字符串")
 
 
 def _append_skipped_chapter(skipped: list[dict[str, Any]], chapter_number: Any, scope: str) -> None:
@@ -610,6 +668,8 @@ class BookImportService:
             failed_steps: list[_StepFailure] = []
             # issue #168：内容审核跳过的章节（characters / relationships 两个 scope 共用）
             skipped: list[dict[str, Any]] = []
+            # issue #172/#173：角色/组织档案与成员关系的生成后体检统计（与 skipped 同模式累加）
+            profile_stats: dict[str, Any] = {}
 
             await _notify("🌍 正在生成世界观...", 22, code="import.progress.generatingWorld")
             try:
@@ -689,6 +749,7 @@ class BookImportService:
                     progress_range=(67, 92),
                     content_language=task.content_language,
                     skipped_chapters=skipped,
+                    profile_stats=profile_stats,
                 )
                 statistics["generated_entities"] = generated_entities
                 await _notify(
@@ -766,6 +827,9 @@ class BookImportService:
             skipped_report = _finalize_skipped_chapters(skipped)
             statistics["skipped_chapters"] = skipped_report
             task.skipped_chapters = skipped_report
+            # issue #172/#173：生成后体检统计（增量键，statistics 已是 dict[str, Any]）
+            if profile_stats:
+                statistics["profile_stats"] = profile_stats
 
             # 如果有步骤失败，通过 SSE 推送失败步骤详情
             if failed_steps:
@@ -2006,7 +2070,7 @@ class BookImportService:
         return max(5, min(count, 10))
 
     @staticmethod
-    def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = 1800) -> str:
+    def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = _DEFAULT_EXCERPT_CHARS) -> str:
         """把章节原文构建为 excerpt 文本（Tier2 拆书喂全文）。
 
         与关系抽取对齐：每章截取前 per_chapter_chars 字符，按章节号正序
@@ -2621,11 +2685,15 @@ class BookImportService:
         progress_range: tuple[int, int] = (0, 100),
         content_language: Optional[str] = None,
         skipped_chapters: Optional[list[dict[str, Any]]] = None,
+        profile_stats: Optional[dict[str, Any]] = None,
     ) -> int:
         """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。
 
-        issue #168：原文摘录触发上游内容审核时按 1800/章 → 900/章 → 章节二分
+        issue #168：原文摘录触发上游内容审核时按 3000/章 → 900/章 → 章节二分
         阶梯降级；单章仍被拦则跳过并写入 `skipped_chapters`（出参，由调用方上报）。
+        issue #172/#173：生成后做一次体检（成员关系可解析率、必填档案字段厚度），
+        不合格时各最多发起一次补全调用；结果写入 `profile_stats`（出参，与
+        `skipped_chapters` 同模式，由调用方累加，不改 HTTP 响应 schema）。
         """
 
         async def _notify(
@@ -2663,12 +2731,6 @@ class BookImportService:
         template = await PromptService.get_template("CHARACTERS_BATCH_GENERATION", user_id, db)
         # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
-        requirements = (
-            "请生成能够支撑前期剧情推进的关键角色与组织，"
-            "角色和组织都要与世界观、职业体系一致。"
-            "如果包含组织，数量不超过2个。"
-            "请尽量为非组织角色补充 organization_memberships。"
-        )
 
         # Tier2 拆书喂全文：把已入库章节原文 excerpt 注入角色生成，
         # 让 AI 基于真实剧情生成角色（而非仅世界观摘要）
@@ -2678,6 +2740,29 @@ class BookImportService:
             .order_by(Chapter.chapter_number)
         )
         db_chapters = chapters_result.scalars().all()
+
+        # 覆盖范围按真实导入区间声明（issue #172）：写死「前期剧情」会让模型只挑
+        # 开头几章的人物，中后段登场的角色与组织被整段遗漏。
+        if db_chapters:
+            chapter_span = (
+                f"第 {db_chapters[0].chapter_number} 到 {db_chapters[-1].chapter_number} 章"
+            )
+        else:
+            chapter_span = "已导入的全部章节"
+
+        requirements = (
+            f"请生成能够支撑已导入全文（{chapter_span}）的关键角色与组织，"
+            "角色和组织都要与世界观、职业体系一致。"
+            "如果包含组织，数量不超过2个。"
+            "每个非组织角色都必须返回 organization_memberships 数组："
+            "有从属关系时逐条给出，organization_name 必须严格取自本次返回的组织名称"
+            "（不得用简称、别名或未在本次结果中出现的组织名）；"
+            "没有任何从属关系时返回空数组 []，不要省略该字段。"
+            "请为每个实体单独撰写档案字段：personality（性格/组织特性）、"
+            "background（背景经历）、appearance（外貌或外在表现）、"
+            f"current_state（在{chapter_span}时的处境与心理状态），"
+            "每个字段都要针对该实体具体描写，禁止输出「同上」「见前文」这类占位表述。"
+        )
 
         # 名称来源约束：角色/组织名必须出现在喂给模型的原文中。
         # 用 _build_import_fulltext 构建与模型所见一致的原文（预算内全文 /
@@ -2708,7 +2793,7 @@ class BookImportService:
                 careers_context += "- 可用副职业：" + "、".join([c.name for c in sub_careers]) + "\n"
 
         def _build_requirements(requirements_chapters: list[Any], per_chapter_chars: int) -> str:
-            """按给定章节子集/单章字数重建 requirements（默认路径 = 1800/章全量）。"""
+            """按给定章节子集/单章字数重建 requirements（默认路径 = 3000/章全量）。"""
             text = requirements
             excerpt = self._build_chapter_excerpt(
                 requirements_chapters, per_chapter_chars=per_chapter_chars
@@ -2803,7 +2888,7 @@ class BookImportService:
             right = await _generate_by_chapter_subsets(subset[mid:])
             return left + right
 
-        # 降级阶梯（issue #168）：1800/章 → 900/章 → 二分章节子集（900/章）→ 跳过单章
+        # 降级阶梯（issue #168）：3000/章 → 900/章 → 二分章节子集（900/章）→ 跳过单章
         generated_entities: list[Any]
         if db_chapters:
             generated_entities, content_filtered = await _run_character_round(
@@ -2877,6 +2962,229 @@ class BookImportService:
             if rel_type.name
         }
 
+        # ---- issue #172/#173：生成后体检 + 有界修复（每类最多一次 AI 调用）----
+        # 出参统计与 skipped_chapters 同模式：由调用方提供容器并累加，不改 HTTP schema。
+        stats: dict[str, Any] = profile_stats if profile_stats is not None else {}
+
+        entity_by_name: dict[str, dict[str, Any]] = {
+            (item.get("name") or "").strip(): item
+            for item in generated_entities
+            if isinstance(item, dict) and (item.get("name") or "").strip()
+        }
+
+        def _entity_will_be_created(name: str, item: dict[str, Any]) -> bool:
+            """与第一阶段创建条件一致：被跳过（重名/泛称/第一人称别名）的实体不参与体检。"""
+            if not name or name in existing_names or name in _GENERIC_PERSON_NAMES:
+                return False
+            return not (is_first_person and _is_first_person_alias_name(name))
+
+        creatable_names = [
+            name for name, item in entity_by_name.items() if _entity_will_be_created(name, item)
+        ]
+        new_org_names = [name for name in creatable_names if entity_by_name[name].get("is_organization")]
+        new_char_names = [name for name in creatable_names if not entity_by_name[name].get("is_organization")]
+        # 可解析的组织名 = 本次生成的组织 + 库中已有组织（append 场景）
+        resolvable_org_names = set(organization_name_to_obj) | set(new_org_names)
+
+        def _iter_new_memberships() -> list[dict[str, Any]]:
+            """本次生成实体上的 organization_memberships（角色侧），只保留会落库的实体。"""
+            entries: list[dict[str, Any]] = []
+            for name in new_char_names:
+                memberships = entity_by_name[name].get("organization_memberships")
+                if not isinstance(memberships, list):
+                    continue
+                entries.extend(m for m in memberships if isinstance(m, dict))
+            return entries
+
+        def _count_resolvable_memberships() -> int:
+            """能解析到已知组织名的成员关系条数（修复判据）。"""
+            return sum(
+                1
+                for membership in _iter_new_memberships()
+                if (org_name := str(membership.get("organization_name") or "").strip())
+                and org_name in resolvable_org_names
+            )
+
+        async def _repair_memberships() -> str:
+            """一次成员关系补全调用（只补关系，不产出实体），返回统计状态。"""
+            prompt = (
+                "【任务】下面是已生成的组织名单与角色名单，请只输出它们之间的从属（成员）关系，"
+                "不要输出角色/组织档案，不要新增名字。\n"
+                f"【组织名单】{'、'.join(sorted(resolvable_org_names))}\n"
+                f"【角色名单】{'、'.join(new_char_names + [c.name for c in existing_chars if not c.is_organization])}\n"
+                "【输出格式】返回纯 JSON 数组，每项形如 "
+                '{"character_name":"角色名单中的名字","organization_name":"组织名单中的名字",'
+                '"position":"职位","rank":0,"loyalty":50}；'
+                "没有从属关系就返回空数组 []；名字必须严格取自上面的名单。\n"
+                f"输出语言：{generation_language}。"
+            )
+            try:
+                data = await ai_service.call_with_json_retry(
+                    prompt=prompt,
+                    max_retries=1,
+                    expected_type="array",
+                    validator=_validate_membership_repair_batch,
+                )
+            except Exception as exc:
+                # 补全调用是「可选增补」：主生成结果此时已拿到，不能因为一次补全失败
+                # 把整批实体判死（与主生成「失败=整批归零、非审核异常必须上抛」不同）。
+                # 内容审核 / 输出截断本就不可重试（单次尝试），其他异常同样只记原因。
+                code = getattr(exc, "code", None)
+                if _is_content_filtered(exc) or _is_output_truncated(exc):
+                    logger.warning("拆书导入：组织成员关系补全被上游拒绝（%s），放弃本次补全", code)
+                else:
+                    logger.warning(
+                        "拆书导入：组织成员关系补全调用失败（%s: %s），放弃本次补全",
+                        type(exc).__name__,
+                        str(exc)[:120],
+                    )
+                return f"aborted:{code or type(exc).__name__}"
+
+            applied = 0
+            for entry in data if isinstance(data, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                char_name = str(entry.get("character_name") or "").strip()
+                org_name = str(entry.get("organization_name") or "").strip()
+                item = entity_by_name.get(char_name)
+                if not item or item.get("is_organization") or not _entity_will_be_created(char_name, item):
+                    continue
+                if org_name not in resolvable_org_names:
+                    continue
+                memberships = item.get("organization_memberships")
+                if not isinstance(memberships, list):
+                    memberships = []
+                    item["organization_memberships"] = memberships
+                if any(
+                    str(m.get("organization_name") or "").strip() == org_name
+                    for m in memberships
+                    if isinstance(m, dict)
+                ):
+                    continue
+                memberships.append(
+                    {
+                        "organization_name": org_name,
+                        "position": str(entry.get("position") or "成员")[:100],
+                        "rank": entry.get("rank", 0),
+                        "loyalty": entry.get("loyalty", 50),
+                    }
+                )
+                applied += 1
+            if applied:
+                logger.info("拆书导入：组织成员关系补全成功 %s 条", applied)
+                return f"applied:{applied}"
+            logger.warning("拆书导入：组织成员关系补全未产出可用条目")
+            return "empty"
+
+        membership_repair_note = "not_needed"
+        if resolvable_org_names and new_char_names:
+            # 有组织但一条成员关系都对不上 → 模型漏了 organization_memberships，
+            # 用「组织名 + 角色名」再要一次（唯一一次，不递归）。
+            if _count_resolvable_memberships() == 0:
+                membership_repair_note = await _repair_memberships()
+        stats["membership_repair"] = membership_repair_note
+
+        def _thin_profiles() -> dict[str, list[str]]:
+            thin: dict[str, list[str]] = {}
+            for name in creatable_names:
+                missing = _missing_profile_fields(entity_by_name[name])
+                if missing:
+                    thin[name] = missing
+            return thin
+
+        async def _repair_profiles(thin: dict[str, list[str]]) -> str:
+            """一次档案补全调用（只补必填字段），返回统计状态。"""
+            payload = []
+            for name, missing in thin.items():
+                item = entity_by_name[name]
+                fields = (
+                    _ORG_PROFILE_REQUIRED_FIELDS if item.get("is_organization") else _PROFILE_REQUIRED_FIELDS
+                )
+                payload.append(
+                    {
+                        "name": name,
+                        "is_organization": bool(item.get("is_organization")),
+                        "missing_fields": missing,
+                        "known_fields": {
+                            field: str(item.get(field)).strip()
+                            for field in fields
+                            if not _profile_field_is_thin(item.get(field))
+                        },
+                    }
+                )
+            prompt = (
+                "【任务】下面这些实体的档案字段为空或过薄，请只补全 missing_fields 列出的字段，"
+                "不要改名、不要新增实体。\n"
+                f"【世界观】时间：{project.world_time_period or '未设定'}；"
+                f"地点：{project.world_location or '未设定'}；"
+                f"氛围：{project.world_atmosphere or '未设定'}；"
+                f"主题：{project.theme or '未设定'}；类型：{project.genre or '未设定'}\n"
+                f"【待补全实体】{json.dumps(payload, ensure_ascii=False)}\n"
+                "【输出要求】返回纯 JSON 数组，每项形如 "
+                '{"name":"实体名","personality":"...","background":"...",'
+                '"appearance":"...","current_state":"..."}；'
+                f"每个字段至少 {_MIN_PROFILE_FIELD_CHARS} 字、必须是该实体独有的具体描写；"
+                "禁止「同上」「见前文」这类占位表述，禁止抄录原文句子/对话；"
+                "正文没有明确描写时可基于上面的世界观与已有字段合理推断，但不得与之矛盾。\n"
+                f"输出语言：{generation_language}。"
+            )
+            try:
+                data = await ai_service.call_with_json_retry(
+                    prompt=prompt,
+                    max_retries=1,
+                    expected_type="array",
+                    validator=_validate_profile_repair_batch,
+                )
+            except Exception as exc:
+                # 同上：档案补全只是增补，失败不得让整批实体落空。
+                code = getattr(exc, "code", None)
+                if _is_content_filtered(exc) or _is_output_truncated(exc):
+                    logger.warning("拆书导入：档案字段补全被上游拒绝（%s），放弃本次补全", code)
+                else:
+                    logger.warning(
+                        "拆书导入：档案字段补全调用失败（%s: %s），放弃本次补全",
+                        type(exc).__name__,
+                        str(exc)[:120],
+                    )
+                return f"aborted:{code or type(exc).__name__}"
+
+            applied = 0
+            for entry in data if isinstance(data, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "").strip()
+                item = entity_by_name.get(name)
+                if item is None or not _entity_will_be_created(name, item):
+                    continue
+                for field in thin.get(name, []):
+                    value = entry.get(field)
+                    if not isinstance(value, str) or _profile_field_is_thin(value):
+                        continue
+                    item[field] = value.strip()
+                    applied += 1
+            if applied:
+                logger.info("拆书导入：档案字段补全成功 %s 个字段", applied)
+                return f"applied:{applied}"
+            logger.warning("拆书导入：档案字段补全未产出可用内容")
+            return "empty"
+
+        profile_repair_note = "not_needed"
+        thin_before = _thin_profiles()
+        if thin_before:
+            profile_repair_note = await _repair_profiles(thin_before)
+        stats["profile_repair"] = profile_repair_note
+        if thin_before:
+            stats["profiles_thin"] = sorted(thin_before)[:20]
+        thin_after = _thin_profiles()
+        if thin_after:
+            logger.warning(
+                "拆书导入：%s 个实体的必填档案字段补全后仍为空/过薄：%s",
+                len(thin_after),
+                "、".join(sorted(thin_after)[:20]),
+            )
+            stats["profiles_still_thin"] = sorted(thin_after)[:20]
+            stats["profiles_still_thin_count"] = len(thin_after)
+
         created = 0
         created_items: list[tuple[Character, dict[str, Any]]] = []
 
@@ -2912,6 +3220,8 @@ class BookImportService:
                 personality=item.get("personality"),
                 background=item.get("background"),
                 appearance=item.get("appearance"),
+                # issue #173：current_state 已在提示词里要求生成，旧实现只生成不落库
+                current_state=item.get("current_state"),
                 organization_type=item.get("organization_type") if is_organization else None,
                 organization_purpose=item.get("organization_purpose") if is_organization else None,
                 organization_members=(
@@ -3100,6 +3410,16 @@ class BookImportService:
                 relationship_pairs.add(pair)
 
         # 第四阶段：创建组织成员关系（优先使用角色上的 organization_memberships）
+        # issue #172：两处解析失败原本是静默 continue，导致 organization_member_count 恒为 0
+        # 且无从排查；现在每条都计入 requested/resolved/unresolved 并把名字写进本地日志。
+        membership_stats = {"requested": 0, "resolved": 0, "unresolved": 0}
+        unresolved_membership_names: list[str] = []
+
+        def _note_membership(outcome: Optional[str] = None) -> None:
+            """记一条成员关系：outcome=None 只计 requested，随后再补 resolved/unresolved。"""
+            key = "requested" if outcome is None else outcome
+            membership_stats[key] += 1
+
         for character, item in created_items:
             if character.is_organization:
                 continue
@@ -3112,16 +3432,22 @@ class BookImportService:
                 if not isinstance(membership, dict):
                     continue
 
+                _note_membership()
                 org_name = (membership.get("organization_name") or "").strip()
-                if not org_name:
-                    continue
-
-                org = organization_name_to_obj.get(org_name)
+                org = organization_name_to_obj.get(org_name) if org_name else None
                 if not org:
+                    logger.warning(
+                        "拆书导入：成员关系无法解析组织名 %r（角色 %r），已跳过",
+                        org_name,
+                        character.name,
+                    )
+                    unresolved_membership_names.append(org_name or "<空组织名>")
+                    _note_membership("unresolved")
                     continue
 
                 pair = (org.id, character.id)
                 if pair in member_pairs:
+                    _note_membership("resolved")
                     continue
 
                 db.add(
@@ -3138,6 +3464,7 @@ class BookImportService:
                 )
                 member_pairs.add(pair)
                 org.member_count = (org.member_count or 0) + 1
+                _note_membership("resolved")
 
         # 第五阶段：回填组织对象里的 organization_members（按名称补充成员）
         for character, item in created_items:
@@ -3156,12 +3483,21 @@ class BookImportService:
                 member_names = [member_names_raw.strip()]
 
             for member_name in member_names:
+                _note_membership()
                 member_char = character_name_to_obj.get(member_name)
                 if not member_char or member_char.is_organization:
+                    logger.warning(
+                        "拆书导入：组织 %r 的成员名 %r 无法解析到角色，已跳过",
+                        character.name,
+                        member_name,
+                    )
+                    unresolved_membership_names.append(member_name)
+                    _note_membership("unresolved")
                     continue
 
                 pair = (org.id, member_char.id)
                 if pair in member_pairs:
+                    _note_membership("resolved")
                     continue
 
                 db.add(
@@ -3176,6 +3512,15 @@ class BookImportService:
                     )
                 )
                 member_pairs.add(pair)
+                # issue #172：本阶段新建成员也要同步 member_count，否则组织成员数仍为 0
+                org.member_count = (org.member_count or 0) + 1
+                _note_membership("resolved")
+
+        stats["memberships_requested"] = membership_stats["requested"]
+        stats["memberships_resolved"] = membership_stats["resolved"]
+        stats["memberships_unresolved"] = membership_stats["unresolved"]
+        if unresolved_membership_names:
+            stats["unresolved_membership_names"] = unresolved_membership_names[:20]
 
         return created
 
