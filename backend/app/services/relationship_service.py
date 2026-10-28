@@ -217,7 +217,9 @@ async def sync_relationship_links(
     type_ids: Optional[Iterable[int]],
 ) -> None:
     """同步关系与类型的多对多关联，并把第一个类型写回旧缓存列。"""
-    unique_ids = list(dict.fromkeys(int(x) for x in (type_ids or [])))
+    # 调用方可能把 relationship_type_id=None 一并塞进来（新关系尚未解析出类型时），
+    # 直接 int(None) 会抛 TypeError 并中断整轮抽取（issue #180）。
+    unique_ids = list(dict.fromkeys(int(x) for x in (type_ids or []) if x is not None))
     existing = (
         await db.execute(
             select(RelationshipTypeLink.relationship_type_id).where(
