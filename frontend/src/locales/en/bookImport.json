@@ -63,6 +63,7 @@
     "autoInfo": "During the import, the AI will automatically fill in:<br/>• Worldview settings (time, place, atmosphere, rules)<br/>• Career system (primary and secondary careers)<br/>• Core characters and related organizations",
     "autoWait": "Please wait; you will be redirected automatically when complete.",
     "cardTitle": "Generation Import Progress",
+    "contentFilteredHint": "The upstream content filter blocked this step: the model returned no text, so there was no JSON to parse. This is not a code or parsing failure — the current model channel has a content filter enabled. Switch to another model channel and retry, or accept skipping the blocked chapters.",
     "error": "Import error",
     "failedStepsCount": "{{count}} generation step(s) failed",
     "failedStepsCount_one": "progress.failedStepsCount",
@@ -74,6 +75,14 @@
     "retryDesc": "The following AI generation steps could not complete, but the base data (chapters, outline) was imported successfully. You can choose to retry or skip them.",
     "retrying": "Retrying...",
     "skip": "Skip and Go to Project",
+    "skippedChaptersList": "Blocked chapter numbers: {{chapters}}",
+    "skippedChaptersTitle": "{{count}} chapters of the source text were blocked by the upstream content filter and left out of {{scope}}",
+    "skippedChaptersTitle_one": "{{count}} chapter of the source text was blocked by the upstream content filter and left out of {{scope}}",
+    "skippedChaptersTitle_other": "{{count}} chapters of the source text were blocked by the upstream content filter and left out of {{scope}}",
+    "skippedScope": {
+      "characters": "character and organization generation",
+      "relationships": "relationship extraction"
+    },
     "stepLabel": {
       "career_system": "Career System Generation",
       "characters": "Characters & Organizations",

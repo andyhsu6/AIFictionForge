@@ -159,6 +159,7 @@ export default interface Resources {
       "autoInfo": "导入过程中，AI会自动帮您补全：<br/>• 世界观设定（时间、地点、氛围、规则）<br/>• 职业体系（主职业与副职业）<br/>• 核心角色与相关组织",
       "autoWait": "请耐心等待，完成后将自动跳转。",
       "cardTitle": "生成导入进度",
+      "contentFilteredHint": "该步骤被上游内容审核拦截：模型返回了空正文，因此没有可解析的 JSON。这不是程序或解析错误，而是当前模型通道启用了内容审核。你可以更换模型通道后重试，或接受跳过被拦截的章节。",
       "error": "导入出错",
       "failedStepsCount": "{{count}} 个生成步骤失败",
       "retriedCount": "已重试 {{count}} 次",
@@ -166,6 +167,12 @@ export default interface Resources {
       "retryDesc": "以下AI生成步骤未能完成，但基础数据（章节、大纲）已成功导入。您可以选择重试或跳过。",
       "retrying": "正在重试...",
       "skip": "跳过，直接进入项目",
+      "skippedChaptersList": "被拦截的章节：第 {{chapters}} 章",
+      "skippedChaptersTitle": "有 {{count}} 章原文被上游内容审核拦截，未参与{{scope}}",
+      "skippedScope": {
+        "characters": "角色与组织生成",
+        "relationships": "原文关系抽取"
+      },
       "stepLabel": {
         "career_system": "职业体系生成",
         "characters": "角色与组织生成",
@@ -1208,6 +1215,10 @@ export default interface Resources {
     }
   },
   "errors": {
+    "ai": {
+      "content_filtered": "本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容",
+      "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容"
+    },
     "auth": {
       "admin_required": "需要管理员权限",
       "email_already_registered": "该邮箱已注册",

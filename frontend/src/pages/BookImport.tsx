@@ -33,6 +33,8 @@ import type {
   BookImportApplyPayload,
   BookImportExtractMode,
   BookImportPreview,
+  BookImportSkippedChapter,
+  BookImportSkippedScope,
   BookImportStepFailure,
   BookImportTask,
 } from '../types';
@@ -52,6 +54,8 @@ type BookImportPageCache = {
   applyMessage: string;
   applyError: string | null;
   isApplyComplete: boolean;
+  /** 上游审核跳过章节（issue #168）：刷新后仍要能明示跳过范围 */
+  skippedChapters?: BookImportSkippedChapter[];
   extractMode: BookImportExtractMode;
   tailChapterCount: number;
   cachedAt: number;
@@ -113,6 +117,11 @@ function isNotFoundError(error: unknown): boolean {
   return maybeError.response?.status === 404;
 }
 
+/** 上游审核跳过的章节（issue #168）：只带章节号与 scope，缺失/异常时按空列表处理。 */
+function readSkippedChapters(raw: unknown): BookImportSkippedChapter[] {
+  return Array.isArray(raw) ? (raw as BookImportSkippedChapter[]) : [];
+}
+
 export default function BookImport() {
   const { message } = App.useApp();
   const navigate = useNavigate();
@@ -138,6 +147,7 @@ export default function BookImport() {
 
   // 步骤级失败和重试相关状态
   const [failedSteps, setFailedSteps] = useState<BookImportStepFailure[]>([]);
+  const [skippedChapters, setSkippedChapters] = useState<BookImportSkippedChapter[]>([]);
   const [retrying, setRetrying] = useState(false);
   const [retryProgress, setRetryProgress] = useState(0);
   const [retryMessage, setRetryMessage] = useState('');
@@ -213,6 +223,7 @@ export default function BookImport() {
         setApplyProgress(cache.applyProgress);
         setApplyError(cache.applyError);
         setIsApplyComplete(cache.isApplyComplete);
+        setSkippedChapters(readSkippedChapters(cache.skippedChapters));
         setExtractMode(cache.extractMode ?? 'tail');
         setTailChapterCount(cache.tailChapterCount ?? 10);
         setApplyMessage(
@@ -283,6 +294,7 @@ export default function BookImport() {
       applyMessage,
       applyError,
       isApplyComplete,
+      skippedChapters,
       extractMode,
       tailChapterCount,
       cachedAt: Date.now(),
@@ -296,6 +308,7 @@ export default function BookImport() {
     applyMessage,
     applyError,
     isApplyComplete,
+    skippedChapters,
     extractMode,
     tailChapterCount,
   ]);
@@ -367,6 +380,24 @@ export default function BookImport() {
       setFailedSteps(restored);
     }
   }, [taskStatus, failedSteps.length]);
+
+  useEffect(() => {
+    // 同上：被上游审核跳过的章节也随任务状态返回（issue #168），恢复后继续明示跳过范围。
+    const restored = taskStatus?.skipped_chapters;
+    if (restored?.length && skippedChapters.length === 0) {
+      setSkippedChapters(restored);
+    }
+  }, [taskStatus, skippedChapters.length]);
+
+  const skippedByScope = useMemo(() => {
+    const grouped: Record<BookImportSkippedScope, number[]> = { characters: [], relationships: [] };
+    skippedChapters.forEach(({ scope, chapter_number }) => {
+      if (grouped[scope]) grouped[scope].push(chapter_number);
+    });
+    return (['characters', 'relationships'] as BookImportSkippedScope[])
+      .map((scope) => ({ scope, chapters: [...new Set(grouped[scope])].sort((a, b) => a - b) }))
+      .filter((group) => group.chapters.length > 0);
+  }, [skippedChapters]);
 
   const startTask = async () => {
     if (!file) {
@@ -448,6 +479,7 @@ export default function BookImport() {
       setApplyError(null);
       setIsApplyComplete(false);
       setFailedSteps([]);
+      setSkippedChapters([]);
 
       await bookImportApi.applyImportStream(
         taskId,
@@ -461,6 +493,9 @@ export default function BookImport() {
                 if (parsed.failed_steps && Array.isArray(parsed.failed_steps)) {
                   setFailedSteps(parsed.failed_steps as BookImportStepFailure[]);
                 }
+                if (parsed.skipped_chapters) {
+                  setSkippedChapters(readSkippedChapters(parsed.skipped_chapters));
+                }
               } catch {
                 // 不是JSON，忽略
               }
@@ -473,6 +508,9 @@ export default function BookImport() {
             importedProjectId.current = result.project_id;
             const generatedCareers = result.statistics?.generated_careers ?? 0;
             const generatedEntities = result.statistics?.generated_entities ?? 0;
+
+            // 被上游内容审核拦下的章节（issue #168）：仅在 apply 结果里带一次
+            setSkippedChapters(readSkippedChapters(result.skipped_chapters));
 
             // 检查最终是否有失败步骤
             setIsApplyComplete(true);
@@ -534,6 +572,9 @@ export default function BookImport() {
                 const parsed = JSON.parse(msg);
                 if (parsed.failed_steps && Array.isArray(parsed.failed_steps)) {
                   setFailedSteps(parsed.failed_steps as BookImportStepFailure[]);
+                }
+                if (parsed.skipped_chapters) {
+                  setSkippedChapters(readSkippedChapters(parsed.skipped_chapters));
                 }
               } catch {
                 // 不是JSON，忽略
@@ -605,6 +646,7 @@ export default function BookImport() {
     setIsApplyComplete(false);
 
     setFailedSteps([]);
+    setSkippedChapters([]);
     setRetrying(false);
     setRetryProgress(0);
     setRetryMessage('');
@@ -1104,6 +1146,25 @@ export default function BookImport() {
             />
           )}
 
+          {/* 上游内容审核跳过的章节（issue #168）：只报章节号，绝不展示原文 */}
+          {skippedByScope.length > 0 && isApplyComplete && !retrying && (
+            <div style={{ textAlign: 'left', marginBottom: 24 }}>
+              {skippedByScope.map((group) => (
+                <Alert
+                  key={group.scope}
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  message={t('progress.skippedChaptersTitle', {
+                    count: group.chapters.length,
+                    scope: t(`progress.skippedScope.${group.scope}`),
+                  })}
+                  description={t('progress.skippedChaptersList', { chapters: group.chapters.join(', ') })}
+                />
+              ))}
+            </div>
+          )}
+
           {/* 步骤失败提示与重试UI */}
           {failedSteps.length > 0 && isApplyComplete && !retrying && (
             <div style={{ textAlign: 'left', marginBottom: 24 }}>
@@ -1141,9 +1202,15 @@ export default function BookImport() {
                                 </Space>
                               }
                               description={
-                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                  {errorText.length > 120 ? errorText.slice(0, 120) + '...' : errorText}
-                                </Typography.Text>
+                                item.error_code === 'ai.content_filtered' ? (
+                                  <Typography.Text style={{ fontSize: 12 }}>
+                                    {t('progress.contentFilteredHint')}
+                                  </Typography.Text>
+                                ) : (
+                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                    {errorText.length > 120 ? errorText.slice(0, 120) + '...' : errorText}
+                                  </Typography.Text>
+                                )
                               }
                             />
                           </List.Item>

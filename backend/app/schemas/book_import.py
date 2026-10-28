@@ -96,6 +96,9 @@ class BookImportTaskStatusResponse(BaseModel):
     error_code: Optional[str] = None
     error_params: Optional[dict] = None
     failed_steps: list[BookImportFailedStep] = Field(default_factory=list)
+    # issue #168：因上游内容审核被跳过的章节（刷新后仍要能在任务态展示）。
+    # 默认空 list —— 旧客户端不做处理也不会炸。
+    skipped_chapters: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -121,8 +124,12 @@ class BookImportApplyResponse(BaseModel):
     """确认导入响应"""
     success: bool
     project_id: str
-    statistics: dict[str, int]
+    # skipped_chapters 为增量键（issue #168），因此 statistics 放宽为 Any 值类型
+    statistics: dict[str, Any]
     warnings: list[BookImportWarning] = Field(default_factory=list)
+    # issue #168：因上游内容审核被跳过的章节
+    # [{"chapter_number": int, "reason": "content_filter", "scope": "characters"|"relationships"}]
+    skipped_chapters: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class BookImportRetryRequest(BaseModel):
