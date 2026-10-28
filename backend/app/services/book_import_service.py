@@ -3845,7 +3845,10 @@ class BookImportService:
                         break
 
                 if matched:
-                    await sync_relationship_links(db, matched, list({matched.relationship_type_id, *type_ids}))
+                    # relationship_type_id 可能为 None（该关系尚未解析出类型），
+                    # 不能直接塞进 int() 链路（issue #180）。
+                    merged_type_ids = [tid for tid in {matched.relationship_type_id, *type_ids} if tid is not None]
+                    await sync_relationship_links(db, matched, merged_type_ids)
                     if matched.source != "manual":
                         note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
                         if note:
