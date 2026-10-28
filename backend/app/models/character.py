@@ -40,6 +40,13 @@ class Character(Base):
     # 心理状态追踪（由章节分析自动更新）
     current_state = Column(Text, comment="角色当前心理状态（由分析自动更新）")
     state_updated_chapter = Column(Integer, comment="心理状态最后更新的章节号")
+
+    # 档案同步追踪（issue #174）：档案随新章节回流时记录同步水位与 AI 上次写入值
+    profile_synced_through_chapter = Column(
+        Integer, nullable=False, default=0, server_default="0",
+        comment="档案已同步到的章节号"
+    )
+    ai_profile_snapshot = Column(Text, comment="上一次 AI 写入的档案字段快照(JSON)")
     
     # 职业相关字段（冗余字段，用于提升查询性能）
     main_career_id = Column(String(36), ForeignKey("careers.id", ondelete="SET NULL"), comment="主职业ID")

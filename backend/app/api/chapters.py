@@ -916,7 +916,7 @@ async def analyze_chapter_background(
 ) -> bool:
     """执行有硬超时保障的章节分析，并确保中断后任务进入终态。"""
     try:
-        return await asyncio.wait_for(
+        success = await asyncio.wait_for(
             _analyze_chapter_background_impl(
                 chapter_id=chapter_id,
                 user_id=user_id,
@@ -943,6 +943,28 @@ async def analyze_chapter_background(
         )
         await asyncio.shield(terminal_update)
         raise
+
+    # 章节正文已落库且分析收尾完成 → 刷新角色/组织档案（issue #174）。
+    # 放在终态之后、fire-and-forget，失败不影响主任务，也不阻塞任务完成。
+    if success:
+        _spawn_character_profile_sync(user_id, project_id, chapter_id)
+    return success
+
+
+def _spawn_character_profile_sync(user_id: str, project_id: str, chapter_id: str) -> None:
+    """后台异步刷新档案：独立会话 + 自吞异常（issue #174）。"""
+    from app.services.character_profile_sync_service import character_profile_sync_service
+
+    async def _run() -> None:
+        await character_profile_sync_service.sync_after_chapter(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+        )
+
+    task = asyncio.create_task(_run())
+    analysis_background_tasks.add(task)
+    task.add_done_callback(analysis_background_tasks.discard)
 
 
 async def _analyze_chapter_background_impl(

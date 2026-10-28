@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_
-from typing import List
+from typing import List, Optional
 import json
 from urllib.parse import quote
 from app.database import get_db
@@ -31,6 +31,7 @@ from app.schemas.project import (
     ProjectResponse,
     ProjectListResponse
 )
+from app.schemas.character import CharacterProfileRefreshRequest
 from app.schemas.import_export import (
     ExportOptions,
     ImportValidationResult,
@@ -38,6 +39,8 @@ from app.schemas.import_export import (
 )
 from app.services.import_export_service import ImportExportService
 from app.services.memory_service import memory_service
+from app.services.character_profile_sync_service import character_profile_sync_service
+from app.api.common import verify_project_access
 from app.logger import get_logger
 from app.utils.data_consistency import (
     run_full_data_consistency_check,
@@ -635,6 +638,35 @@ async def fix_project_member_counts(
     except Exception as e:
         logger.error(f"修复成员计数失败: {str(e)}", exc_info=True)
         detail = f"修复失败: {str(e)}"
+        raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
+
+
+@router.post("/{project_id}/characters/refresh-profiles", summary="刷新角色/组织档案（把新增章节回流到档案）")
+async def refresh_character_profiles(
+    project_id: str,
+    request: Request,
+    payload: Optional[CharacterProfileRefreshRequest] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """手动触发档案同步（issue #174）。
+
+    `through_chapter` 不传时同步到项目内已写完的最大章节号；同一范围重复调用是 no-op。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    try:
+        return await character_profile_sync_service.sync(
+            db=db,
+            user_id=user_id,
+            project_id=project_id,
+            through_chapter=payload.through_chapter if payload else None,
+        )
+    except (HTTPException, ApiError):
+        raise
+    except Exception as e:
+        logger.error(f"刷新角色档案失败: {str(e)}", exc_info=True)
+        detail = f"刷新档案失败: {str(e)}"
         raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
 
 
