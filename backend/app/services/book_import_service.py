@@ -50,7 +50,6 @@ from app.services.ai_service import (
     create_user_ai_service_with_mcp,
 )
 from app.services.import_validators import (
-    _looks_like_pasted_narration,
     validate_career_system,
     validate_characters_batch,
     validate_relationships,
@@ -3813,33 +3812,17 @@ class BookImportService:
                         and _chapter_mentions(name) >= _MIN_CHAPTERS_FOR_AUTO_CHARACTER
                         and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
                     ):
-                        personality = (item.get("evidence") or "").strip() or None
-                        relationship_desc = (item.get("description") or "").strip()
-                        # evidence 才是原文中角色的真实描述；若 evidence 与关系描述相同
-                        # 或缺失，则不写入 personality，避免关系描述污染性格字段
-                        if personality and personality == relationship_desc:
-                            personality = None
-                        # 质量门：粘贴的叙事原文（省略号/长句等）不是性格描写，
-                        # 不写入 personality；无明确描写时留空
-                        if personality and _looks_like_pasted_narration(personality):
-                            personality = None
+                        # 档案字段一律留空：关系抽取的输出契约（RELATIONSHIP_EXTRACTION）
+                        # 里根本没有 personality/background/appearance/age/gender，
+                        # 此前这里的 item.get(...) 恒为 None，而把 evidence 塞进 personality
+                        # 只会得到"原文碎片"。建档后由档案同步
+                        # （character_profile_sync_service，依据章节原文、无据留空）回填。
                         new_char = Character(
                             project_id=project.id,
                             name=name[:100],
                             role_type="supporting",
                             # 名称来源约束：原文中出现 → imported；编造名 → AI 补充标记
                             source="imported" if _name_appears_in_source(name, source_text) else SOURCE_AI_AUGMENTED,
-                            personality=personality,
-                            age=(str(item.get("age")) if item.get("age") is not None else None),
-                            gender=item.get("gender"),
-                            background=item.get("background"),
-                            appearance=item.get("appearance"),
-                            # issue #174：关系抽取时补齐的字段同样是 AI 写入，登记快照
-                            ai_profile_snapshot=_profile_snapshot_json(
-                                personality=personality,
-                                background=item.get("background"),
-                                appearance=item.get("appearance"),
-                            ),
                         )
                         db.add(new_char)
                         await db.flush()
