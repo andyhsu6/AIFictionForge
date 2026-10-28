@@ -50,6 +50,7 @@ from app.services.ai_service import (
     create_user_ai_service_with_mcp,
 )
 from app.services.import_validators import (
+    looks_like_profile_narration,
     validate_career_system,
     validate_characters_batch,
     validate_relationships,
@@ -3223,6 +3224,7 @@ class BookImportService:
                 return f"aborted:{code or type(exc).__name__}"
 
             applied = 0
+            rejected = 0
             for entry in data if isinstance(data, list) else []:
                 if not isinstance(entry, dict):
                     continue
@@ -3234,11 +3236,19 @@ class BookImportService:
                     value = entry.get(field)
                     if not isinstance(value, str) or _profile_field_is_thin(value):
                         continue
+                    # issue #188：补全结果同样要过内容体检，别把剧情复述写进档案
+                    if looks_like_profile_narration(value):
+                        rejected += 1
+                        continue
                     item[field] = value.strip()
                     applied += 1
-            if applied:
-                logger.info("拆书导入：档案字段补全成功 %s 个字段", applied)
-                return f"applied:{applied}"
+            if applied or rejected:
+                logger.info(
+                    "拆书导入：档案字段补全成功 %s 个字段（丢弃剧情复述 %s 个）",
+                    applied,
+                    rejected,
+                )
+                return f"applied:{applied}" if applied else f"rejected:{rejected}"
             logger.warning("拆书导入：档案字段补全未产出可用内容")
             return "empty"
 

@@ -60,6 +60,39 @@ def _looks_like_pasted_narration(text: str) -> bool:
     return False
 
 
+# 第三人称叙述句的信号：主语 + 因果/转折连词 或 亲属/师门称谓 + 多分句。
+# 目的是挡住「因为她和丈夫不仅是夫妻，还是师兄妹，她的骑术和刀法都不在……之下」这类
+# 关系/情节叙述被写进「性格特点」——它不是性格，而是剧情复述。
+NARRATION_SUBJECTS = ("他", "她", "他们", "她们", "二人", "两人")
+NARRATION_MARKERS = ("因为", "所以", "于是", "但是", "然而", "不仅", "而且", "虽然", "可是", "不过", "却")
+NARRATION_RELATION_NOUNS = (
+    "丈夫", "妻子", "夫君", "娘子", "父亲", "母亲", "儿子", "女儿",
+    "师父", "师傅", "师兄", "师姐", "师弟", "师妹", "夫妻", "父子", "母女", "兄弟", "姐妹",
+)
+NARRATION_MIN_LEN = 30
+
+
+def looks_like_profile_narration(text: str) -> bool:
+    """档案字段（性格/背景/外貌）的内容体检：抄录片段或第三人称剧情复述都算不合格。
+
+    比 `_looks_like_pasted_narration` 多一条「叙述句」判定，用于所有会写档案的路径
+    （角色生成校验、档案补全、档案同步），避免同一类错误在不同入口反复出现。
+    """
+    if _looks_like_pasted_narration(text):
+        return True
+    if not isinstance(text, str):
+        return False
+    value = text.strip()
+    if len(value) < NARRATION_MIN_LEN or "，" not in value:
+        return False
+    has_subject = any(token in value for token in NARRATION_SUBJECTS)
+    if not has_subject:
+        return False
+    has_marker = any(token in value for token in NARRATION_MARKERS)
+    has_relation = any(token in value for token in NARRATION_RELATION_NOUNS)
+    return has_marker or has_relation
+
+
 def validate_world_building(data: Any) -> None:
     """世界观：必须是 dict，且 time_period/location/atmosphere/rules 四字段均为非空字符串。"""
     if not isinstance(data, dict):

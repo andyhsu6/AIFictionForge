@@ -28,6 +28,7 @@ from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.project import Project
 from app.models.relationship import Organization, OrganizationMember
+from app.services.import_validators import looks_like_profile_narration
 
 logger = get_logger(__name__)
 
@@ -210,6 +211,12 @@ def _apply_profile_values(
         if not isinstance(new_value, str) or not new_value.strip():
             continue
         new_value = new_value.strip()
+        # issue #188：档案字段不得是剧情复述/原文抄录（例如把「因为她和丈夫不仅是夫妻，
+        # 还是师兄妹……」写进性格特点）。这类内容一律不落库，宁可留空等下一轮。
+        if looks_like_profile_narration(new_value):
+            stats["fields_rejected"] = stats.get("fields_rejected", 0) + 1
+            logger.info("丢弃疑似剧情复述的档案字段: %s.%s", label, field)
+            continue
         current = getattr(target, field, None)
 
         if force:
@@ -271,6 +278,7 @@ class CharacterProfileSyncService:
             "characters_updated": 0,
             "fields_updated": 0,
             "fields_preserved": 0,
+            "fields_rejected": 0,
             "skipped": [],
             "through_chapter": 0,
         }
@@ -598,6 +606,7 @@ class CharacterProfileSyncService:
             "updated": False,
             "fields_updated": 0,
             "fields_preserved": 0,
+            "fields_rejected": 0,
             "skipped": [],
             "through_chapter": 0,
         }
