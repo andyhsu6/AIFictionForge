@@ -6,7 +6,7 @@
 
 本文件钉死修复契约：
 (a) 关系抽取：5 章批里 1 章被拦 → 其余 4 章的关系照常产出，被拦章进 skipped；
-(b) 角色生成：1800/章被拦 → 以 900/章重试；仍被拦 → 章节二分，单章仍被拦则跳过；
+(b) 角色生成：默认窗口/章被拦 → 以 900/章重试；仍被拦 → 章节二分，单章仍被拦则跳过；
 (c) 非审核类异常必须继续上抛，不得被降级逻辑吞掉；
 (d) 无内容审核时调用次数与旧行为一致（回归）；
 (e) skipped_chapters 的落点：响应顶层 + statistics + 任务态 + step_failures 消息。
@@ -46,12 +46,12 @@ CHARACTER_TEMPLATE = (
     "要求:{requirements}"
 )
 
-# 占位填充：让「1800 窗口」与「900 窗口」的摘录内容可区分（TAIL 标记落在 900 之后）
+# 占位填充：让「默认窗口」与「900 窗口」的摘录内容可区分（TAIL 标记落在 900 之后）
 _FILLER = "占位正文" * 250  # 1000 字符
 
 
 def _chapter_content(number: int) -> str:
-    """占位章节正文：前 1000 字符 + TAIL 标记（1800 窗口能读到，900 窗口读不到）。"""
+    """占位章节正文：前 1000 字符 + TAIL 标记（默认 3000 窗口能读到，900 窗口读不到）。"""
     return f"占位章节{number}开头。" + _FILLER + f"TAIL{number}"
 
 
@@ -154,6 +154,19 @@ def _relationship_items(numbers: list[int]) -> list[dict]:
     ]
 
 
+def _complete_profile(name: str) -> dict:
+    """档案齐全的占位实体（issue #173）：这些用例只关心降级/调用次数，
+    实体字段若为空会额外触发一次档案补全调用，污染调用计数断言。"""
+    return {
+        "name": name,
+        "role_type": "supporting",
+        "personality": f"{name}的占位性格：沉着克制，遇事先观察再表态。",
+        "background": f"{name}的占位背景：在占位城镇长大，靠占位手艺谋生。",
+        "appearance": f"{name}的占位外貌：中等身材，常穿占位式样的深色外衣。",
+        "current_state": f"{name}的占位处境：暂住占位城镇，等待占位事件的结果。",
+    }
+
+
 # --- (a) 关系抽取：批内二分降级 ------------------------------------------------
 
 
@@ -218,14 +231,14 @@ async def test_relationship_extraction_reraises_non_content_filter_errors(
 async def test_character_generation_downgrades_to_900_window(
     db_session, patched_prompts, monkeypatch
 ):
-    """1800/章被拦 → 900/章重试成功（TAIL 标记落在 900 之后，故 900 档不再命中）。"""
+    """默认窗口/章被拦 → 900/章重试成功（TAIL 标记落在 900 之后，故 900 档不再命中）。"""
     project = await _seed_project(db_session)
     await _seed_chapters(db_session, [1, 2, 3])
 
     def handler(prompt: str, kwargs: dict):
         if "TAIL" in prompt:
             raise _content_filter_error()
-        return [{"name": f"占位角色{n}", "role_type": "supporting"} for n in _chapter_numbers_in_prompt(prompt)]
+        return [_complete_profile(f"占位角色{n}") for n in _chapter_numbers_in_prompt(prompt)]
 
     ai_service, calls = _install_ai_service(monkeypatch, handler)
     skipped: list[dict] = []
@@ -242,7 +255,7 @@ async def test_character_generation_downgrades_to_900_window(
 
     assert created == 3
     assert skipped == []
-    # count=5 → 单批：1800 档一次（被拦）+ 900 档一次（成功）
+    # count=5 → 单批：3000 档一次（被拦）+ 900 档一次（成功）
     assert len(calls) == 2
 
 
@@ -257,7 +270,7 @@ async def test_character_generation_bisects_chapters_when_900_still_filtered(
         numbers = _chapter_numbers_in_prompt(prompt)
         if 3 in numbers:
             raise _content_filter_error()
-        return [{"name": f"占位角色{n}", "role_type": "supporting"} for n in numbers]
+        return [_complete_profile(f"占位角色{n}") for n in numbers]
 
     ai_service, calls = _install_ai_service(monkeypatch, handler)
     skipped: list[dict] = []
@@ -277,7 +290,7 @@ async def test_character_generation_bisects_chapters_when_900_still_filtered(
     assert skipped == [
         {"chapter_number": 3, "reason": "content_filter", "scope": "characters"}
     ]
-    # 1800 档 + 900 档 + [1,2] + [3,4] + [3] + [4] = 6 次
+    # 3000 档 + 900 档 + [1,2] + [3,4] + [3] + [4] = 6 次
     assert len(calls) == 6
 
 
@@ -339,7 +352,7 @@ async def test_no_content_filter_keeps_single_character_round(
     await _seed_chapters(db_session, [1, 2, 3])
 
     def handler(prompt: str, kwargs: dict):
-        return [{"name": f"占位角色{n}", "role_type": "supporting"} for n in _chapter_numbers_in_prompt(prompt)]
+        return [_complete_profile(f"占位角色{n}") for n in _chapter_numbers_in_prompt(prompt)]
 
     ai_service, calls = _install_ai_service(monkeypatch, handler)
     skipped: list[dict] = []
