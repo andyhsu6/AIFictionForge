@@ -124,7 +124,8 @@ class CharacterListResponse(BaseModel):
 
 
 class CharacterProfileRefreshRequest(BaseModel):
-    """档案同步请求（issue #174）"""
+    """档案同步请求（issue #174 / #175）"""
     through_chapter: Optional[int] = Field(
         None, description="同步到第几章（不传则取项目内已写完的最大章节号）"
     )
+    include_world: bool = Field(True, description="是否同时刷新世界设定")

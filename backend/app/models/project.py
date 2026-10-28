@@ -27,6 +27,13 @@ class Project(Base):
     world_location = Column(Text, comment="地理位置")
     world_atmosphere = Column(Text, comment="氛围基调")
     world_rules = Column(Text, comment="世界规则")
+
+    # 世界设定同步追踪（issue #175）：设定随新章节回流
+    world_profile_synced_through_chapter = Column(
+        Integer, nullable=False, default=0, server_default="0",
+        comment="世界设定已同步到的章节号"
+    )
+    ai_world_profile_snapshot = Column(Text, comment="上一次 AI 写入的世界设定快照(JSON)")
     
     # 项目配置
     chapter_count = Column(Integer, comment="章节数量")

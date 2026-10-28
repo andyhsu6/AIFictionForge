@@ -648,19 +648,21 @@ async def refresh_character_profiles(
     payload: Optional[CharacterProfileRefreshRequest] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """手动触发档案同步（issue #174）。
+    """手动触发档案同步（issue #174 / #175）。
 
     `through_chapter` 不传时同步到项目内已写完的最大章节号；同一范围重复调用是 no-op。
+    返回体含角色档案统计与 `world` 段（世界设定统计）。
     """
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(project_id, user_id, db)
 
     try:
-        return await character_profile_sync_service.sync(
+        return await character_profile_sync_service.sync_all(
             db=db,
             user_id=user_id,
             project_id=project_id,
             through_chapter=payload.through_chapter if payload else None,
+            include_world=payload.include_world if payload else True,
         )
     except (HTTPException, ApiError):
         raise

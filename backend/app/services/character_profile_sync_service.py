@@ -26,12 +26,16 @@ from app.core.errors import ApiError
 from app.logger import get_logger
 from app.models.chapter import Chapter
 from app.models.character import Character
+from app.models.project import Project
 from app.models.relationship import Organization, OrganizationMember
 
 logger = get_logger(__name__)
 
 # 允许 AI 回流的档案字段
 PROFILE_FIELDS = ("personality", "background", "appearance", "current_state")
+
+# 允许 AI 回流的世界设定字段（title/theme/genre/description 不动）
+WORLD_FIELDS = ("world_time_period", "world_location", "world_atmosphere", "world_rules")
 
 # 不可重试的错误码：记入 skipped 后继续处理其他批次
 NON_RETRYABLE_CODES = frozenset({"ai.content_filtered", "ai.output_truncated"})
@@ -77,6 +81,36 @@ _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
 2. 不要把现有档案原样复述一遍。
 3. organizations 只列出本章新出现或发生变化的组织从属关系；没有则给空数组。
 4. 未在上面列出名称的角色一律不要输出。"""
+
+_WORLD_SYSTEM_PROMPT = (
+    "你是小说世界设定维护助手。只依据给定章节正文归纳世界设定，不得臆造正文中"
+    "没有出现的信息。输出严格 JSON，不要额外解释。"
+)
+
+_WORLD_PROMPT_TEMPLATE = """请根据下列章节正文，归纳并更新这本书的世界设定。
+
+【现有世界设定】
+{profile}
+
+【章节正文】
+{chapters}
+
+输出 JSON（顶层对象）：
+{{
+  "world": {{
+    "world_time_period": "具体时代/时间线：写明年代、纪元或阶段，以及推动它的具体事件",
+    "world_location": "具体地理：地名、区域、城邦、势力所在，必要时点出空间结构",
+    "world_atmosphere": "基调：这本书特有的氛围与张力来源，结合具体场景与冲突",
+    "world_rules": "规则约束：力量体系/技术/制度/禁忌等硬性规则，写清代价与限制"
+  }}
+}}
+
+规则：
+1. 四个字段都必须给出非空值，每段 40 字以上，要写这本书**具体的专名、势力、地点、事件、规则**。
+2. 严禁类型标签式空话（如「古代架空时代」「一个充满冒险的世界」「氛围紧张」），
+   宁可写正文里出现的具体名词。
+3. 如果正文提供了比现有设定更具体的信息，就把它合并进来；不要退回到更笼统的表述。
+4. 正文没有涉及的方面，保留现有设定里已有的内容，不要清空。"""
 
 
 def _loads_json(raw: Optional[str], fallback: Any) -> Any:
@@ -142,11 +176,55 @@ def _render_chapters(chapters: Iterable[Chapter]) -> str:
     )
 
 
+def _render_world_profile(project: Any) -> str:
+    lines = [
+        f"- {field}：{getattr(project, field)}"
+        for field in WORLD_FIELDS
+        if getattr(project, field, None)
+    ]
+    return "\n".join(lines) or "- （尚无设定，需要从正文归纳）"
+
+
+def _apply_profile_values(
+    target: Any,
+    values: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    fields: Iterable[str],
+    stats: Dict[str, Any],
+    *,
+    label: str,
+) -> bool:
+    """逐字段写回：只覆盖「没被用户手改过」的字段，并把 AI 写入值记进快照。"""
+    changed = False
+    for field in fields:
+        new_value = values.get(field)
+        if not isinstance(new_value, str) or not new_value.strip():
+            continue
+        new_value = new_value.strip()
+        current = getattr(target, field, None)
+        if current == new_value:
+            snapshot[field] = new_value
+            continue
+        previous_ai = snapshot.get(field)
+        if current and previous_ai is not None and current != previous_ai:
+            # 用户手改过该字段：保留用户值，也不动快照（否则下次会误判为 AI 值）
+            stats["fields_preserved"] += 1
+            logger.debug("保留用户手改字段: %s.%s", label, field)
+            continue
+        setattr(target, field, new_value)
+        snapshot[field] = new_value
+        stats["fields_updated"] += 1
+        changed = True
+    return changed
+
+
 class CharacterProfileSyncService:
     """把新章节回流到角色/组织档案。"""
 
     # 同项目并发 sync 的防重入集合（键：project_id）
     _in_progress: set[str] = set()
+    # 世界设定同步单独的防重入集合，避免与角色档案互相阻塞
+    _world_in_progress: set[str] = set()
 
     async def sync(
         self,
@@ -366,29 +444,16 @@ class CharacterProfileSyncService:
         snapshot = _loads_json(character.ai_profile_snapshot, {})
         if not isinstance(snapshot, dict):
             snapshot = {}
-        changed = False
 
         fields = entry.get("fields")
-        if isinstance(fields, dict):
-            for field in PROFILE_FIELDS:
-                new_value = fields.get(field)
-                if not isinstance(new_value, str) or not new_value.strip():
-                    continue
-                new_value = new_value.strip()
-                current = getattr(character, field, None)
-                if current == new_value:
-                    snapshot[field] = new_value
-                    continue
-                previous_ai = snapshot.get(field)
-                if current and previous_ai is not None and current != previous_ai:
-                    # 用户手改过该字段：保留用户值
-                    stats["fields_preserved"] += 1
-                    logger.debug("保留用户手改字段: %s.%s", character.name, field)
-                    continue
-                setattr(character, field, new_value)
-                snapshot[field] = new_value
-                stats["fields_updated"] += 1
-                changed = True
+        changed = _apply_profile_values(
+            character,
+            fields if isinstance(fields, dict) else {},
+            snapshot,
+            PROFILE_FIELDS,
+            stats,
+            label=character.name,
+        )
 
         org_changed = await self._apply_organizations(
             db=db, character=character, organizations=entry.get("organizations")
@@ -480,6 +545,195 @@ class CharacterProfileSyncService:
 
         return await get_user_ai_service_from_db(user_id, db)
 
+    async def sync_world(
+        self,
+        *,
+        db: AsyncSession,
+        user_id: str,
+        project_id: str,
+        through_chapter: Optional[int] = None,
+        ai_service: Any = None,
+    ) -> Dict[str, Any]:
+        """把新写出的章节回流到项目世界设定（issue #175）。"""
+        stats: Dict[str, Any] = {
+            "updated": False,
+            "fields_updated": 0,
+            "fields_preserved": 0,
+            "skipped": [],
+            "through_chapter": 0,
+        }
+
+        if project_id in self._world_in_progress:
+            logger.info("世界设定同步已在进行中，本次跳过: project=%s", project_id)
+            stats["skipped"].append({"reason": "sync_in_progress", "project_id": project_id})
+            return stats
+
+        self._world_in_progress.add(project_id)
+        try:
+            return await self._sync_world(
+                db=db,
+                user_id=user_id,
+                project_id=project_id,
+                through_chapter=through_chapter,
+                ai_service=ai_service,
+                stats=stats,
+            )
+        finally:
+            self._world_in_progress.discard(project_id)
+
+    async def sync_all(
+        self,
+        *,
+        db: AsyncSession,
+        user_id: str,
+        project_id: str,
+        through_chapter: Optional[int] = None,
+        ai_service: Any = None,
+        include_world: bool = True,
+    ) -> Dict[str, Any]:
+        """手动入口：世界设定 + 角色档案。世界设定失败不影响角色档案结果。"""
+        world: Optional[Dict[str, Any]] = None
+        if include_world:
+            try:
+                world = await self.sync_world(
+                    db=db,
+                    user_id=user_id,
+                    project_id=project_id,
+                    through_chapter=through_chapter,
+                    ai_service=ai_service,
+                )
+            except Exception as exc:  # noqa: BLE001 - 世界设定失败不得影响角色档案
+                logger.warning("世界设定同步失败（角色档案继续）: %s", exc, exc_info=True)
+                world = {
+                    "updated": False,
+                    "fields_updated": 0,
+                    "fields_preserved": 0,
+                    "skipped": [{"reason": "world_sync_failed", "error": str(exc)[:200]}],
+                    "through_chapter": int(through_chapter or 0),
+                }
+
+        stats = await self.sync(
+            db=db,
+            user_id=user_id,
+            project_id=project_id,
+            through_chapter=through_chapter,
+            ai_service=ai_service,
+        )
+        stats["world"] = world
+        return stats
+
+    async def _sync_world(
+        self,
+        *,
+        db: AsyncSession,
+        user_id: str,
+        project_id: str,
+        through_chapter: Optional[int],
+        ai_service: Any,
+        stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        project = (
+            await db.execute(select(Project).where(Project.id == project_id))
+        ).scalars().first()
+        if project is None:
+            return stats
+
+        through = through_chapter
+        if through is None:
+            max_number = await db.scalar(
+                select(func.max(Chapter.chapter_number)).where(
+                    Chapter.project_id == project_id,
+                    Chapter.content.isnot(None),
+                    Chapter.content != "",
+                )
+            )
+            through = int(max_number or 0)
+        stats["through_chapter"] = int(through or 0)
+
+        start = int(project.world_profile_synced_through_chapter or 0) + 1
+        if not through or start > through:
+            return stats
+
+        chapters = list(
+            (
+                await db.execute(
+                    select(Chapter)
+                    .where(
+                        Chapter.project_id == project_id,
+                        Chapter.chapter_number >= start,
+                        Chapter.chapter_number <= through,
+                        Chapter.content.isnot(None),
+                        Chapter.content != "",
+                    )
+                    .order_by(Chapter.chapter_number)
+                )
+            ).scalars()
+        )
+        if not chapters:
+            return stats
+
+        service = ai_service or await self._resolve_ai_service(user_id, db)
+        snapshot = _loads_json(project.ai_world_profile_snapshot, {})
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+
+        for text_batch in _batch_by_budget(chapters):
+            prompt = _WORLD_PROMPT_TEMPLATE.format(
+                profile=_render_world_profile(project),
+                chapters=_render_chapters(text_batch),
+            )
+            try:
+                response = await service.call_with_json_retry(
+                    prompt=prompt,
+                    system_prompt=_WORLD_SYSTEM_PROMPT,
+                    max_retries=2,
+                    expected_type="object",
+                    auto_mcp=False,
+                )
+            except ApiError as exc:
+                if exc.code not in NON_RETRYABLE_CODES:
+                    raise
+                stats["skipped"].append(
+                    {
+                        "chapter_numbers": [chapter.chapter_number for chapter in text_batch],
+                        "code": exc.code,
+                    }
+                )
+                logger.warning(
+                    "世界设定同步批次被跳过: code=%s chapters=%s",
+                    exc.code,
+                    [chapter.chapter_number for chapter in text_batch],
+                )
+                continue
+
+            payload = response.get("world") if isinstance(response, dict) else None
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "世界设定返回结构异常，跳过该批次: chapters=%s",
+                    [chapter.chapter_number for chapter in text_batch],
+                )
+                continue
+
+            _apply_profile_values(
+                project, payload, snapshot, WORLD_FIELDS, stats, label="世界设定"
+            )
+            project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+            project.world_profile_synced_through_chapter = max(
+                chapter.chapter_number for chapter in text_batch
+            )
+
+        stats["updated"] = stats["fields_updated"] > 0
+        await db.commit()
+        logger.info(
+            "世界设定同步完成: project=%s through=%s 更新%s 保留%s 跳过%s",
+            project_id,
+            stats["through_chapter"],
+            stats["fields_updated"],
+            stats["fields_preserved"],
+            len(stats["skipped"]),
+        )
+        return stats
+
     @classmethod
     async def sync_after_chapter(
         cls, *, user_id: str, project_id: str, chapter_id: str
@@ -526,7 +780,7 @@ class CharacterProfileSyncService:
             session_factory = async_sessionmaker(engine, expire_on_commit=False)
             async with session_factory() as db:
                 ai_service = await cls._resolve_ai_service(user_id, db)
-                return await character_profile_sync_service.sync(
+                return await character_profile_sync_service.sync_all(
                     db=db,
                     user_id=user_id,
                     project_id=project_id,

@@ -95,8 +95,10 @@ async def db_session():
 def _clear_reentry_guard():
     """防重入集合是类级状态，用例之间必须清空。"""
     CharacterProfileSyncService._in_progress.clear()
+    CharacterProfileSyncService._world_in_progress.clear()
     yield
     CharacterProfileSyncService._in_progress.clear()
+    CharacterProfileSyncService._world_in_progress.clear()
 
 
 async def _seed(db, *, chapters: list[tuple[int, str]], markers: dict[str, int] | None = None):
@@ -130,6 +132,43 @@ async def _character(db, name: str) -> Character:
     character = result.scalar_one()
     await db.refresh(character)
     return character
+
+
+async def _project(db) -> Project:
+    from sqlalchemy import select
+
+    project = (await db.execute(select(Project).where(Project.id == PROJECT_ID))).scalar_one()
+    await db.refresh(project)
+    return project
+
+
+class RoutingAIService:
+    """按提示词类型分流的 AI 桩：世界设定 vs 角色档案。"""
+
+    def __init__(self, *, char_response=None, world_response=None, world_error=None):
+        self.char_response = char_response
+        self.world_response = world_response
+        self.world_error = world_error
+        self.calls: list[str] = []
+
+    async def call_with_json_retry(self, *, prompt, **kwargs):
+        self.calls.append(prompt)
+        if "【现有世界设定】" in prompt:
+            if self.world_error is not None:
+                raise self.world_error
+            return self.world_response
+        return self.char_response
+
+
+def _world_payload(**fields) -> dict:
+    return {
+        "world": {
+            "world_time_period": fields.get("world_time_period"),
+            "world_location": fields.get("world_location"),
+            "world_atmosphere": fields.get("world_atmosphere"),
+            "world_rules": fields.get("world_rules"),
+        }
+    }
 
 
 async def test_new_chapter_updates_profile_and_marker(db_session):
@@ -327,3 +366,126 @@ async def test_organization_affiliation_is_created_but_manual_kept(db_session):
 
     await db_session.refresh(memberships[0])
     assert memberships[0].position == "占位用户职位"
+
+
+async def test_world_new_chapter_updates_fields_and_marker(db_session):
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦与占位势力登场。")])
+    ai = FakeAIService(
+        _world_payload(
+            world_time_period="占位纪元第七年，占位战争结束后",
+            world_location="占位大陆东侧的占位城邦",
+            world_atmosphere="占领与抵抗并存，街道上布满占位告示",
+            world_rules="占位晶石可换取通行权，每人每月限三枚",
+        )
+    )
+
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    project = await _project(db_session)
+    assert len(ai.calls) == 1
+    assert project.world_time_period == "占位纪元第七年，占位战争结束后"
+    assert project.world_location == "占位大陆东侧的占位城邦"
+    assert project.world_atmosphere == "占领与抵抗并存，街道上布满占位告示"
+    assert project.world_rules == "占位晶石可换取通行权，每人每月限三枚"
+    assert project.world_profile_synced_through_chapter == 1
+    assert json.loads(project.ai_world_profile_snapshot)["world_rules"].startswith("占位晶石")
+    assert stats["updated"] is True
+    assert stats["fields_updated"] == 4
+    assert stats["fields_preserved"] == 0
+    assert stats["through_chapter"] == 1
+
+
+async def test_world_same_through_chapter_is_idempotent(db_session):
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    ai = FakeAIService(_world_payload(world_location="占位城邦"))
+
+    await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+    second = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    project = await _project(db_session)
+    assert len(ai.calls) == 1  # 第二次没有再调用模型
+    assert project.world_location == "占位城邦"
+    assert project.world_profile_synced_through_chapter == 1
+    assert second["updated"] is False
+    assert second["fields_updated"] == 0
+
+
+async def test_world_user_edited_rules_is_preserved(db_session):
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    project = await _project(db_session)
+    project.world_rules = "占位用户手写规则"
+    project.world_location = "占位旧地点"
+    project.ai_world_profile_snapshot = json.dumps(
+        {"world_rules": "占位AI旧规则", "world_location": "占位旧地点"}, ensure_ascii=False
+    )
+    await db_session.commit()
+
+    ai = FakeAIService(
+        _world_payload(
+            world_time_period="占位新纪元",
+            world_location="占位新地点",
+            world_atmosphere="占位新氛围",
+            world_rules="占位AI新规则",
+        )
+    )
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    refreshed = await _project(db_session)
+    assert refreshed.world_rules == "占位用户手写规则"  # 用户手改值保留
+    assert refreshed.world_location == "占位新地点"  # 未被改过的字段照常覆盖
+    snapshot = json.loads(refreshed.ai_world_profile_snapshot)
+    assert snapshot["world_rules"] == "占位AI旧规则"  # 快照不因保留而漂移
+    assert snapshot["world_location"] == "占位新地点"
+    assert stats["fields_preserved"] == 1
+    assert stats["fields_updated"] == 3
+
+
+async def test_world_content_filtered_is_skipped_without_raising(db_session):
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    ai = FakeAIService(error=ApiError(code="ai.content_filtered"))
+
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    project = await _project(db_session)
+    assert len(ai.calls) == 1  # 不重试
+    assert project.world_location is None
+    assert project.world_profile_synced_through_chapter == 0  # 水位不前进，下次还能补
+    assert project.ai_world_profile_snapshot is None
+    assert stats["updated"] is False
+    assert len(stats["skipped"]) == 1
+    assert stats["skipped"][0]["code"] == "ai.content_filtered"
+
+
+async def test_world_failure_does_not_break_character_sync(db_session):
+    await _seed(
+        db_session,
+        chapters=[(1, "第1章占位正文。角色甲在占位城邦登场。")],
+        markers={"角色甲": 0},
+    )
+    ai = RoutingAIService(
+        char_response=_ai_payload("角色甲", personality="占位新性格"),
+        world_error=RuntimeError("世界设定桩失败"),
+    )
+
+    stats = await character_profile_sync_service.sync_all(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    project = await _project(db_session)
+    assert character.personality == "占位新性格"  # 角色档案照常更新
+    assert stats["fields_updated"] == 1
+    assert stats["characters_updated"] == 1
+    assert stats["world"]["updated"] is False
+    assert stats["world"]["skipped"][0]["reason"] == "world_sync_failed"
+    assert project.world_location is None  # 世界设定保持原样
