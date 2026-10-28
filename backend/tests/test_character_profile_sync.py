@@ -29,6 +29,7 @@ from app.models.relationship import Organization, OrganizationMember
 from app.schemas.book_import import BookImportApplyRequest, ProjectSuggestion
 from app.services import book_import_service as bis
 from app.services.book_import_service import BookImportService, _BookImportTask
+from app.services.prompt_service import PromptService
 from app.services.character_profile_sync_service import (
     CharacterProfileSyncService,
     character_profile_sync_service,
@@ -694,3 +695,136 @@ async def test_import_failure_does_not_schedule_profile_sync(monkeypatch):
         )
 
     assert scheduled == []
+
+
+WORLD_TEMPLATE = "占位模板 {title}|{genre}|{theme}|{description}|{full_book_context}"
+CHARACTER_TEMPLATE = (
+    "数量:{count}\n{time_period}|{location}|{atmosphere}|{rules}|{theme}|{genre}\n要求:{requirements}"
+)
+
+
+def _patch_import_prompts(monkeypatch):
+    """导入侧模板/语言解析走桩：只关心「落库时是否登记 AI 快照」。"""
+
+    async def fake_get_template(name, user_id=None, db=None):
+        return CHARACTER_TEMPLATE if name.startswith("CHARACTER") else WORLD_TEMPLATE
+
+    async def fake_generation_language(db, user_id, content_language=None):
+        return "zh"
+
+    monkeypatch.setattr(PromptService, "get_template", fake_get_template)
+    monkeypatch.setattr(bis, "resolve_user_generation_language", fake_generation_language)
+
+
+async def _run_import_world_generation(monkeypatch, db, project, world: dict):
+    """真实跑一遍导入的世界设定生成（AI 桩返回给定 world 数据）。"""
+    _patch_import_prompts(monkeypatch)
+    ai = FakeAIService(world)
+    updated = await BookImportService()._generate_world_building_from_project(
+        db=db,
+        user_id=USER_ID,
+        project=project,
+        ai_service=ai,
+        content_language="zh",
+    )
+    await db.commit()
+    return updated, ai
+
+
+async def test_import_world_generation_seeds_ai_snapshot(db_session, monkeypatch):
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    project = await _project(db_session)
+
+    world = {
+        "time_period": "占位纪元第七年",
+        "location": "占位大陆东侧",
+        "atmosphere": "占领与抵抗并存",
+        "rules": "占位晶石换取通行权，每人每月限三枚",
+    }
+    updated, ai = await _run_import_world_generation(monkeypatch, db_session, project, world)
+
+    refreshed = await _project(db_session)
+    snapshot = json.loads(refreshed.ai_world_profile_snapshot)
+    assert updated == 1  # 返回值是「是否写入过」的标记（服务原语义），非字段计数
+    assert len(ai.calls) == 1
+    assert set(snapshot) == {
+        "world_time_period",
+        "world_location",
+        "world_atmosphere",
+        "world_rules",
+    }
+    # 快照值与落库值逐字一致
+    for field, value in snapshot.items():
+        assert getattr(refreshed, field) == value
+    assert refreshed.world_rules == world["rules"]
+    # 水位保持在 0：首轮同步仍会补看全书
+    assert refreshed.world_profile_synced_through_chapter == 0
+
+
+async def test_import_character_generation_seeds_ai_snapshot(db_session, monkeypatch):
+    await _seed(db_session, chapters=[])
+    project = await _project(db_session)
+    _patch_import_prompts(monkeypatch)
+
+    fields = {
+        "personality": "占位角色甲的性格：沉着克制，遇事先观察再表态，不轻易承诺。",
+        "background": "占位角色甲的背景：在占位城镇长大，靠占位手艺谋生，经历过占位变故。",
+        "appearance": "占位角色甲的外貌：中等身材，常穿占位式样的深色外衣，随身带占位物件。",
+        "current_state": "占位角色甲的处境：暂住占位城镇，等待占位事件的结果，心里没底。",
+    }
+    ai = FakeAIService([{"name": "角色甲", "role_type": "supporting", **fields}])
+
+    created = await BookImportService()._generate_characters_and_organizations_from_project(
+        db=db_session,
+        user_id=USER_ID,
+        project=project,
+        count=3,
+        ai_service=ai,
+        content_language="zh",
+    )
+    await db_session.commit()
+
+    character = await _character(db_session, "角色甲")
+    snapshot = json.loads(character.ai_profile_snapshot)
+    assert created == 1
+    assert set(snapshot) == {"personality", "background", "appearance", "current_state"}
+    for field in snapshot:
+        assert snapshot[field] == getattr(character, field) == fields[field]
+    assert character.profile_synced_through_chapter == 0
+
+
+async def test_world_profile_can_evolve_after_import_snapshot(db_session, monkeypatch):
+    """导入登记快照后，同步不再把它判为历史值：字段可被模型新值覆盖。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    project = await _project(db_session)
+    await _run_import_world_generation(
+        monkeypatch,
+        db_session,
+        project,
+        {
+            "time_period": "占位纪元第七年",
+            "location": "占位大陆东侧",
+            "atmosphere": "占领与抵抗并存",
+            "rules": "占位晶石换取通行权",
+        },
+    )
+
+    ai = FakeAIService(
+        _world_payload(
+            world_time_period="占位纪元第九年",
+            world_location="占位大陆西侧",
+            world_atmosphere="停战后的清算气氛",
+            world_rules="占位晶石已废止，改用占位契书",
+        )
+    )
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    refreshed = await _project(db_session)
+    assert refreshed.world_time_period == "占位纪元第九年"
+    assert refreshed.world_location == "占位大陆西侧"
+    assert refreshed.world_rules == "占位晶石已废止，改用占位契书"
+    assert stats["fields_preserved"] == 0  # 不再被判为历史值
+    assert stats["fields_updated"] == 4
+    assert refreshed.world_profile_synced_through_chapter == 1

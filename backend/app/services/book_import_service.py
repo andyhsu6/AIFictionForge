@@ -242,6 +242,24 @@ def _is_output_truncated(exc: BaseException) -> bool:
 _profile_sync_tasks: set["asyncio.Task"] = set()
 
 
+def _profile_snapshot_json(**values: Any) -> Optional[str]:
+    """把刚由 AI 写入的档案字段序列化为「AI 快照」（只收非空字段）。
+
+    快照是「这些值是 AI 写的」的凭证：档案同步服务据此区分用户手改与 AI 值，
+    没有快照的字段一律按历史值保护（issue #174/#175）。
+    注意：这里**不推进** `*_profile_synced_through_chapter`，水位由同步服务维护，
+    导入时保持 0，首轮同步仍会补看全书。
+    """
+    snapshot = {
+        field: value.strip()
+        for field, value in values.items()
+        if isinstance(value, str) and value.strip()
+    }
+    if not snapshot:
+        return None
+    return json.dumps(snapshot, ensure_ascii=False)
+
+
 def _schedule_profile_sync(user_id: str, project_id: str) -> None:
     """导入成功落库后异步刷新角色/组织档案与世界设定（issue #174/#175）。
 
@@ -2574,6 +2592,16 @@ class BookImportService:
                 project.world_rules = rules
                 updated = 1
 
+            # issue #175：把刚生成的世界设定登记为「AI 写入」，后续同步才允许演进
+            world_snapshot = _profile_snapshot_json(
+                world_time_period=time_period,
+                world_location=location,
+                world_atmosphere=atmosphere,
+                world_rules=rules,
+            )
+            if world_snapshot:
+                project.ai_world_profile_snapshot = world_snapshot
+
             await _notify("🌍 世界观写入完成", 1.0, code="import.progress.worldWritten")
             return updated
         except Exception as exc:
@@ -3267,6 +3295,13 @@ class BookImportService:
                     json.dumps(item.get("aliases"), ensure_ascii=False)
                     if item.get("aliases") else None
                 ),
+                # issue #174：登记「档案由 AI 生成」，后续同步才允许覆盖演进
+                ai_profile_snapshot=_profile_snapshot_json(
+                    personality=item.get("personality"),
+                    background=item.get("background"),
+                    appearance=item.get("appearance"),
+                    current_state=item.get("current_state"),
+                ),
                 source=source,
             )
             db.add(character)
@@ -3770,6 +3805,12 @@ class BookImportService:
                             gender=item.get("gender"),
                             background=item.get("background"),
                             appearance=item.get("appearance"),
+                            # issue #174：关系抽取时补齐的字段同样是 AI 写入，登记快照
+                            ai_profile_snapshot=_profile_snapshot_json(
+                                personality=personality,
+                                background=item.get("background"),
+                                appearance=item.get("appearance"),
+                            ),
                         )
                         db.add(new_char)
                         await db.flush()
