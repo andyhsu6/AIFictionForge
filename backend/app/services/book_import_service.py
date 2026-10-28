@@ -180,6 +180,11 @@ _GENERIC_PERSON_NAMES = frozenset({
     "叔叔", "阿姨", "舅舅", "舅母", "姑姑", "姑父", "爷爷", "奶奶", "外公", "外婆",
 })
 
+# 自动补角色的存在度门禁（issue #184）：名字需要在至少这么多章的正文里出现。
+# 只出现 1-2 章的角色是"两句领盒饭"的散角，建行会占满
+# MAX_IMPORTED_CHARACTERS_PER_IMPORT 名额，并让档案同步/成员统计为它们反复花预算。
+_MIN_CHAPTERS_FOR_AUTO_CHARACTER = 3
+
 
 def _parse_character_aliases(aliases: Any) -> list[str]:
     """解析 Character.aliases（JSON 数组字符串，可能为 None/坏值）为字符串列表。
@@ -3738,6 +3743,21 @@ class BookImportService:
         skipped: list[dict[str, Any]] = []
         batch_size = 5
 
+        # 存在度门禁（issue #184）：自动补角色前先统计候选名出现在多少章正文里。
+        # 只出现在 1-2 章的"两句领盒饭"角色不建行——它们不会在后续剧情里承接作用，
+        # 建行只会占用角色表、档案同步预算和 MAX_IMPORTED_CHARACTERS_PER_IMPORT 名额。
+        # 计数按需惰性计算并缓存：候选名通常只有几十个，章节正文已在内存里。
+        _mention_chapter_cache: dict[str, int] = {}
+
+        def _chapter_mentions(name: str) -> int:
+            if not name:
+                return 0
+            cached = _mention_chapter_cache.get(name)
+            if cached is None:
+                cached = sum(1 for chapter in chapters if name in (chapter.content or ""))
+                _mention_chapter_cache[name] = cached
+            return cached
+
         for start in range(0, len(chapters), batch_size):
             batch = chapters[start:start + batch_size]
             items = await self._extract_relationship_batch(
@@ -3790,6 +3810,7 @@ class BookImportService:
                         and name not in alias_to_char
                         and not _is_first_person_alias_name(name)
                         and name not in _GENERIC_PERSON_NAMES
+                        and _chapter_mentions(name) >= _MIN_CHAPTERS_FOR_AUTO_CHARACTER
                         and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
                     ):
                         personality = (item.get("evidence") or "").strip() or None

@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.errors import ApiError
 from app.database import Base
 from app.models.chapter import Chapter
+from app.models.character import Character
 from app.models.project import Project
 from app.schemas.book_import import BookImportApplyRequest, BookImportChapter, ProjectSuggestion
 from app.services import book_import_service as bis
@@ -116,6 +117,26 @@ async def _seed_project(db, title: str = "占位项目") -> Project:
     return project
 
 
+async def _seed_relationship_characters(db, numbers: tuple[int, ...] = (1, 2, 3, 4, 5)) -> None:
+    """预建关系抽取用的占位角色。
+
+    issue #184 之后，未预建且只在 1 章出现的名字会被存在度门禁拦下、关系随之跳过；
+    这些用例只关心降级与调用次数，因此直接把两端角色建好，绕开自动补角色路径。
+    """
+    for number in numbers:
+        for suffix in ("甲", "乙"):
+            db.add(
+                Character(
+                    id=f"char-rel-{number}-{suffix}",
+                    project_id=PROJECT_ID,
+                    name=f"占位人物{number}{suffix}",
+                    role_type="supporting",
+                    is_organization=False,
+                )
+            )
+    await db.commit()
+
+
 async def _seed_chapters(db, numbers: list[int]) -> None:
     for number in numbers:
         db.add(
@@ -174,6 +195,7 @@ async def test_relationship_extraction_bisects_batch_on_content_filter(
     db_session, patched_prompts, monkeypatch
 ):
     project = await _seed_project(db_session)
+    await _seed_relationship_characters(db_session)
     chapters = _book_chapters([1, 2, 3, 4, 5])
     blocked = {3}
 
@@ -324,6 +346,7 @@ async def test_no_content_filter_keeps_single_relationship_call(
     db_session, patched_prompts, monkeypatch
 ):
     project = await _seed_project(db_session)
+    await _seed_relationship_characters(db_session)
     chapters = _book_chapters([1, 2, 3, 4, 5])
 
     def handler(prompt: str, kwargs: dict):

@@ -76,25 +76,38 @@ def _install_ai_service(monkeypatch, items):
     return ai_service, calls
 
 
-async def _seed(db):
+async def _seed(db, chapter_texts: list[str] | None = None):
+    texts = chapter_texts or ["占位章节正文：母亲与占位人物乙在场。"]
     project = Project(id=PROJECT_ID, user_id=USER_ID, title="placeholder project")
-    chapter = Chapter(
-        id="chapter-generic-1",
-        project_id=PROJECT_ID,
-        chapter_number=1,
-        title="placeholder chapter one",
-        content="占位章节正文：母亲与占位人物乙在场。",
-        word_count=20,
-        status="draft",
-    )
-    db.add_all([project, chapter])
+    chapters = [
+        Chapter(
+            id=f"chapter-generic-{index}",
+            project_id=PROJECT_ID,
+            chapter_number=index,
+            title=f"placeholder chapter {index}",
+            content=text,
+            word_count=len(text),
+            status="draft",
+        )
+        for index, text in enumerate(texts, start=1)
+    ]
+    db.add_all([project, *chapters])
     await db.commit()
-    return project, [chapter]
+    return project, chapters
 
 
 @pytest.mark.anyio
 async def test_relational_terms_are_not_created_as_characters(db_session, patched_prompts, monkeypatch):
-    project, chapters = await _seed(db_session)
+    # issue #184 的存在度门禁要求名字出现在 ≥3 章，这里让占位人物乙满足该条件，
+    # 以便本用例只验证「称谓词不建角色」这一件事。
+    project, chapters = await _seed(
+        db_session,
+        [
+            "占位章节正文：母亲与占位人物乙在场。",
+            "占位章节正文：占位人物乙再次出现。",
+            "占位章节正文：占位人物乙离开。",
+        ],
+    )
     items = [
         {
             "character_a": "母亲",
