@@ -161,10 +161,16 @@ class ProjectAgentToolRegistry:
             ),
             ProjectAgentTool(
                 "list_outlines",
-                "查询当前项目的大纲列表，可按标题或正文关键词筛选。",
+                "查询当前项目的大纲列表，可按标题或正文关键词筛选。可按 offset 分页，limit 上限 100；"
+                "响应含 total（项目内匹配大纲总数）/returned/offset。"
+                "大纲多时用 compact=true 配合 offset 分页逐页读：compact 的 items 是数组，"
+                "字段顺序为 [id, order_index, title]，不含 content（正文用 get_outline_detail 取）；"
+                "非 compact 仍返回完整条目。",
                 _object_schema({
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "compact": {"type": "boolean"},
                 }),
             ),
             ProjectAgentTool(
@@ -576,16 +582,30 @@ class ProjectAgentToolRegistry:
 
     async def _list_outlines(self, arguments: dict[str, Any]) -> dict[str, Any]:
         limit = min(max(int(arguments.get("limit", 50)), 1), 100)
-        query = select(Outline).where(Outline.project_id == self.project.id)
+        offset = max(int(arguments.get("offset", 0) or 0), 0)
+        compact = arguments.get("compact") is True
+        conditions = [Outline.project_id == self.project.id]
         keyword = str(arguments.get("query") or "").strip()
         if keyword:
             pattern = f"%{keyword}%"
-            query = query.where(or_(Outline.title.ilike(pattern), Outline.content.ilike(pattern)))
-        rows = (await self.db.execute(query.order_by(Outline.order_index).limit(limit))).scalars().all()
-        return {"total": len(rows), "items": [
-            {"id": row.id, "order_index": row.order_index, "title": row.title, "content": row.content}
-            for row in rows
-        ]}
+            conditions.append(or_(Outline.title.ilike(pattern), Outline.content.ilike(pattern)))
+        # total 是过滤后的全量（不是本页条数），否则分页调用方的「还有多少」全是错的。
+        total = (await self.db.execute(
+            select(func.count(Outline.id)).where(*conditions)
+        )).scalar_one()
+        rows = (await self.db.execute(
+            select(Outline).where(*conditions)
+            .order_by(Outline.order_index)
+            .limit(limit).offset(offset)
+        )).scalars().all()
+        if compact:
+            items: list[Any] = [[row.id, row.order_index, row.title] for row in rows]
+        else:
+            items = [
+                {"id": row.id, "order_index": row.order_index, "title": row.title, "content": row.content}
+                for row in rows
+            ]
+        return {"total": total, "returned": len(rows), "offset": offset, "items": items}
 
     async def _get_outline_detail(self, arguments: dict[str, Any]) -> dict[str, Any]:
         row = await self._find_outline(arguments)
