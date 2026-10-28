@@ -828,3 +828,32 @@ async def test_world_profile_can_evolve_after_import_snapshot(db_session, monkey
     assert stats["fields_preserved"] == 0  # 不再被判为历史值
     assert stats["fields_updated"] == 4
     assert refreshed.world_profile_synced_through_chapter == 1
+
+
+async def test_narration_personality_is_rejected_not_written(db_session):
+    """issue #188：剧情复述不得写进性格字段，同批的合法字段仍要落库。"""
+    await _seed(
+        db_session,
+        chapters=[(1, "第1章占位正文。角色甲登场。")],
+        markers={"角色甲": 0},
+    )
+    narration = (
+        "因为她和丈夫不仅是夫妻，还是师兄妹，她的骑术和刀法都不在角色乙之下，"
+        "「占位双刀」的名头她可是占了一半的。"
+    )
+    ai = FakeAIService(
+        _ai_payload("角色甲", personality=narration, background="占位出身：山门弟子，行侠多年。")
+    )
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+    character = await _character(db_session, "角色甲")
+
+    assert character.personality == "占位旧性格", "疑似剧情复述的内容不得覆盖已有性格"
+    assert character.background == "占位出身：山门弟子，行侠多年。"
+    assert stats["fields_rejected"] == 1
+    assert stats["fields_updated"] == 1
+    snapshot = json.loads(character.ai_profile_snapshot)
+    assert "background" in snapshot
+    assert snapshot.get("personality") == "占位旧性格", "被拒内容不得进入快照"
