@@ -174,3 +174,43 @@ async def test_kinship_term_with_high_frequency_is_still_blocked(db_session, pat
 
 def test_threshold_constant_is_documented():
     assert bis._MIN_CHAPTERS_FOR_AUTO_CHARACTER >= 2
+
+
+@pytest.mark.anyio
+async def test_auto_created_character_carries_no_fabricated_profile(db_session, patched_prompts, monkeypatch):
+    """自动补建的角色不得携带伪造档案（issue #186）。
+
+    关系抽取的输出契约里没有 personality/background/appearance/age/gender，
+    旧实现去读这些键只会拿到 None，并把 evidence 当成 personality 留下原文碎片。
+    正确行为是建一个空档案的骨架，交由档案同步按章节原文回填。
+    """
+    project, chapters = await _seed(
+        db_session,
+        [
+            "占位正文：路人丙登场。",
+            "占位正文：路人丙再说一句。",
+            "占位正文：路人丙退场。",
+        ],
+    )
+    items = [{
+        "character_a": "路人丙",
+        "character_b": "占位人物戊",
+        "relationship_types": ["盟友"],
+        "description": "占位关系描述",
+        "evidence": "路人丙说了一句占位台词……",
+    }]
+
+    _result, names = await _extract(db_session, project, chapters, monkeypatch, items)
+    assert "路人丙" in names
+
+    row = (
+        await db_session.execute(
+            select(Character).where(Character.project_id == PROJECT_ID, Character.name == "路人丙")
+        )
+    ).scalar_one()
+    assert row.personality is None
+    assert row.background is None
+    assert row.appearance is None
+    assert row.age is None
+    assert row.gender is None
+    assert row.ai_profile_snapshot is None, "没有写入任何字段时不应登记快照，否则后续同步会把它当历史值保护"
