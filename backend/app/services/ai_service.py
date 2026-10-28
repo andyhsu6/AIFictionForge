@@ -929,6 +929,7 @@ class AIService:
         auto_mcp: bool = True,
         mcp_max_rounds: Optional[int] = None,
         response_format: Optional[Dict[str, str]] = None,
+        finish_sink: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         流式生成文本（自动支持MCP工具）
@@ -946,9 +947,12 @@ class AIService:
             auto_mcp: 是否自动加载MCP工具
             mcp_max_rounds: 最大工具调用轮数（None使用默认值3）
             response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）
+            finish_sink: 可选出参字典。生成结束（成功或被关闭/异常）后写入
+                ``finish_sink["finish_reason"]``。仅影响出参，不改变 yield 契约
+                （仍然只 yield 文本块），供调用方拿到真实结束原因。
             
         Yields:
-            生成的文本块
+            生成的文本块（str），永远不会是 dict
         """
         logger.debug(f"🔧 generate_text_stream: auto_mcp={auto_mcp}, tool_choice={tool_choice}")
         # 未配置模型即明确报错，且在加载 MCP 工具/发请求之前就失败（需求 #55 步骤 2）
@@ -1031,6 +1035,11 @@ class AIService:
             )
             self._log_call_metrics(metrics)
             raise
+        finally:
+            # 结束原因既要在成功路径可见，也要在异常/CancelledError 路径可见：
+            # 统一在 finally 写回出参，避免「被拦截」的失败只能从 metrics 日志里猜。
+            if finish_sink is not None:
+                finish_sink["finish_reason"] = finish_reason
 
     async def generate_text_stream_full(
         self,
@@ -1176,6 +1185,7 @@ class AIService:
                 # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
                 # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
                 accumulated: List[str] = []
+                finish_sink: Dict[str, Any] = {}
                 finish_reason = None
                 # while 保底：response_format 降级即置空，后续不会再次命中，不会死循环
                 while True:
@@ -1189,6 +1199,7 @@ class AIService:
                             system_prompt=system_prompt,
                             auto_mcp=auto_mcp,
                             response_format=response_format,
+                            finish_sink=finish_sink,
                         ):
                             if isinstance(chunk, dict):
                                 if chunk.get("finish_reason"):
@@ -1208,16 +1219,22 @@ class AIService:
                             response_format = None
                             accumulated = []
                             finish_reason = None
+                            finish_sink.clear()
                             continue
                         raise
                 result = {
                     "content": "".join(accumulated),
-                    "finish_reason": finish_reason,
+                    # yield 契约只吐字符串，dict 分支基本走不到；结束原因以出参
+                    # sink 为准（generate_text_stream 内 finally 必写）。
+                    "finish_reason": finish_reason or finish_sink.get("finish_reason"),
                 }
                 metrics.retry_count = attempt
                 metrics.tools_count = max(metrics.tools_count, len(self._cached_tools) if self._cached_tools else 0)
                 
                 last_response = result.get("content", "")
+                # 跨 attempt 记住最近一次真实结束原因：失败路径的汇总日志要用它，
+                # 否则只能写「结束原因=未知」。
+                last_finish_reason = str(result.get("finish_reason") or "") or last_finish_reason
                 
                 # 思考型模型可能把 token 预算耗在推理上致正文为空，跳过解析直接重试
                 if not last_response.strip():
