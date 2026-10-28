@@ -26,6 +26,9 @@ from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.project import Project
 from app.models.relationship import Organization, OrganizationMember
+from app.schemas.book_import import BookImportApplyRequest, ProjectSuggestion
+from app.services import book_import_service as bis
+from app.services.book_import_service import BookImportService, _BookImportTask
 from app.services.character_profile_sync_service import (
     CharacterProfileSyncService,
     character_profile_sync_service,
@@ -109,6 +112,8 @@ async def _seed(db, *, chapters: list[tuple[int, str]], markers: dict[str, int] 
                 project_id=PROJECT_ID,
                 name=name,
                 personality="占位旧性格",
+                # 模拟「上一次 AI 写入」的档案：有快照的字段才允许后续覆盖
+                ai_profile_snapshot=json.dumps({"personality": "占位旧性格"}, ensure_ascii=False),
                 profile_synced_through_chapter=marker,
             )
         )
@@ -489,3 +494,203 @@ async def test_world_failure_does_not_break_character_sync(db_session):
     assert stats["world"]["updated"] is False
     assert stats["world"]["skipped"][0]["reason"] == "world_sync_failed"
     assert project.world_location is None  # 世界设定保持原样
+
+
+async def test_legacy_profile_value_is_preserved_by_default(db_session):
+    """历史数据（无快照）+ 当前值非空 → 默认不覆盖；空字段照常填入。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。角色丙登场。")])
+    db_session.add(
+        Character(
+            project_id=PROJECT_ID,
+            name="角色丙",
+            personality="占位历史手写性格",
+            ai_profile_snapshot=None,
+            profile_synced_through_chapter=0,
+        )
+    )
+    await db_session.commit()
+
+    ai = FakeAIService(_ai_payload("角色丙", personality="占位AI新性格", background="占位AI新背景"))
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色丙")
+    assert character.personality == "占位历史手写性格"  # 默认保护历史值
+    assert character.background == "占位AI新背景"  # 空字段允许填入
+    assert json.loads(character.ai_profile_snapshot) == {"background": "占位AI新背景"}
+    assert stats["fields_preserved"] == 1
+    assert stats["fields_updated"] == 1
+
+
+async def test_force_overwrites_legacy_profile_values(db_session):
+    """同一份历史数据 + force=True → 整段覆盖并写入快照。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。角色丙登场。")])
+    db_session.add(
+        Character(
+            project_id=PROJECT_ID,
+            name="角色丙",
+            personality="占位历史手写性格",
+            ai_profile_snapshot=None,
+            profile_synced_through_chapter=0,
+        )
+    )
+    await db_session.commit()
+
+    ai = FakeAIService(_ai_payload("角色丙", personality="占位AI新性格", background="占位AI新背景"))
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=1,
+        ai_service=ai,
+        force=True,
+    )
+
+    character = await _character(db_session, "角色丙")
+    assert character.personality == "占位AI新性格"
+    assert character.background == "占位AI新背景"
+    snapshot = json.loads(character.ai_profile_snapshot)
+    assert snapshot["personality"] == "占位AI新性格"
+    assert snapshot["background"] == "占位AI新背景"
+    assert stats["fields_preserved"] == 0
+    assert stats["fields_updated"] == 2
+
+
+async def test_legacy_world_empty_field_is_filled_by_default(db_session):
+    """世界设定同样默认保护历史值，但空字段默认会被填入。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦登场。")])
+    project = await _project(db_session)
+    project.world_location = "占位历史地点"
+    project.ai_world_profile_snapshot = None
+    await db_session.commit()
+
+    ai = FakeAIService(
+        _world_payload(world_location="占位AI新地点", world_rules="占位AI新规则")
+    )
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    refreshed = await _project(db_session)
+    assert refreshed.world_location == "占位历史地点"  # 历史值保留
+    assert refreshed.world_rules == "占位AI新规则"  # 空字段填入
+    assert json.loads(refreshed.ai_world_profile_snapshot) == {"world_rules": "占位AI新规则"}
+    assert stats["fields_preserved"] == 1
+    assert stats["fields_updated"] == 1
+
+
+def _make_import_task(task_id: str) -> _BookImportTask:
+    task = _BookImportTask(
+        task_id=task_id,
+        user_id=USER_ID,
+        filename="placeholder.txt",
+        project_id=None,
+        create_new_project=True,
+        import_mode="append",
+        status="completed",
+    )
+    return task
+
+
+def _patch_import_steps(monkeypatch, svc, *, prepare_project):
+    async def fake_import_outlines(**kwargs):
+        return {}
+
+    async def fake_import_chapters(**kwargs):
+        return 3, 1000
+
+    async def fake_generate_world(**kwargs):
+        return 1
+
+    async def fake_generate_careers(**kwargs):
+        return 2
+
+    async def fake_generate_characters(**kwargs):
+        return 3
+
+    async def fake_extract_relationships(**kwargs):
+        return {
+            "extracted_relationships": 1,
+            "created_types": 1,
+            "created_characters": 1,
+            "skipped_chapters": [],
+        }
+
+    monkeypatch.setattr(svc, "_prepare_project", prepare_project)
+    monkeypatch.setattr(svc, "_import_outlines", fake_import_outlines)
+    monkeypatch.setattr(svc, "_import_chapters", fake_import_chapters)
+    monkeypatch.setattr(svc, "_generate_world_building_from_project", fake_generate_world)
+    monkeypatch.setattr(svc, "_generate_career_system_from_project", fake_generate_careers)
+    monkeypatch.setattr(
+        svc, "_generate_characters_and_organizations_from_project", fake_generate_characters
+    )
+    monkeypatch.setattr(svc, "_extract_relationships_from_chapters", fake_extract_relationships)
+
+
+async def test_import_success_schedules_profile_sync(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    scheduled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        bis, "_schedule_profile_sync", lambda user_id, project_id: scheduled.append((user_id, project_id))
+    )
+
+    svc = BookImportService()
+    task = _make_import_task("t-hook-ok")
+    svc._tasks[task.task_id] = task
+
+    async def fake_prepare_project(**kwargs):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id="p-hook", character_count=5, current_words=0)
+
+    _patch_import_steps(monkeypatch, svc, prepare_project=fake_prepare_project)
+
+    result = await svc.apply_import_stream(
+        task_id=task.task_id,
+        user_id=USER_ID,
+        payload=BookImportApplyRequest(
+            project_suggestion=ProjectSuggestion(title="占位项目"),
+            chapters=[],
+        ),
+        db=AsyncMock(),
+        progress_callback=None,
+        ai_service=None,
+    )
+
+    assert result.success is True
+    assert scheduled == [(USER_ID, "p-hook")]
+
+
+async def test_import_failure_does_not_schedule_profile_sync(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    scheduled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        bis, "_schedule_profile_sync", lambda user_id, project_id: scheduled.append((user_id, project_id))
+    )
+
+    svc = BookImportService()
+    task = _make_import_task("t-hook-fail")
+    svc._tasks[task.task_id] = task
+
+    async def failing_prepare_project(**kwargs):
+        raise RuntimeError("占位落库失败")
+
+    _patch_import_steps(monkeypatch, svc, prepare_project=failing_prepare_project)
+
+    with pytest.raises(ApiError):
+        await svc.apply_import_stream(
+            task_id=task.task_id,
+            user_id=USER_ID,
+            payload=BookImportApplyRequest(
+                project_suggestion=ProjectSuggestion(title="占位项目"),
+                chapters=[],
+            ),
+            db=AsyncMock(),
+            progress_callback=None,
+            ai_service=None,
+        )
+
+    assert scheduled == []

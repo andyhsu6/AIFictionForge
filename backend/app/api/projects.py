@@ -663,6 +663,7 @@ async def refresh_character_profiles(
             project_id=project_id,
             through_chapter=payload.through_chapter if payload else None,
             include_world=payload.include_world if payload else True,
+            force=payload.force if payload else False,
         )
     except (HTTPException, ApiError):
         raise

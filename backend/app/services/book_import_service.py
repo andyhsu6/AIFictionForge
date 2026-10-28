@@ -238,6 +238,35 @@ def _is_output_truncated(exc: BaseException) -> bool:
     return getattr(exc, "code", None) == "ai.output_truncated"
 
 
+# 导入后档案刷新的后台任务强引用集合（避免被 GC 提前回收）
+_profile_sync_tasks: set["asyncio.Task"] = set()
+
+
+def _schedule_profile_sync(user_id: str, project_id: str) -> None:
+    """导入成功落库后异步刷新角色/组织档案与世界设定（issue #174/#175）。
+
+    fire-and-forget：失败只记 warning，绝不影响导入终态。
+    抽成模块级钩子便于测试 monkeypatch（测试不应真的跑同步任务）。
+    """
+    from app.services.character_profile_sync_service import character_profile_sync_service
+
+    async def _run() -> None:
+        try:
+            await character_profile_sync_service.sync_standalone(
+                user_id=user_id, project_id=project_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 兜底，导入终态不受影响
+            logger.warning(f"拆书导入：刷新角色档案失败（已忽略）: {exc}")
+
+    try:
+        task = asyncio.create_task(_run())
+    except RuntimeError as exc:  # 没有运行中的事件循环（同步脚本/测试）
+        logger.warning(f"拆书导入：无法调度档案刷新: {exc}")
+        return
+    _profile_sync_tasks.add(task)
+    task.add_done_callback(_profile_sync_tasks.discard)
+
+
 def _profile_field_is_thin(value: Any) -> bool:
     """档案字段是否为空、过短或只写了占位（issue #173）。"""
     text = str(value or "").strip()
@@ -539,6 +568,8 @@ class BookImportService:
             task.skipped_chapters = skipped_report
 
             await db.commit()
+            # issue #174/#175：导入成功后异步刷新档案与世界设定（失败不影响导入终态）
+            _schedule_profile_sync(user_id, project.id)
             task.applied = True
 
             return BookImportApplyResponse(
@@ -817,6 +848,9 @@ class BookImportService:
             await _notify("正在保存到数据库...", 96, code="import.progress.savingDb")
             await db.commit()
             await _notify("数据保存完成", 98, code="import.progress.savedDb")
+
+            # issue #174/#175：导入成功后异步刷新档案与世界设定（失败不影响导入终态）
+            _schedule_profile_sync(user_id, project.id)
 
             # 记录失败步骤和项目ID到任务中，供重试使用
             task.imported_project_id = project.id

@@ -193,8 +193,17 @@ def _apply_profile_values(
     stats: Dict[str, Any],
     *,
     label: str,
+    force: bool = False,
 ) -> bool:
-    """逐字段写回：只覆盖「没被用户手改过」的字段，并把 AI 写入值记进快照。"""
+    """逐字段写回：默认保护历史值，只有确认是 AI 写入过的字段才允许覆盖。
+
+    判定顺序：
+    1. 模型返回空 → 跳过（不覆盖、不计数）；
+    2. `force=True` → 整段覆盖并刷新快照；
+    3. 有快照：当前值 == 快照值 → 覆盖；不相等 → 判定用户手改，保留并计 `fields_preserved`；
+    4. 无快照（历史数据）：当前值为空 → 填入；非空 → 保留并计 `fields_preserved`
+       （不写快照，将来 force 时仍能识别为旧值）。
+    """
     changed = False
     for field in fields:
         new_value = values.get(field)
@@ -202,19 +211,38 @@ def _apply_profile_values(
             continue
         new_value = new_value.strip()
         current = getattr(target, field, None)
-        if current == new_value:
+
+        if force:
+            if current != new_value:
+                setattr(target, field, new_value)
+                stats["fields_updated"] += 1
+                changed = True
             snapshot[field] = new_value
             continue
+
+        if field not in snapshot:
+            if current:
+                # 历史数据：没有 AI 快照可对照，无法证明是 AI 写的 → 保护用户值
+                stats["fields_preserved"] += 1
+                logger.debug("保留历史字段（无快照）: %s.%s", label, field)
+                continue
+            setattr(target, field, new_value)
+            snapshot[field] = new_value
+            stats["fields_updated"] += 1
+            changed = True
+            continue
+
         previous_ai = snapshot.get(field)
-        if current and previous_ai is not None and current != previous_ai:
+        if current != previous_ai:
             # 用户手改过该字段：保留用户值，也不动快照（否则下次会误判为 AI 值）
             stats["fields_preserved"] += 1
             logger.debug("保留用户手改字段: %s.%s", label, field)
             continue
-        setattr(target, field, new_value)
+        if current != new_value:
+            setattr(target, field, new_value)
+            stats["fields_updated"] += 1
+            changed = True
         snapshot[field] = new_value
-        stats["fields_updated"] += 1
-        changed = True
     return changed
 
 
@@ -234,6 +262,7 @@ class CharacterProfileSyncService:
         project_id: str,
         through_chapter: Optional[int] = None,
         ai_service: Any = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """同步至 `through_chapter`（默认取项目内已写正文的最大章节号）。"""
         guard_key = project_id
@@ -260,6 +289,7 @@ class CharacterProfileSyncService:
                 through_chapter=through_chapter,
                 ai_service=ai_service,
                 stats=stats,
+                force=force,
             )
         finally:
             self._in_progress.discard(guard_key)
@@ -273,6 +303,7 @@ class CharacterProfileSyncService:
         through_chapter: Optional[int],
         ai_service: Any,
         stats: Dict[str, Any],
+        force: bool = False,
     ) -> Dict[str, Any]:
         through = through_chapter
         if through is None:
@@ -331,7 +362,9 @@ class CharacterProfileSyncService:
 
         for offset in range(0, len(candidates), _CHARACTERS_PER_CALL):
             chunk = candidates[offset: offset + _CHARACTERS_PER_CALL]
-            await self._sync_chunk(db=db, chunk=chunk, ai_service=service, stats=stats)
+            await self._sync_chunk(
+                db=db, chunk=chunk, ai_service=service, stats=stats, force=force
+            )
 
         await db.commit()
         logger.info(
@@ -353,6 +386,7 @@ class CharacterProfileSyncService:
         chunk: List[tuple[Character, List[Chapter]]],
         ai_service: Any,
         stats: Dict[str, Any],
+        force: bool = False,
     ) -> None:
         """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。"""
         character_ids = {character.id for character, _ in chunk}
@@ -403,7 +437,9 @@ class CharacterProfileSyncService:
                 character = self._match_character(entry.get("name"), chunk, names)
                 if character is None or character.id not in character_ids:
                     continue
-                await self._apply_entry(db=db, character=character, entry=entry, stats=stats)
+                await self._apply_entry(
+                    db=db, character=character, entry=entry, stats=stats, force=force
+                )
 
             # 本批成功处理即视为已覆盖（模型没给出新信息也算看过，避免反复重跑）
             batch_chapter_ids = {chapter.id for chapter in text_batch}
@@ -440,6 +476,7 @@ class CharacterProfileSyncService:
         character: Character,
         entry: Dict[str, Any],
         stats: Dict[str, Any],
+        force: bool = False,
     ) -> None:
         snapshot = _loads_json(character.ai_profile_snapshot, {})
         if not isinstance(snapshot, dict):
@@ -453,6 +490,7 @@ class CharacterProfileSyncService:
             PROFILE_FIELDS,
             stats,
             label=character.name,
+            force=force,
         )
 
         org_changed = await self._apply_organizations(
@@ -553,6 +591,7 @@ class CharacterProfileSyncService:
         project_id: str,
         through_chapter: Optional[int] = None,
         ai_service: Any = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """把新写出的章节回流到项目世界设定（issue #175）。"""
         stats: Dict[str, Any] = {
@@ -577,6 +616,7 @@ class CharacterProfileSyncService:
                 through_chapter=through_chapter,
                 ai_service=ai_service,
                 stats=stats,
+                force=force,
             )
         finally:
             self._world_in_progress.discard(project_id)
@@ -590,6 +630,7 @@ class CharacterProfileSyncService:
         through_chapter: Optional[int] = None,
         ai_service: Any = None,
         include_world: bool = True,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """手动入口：世界设定 + 角色档案。世界设定失败不影响角色档案结果。"""
         world: Optional[Dict[str, Any]] = None
@@ -601,6 +642,7 @@ class CharacterProfileSyncService:
                     project_id=project_id,
                     through_chapter=through_chapter,
                     ai_service=ai_service,
+                    force=force,
                 )
             except Exception as exc:  # noqa: BLE001 - 世界设定失败不得影响角色档案
                 logger.warning("世界设定同步失败（角色档案继续）: %s", exc, exc_info=True)
@@ -618,6 +660,7 @@ class CharacterProfileSyncService:
             project_id=project_id,
             through_chapter=through_chapter,
             ai_service=ai_service,
+            force=force,
         )
         stats["world"] = world
         return stats
@@ -631,6 +674,7 @@ class CharacterProfileSyncService:
         through_chapter: Optional[int],
         ai_service: Any,
         stats: Dict[str, Any],
+        force: bool = False,
     ) -> Dict[str, Any]:
         project = (
             await db.execute(select(Project).where(Project.id == project_id))
@@ -715,7 +759,13 @@ class CharacterProfileSyncService:
                 continue
 
             _apply_profile_values(
-                project, payload, snapshot, WORLD_FIELDS, stats, label="世界设定"
+                project,
+                payload,
+                snapshot,
+                WORLD_FIELDS,
+                stats,
+                label="世界设定",
+                force=force,
             )
             project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
             project.world_profile_synced_through_chapter = max(
