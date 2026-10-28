@@ -121,3 +121,15 @@ class CharacterListResponse(BaseModel):
     """角色列表响应模型"""
     total: int
     items: List[CharacterResponse]
+
+
+class CharacterProfileRefreshRequest(BaseModel):
+    """档案同步请求（issue #174 / #175）"""
+    through_chapter: Optional[int] = Field(
+        None, description="同步到第几章（不传则取项目内已写完的最大章节号）"
+    )
+    include_world: bool = Field(True, description="是否同时刷新世界设定")
+    force: bool = Field(
+        False,
+        description="强制覆盖：忽略历史值与快照对照，整段重写（默认保护用户手改/历史值）",
+    )
