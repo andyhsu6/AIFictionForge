@@ -34,6 +34,10 @@ from app.models.character import Character
 from app.models.project import Project
 from app.models.relationship import Organization, OrganizationMember
 from app.services.import_validators import looks_like_profile_narration
+from app.services.profile_prompt_rules import (
+    FACTS_FIELD_BOUNDARIES,
+    PROSE_FIELD_BOUNDARIES,
+)
 from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
     merge_profile_facts,
@@ -70,8 +74,8 @@ _SYSTEM_PROMPT = (
     "2. appearance 只写稳定的外貌与常驻装束，禁止写「被…之后露出」「曾在…时」"
     "这类一次性事件或状态变化；\n"
     "3. current_state 才是承载「最近发生了什么/当前处境」的字段；\n"
-    "4. 正文确实没有描写时宁可留空（\"\"），不要拿情节凑数。"
-)
+    "4. 正文确实没有描写时宁可留空（\"\"），不要拿情节凑数。\n"
+) + "\n" + PROSE_FIELD_BOUNDARIES
 
 _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
 
@@ -139,13 +143,7 @@ _PROMPT_TEMPLATE_FACTS = """请根据下列章节正文，更新角色/组织档
   ]
 }}
 
-【档案字段定义 - 判断依据只有这一份】
-- personality：性格/脾气/态度/处事风格。禁止写入身份、职务、门派归属、亲属关系、排行、
-  能力与武力高低、经历事件、外貌。
-- background：出身、师承、身份与归属（门派/职务/排行/家族位置）、经历与遭遇、
-  能力与实力（例如「武功高强」属于本字段，不属于性格）。
-- appearance：只写外形（体型、容貌、衣着）。禁止写入行为、事件、身份、能力。
-- current_state 不在本次输出范围内（由章节分析链路维护）。
+""" + FACTS_FIELD_BOUNDARIES + """
 
 规则：
 1. 只输出相对现有档案有实质变化的事实；某角色没有新依据就返回空数组，不要复述现有档案。

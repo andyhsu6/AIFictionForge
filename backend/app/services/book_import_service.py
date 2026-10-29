@@ -58,6 +58,7 @@ from app.services.import_validators import (
 )
 from app.services.prompt_service import PromptService
 from app.services.profile_facts import PROFILE_FACTS_PROMPT_ENABLED, resolve_profile_fields
+from app.services.profile_prompt_rules import PROSE_TRAIT_HINT
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -3250,6 +3251,7 @@ class BookImportService:
                 f"每个字段至少 {_MIN_PROFILE_FIELD_CHARS} 字、必须是该实体独有的具体描写；"
                 "禁止「同上」「见前文」这类占位表述，禁止抄录原文句子/对话；"
                 "正文没有明确描写时可基于上面的世界观与已有字段合理推断，但不得与之矛盾。\n"
+                f"{PROSE_TRAIT_HINT}"
                 f"输出语言：{generation_language}。"
             )
             try:
