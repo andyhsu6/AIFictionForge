@@ -8,8 +8,9 @@
 2. ``render_profile``：把通过校验的事实拼成三个自由文本字段。
 
 第一版：字面存在性 + 字段谓词，谓词层是兜底、不是主保证。
-真正的保证来自"引文必须在原文里字面存在"这一条；谓词（亲属称谓、事件词、
-动作词）只是挡住最明显的错位，不能替代模型按字段理解语义。
+真正的保证来自"引文必须在原文里字面存在"这一条；谓词（关系断言句式、
+事件短语）只是挡住最明显的错位，**不判断纯语义错位**（门派归属写进外貌
+这类），也不能替代模型按字段理解语义。
 """
 
 from __future__ import annotations
@@ -26,63 +27,55 @@ MAX_FACTS_PER_FIELD = 6
 # claim 里出现这些字符说明模型还在写句子/多句叙述，不是原子事实
 _BANNED_CLAIM_CHARS = "。！？；!?;\n\r"
 
-# 亲属称谓：出现在 personality 里说明把"关系"当成了"性格"
-_KINSHIP_TOKENS = (
-    "丈夫",
-    "妻子",
-    "夫君",
-    "娘子",
-    "父亲",
-    "母亲",
-    "儿子",
-    "女儿",
-    "师父",
-    "师傅",
-    "师兄",
-    "师姐",
-    "师弟",
-    "师妹",
-    "夫妻",
-    "父子",
-    "母女",
-    "兄弟",
-    "姐妹",
-    "之妻",
-    "之夫",
-    "之子",
-    "之女",
+# 关系断言句式：说明把"关系"当成"性格"（如「狄宏伟之妻」「与丈夫并称双刀」）。
+# 只匹配断言结构，不匹配称谓词的任意出现——「视下属如兄弟」是性格，不是关系。
+_RELATION_ASSERTION_RE = re.compile(
+    r"(之[妻夫子女父母兄姐弟妹]"
+    r"|的(丈夫|妻子|夫君|娘子|父亲|母亲|儿子|女儿|师父|师傅|师兄|师姐|师弟|师妹)"
+    r"|(?:与|和|跟)(?:丈夫|妻子|夫君|娘子|父亲|母亲|兄弟|姐妹|师父|师傅|师兄|师姐|师弟|师妹))"
 )
 
-# 事件词：出现在 personality 里说明把"发生过的事"当成了"性格"
-_PERSONALITY_EVENT_MARKERS = (
-    "死",
-    "杀",
-    "婚",
-    "娶",
-    "嫁",
-    "怀孕",
-    "出生",
-    "即位",
-    "登基",
-    "复仇",
-    "报仇",
-    "自尽",
+# 事件短语：出现在 personality 里说明把"发生过的事"当成了"性格"。
+# 刻意用短语而非单字：单字「杀」会误杀「杀伐果断」「冷面杀手」，
+# 单字「婚」会误杀「婚姻观」，单字「生」会误杀「生性」。
+_PERSONALITY_EVENT_PHRASES = (
+    "死于",
+    "而死",
+    "被杀",
+    "杀死",
+    "杀害",
+    "战死",
     "战败",
     "身亡",
     "去世",
+    "自尽",
     "获救",
     "被俘",
+    "即位",
+    "登基",
+    "怀孕",
+    "出生",
+    "嫁人",
+    "娶妻",
+    "成婚",
+    "结婚",
+    "复仇",
+    "报仇",
 )
 
-# 动作词：出现在 appearance 里说明把"行为"当成了"外貌"
-# 注意不含"战"——"战袍""战甲"是合法外貌，且"战死"已由"死"覆盖。
-_APPEARANCE_ACTION_MARKERS = (
-    "死",
-    "杀",
-    "嫁",
-    "娶",
-    "逃",
-    "救",
+# 事件短语：出现在 appearance 里说明把"行为/结局"当成了"外貌"。
+# 同样不用单字（「战袍」「杀气」都是合法外貌/气质描述）。
+_APPEARANCE_EVENT_PHRASES = (
+    "死于",
+    "被杀",
+    "战死",
+    "自尽",
+    "被俘",
+    "杀敌",
+    "挥刀",
+    "救下",
+    "嫁人",
+    "娶妻",
 )
 
 # 与 str 的 \s 保持一致，额外显式列出全角空格，避免不同实现差异
@@ -177,14 +170,19 @@ def _claim_has_banned_text(claim: str) -> bool:
 
 
 def _claim_matches_field(field: str, claim: str) -> bool:
-    """字段谓词兜底：claim 是否与声明字段相容。"""
+    """字段谓词兜底：claim 是否与声明字段相容。
+
+    只挡"形状上明显属于另一类"的内容（关系断言、事件短语），
+    不判断"门派归属写进外貌"这类纯语义错位——那类问题确定性规则挡不住，
+    由"引文必须字面存在"与提示词约束负责，不在这一层假装能解决。
+    """
     if field == "personality":
-        if any(token in claim for token in _KINSHIP_TOKENS):
+        if _RELATION_ASSERTION_RE.search(claim):
             return False
-        if any(marker in claim for marker in _PERSONALITY_EVENT_MARKERS):
+        if any(phrase in claim for phrase in _PERSONALITY_EVENT_PHRASES):
             return False
     elif field == "appearance":
-        if any(marker in claim for marker in _APPEARANCE_ACTION_MARKERS):
+        if any(phrase in claim for phrase in _APPEARANCE_EVENT_PHRASES):
             return False
     return True
 

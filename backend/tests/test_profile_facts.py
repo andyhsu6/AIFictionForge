@@ -6,6 +6,7 @@ from app.services.profile_facts import (
     MAX_FACTS_PER_FIELD,
     MIN_QUOTE_CHARS,
     ProfileFactResult,
+    _claim_matches_field,
     locate_quote,
     normalize_quote,
     render_profile,
@@ -130,7 +131,7 @@ def test_event_claim_in_personality_rejected():
     assert result.stats["claim_invalid"] == 1
 
 
-# 9. 亲属称谓出现在性格里
+# 9. 关系断言混在更长短语里
 def test_kinship_token_inside_longer_claim_rejected():
     result = validate_profile_facts(
         {"name": "角色甲", "facts": [_fact(claim="武功高强，与丈夫并称双刀")]},
@@ -138,6 +139,22 @@ def test_kinship_token_inside_longer_claim_rejected():
     )
     assert result.facts == []
     assert result.stats["claim_invalid"] == 1
+
+
+# 9b. 谓词层不得误杀合法性格/外貌（单字标记会杀掉「杀伐果断」这类成语）
+def test_legit_trait_phrases_pass_predicate():
+    legit = [
+        ("personality", "重情重义，视下属如兄弟"),
+        ("personality", "杀伐果断，行事果决"),
+        ("personality", "冷面杀手"),
+        ("personality", "婚姻观保守"),
+        ("personality", "生性多疑"),
+        ("appearance", "身披战袍"),
+        ("appearance", "杀气凛然"),
+        ("appearance", "身形瘦削，面色蜡黄"),
+    ]
+    for field, claim in legit:
+        assert _claim_matches_field(field, claim) is True, (field, claim)
 
 
 # 10. background 不接受 inferred
