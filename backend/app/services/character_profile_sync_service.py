@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import func, select
@@ -33,6 +34,11 @@ from app.models.character import Character
 from app.models.project import Project
 from app.models.relationship import Organization, OrganizationMember
 from app.services.import_validators import looks_like_profile_narration
+from app.services.profile_facts import (
+    PROFILE_FACTS_PROMPT_ENABLED,
+    merge_profile_facts,
+    resolve_profile_fields,
+)
 
 logger = get_logger(__name__)
 
@@ -101,6 +107,54 @@ _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
 5. personality/appearance 只写稳定特质与常驻样貌；事件、对话、他人评价、状态变化
    写进 current_state 或 background，不要写进这两个字段。正文没有描写时宁可留空，
    不要用情节凑数。"""
+
+# issue #190：facts 版模板。字段本体与引文规则必须与拆书导入的
+# CHARACTERS_BATCH_GENERATION_FACTS 保持一致，否则两条写入路径会产出不同口径的档案。
+_PROMPT_TEMPLATE_FACTS = """请根据下列章节正文，更新角色/组织档案。
+
+【待更新档案】
+{profiles}
+
+【章节正文】
+{chapters}
+
+输出 JSON（顶层对象）：
+{{
+  "characters": [
+    {{
+      "name": "档案名称（必须与上面列出的名称完全一致）",
+      "profile_facts": [
+        {{
+          "field": "personality",
+          "claim": "性情沉稳",
+          "quote": "他听完只是点了点头，没有说话",
+          "chapter_number": 12,
+          "inferred": false
+        }}
+      ],
+      "organizations": [
+        {{"organization_name": "组织名称", "position": "职位", "status": "active"}}
+      ]
+    }}
+  ]
+}}
+
+【档案字段定义 - 判断依据只有这一份】
+- personality：性格/脾气/态度/处事风格。禁止写入身份、职务、门派归属、亲属关系、排行、
+  能力与武力高低、经历事件、外貌。
+- background：出身、师承、身份与归属（门派/职务/排行/家族位置）、经历与遭遇、
+  能力与实力（例如「武功高强」属于本字段，不属于性格）。
+- appearance：只写外形（体型、容貌、衣着）。禁止写入行为、事件、身份、能力。
+- current_state 不在本次输出范围内（由章节分析链路维护）。
+
+规则：
+1. 只输出相对现有档案有实质变化的事实；某角色没有新依据就返回空数组，不要复述现有档案。
+2. quote 必须从【章节正文】里逐字复制，至少 8 个字；禁止改写、拼接、补字，禁止含省略号。
+   正文找不到就只能不写。
+3. chapter_number 必须是该引文实际所在的章号。
+4. inferred 只有 personality 允许为 true（由行为推断性格，quote 仍必须真实）；其余字段必须 false。
+5. 每条 claim 只表达一个特质或一个事实，不写成叙述句，不含句末标点。
+6. 未在上面列出名称的角色一律不要输出。"""
 
 _WORLD_SYSTEM_PROMPT = (
     "你是小说世界设定维护助手。只依据给定章节正文归纳世界设定，不得臆造正文中"
@@ -474,6 +528,14 @@ class CharacterProfileSyncService:
                 mentioned[chapter.id] = chapter
         ordered = sorted(mentioned.values(), key=lambda item: item.chapter_number)
         profiles = _render_profiles([character for character, _ in chunk])
+        # issue #190：引文校验用**整章全文**（模型看到的是切片，校验可以放宽到整章：
+        # 命中说明这句话确实在该章正文里，只是模型看到的部分比切片多）。
+        chapters_by_number = {
+            chapter.chapter_number: (chapter.content or "") for chapter in ordered
+        }
+        prompt_template = (
+            _PROMPT_TEMPLATE_FACTS if PROFILE_FACTS_PROMPT_ENABLED else _PROMPT_TEMPLATE
+        )
 
         # 章节 id → 该章所有切片是否都成功（issue #193）
         covered: Dict[str, bool] = {}
@@ -490,7 +552,12 @@ class CharacterProfileSyncService:
                 if character is None or character.id not in character_ids:
                     continue
                 await self._apply_entry(
-                    db=db, character=character, entry=entry, stats=stats, force=force
+                    db=db,
+                    character=character,
+                    entry=entry,
+                    stats=stats,
+                    chapters_by_number=chapters_by_number,
+                    force=force,
                 )
             return True
 
@@ -504,7 +571,7 @@ class CharacterProfileSyncService:
         for text_batch in _batch_by_budget(ordered):
             results = await self._call_with_bisect(
                 pieces=_as_slices(text_batch),
-                build_prompt=lambda pieces: _PROMPT_TEMPLATE.format(
+                build_prompt=lambda pieces: prompt_template.format(
                     profiles=profiles, chapters=_render_chapters(pieces)
                 ),
                 system_prompt=_SYSTEM_PROMPT,
@@ -657,6 +724,7 @@ class CharacterProfileSyncService:
         character: Character,
         entry: Dict[str, Any],
         stats: Dict[str, Any],
+        chapters_by_number: Optional[Dict[int, str]] = None,
         force: bool = False,
     ) -> None:
         snapshot = _loads_json(character.ai_profile_snapshot, {})
@@ -664,9 +732,24 @@ class CharacterProfileSyncService:
             snapshot = {}
 
         fields = entry.get("fields")
+        values: Dict[str, Any] = fields if isinstance(fields, dict) else {}
+
+        # issue #190：返回里有 profile_facts 时，档案文本只能由通过引文校验的事实渲染。
+        # 一条事实都没通过时 values 为空 dict——宁可这轮不更新，也不落无依据文本。
+        if PROFILE_FACTS_PROMPT_ENABLED and chapters_by_number:
+            rendered, facts_stats, facts = resolve_profile_fields(entry, chapters_by_number)
+            if facts_stats.get("payloads_facts"):
+                values = rendered
+                bucket = stats.setdefault("profile_facts", {})
+                for key, value in facts_stats.items():
+                    bucket[key] = bucket.get(key, 0) + value
+                if facts:
+                    character.profile_facts = merge_profile_facts(character.profile_facts, facts)
+                    character.profile_facts_updated_at = datetime.utcnow()
+
         changed = _apply_profile_values(
             character,
-            fields if isinstance(fields, dict) else {},
+            values,
             snapshot,
             PROFILE_FIELDS,
             stats,

@@ -17,9 +17,20 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
+
+# issue #190：档案改走「原子事实 + 原文引用」的总开关，所有写入路径共用这一处。
+# 线上回退旧提示词（三段长文本 + 启发式门禁）：PROFILE_FACTS_PROMPT=0。
+PROFILE_FACTS_PROMPT_ENABLED = os.getenv("PROFILE_FACTS_PROMPT", "1").strip().lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 
 FACT_FIELDS = ("personality", "background", "appearance")  # current_state 由章节分析链路拥有，不在范围内
 MIN_QUOTE_CHARS = 8
@@ -431,3 +442,47 @@ def resolve_profile_fields(
     stats["facts_rendered"] = len(result.facts)
 
     return render_profile(result.facts, kind=kind), stats, result.facts
+
+
+def merge_profile_facts(existing: Any, new_facts: list[dict]) -> str | None:
+    """把新事实并入已有溯源 JSON，返回新的 JSON 串（无事实时返回 None）。
+
+    合并规则：按 ``(field, normalize(claim))`` 去重，新事实覆盖旧值；
+    每个字段只保留**最近** ``FACT_FIELD_LIMITS[field]`` 条——档案是演进中的
+    快照，旧属性被新章节推翻时应当让位，而不是无限堆积。
+    """
+    merged: dict[str, list[dict]] = {field: [] for field in FACT_FIELDS}
+    seen: dict[str, dict[str, dict]] = {field: {} for field in FACT_FIELDS}
+
+    def _add(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for fact in items:
+            if not isinstance(fact, dict):
+                continue
+            field = fact.get("field")
+            claim = fact.get("claim")
+            if field not in FACT_FIELDS or not isinstance(claim, str):
+                continue
+            key = normalize_quote(claim)
+            if not key:
+                continue
+            seen[field][key] = fact
+
+    if isinstance(existing, str) and existing.strip():
+        try:
+            _add(json.loads(existing))
+        except (ValueError, TypeError):
+            # 溯源是附属信息，损坏时按"没有历史事实"处理，不影响本次写入
+            pass
+    _add(new_facts)
+
+    for field in FACT_FIELDS:
+        limit = FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD)
+        # dict 保持插入顺序：旧事实在前，新事实在前者被覆盖时原位更新 → 取尾部 limit 条即"最近"
+        merged[field] = list(seen[field].values())[-limit:]
+
+    facts = [fact for field in FACT_FIELDS for fact in merged[field]]
+    if not facts:
+        return None
+    return json.dumps(facts, ensure_ascii=False)

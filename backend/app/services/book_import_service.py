@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import uuid
 from collections import Counter
@@ -58,7 +57,7 @@ from app.services.import_validators import (
     validate_world_building,
 )
 from app.services.prompt_service import PromptService
-from app.services.profile_facts import resolve_profile_fields
+from app.services.profile_facts import PROFILE_FACTS_PROMPT_ENABLED, resolve_profile_fields
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -96,14 +95,9 @@ _MIN_PROFILE_FIELD_CHARS = 20
 _PROFILE_PLACEHOLDER_SNIPPETS = ("同上", "见前文", "见上文", "参见前文", "同前")
 
 # issue #190：档案改为「原子事实 + 原文引用」（prompt_service.CHARACTERS_BATCH_GENERATION_FACTS）。
-# 默认开启；线上若要回退旧提示词（三段长文本 + 启发式门禁），设 PROFILE_FACTS_PROMPT=0 即可，
+# 开关与解析规则集中在 profile_facts；PROFILE_FACTS_PROMPT=0 回退旧提示词，
 # 回退路径与改动前完全一致（facts 解析在 legacy 格式下返回空 dict，不介入）。
-_PROFILE_FACTS_PROMPT_ENABLED = os.getenv("PROFILE_FACTS_PROMPT", "1").strip().lower() not in {
-    "0",
-    "false",
-    "off",
-    "no",
-}
+_PROFILE_FACTS_PROMPT_ENABLED = PROFILE_FACTS_PROMPT_ENABLED
 _PROFILE_FACTS_TEMPLATE_KEY = "CHARACTERS_BATCH_GENERATION_FACTS"
 _PROFILE_FACTS_LEGACY_TEMPLATE_KEY = "CHARACTERS_BATCH_GENERATION"
 

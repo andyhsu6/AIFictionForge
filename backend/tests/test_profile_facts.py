@@ -1,5 +1,7 @@
 """profile_facts 纯函数层测试（issue #190 / P1）。"""
 
+import json
+
 from app.services.profile_facts import (
     FACT_FIELDS,
     MAX_CLAIM_CHARS,
@@ -372,3 +374,49 @@ def test_render_profile_uses_per_field_limits():
     assert set(rendered) == set(FACT_FIELD_LIMITS)
     for field, limit in FACT_FIELD_LIMITS.items():
         assert len(rendered[field].split("、")) == limit
+
+
+def test_merge_profile_facts_dedupes_and_prefers_new_value():
+    """issue #190：同步回流时事实按 (field, claim) 去重，新值覆盖旧值。"""
+    from app.services.profile_facts import merge_profile_facts
+
+    existing = json.dumps(
+        [{"field": "personality", "claim": "性情沉稳", "quote": "旧引文", "chapter_number": 1}],
+        ensure_ascii=False,
+    )
+    merged = json.loads(
+        merge_profile_facts(
+            existing,
+            [{"field": "personality", "claim": "性情沉稳", "quote": "新引文", "chapter_number": 9}],
+        )
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["quote"] == "新引文"
+    assert merged[0]["chapter_number"] == 9
+
+
+def test_merge_profile_facts_keeps_only_recent_per_field():
+    from app.services.profile_facts import FACT_FIELD_LIMITS, merge_profile_facts
+
+    limit = FACT_FIELD_LIMITS["appearance"]
+    existing = [
+        {"field": "appearance", "claim": f"外貌特征{i}", "quote": f"引文{i}", "chapter_number": i}
+        for i in range(limit)
+    ]
+    new = [{"field": "appearance", "claim": "新增外貌", "quote": "新引文", "chapter_number": 99}]
+
+    merged = json.loads(merge_profile_facts(json.dumps(existing, ensure_ascii=False), new))
+
+    assert len(merged) == limit
+    assert merged[-1]["claim"] == "新增外貌"
+    assert "外貌特征0" not in [fact["claim"] for fact in merged]
+
+
+def test_merge_profile_facts_ignores_invalid_and_empty():
+    from app.services.profile_facts import merge_profile_facts
+
+    assert merge_profile_facts(None, []) is None
+    assert merge_profile_facts("not json", []) is None
+    assert merge_profile_facts(None, [{"field": "current_state", "claim": "处境"}]) is None
+    assert merge_profile_facts(None, [{"field": "personality"}]) is None
