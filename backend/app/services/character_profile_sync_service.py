@@ -10,14 +10,18 @@
   字段没被手改过，允许覆盖并把新值写进快照；不相等说明用户改过，跳过该字段并
   计入 `fields_preserved`。快照缺失（首次同步）时允许覆盖。
 - 幂等：同一 `through_chapter` 再跑一次是 no-op（水位已越过，零 AI 调用零写入）。
-- 异常：`ai.content_filtered` / `ai.output_truncated` 不重试，记入 `skipped`；
+- 异常：`ai.content_filtered` 按「多章对半拆批 → 单章正文二分」降级重试（issue #193），
+  降到最小粒度仍被拦才记入 `skipped`；`ai.output_truncated` 不重试、直接记 `skipped`；
   其余异常照常上抛。
+- 水位只按连续覆盖推进：某章的切片全部成功才算 covered，水位停在该档案提及章节序列里
+  「从起点连续成功的最长前缀」的最大章号，失败章节下一轮 `start = marker + 1` 会重新覆盖。
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,14 +45,26 @@ WORLD_FIELDS = ("world_time_period", "world_location", "world_atmosphere", "worl
 # 不可重试的错误码：记入 skipped 后继续处理其他批次
 NON_RETRYABLE_CODES = frozenset({"ai.content_filtered", "ai.output_truncated"})
 
+# 只有内容审核拦截允许降级重试；`ai.output_truncated` 语义不变（不重试）
+CONTENT_FILTERED_CODE = "ai.content_filtered"
+
 # 单次 AI 调用最多覆盖的角色数，避免提示词里塞进整本项目
 _CHARACTERS_PER_CALL = 5
 # 单次 AI 调用的章节正文预算（字符）。超出的章节拆分到下一批，不截断正文。
 _PROMPT_CHAR_BUDGET = 8000
+# 单章正文二分后的最小切片长度（字符）：短于等于该值不再切，直接记 skipped。
+_MIN_SLICE_CHARS = 600
 
 _SYSTEM_PROMPT = (
     "你是小说设定档案维护助手。只依据给定章节正文更新档案，不得臆造正文中"
-    "没有出现的信息。输出严格 JSON，不要额外解释。"
+    "没有出现的信息。输出严格 JSON，不要额外解释。\n"
+    "档案字段硬约束：\n"
+    "1. personality 只写稳定的性格特质（形容词或短句），禁止复述情节、对话、"
+    "他人的评价事件；\n"
+    "2. appearance 只写稳定的外貌与常驻装束，禁止写「被…之后露出」「曾在…时」"
+    "这类一次性事件或状态变化；\n"
+    "3. current_state 才是承载「最近发生了什么/当前处境」的字段；\n"
+    "4. 正文确实没有描写时宁可留空（\"\"），不要拿情节凑数。"
 )
 
 _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
@@ -65,9 +81,9 @@ _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
     {{
       "name": "档案名称（必须与上面列出的名称完全一致）",
       "fields": {{
-        "personality": "性格特点/组织特性，无新信息填 null",
+        "personality": "稳定的性格特质（形容词/短句），无新信息填 null",
         "background": "背景故事，无新信息填 null",
-        "appearance": "外貌描述，无新信息填 null",
+        "appearance": "稳定的外貌与常驻装束，无新信息填 null",
         "current_state": "当前处境与心理状态，无新信息填 null"
       }},
       "organizations": [
@@ -81,7 +97,10 @@ _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
 1. 只输出相对现有档案有实质变化的字段；没有变化或正文无依据的字段填 null。
 2. 不要把现有档案原样复述一遍。
 3. organizations 只列出本章新出现或发生变化的组织从属关系；没有则给空数组。
-4. 未在上面列出名称的角色一律不要输出。"""
+4. 未在上面列出名称的角色一律不要输出。
+5. personality/appearance 只写稳定特质与常驻样貌；事件、对话、他人评价、状态变化
+   写进 current_state 或 background，不要写进这两个字段。正文没有描写时宁可留空，
+   不要用情节凑数。"""
 
 _WORLD_SYSTEM_PROMPT = (
     "你是小说世界设定维护助手。只依据给定章节正文归纳世界设定，不得臆造正文中"
@@ -112,6 +131,49 @@ _WORLD_PROMPT_TEMPLATE = """请根据下列章节正文，归纳并更新这本�
    宁可写正文里出现的具体名词。
 3. 如果正文提供了比现有设定更具体的信息，就把它合并进来；不要退回到更笼统的表述。
 4. 正文没有涉及的方面，保留现有设定里已有的内容，不要清空。"""
+
+
+@dataclass(frozen=True)
+class _ChapterSlice:
+    """喂给模型的一段正文：整章，或单章正文二分后的一片。
+
+    切片保留原章节的 `id` 与 `chapter_number`，水位仍按章节身份计算；`part/parts`
+    只在二分后出现，渲染时标注「第 x/y 段」，避免模型把两片当成两章。
+    """
+
+    id: str
+    chapter_number: int
+    title: Optional[str]
+    content: str
+    part: Optional[int] = None
+    parts: Optional[int] = None
+
+
+def _as_slices(chapters: Iterable[Chapter]) -> List[_ChapterSlice]:
+    return [
+        _ChapterSlice(
+            id=chapter.id,
+            chapter_number=chapter.chapter_number,
+            title=chapter.title,
+            content=chapter.content or "",
+        )
+        for chapter in chapters
+    ]
+
+
+def _split_content(content: str) -> Optional[Tuple[str, str]]:
+    """在段落边界把单章正文切成两片；正文不长于切片下限时返回 None（不再切）。"""
+    if len(content) <= _MIN_SLICE_CHARS:
+        return None
+    mid = len(content) // 2
+    newlines = [index for index, char in enumerate(content) if char == "\n"]
+    if newlines:
+        split_at = min(newlines, key=lambda index: abs(index - mid))
+        left = content[:split_at].rstrip()
+        right = content[split_at:].lstrip()
+        if left and right:
+            return left, right
+    return content[:mid], content[mid:]
 
 
 def _loads_json(raw: Optional[str], fallback: Any) -> Any:
@@ -170,11 +232,16 @@ def _render_profiles(characters: Iterable[Character]) -> str:
     return "\n".join(lines)
 
 
-def _render_chapters(chapters: Iterable[Chapter]) -> str:
-    return "\n\n".join(
-        f"【第{chapter.chapter_number}章 {chapter.title or ''}】\n{chapter.content or ''}"
-        for chapter in chapters
-    )
+def _render_chapters(chapters: Iterable[_ChapterSlice]) -> str:
+    blocks: List[str] = []
+    for chapter in chapters:
+        part = chapter.part or 0
+        parts = chapter.parts or 0
+        marker = f"（第 {part}/{parts} 段）" if parts > 1 and part else ""
+        blocks.append(
+            f"【第{chapter.chapter_number}章 {chapter.title or ''}{marker}】\n{chapter.content or ''}"
+        )
+    return "\n\n".join(blocks)
 
 
 def _render_world_profile(project: Any) -> str:
@@ -400,46 +467,22 @@ class CharacterProfileSyncService:
         """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。"""
         character_ids = {character.id for character, _ in chunk}
         names = {character.name for character, _ in chunk}
-        covered: Dict[str, int] = {character.id: 0 for character, _ in chunk}
 
         mentioned: Dict[str, Chapter] = {}
         for _, mentions in chunk:
             for chapter in mentions:
                 mentioned[chapter.id] = chapter
         ordered = sorted(mentioned.values(), key=lambda item: item.chapter_number)
+        profiles = _render_profiles([character for character, _ in chunk])
 
-        for text_batch in _batch_by_budget(ordered):
-            prompt = _PROMPT_TEMPLATE.format(
-                profiles=_render_profiles([character for character, _ in chunk]),
-                chapters=_render_chapters(text_batch),
-            )
-            try:
-                response = await ai_service.call_with_json_retry(
-                    prompt=prompt,
-                    system_prompt=_SYSTEM_PROMPT,
-                    max_retries=2,
-                    expected_type="object",
-                    auto_mcp=False,
-                )
-            except ApiError as exc:
-                if exc.code not in NON_RETRYABLE_CODES:
-                    raise
-                stats["skipped"].append(
-                    {
-                        "chapter_numbers": [chapter.chapter_number for chapter in text_batch],
-                        "code": exc.code,
-                        "characters": sorted(names),
-                    }
-                )
-                logger.warning("档案同步批次被跳过: code=%s chapters=%s", exc.code, [c.chapter_number for c in text_batch])
-                continue
+        # 章节 id → 该章所有切片是否都成功（issue #193）
+        covered: Dict[str, bool] = {}
 
+        async def _apply(response: Any) -> bool:
             entries = response.get("characters") if isinstance(response, dict) else None
             if not isinstance(entries, list):
-                logger.warning("档案同步返回结构异常，跳过该批次: chapters=%s", [c.chapter_number for c in text_batch])
-                continue
-
-            max_covered = max(chapter.chapter_number for chapter in text_batch)
+                logger.warning("档案同步返回结构异常，跳过该批次")
+                return False
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
@@ -449,16 +492,145 @@ class CharacterProfileSyncService:
                 await self._apply_entry(
                     db=db, character=character, entry=entry, stats=stats, force=force
                 )
+            return True
 
-            # 本批成功处理即视为已覆盖（模型没给出新信息也算看过，避免反复重跑）
-            batch_chapter_ids = {chapter.id for chapter in text_batch}
-            for character, mentions in chunk:
-                if any(chapter.id in batch_chapter_ids for chapter in mentions):
-                    covered[character.id] = max(covered.get(character.id, 0), max_covered)
+        def _on_skipped(pieces: List[_ChapterSlice], exc: ApiError) -> None:
+            numbers = sorted({piece.chapter_number for piece in pieces})
+            stats["skipped"].append(
+                {"chapter_numbers": numbers, "code": exc.code, "characters": sorted(names)}
+            )
+            logger.warning("档案同步批次被跳过: code=%s chapters=%s", exc.code, numbers)
 
-        for character, _ in chunk:
-            if covered.get(character.id, 0) > int(character.profile_synced_through_chapter or 0):
-                character.profile_synced_through_chapter = covered[character.id]
+        for text_batch in _batch_by_budget(ordered):
+            results = await self._call_with_bisect(
+                pieces=_as_slices(text_batch),
+                build_prompt=lambda pieces: _PROMPT_TEMPLATE.format(
+                    profiles=profiles, chapters=_render_chapters(pieces)
+                ),
+                system_prompt=_SYSTEM_PROMPT,
+                ai_service=ai_service,
+                apply_response=_apply,
+                on_skipped=_on_skipped,
+            )
+            for chapter_id, ok in results.items():
+                covered[chapter_id] = covered.get(chapter_id, True) and ok
+
+        for character, mentions in chunk:
+            # 水位只推进到「该角色提及章节序列里从起点连续成功的最长前缀」的最大章号，
+            # 中间失败就停在它前面，下一轮 start = marker + 1 会重新覆盖失败章节。
+            contiguous = 0
+            for chapter in mentions:
+                if not covered.get(chapter.id, False):
+                    break
+                contiguous = chapter.chapter_number
+            if contiguous > int(character.profile_synced_through_chapter or 0):
+                character.profile_synced_through_chapter = contiguous
+
+    async def _call_with_bisect(
+        self,
+        *,
+        pieces: List[_ChapterSlice],
+        build_prompt: Callable[[List[_ChapterSlice]], str],
+        system_prompt: str,
+        ai_service: Any,
+        apply_response: Callable[[Any], Awaitable[bool]],
+        on_skipped: Callable[[List[_ChapterSlice], ApiError], None],
+    ) -> Dict[str, bool]:
+        """调用模型处理一段正文，返回 {章节 id: 该章是否全部切片都成功}。
+
+        `ai.content_filtered` 时二分降级（issue #193）：多章对半拆批，单章按段落边界
+        把正文切成两片；降到最小粒度仍被拦才记 `skipped` 并返回 False。
+        `ai.output_truncated` 语义不变：不重试、记 `skipped`。
+        """
+        try:
+            response = await ai_service.call_with_json_retry(
+                prompt=build_prompt(pieces),
+                system_prompt=system_prompt,
+                max_retries=2,
+                expected_type="object",
+                auto_mcp=False,
+            )
+        except ApiError as exc:
+            if exc.code not in NON_RETRYABLE_CODES:
+                raise
+            halves = self._bisect(pieces) if exc.code == CONTENT_FILTERED_CODE else None
+            if halves is None:
+                on_skipped(pieces, exc)
+                return {piece.id: False for piece in pieces}
+
+            logger.info(
+                "档案同步命中内容审核，二分降级: chapters=%s -> %s / %s",
+                sorted({piece.chapter_number for piece in pieces}),
+                sorted({piece.chapter_number for piece in halves[0]}),
+                sorted({piece.chapter_number for piece in halves[1]}),
+            )
+            results: Dict[str, bool] = {}
+            for half in halves:
+                sub = await self._call_with_bisect(
+                    pieces=half,
+                    build_prompt=build_prompt,
+                    system_prompt=system_prompt,
+                    ai_service=ai_service,
+                    apply_response=apply_response,
+                    on_skipped=on_skipped,
+                )
+                for chapter_id, ok in sub.items():
+                    results[chapter_id] = results.get(chapter_id, True) and ok
+            return results
+
+        ok = await apply_response(response)
+        return {piece.id: ok for piece in pieces}
+
+    @staticmethod
+    def _bisect(
+        pieces: List[_ChapterSlice],
+    ) -> Optional[Tuple[List[_ChapterSlice], List[_ChapterSlice]]]:
+        """把一段正文对半拆开；已到最小粒度（单章且正文不超下限）返回 None。"""
+        if not pieces:
+            return None
+
+        groups: List[List[_ChapterSlice]] = []
+        for piece in pieces:
+            if groups and groups[-1][0].id == piece.id:
+                groups[-1].append(piece)
+            else:
+                groups.append([piece])
+        if len(groups) > 1:
+            mid = len(groups) // 2
+            return (
+                [piece for group in groups[:mid] for piece in group],
+                [piece for group in groups[mid:] for piece in group],
+            )
+
+        piece = pieces[0]
+        if piece.part is not None:
+            return None
+        split = _split_content(piece.content)
+        if split is None:
+            return None
+        left_text, right_text = split
+        return (
+            [
+                _ChapterSlice(
+                    id=piece.id,
+                    chapter_number=piece.chapter_number,
+                    title=piece.title,
+                    content=left_text,
+                    part=1,
+                    parts=2,
+                )
+            ],
+            [
+                _ChapterSlice(
+                    id=piece.id,
+                    chapter_number=piece.chapter_number,
+                    title=piece.title,
+                    content=right_text,
+                    part=2,
+                    parts=2,
+                )
+            ],
+        )
 
     @staticmethod
     def _match_character(
@@ -732,43 +904,14 @@ class CharacterProfileSyncService:
         if not isinstance(snapshot, dict):
             snapshot = {}
 
-        for text_batch in _batch_by_budget(chapters):
-            prompt = _WORLD_PROMPT_TEMPLATE.format(
-                profile=_render_world_profile(project),
-                chapters=_render_chapters(text_batch),
-            )
-            try:
-                response = await service.call_with_json_retry(
-                    prompt=prompt,
-                    system_prompt=_WORLD_SYSTEM_PROMPT,
-                    max_retries=2,
-                    expected_type="object",
-                    auto_mcp=False,
-                )
-            except ApiError as exc:
-                if exc.code not in NON_RETRYABLE_CODES:
-                    raise
-                stats["skipped"].append(
-                    {
-                        "chapter_numbers": [chapter.chapter_number for chapter in text_batch],
-                        "code": exc.code,
-                    }
-                )
-                logger.warning(
-                    "世界设定同步批次被跳过: code=%s chapters=%s",
-                    exc.code,
-                    [chapter.chapter_number for chapter in text_batch],
-                )
-                continue
+        # 章节 id → 该章所有切片是否都成功（issue #193）
+        covered: Dict[str, bool] = {}
 
+        async def _apply(response: Any) -> bool:
             payload = response.get("world") if isinstance(response, dict) else None
             if not isinstance(payload, dict):
-                logger.warning(
-                    "世界设定返回结构异常，跳过该批次: chapters=%s",
-                    [chapter.chapter_number for chapter in text_batch],
-                )
-                continue
-
+                logger.warning("世界设定返回结构异常，跳过该批次")
+                return False
             _apply_profile_values(
                 project,
                 payload,
@@ -779,9 +922,36 @@ class CharacterProfileSyncService:
                 force=force,
             )
             project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
-            project.world_profile_synced_through_chapter = max(
-                chapter.chapter_number for chapter in text_batch
+            return True
+
+        def _on_skipped(pieces: List[_ChapterSlice], exc: ApiError) -> None:
+            numbers = sorted({piece.chapter_number for piece in pieces})
+            stats["skipped"].append({"chapter_numbers": numbers, "code": exc.code})
+            logger.warning("世界设定同步批次被跳过: code=%s chapters=%s", exc.code, numbers)
+
+        for text_batch in _batch_by_budget(chapters):
+            results = await self._call_with_bisect(
+                pieces=_as_slices(text_batch),
+                build_prompt=lambda pieces: _WORLD_PROMPT_TEMPLATE.format(
+                    profile=_render_world_profile(project),
+                    chapters=_render_chapters(pieces),
+                ),
+                system_prompt=_WORLD_SYSTEM_PROMPT,
+                ai_service=service,
+                apply_response=_apply,
+                on_skipped=_on_skipped,
             )
+            for chapter_id, ok in results.items():
+                covered[chapter_id] = covered.get(chapter_id, True) and ok
+
+        # 世界设定按章节顺序全量喂：水位只推进到连续成功的最长前缀。
+        contiguous = 0
+        for chapter in chapters:
+            if not covered.get(chapter.id, False):
+                break
+            contiguous = chapter.chapter_number
+        if contiguous > int(project.world_profile_synced_through_chapter or 0):
+            project.world_profile_synced_through_chapter = contiguous
 
         stats["updated"] = stats["fields_updated"] > 0
         await db.commit()
