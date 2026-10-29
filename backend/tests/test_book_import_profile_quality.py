@@ -359,6 +359,9 @@ async def test_thin_profile_triggers_single_repair_and_is_persisted(
     db_session, patched_prompts, monkeypatch
 ):
     project = await _seed(db_session)
+    # 老路径契约：档案补全（issue #172/#173）只在旧提示词下存在。
+    # issue #190 起默认改走 profile_facts，补全按设计关闭；这里固定回退开关。
+    monkeypatch.setattr(bis, "_PROFILE_FACTS_PROMPT_ENABLED", False)
 
     def generation(_prompt):
         # 四项必填字段全空（模型只给了名字）
@@ -388,6 +391,9 @@ async def test_thin_profile_still_thin_is_counted_and_does_not_block(
     db_session, patched_prompts, monkeypatch
 ):
     project = await _seed(db_session)
+    # 老路径契约：档案补全（issue #172/#173）只在旧提示词下存在。
+    # issue #190 起默认改走 profile_facts，补全按设计关闭；这里固定回退开关。
+    monkeypatch.setattr(bis, "_PROFILE_FACTS_PROMPT_ENABLED", False)
 
     def generation(_prompt):
         return [{"name": CHAR_A, "role_type": "supporting", "personality": "同上"}]
@@ -416,6 +422,9 @@ async def test_thin_profile_still_thin_is_counted_and_does_not_block(
 
 async def test_healthy_result_keeps_single_ai_call(db_session, patched_prompts, monkeypatch):
     project = await _seed(db_session)
+    # 老路径契约：档案补全（issue #172/#173）只在旧提示词下存在。
+    # issue #190 起默认改走 profile_facts，补全按设计关闭；这里固定回退开关。
+    monkeypatch.setattr(bis, "_PROFILE_FACTS_PROMPT_ENABLED", False)
 
     def generation(_prompt):
         return [
@@ -436,3 +445,103 @@ async def test_healthy_result_keeps_single_ai_call(db_session, patched_prompts, 
     assert stats["membership_repair"] == "not_needed"
     assert stats["profile_repair"] == "not_needed"
     assert "profiles_thin" not in stats
+
+
+# --- (g) issue #190：facts 模式——引文校验后渲染落库，补全按设计关闭 ----------
+
+
+_FACT_QUOTE = "占位章节正文。占位填充内容。"
+
+
+def test_resolve_profile_fields_quote_hit_and_miss():
+    """纯函数层：有效引文渲染落字段，编造引文留空（不阻塞）。"""
+    from app.services.profile_facts import resolve_profile_fields
+
+    chapters = {1: "占位章节正文。占位填充内容。占位填充内容。"}
+    payload = {
+        "name": CHAR_A,
+        "profile_facts": [
+            {
+                "field": "personality",
+                "claim": "沉着克制",
+                "quote": _FACT_QUOTE,
+                "chapter_number": 1,
+                "inferred": False,
+            },
+            {
+                "field": "background",
+                "claim": "编造的背景",
+                "quote": "正文里根本没有出现过的句子",
+                "chapter_number": 1,
+                "inferred": False,
+            },
+        ],
+    }
+
+    rendered, stats = resolve_profile_fields(payload, chapters)
+
+    assert rendered == {"personality": "沉着克制"}
+    assert stats["payloads_facts"] == 1
+    assert stats["facts_accepted"] == 1
+    assert stats["quote_not_found"] == 1
+    assert stats["facts_field_personality"] == 1
+
+
+async def test_profile_facts_are_rendered_and_repair_is_skipped(
+    db_session, patched_prompts, monkeypatch
+):
+    """facts 模式：落库的是渲染结果；补全调用一次都不发（无依据文本不得填空）。"""
+    project = await _seed(db_session)
+
+    def generation(_prompt):
+        return [
+            {
+                "name": CHAR_A,
+                "role_type": "supporting",
+                "profile_facts": [
+                    {
+                        "field": "personality",
+                        "claim": "沉着克制",
+                        "quote": _FACT_QUOTE,
+                        "chapter_number": 1,
+                        "inferred": False,
+                    },
+                    {
+                        "field": "appearance",
+                        "claim": "中等身材",
+                        "quote": _FACT_QUOTE,
+                        "chapter_number": 1,
+                        "inferred": False,
+                    },
+                    {
+                        "field": "background",
+                        "claim": "编造的背景",
+                        "quote": "正文里根本没有出现过的句子",
+                        "chapter_number": 1,
+                        "inferred": False,
+                    },
+                ],
+            }
+        ]
+
+    def _no_repair(_prompt):
+        raise AssertionError("facts 模式不应触发档案补全调用")
+
+    ai_service, calls = _install_ai_service(
+        monkeypatch, generation=generation, profile_repair=_no_repair
+    )
+    stats: dict = {}
+
+    created = await _run(project, db_session, ai_service, profile_stats=stats)
+
+    assert created == 1
+    assert calls["profile_repair"] == 0
+    assert stats["profile_repair"] == "skipped:profile_facts"
+    assert stats["profile_facts"]["facts_accepted"] == 2
+    assert stats["profile_facts"]["quote_not_found"] == 1
+
+    character = (await db_session.execute(select(Character))).scalars().one()
+    assert character.personality == "沉着克制"
+    assert character.appearance == "中等身材"
+    # 引文不存在 → 该字段留空，不落任何无依据文本
+    assert character.background is None

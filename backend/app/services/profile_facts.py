@@ -25,6 +25,9 @@ FACT_FIELDS = ("personality", "background", "appearance")  # current_state 由�
 MIN_QUOTE_CHARS = 8
 MAX_CLAIM_CHARS = 60
 MAX_FACTS_PER_FIELD = 6
+# 按字段的渲染条数上限：background 承载身份/师承/经历，信息密度最高；
+# appearance 靠 2-4 条覆盖体态/容貌/衣着，再多就是同义堆叠。
+FACT_FIELD_LIMITS = {"personality": 6, "background": 8, "appearance": 4}
 
 # claim 里出现这些字符说明模型还在写句子/多句叙述，不是原子事实
 _BANNED_CLAIM_CHARS = "。！？；!?;\n\r"
@@ -309,7 +312,7 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
         key = normalize_quote(claim)
         if not key or key in seen[field]:
             continue
-        if len(buckets[field]) >= MAX_FACTS_PER_FIELD:
+        if len(buckets[field]) >= FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD):
             continue
         seen[field].add(key)
 
@@ -383,3 +386,45 @@ def parse_profile_payload(payload: Any) -> ParsedProfile:
         facts=[],
         legacy=legacy,
     )
+
+
+def resolve_profile_fields(
+    payload: Any,
+    chapters_by_number: dict[int, str],
+    *,
+    kind: str = "character",
+) -> tuple[dict[str, str], dict[str, int]]:
+    """把一份实体返回解析成可直接落库的档案文本，并给出统计。
+
+    这是 P4 接线的唯一入口，保证三条写入路径用同一套判定：
+
+    - ``facts`` 格式 → 校验 + 渲染，返回只含非空字段的 ``{field: text}``；
+    - ``legacy`` / ``empty`` 格式 → 返回空 dict，**调用方保持原行为**
+      （旧门禁 ``looks_like_profile_narration`` 仍在旧路径上生效，
+      这里不重复判断，避免两套口径打架）。
+
+    统计在 ``validate_profile_facts`` 的 stats 基础上追加：
+
+    - ``payloads_facts`` / ``payloads_legacy`` / ``payloads_empty``：格式计数；
+    - ``facts_rendered``：通过校验的事实条数；
+    - ``facts_field_personality`` / ``facts_field_background`` /
+      ``facts_field_appearance``：各字段通过校验的条数（用于观察覆盖率）。
+    """
+    parsed = parse_profile_payload(payload)
+    stats: dict[str, int] = {f"payloads_{parsed.mode}": 1}
+    if parsed.mode != "facts":
+        return {}, stats
+
+    result = validate_profile_facts(
+        {"name": parsed.entity, "facts": parsed.facts},
+        chapters_by_number,
+        kind=kind,
+    )
+    for key, value in result.stats.items():
+        stats[key] = stats.get(key, 0) + value
+    for fact in result.facts:
+        key = f"facts_field_{fact.get('field')}"
+        stats[key] = stats.get(key, 0) + 1
+    stats["facts_rendered"] = len(result.facts)
+
+    return render_profile(result.facts, kind=kind), stats

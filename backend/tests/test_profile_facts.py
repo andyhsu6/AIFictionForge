@@ -355,3 +355,20 @@ def test_parse_payload_ignores_blank_and_non_str_legacy_values():
 def test_parse_payload_entity_defaults_to_empty_string():
     assert parse_profile_payload({"personality": "性情沉稳"}).entity == ""
     assert parse_profile_payload({"name": 123, "personality": "性情沉稳"}).entity == ""
+
+
+def test_render_profile_uses_per_field_limits():
+    """issue #190：background 承载身份/经历，限额高于 personality；appearance 只留 4 条。"""
+    from app.services.profile_facts import FACT_FIELD_LIMITS
+
+    facts = []
+    for field, limit in FACT_FIELD_LIMITS.items():
+        facts.extend(
+            {"field": field, "claim": f"{field}特征{i}"} for i in range(limit + 3)
+        )
+
+    rendered = render_profile(facts)
+
+    assert set(rendered) == set(FACT_FIELD_LIMITS)
+    for field, limit in FACT_FIELD_LIMITS.items():
+        assert len(rendered[field].split("、")) == limit
