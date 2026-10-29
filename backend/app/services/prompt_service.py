@@ -513,6 +513,63 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 使用markdown或代码块标记
 </constraints>"""
 
+    # 档案回填（全量整理）版：`_PROMPT_TEMPLATE_FACTS` 是「有新章节了，给现有档案补几条」
+    # 的增量语境，模型看到档案里已有就不输出，导致新写档案普遍比旧文本短、甚至清空原值。
+    # 本模板显式改成「整体整理、不是增量补充」，用于一次性回填/批量试跑。
+    PROFILE_BACKFILL_SYSTEM = (
+        "你是小说设定档案整理助手。只依据给定正文摘录归纳，不得臆造摘录中没有出现的信息。"
+        "输出严格 JSON，不要额外解释。"
+    )
+
+    PROFILE_BACKFILL_FACTS = """<system>
+你是小说档案整理助手。你的任务不是"根据新章节补几条新事实"，而是为一组已知实体整理出尽可能完整的档案事实。
+</system>
+
+<task>
+【任务】下面是若干已知实体与一段正文摘录。请为每个实体输出其档案事实（profile_facts）。
+
+【重要】这是整体整理，不是增量补充：
+- 不要因为该实体现有档案里已经写了某条，就把那条省略；凡是正文里有依据的事实，都要以 field/claim/quote/chapter_number/inferred 的形式重新给出。
+- 一段正文里对某个实体只能支撑几条事实，这很正常；但不要因为"档案里已经有了"而少给。
+- 每个字段尽量给足：personality 最多 6 条、background 最多 8 条、appearance 最多 4 条；确实没有依据的字段给空数组。
+- 越稳定、越能代表该实体的排在前面。
+</task>
+
+<context priority="P1">
+【已知实体】
+{profiles}
+
+【正文摘录】
+{chapters}
+</context>
+
+<profile_ontology priority="P0">
+""" + FACTS_FIELD_BOUNDARIES + """
+</profile_ontology>
+
+<output priority="P0">
+返回 JSON 对象，形如：
+{{
+  "characters": [
+    {{
+      "name": "实体名（必须与【已知实体】里的名字逐字一致）",
+      "profile_facts": [
+        {{"field": "personality", "claim": "仗义护弱", "quote": "正文里逐字存在的连续片段", "chapter_number": 1, "inferred": false}}
+      ]
+    }}
+  ]
+}}
+quote 必须是【正文摘录】里逐字存在的连续片段：不改写、不拼接、不概括。
+</output>
+
+<rules>
+1. chapter_number 必须是该 quote 所属章的章号（摘录里每章都有标注）。
+2. 只输出 personality / background / appearance 三个字段，不要 current_state，不要新增实体。
+3. 正文没有依据的字段输出空数组，不要编造。
+4. 同一实体同一字段不要重复表达同一个特质。
+</rules>
+"""
+
     # 大纲生成提示词 V2（RTCO框架）
     OUTLINE_CREATE = """<system>
 你是经验丰富的小说作家和编剧，擅长为{genre}类型的小说设计精彩开篇。
