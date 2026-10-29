@@ -393,7 +393,7 @@ def resolve_profile_fields(
     chapters_by_number: dict[int, str],
     *,
     kind: str = "character",
-) -> tuple[dict[str, str], dict[str, int]]:
+) -> tuple[dict[str, str], dict[str, int], list[dict]]:
     """把一份实体返回解析成可直接落库的档案文本，并给出统计。
 
     这是 P4 接线的唯一入口，保证三条写入路径用同一套判定：
@@ -409,11 +409,14 @@ def resolve_profile_fields(
     - ``facts_rendered``：通过校验的事实条数；
     - ``facts_field_personality`` / ``facts_field_background`` /
       ``facts_field_appearance``：各字段通过校验的条数（用于观察覆盖率）。
+
+    第三个返回值是**通过校验的事实本身**（只含 accepted 条目），供落库做溯源
+    （``characters.profile_facts``）；legacy/empty 格式返回空列表。
     """
     parsed = parse_profile_payload(payload)
     stats: dict[str, int] = {f"payloads_{parsed.mode}": 1}
     if parsed.mode != "facts":
-        return {}, stats
+        return {}, stats, []
 
     result = validate_profile_facts(
         {"name": parsed.entity, "facts": parsed.facts},
@@ -427,4 +430,4 @@ def resolve_profile_fields(
         stats[key] = stats.get(key, 0) + 1
     stats["facts_rendered"] = len(result.facts)
 
-    return render_profile(result.facts, kind=kind), stats
+    return render_profile(result.facts, kind=kind), stats, result.facts

@@ -3074,9 +3074,14 @@ class BookImportService:
             for item in generated_entities:
                 if not isinstance(item, dict):
                     continue
-                rendered, item_stats = resolve_profile_fields(item, facts_chapters_by_number)
+                rendered, item_stats, facts = resolve_profile_fields(
+                    item, facts_chapters_by_number
+                )
                 for key, value in item_stats.items():
                     profile_facts_stats[key] = profile_facts_stats.get(key, 0) + value
+                if facts:
+                    # 溯源：只落通过校验的事实（accepted），渲染文本由它们拼出
+                    item["profile_facts"] = facts
                 if rendered:
                     item.update(rendered)
                     rendered_entities += 1
@@ -3393,6 +3398,14 @@ class BookImportService:
                     background=item.get("background"),
                     appearance=item.get("appearance"),
                     current_state=item.get("current_state"),
+                ),
+                # issue #190：档案事实落库做溯源（渲染文本由这些事实拼出）
+                profile_facts=(
+                    json.dumps(item.get("profile_facts"), ensure_ascii=False)
+                    if item.get("profile_facts") else None
+                ),
+                profile_facts_updated_at=(
+                    datetime.utcnow() if item.get("profile_facts") else None
                 ),
                 source=source,
             )

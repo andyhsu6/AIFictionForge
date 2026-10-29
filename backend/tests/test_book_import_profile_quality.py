@@ -17,6 +17,7 @@ appearance / current_state）为空或过短时没有任何补救，且 current_
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -478,9 +479,11 @@ def test_resolve_profile_fields_quote_hit_and_miss():
         ],
     }
 
-    rendered, stats = resolve_profile_fields(payload, chapters)
+    rendered, stats, facts = resolve_profile_fields(payload, chapters)
 
     assert rendered == {"personality": "沉着克制"}
+    # 溯源只保留通过校验的事实
+    assert [f["claim"] for f in facts] == ["沉着克制"]
     assert stats["payloads_facts"] == 1
     assert stats["facts_accepted"] == 1
     assert stats["quote_not_found"] == 1
@@ -545,3 +548,8 @@ async def test_profile_facts_are_rendered_and_repair_is_skipped(
     assert character.appearance == "中等身材"
     # 引文不存在 → 该字段留空，不落任何无依据文本
     assert character.background is None
+    # 溯源落库：只含 accepted 事实
+    assert character.profile_facts is not None
+    facts = json.loads(character.profile_facts)
+    assert sorted(f["claim"] for f in facts) == ["中等身材", "沉着克制"]
+    assert character.profile_facts_updated_at is not None
