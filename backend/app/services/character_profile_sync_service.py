@@ -745,6 +745,9 @@ class CharacterProfileSyncService:
                         source="ai",
                     )
                 )
+                # 计数按成员行数维护（与其它写入方一致）；只在新建行时 +1，
+                # 已有行改 position/status 时行数不变，不动计数（issue #195）。
+                organization.member_count = (organization.member_count or 0) + 1
                 changed = True
                 continue
 

@@ -65,18 +65,22 @@ async def sync_organization_member_count(
 ) -> int:
     """
     同步组织的成员计数，从实际成员记录计算
-    
+
+    与成员表一致：统计全部成员行，不区分状态（active/deceased 等）。
+    成员表接口 GET /api/organizations/{org_id}/members 同样不过滤状态，
+    且各写入方都按「行数」维护 member_count，因此这里也必须按行数统计，
+    否则会把正确值"修正"成更小的数，造成详情页两个数字互相矛盾（issue #195）。
+
     Args:
         organization: Organization对象
         db: 数据库会话
-        
+
     Returns:
         实际成员数量
     """
     result = await db.execute(
         select(OrganizationMember).where(
-            OrganizationMember.organization_id == organization.id,
-            OrganizationMember.status == "active"
+            OrganizationMember.organization_id == organization.id
         )
     )
     members = result.scalars().all()
