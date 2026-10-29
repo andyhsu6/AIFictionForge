@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""黄金集评测：读人工标注的 TSV，输出按来源/字段分组的错填率（issue #190）。
+"""黄金集评测：读人工标注的 TSV，输出按来源/字段分组的**字段分类错误率**（issue #190）。
+
+注意口径：标注只回答"这段文字是否属于这个字段"，因此这里算出来的**不是**
+内容分类错误率，也不覆盖"表达形态"（是否写成特质短语）与"主体归属"（是否张冠李戴）。
+后两者需单独评审——把三种轴混成一个数字会导致结论失真。
 
 用法：
     python3 backend/scripts/eval_golden_profile_facts.py <golden-set.tsv>
@@ -9,7 +13,7 @@
 - verdict: 通过 / 不通过 / 拿不准（空 = 未标注）
 
 验收口径：
-- facts 组错填率 `不通过 / (通过 + 不通过)` ≤ 5%
+- facts 组分类错误率 `不通过 / (通过 + 不通过)` ≤ 5%
 - 拿不准单列出来人工复核，不计入分母
 未标注的行只统计数量，不参与比率。
 """
@@ -54,7 +58,7 @@ def main(path: str) -> int:
     for source in sorted({row["source"] for row in rows}):
         ok, bad, rate = _rate(by_source[source])
         shown = "n/a" if rate is None else f"{rate:.1%}"
-        print(f"\n[{source}] 通过 {ok} / 不通过 {bad} → 错填率 {shown}")
+        print(f"\n[{source}] 通过 {ok} / 不通过 {bad} → 分类错误率 {shown}")
         for (src, field), items in sorted(by_source_field.items()):
             if src != source:
                 continue
@@ -77,7 +81,7 @@ def main(path: str) -> int:
         print("\n结论：facts 组尚未标注，无法验收。")
         return 2
     passed = facts_rate <= TARGET
-    print(f"\n结论：facts 组错填率 {facts_rate:.1%}（目标 ≤{TARGET:.0%}）→ "
+    print(f"\n结论：facts 组分类错误率 {facts_rate:.1%}（目标 ≤{TARGET:.0%}）→ "
           f"{'达标' if passed else '未达标'}")
     return 0 if passed and not failed else 1
 
