@@ -857,3 +857,37 @@ async def test_narration_personality_is_rejected_not_written(db_session):
     snapshot = json.loads(character.ai_profile_snapshot)
     assert "background" in snapshot
     assert snapshot.get("personality") == "占位旧性格", "被拒内容不得进入快照"
+
+
+class _RotatingAIService:
+    """每次调用返回不同性格，用来区分「按批计数」与「按人计数」。"""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.calls = 0
+
+    async def call_with_json_retry(self, *, prompt, **kwargs):
+        self.calls += 1
+        return _ai_payload(self.name, personality=f"占位性格第{self.calls}版")
+
+
+async def test_updated_counter_is_per_character_not_per_chunk(db_session, monkeypatch):
+    """issue #191：同一角色出现在多个章节批次里只应计一次。"""
+    import app.services.character_profile_sync_service as mod
+
+    monkeypatch.setattr(mod, "_PROMPT_CHAR_BUDGET", 5)  # 每章单独成批
+
+    await _seed(
+        db_session,
+        chapters=[(1, "占位正文甲，角色甲登场。"), (2, "占位正文乙，角色甲再次出场。")],
+        markers={"角色甲": 0},
+    )
+    ai = _RotatingAIService("角色甲")
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=2, ai_service=ai
+    )
+
+    assert ai.calls >= 2, "两章应各自成批"
+    assert stats["characters_updated"] == 1, "同一角色多批次只算一个人"
+    assert stats["fields_updated"] >= 2
