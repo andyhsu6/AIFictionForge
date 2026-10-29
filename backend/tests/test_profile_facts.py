@@ -9,6 +9,7 @@ from app.services.profile_facts import (
     _claim_matches_field,
     locate_quote,
     normalize_quote,
+    parse_profile_payload,
     render_profile,
     validate_profile_facts,
 )
@@ -258,3 +259,99 @@ def test_stats_always_contain_all_keys():
         "chapter_corrected",
     ):
         assert result.stats[key] == 0
+
+
+# 15. parse_profile_payload：事实格式优先，原始条目原样返回
+def test_parse_payload_facts_preferred():
+    payload = {
+        "name": "角色甲",
+        "profile_facts": [
+            {"field": "personality", "claim": "性情沉稳", "quote": "他听完只是点了点头", "chapter_number": 3, "inferred": True},
+        ],
+        "personality": "旧格式文本",
+    }
+    parsed = parse_profile_payload(payload)
+    assert parsed.mode == "facts"
+    assert parsed.entity == "角色甲"
+    assert parsed.facts == payload["profile_facts"]
+    assert parsed.facts[0]["inferred"] is True
+    assert parsed.facts[0]["chapter_number"] == 3
+    assert parsed.legacy == {}
+
+
+def test_parse_payload_accepts_short_facts_key():
+    payload = {"name": "角色甲", "facts": [{"field": "appearance", "claim": "身材修长"}]}
+    parsed = parse_profile_payload(payload)
+    assert parsed.mode == "facts"
+    assert parsed.facts == payload["facts"]
+
+
+# 16. 旧三字段格式：只收非空字段，值已 strip
+def test_parse_payload_legacy_fields():
+    parsed = parse_profile_payload(
+        {
+            "name": "角色甲",
+            "personality": "  性情沉稳  ",
+            "background": "出身寒门",
+            "appearance": "   ",
+        }
+    )
+    assert parsed.mode == "legacy"
+    assert parsed.facts == []
+    assert parsed.legacy == {"personality": "性情沉稳", "background": "出身寒门"}
+
+
+# 17. 两种格式同时存在 → facts 优先
+def test_parse_payload_facts_beat_legacy_when_both_present():
+    parsed = parse_profile_payload(
+        {
+            "name": "角色甲",
+            "profile_facts": [{"field": "personality", "claim": "性情沉稳"}],
+            "personality": "性情沉稳",
+            "background": "出身寒门",
+        }
+    )
+    assert parsed.mode == "facts"
+    assert parsed.legacy == {}
+
+
+# 18. 空数组不能把旧文本判成 empty
+def test_parse_payload_empty_facts_list_falls_back_to_legacy():
+    parsed = parse_profile_payload(
+        {"name": "角色甲", "profile_facts": [], "personality": "性情沉稳"}
+    )
+    assert parsed.mode == "legacy"
+    assert parsed.facts == []
+    assert parsed.legacy == {"personality": "性情沉稳"}
+
+
+def test_parse_payload_empty_facts_list_without_text_is_empty():
+    parsed = parse_profile_payload({"name": "角色甲", "profile_facts": []})
+    assert parsed.mode == "empty"
+    assert parsed.facts == []
+    assert parsed.legacy == {}
+
+
+# 19. 非 dict 入参不抛异常
+def test_parse_payload_non_dict_is_empty():
+    for payload in (None, "字符串", [1, 2]):
+        parsed = parse_profile_payload(payload)
+        assert parsed.mode == "empty"
+        assert parsed.entity == ""
+        assert parsed.facts == []
+        assert parsed.legacy == {}
+
+
+# 20. 旧字段值非法（空白/非字符串）被忽略
+def test_parse_payload_ignores_blank_and_non_str_legacy_values():
+    parsed = parse_profile_payload(
+        {"name": "角色甲", "personality": "   ", "background": 123, "appearance": "身材修长"}
+    )
+    assert parsed.mode == "legacy"
+    assert parsed.legacy == {"appearance": "身材修长"}
+
+
+# 21. name 缺失或非字符串
+def test_parse_payload_entity_defaults_to_empty_string():
+    assert parse_profile_payload({"personality": "性情沉稳"}).entity == ""
+    assert parse_profile_payload({"name": 123, "personality": "性情沉稳"}).entity == ""

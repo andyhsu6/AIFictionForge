@@ -340,6 +340,181 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 在描述中使用特殊符号
 </constraints>"""
 
+    # 结构化档案事实版（issue #190 P2）：与 CHARACTERS_BATCH_GENERATION 同结构，
+    # 但档案不再是三段自由文本，而是"原子事实 + 原文引用"数组。
+    # 目的：让"这条内容属于哪个字段"由模型按定义分类，服务端只校验引文是否字面存在。
+    # 与旧模板并存以便 dry-run A/B 对比，切换前不得替换旧模板。
+    CHARACTERS_BATCH_GENERATION_FACTS = """<system>
+你是专业的角色设定师与文本考据员，擅长为{genre}类型的小说创建立体丰满的角色，并能准确引用原文作为依据。
+</system>
+
+<task>
+【生成任务】
+生成{count}个角色和组织实体。
+
+【数量要求 - 严格遵守】
+数组中必须精确包含{count}个对象，不多不少。
+
+【实体类型分配】
+- 至少1个主角（protagonist）
+- 多个配角（supporting）
+- 可包含反派（antagonist）
+- 可包含1-2个高影响力组织（power_level: 70-95）
+</task>
+
+<worldview priority="P0">
+【世界观信息】
+时间背景：{time_period}
+地理位置：{location}
+氛围基调：{atmosphere}
+世界规则：{rules}
+
+主题：{theme}
+类型：{genre}
+</worldview>
+
+<requirements priority="P1">
+【特殊要求】
+{requirements}
+</requirements>
+
+<profile_ontology priority="P0">
+【档案字段定义 - 判断依据只有这一份】
+档案内容一律写成 profile_facts 原子事实，每条事实归入以下三个字段之一。字段边界是硬约束：
+
+**personality（性格）**——只收「这个人是什么样的」：性情、脾气、态度、处事风格、价值取向、对他人的惯常反应。
+禁止写入：身份、职务、门派/阵营归属、亲属关系、排行、能力与武力高低、经历事件、外貌。
+
+**background（背景）**——收「这个人从哪来、是谁、会什么、经历过什么」：
+出身、师承、身份与归属（门派、职务、排行、家族位置、亲属关系）、经历与遭遇、能力与实力（如「武功高强」属于本字段，不属于性格）。
+
+**appearance（外貌）**——只收外形：体型、容貌、衣着、气质外观。
+禁止写入：行为、事件、身份、能力。
+
+判断口诀：描述「性情」进 personality；描述「是谁/会什么/经历过什么」进 background；描述「长什么样」进 appearance。拿不准时不要写，宁可少写。
+</profile_ontology>
+
+<output priority="P0">
+【输出格式】
+返回纯JSON数组，每个对象包含：
+
+**角色对象**：
+{{
+  "name": "角色姓名",
+  "aliases": ["别名1", "别名2"],
+  "age": 25,
+  "gender": "男/女/其他",
+  "is_organization": false,
+  "role_type": "protagonist/supporting/antagonist",
+  "profile_facts": [
+    {{
+      "field": "personality",
+      "claim": "性情沉稳",
+      "quote": "他从头到尾没有说一句话，只是点了点头",
+      "chapter_number": 12,
+      "inferred": false
+    }}
+  ],
+  "traits": ["特长1", "特长2", "特长3"],
+  "relationships_array": [
+    {{
+      "target_character_name": "已生成的角色名称",
+      "relationship_type": "关系类型",
+      "intimacy_level": 75,
+      "description": "关系描述"
+    }}
+  ],
+  "organization_memberships": [
+    {{
+      "organization_name": "已生成的组织名称",
+      "position": "职位",
+      "rank": 5,
+      "loyalty": 80
+    }}
+  ]
+}}
+
+**组织对象**：
+{{
+  "name": "组织名称",
+  "is_organization": true,
+  "role_type": "supporting",
+  "profile_facts": [
+    {{
+      "field": "personality",
+      "claim": "内部等级森严，只认业绩",
+      "quote": "堂中论功行赏，不问出身，只看这一年办成了几件事",
+      "chapter_number": 8,
+      "inferred": false
+    }}
+  ],
+  "organization_type": "组织类型",
+  "organization_purpose": "组织目的",
+  "organization_members": ["成员1", "成员2"],
+  "power_level": 85,
+  "location": "所在地或主要活动区域",
+  "motto": "组织格言、口号或宗旨",
+  "color": "代表颜色",
+  "traits": []
+}}
+
+【fact 字段规则 - 逐条遵守】
+1. claim：短语，不是句子。不超过 60 字，不得包含 。！？；!?; 这些句末标点，不得写成第一人称或第三人称叙述。
+2. quote：从【章节原文摘录】里**逐字复制**的一段连续原文，至少 8 个字。禁止改写、缩写、拼接、补字，禁止包含省略号（……）。引文必须能在摘录中原样找到，一个字都不能差。
+3. chapter_number：该引文实际所在的章号（摘录里每章开头标有【第N章 …】）。
+4. inferred：只有 personality 允许为 true，表示「性格由行为推断、正文没有直接形容」，此时 quote 仍必须是真实原文。background 与 appearance 必须为 false。
+5. 每个实体的 profile_facts 建议 3-8 条；某字段没有原文依据时，就不要为该字段生成事实（不要编造、不要用空字符串占位）。
+6. 同一实体内不要重复表达同一含义的事实。
+7. 严禁把原文的叙述句、对话、内心独白直接作为 claim；叙述内容只能出现在 quote 里。
+
+aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称谓）。例如 主角 李四 的 aliases 为 ["四哥","小李"]；女主角 王芳 的 aliases 为 ["小芳","姐姐","王老师"]。若没有别名给空数组 []。
+
+【关系类型参考】
+- 家族：父亲、母亲、兄弟、姐妹、子女、配偶、恋人
+- 社交：师父、徒弟、朋友、同学、同事、邻居、知己
+- 职业：上司、下属、合作伙伴
+- 敌对：敌人、仇人、竞争对手、宿敌
+
+【数值范围】
+- intimacy_level：-100到100（负值表示敌对）
+- loyalty：0到100
+- rank：0到10（职位等级）
+- power_level：70到95（组织影响力）
+</output>
+
+<constraints>
+【必须遵守】
+✅ 数量精确：数组必须包含{count}个对象
+✅ 符合世界观：角色设定与世界观一致
+✅ 关系网络：角色间形成合理关系
+✅ 组织合理：组织是推动剧情的关键力量
+✅ 每条事实都必须有真实 quote：正文找不到依据的内容，宁可不写
+✅ 事实归字段遵循 profile_ontology：能力/身份/归属归 background，不归 personality
+
+【关系约束】
+✅ relationships_array只能引用本批次已出现的角色
+✅ organization_memberships只能引用本批次的组织
+✅ 第一个角色的relationships_array必须为空[]
+✅ 禁止幻觉：不引用不存在的角色或组织
+
+【实体唯一性约束】
+✅ 同一实体（同一人物）只生成一条记录：name用正文中最正式/最常见的名字，其余称呼（昵称、亲属称谓如"姐姐/妈妈/爸"、职业称谓）放入aliases，禁止把同一人物拆成多条
+✅ 禁止使用无信息量的代词/泛称（他/她/男人/女人/小家伙/陌生人）作为name——若正文未给出明确人名，宁可不生成该角色
+
+【格式约束】
+✅ 纯JSON数组输出，无markdown标记
+✅ claim 中严禁使用引号、方括号、书名号等特殊符号
+✅ 专有名词直接书写，不使用符号包裹
+
+【禁止事项】
+❌ 生成数量不符（多于或少于{count}个）
+❌ quote 非逐字原文（改写、拼接、省略、补字）
+❌ 编造引文或不存在的章号
+❌ 把身份/能力/经历写成 personality
+❌ 引用不存在的角色或组织
+❌ 使用markdown或代码块标记
+</constraints>"""
+
     # 大纲生成提示词 V2（RTCO框架）
     OUTLINE_CREATE = """<system>
 你是经验丰富的小说作家和编剧，擅长为{genre}类型的小说设计精彩开篇。

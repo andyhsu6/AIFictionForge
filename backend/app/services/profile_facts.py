@@ -1,11 +1,13 @@
 """角色档案原子事实校验（issue #190 / P1 纯函数层）。
 
-本模块只做两件事，全部是纯函数、无 IO、无日志、无模型调用：
+本模块只做三件事，全部是纯函数、无 IO、无日志、无模型调用：
 
-1. ``validate_profile_facts``：校验模型给出的"原子事实 + 原文引用"，只判断
+1. ``parse_profile_payload``：判定一份返回是"原子事实格式"还是旧的长文本格式
+   （旧格式回退路径，兼容旧提示词/旧项目/同步链路）。
+2. ``validate_profile_facts``：校验模型给出的"原子事实 + 原文引用"，只判断
    **可判定真假**的条件——引文在批次正文里字面存在、字段合法、claim 不含
    叙述残留、谓词与字段匹配。
-2. ``render_profile``：把通过校验的事实拼成三个自由文本字段。
+3. ``render_profile``：把通过校验的事实拼成三个自由文本字段。
 
 第一版：字面存在性 + 字段谓词，谓词层是兜底、不是主保证。
 真正的保证来自"引文必须在原文里字面存在"这一条；谓词（关系断言句式、
@@ -317,3 +319,67 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
         buckets[field].append(text)
 
     return {field: "、".join(items) for field, items in buckets.items() if items}
+
+
+# 旧格式（模型直接给三段长文本）与本模块的字段集合一致，直接复用
+LEGACY_PROFILE_FIELDS = FACT_FIELDS
+
+
+@dataclass
+class ParsedProfile:
+    """一次 payload 格式判定的结果。
+
+    ``entity``：payload 的 ``name``（非 str 或缺失则为 ``""``）。
+    ``mode``：``"facts"`` / ``"legacy"`` / ``"empty"``。
+    ``facts``：``mode == "facts"`` 时的原始事实条目，不做校验、不预过滤。
+    ``legacy``：``mode == "legacy"`` 时的字段文本，只含非空字段（已 strip）。
+    """
+
+    entity: str
+    mode: str
+    facts: list[dict]
+    legacy: dict[str, str]
+
+
+def parse_profile_payload(payload: Any) -> ParsedProfile:
+    """判定一份角色档案返回是"原子事实格式"还是"旧长文本格式"（issue #190 P2）。
+
+    这是旧格式的回退路径：提示词改为输出 ``profile_facts`` 原子事实后，旧项目、
+    用户自定义提示词与同步链路仍会给出 ``personality``/``background``/
+    ``appearance`` 三段长文本，需要先分清格式再交给下游。
+
+    判定顺序：
+
+    1. 非 dict → ``mode="empty"``，不抛异常；
+    2. ``profile_facts``（优先）或 ``facts`` 是非空 list → ``mode="facts"``，
+       原始条目原样返回，此时忽略旧文本字段；
+    3. 否则收集旧文本字段中的非空字符串（strip 后），非空即 ``mode="legacy"``；
+    4. 都没有 → ``mode="empty"``。
+
+    事实条目本身不校验（字段、引文、章号交给 ``validate_profile_facts``），
+    空 list 与非 list 都只是"不是事实格式"，继续走旧文本分支，不报错。
+    """
+    if not isinstance(payload, dict):
+        return ParsedProfile(entity="", mode="empty", facts=[], legacy={})
+
+    raw_name = payload.get("name")
+    entity = raw_name if isinstance(raw_name, str) else ""
+
+    raw_facts = payload.get("profile_facts")
+    if not isinstance(raw_facts, list) or not raw_facts:
+        raw_facts = payload.get("facts")
+    if isinstance(raw_facts, list) and raw_facts:
+        return ParsedProfile(entity=entity, mode="facts", facts=raw_facts, legacy={})
+
+    legacy: dict[str, str] = {}
+    for field in LEGACY_PROFILE_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip():
+            legacy[field] = value.strip()
+
+    return ParsedProfile(
+        entity=entity,
+        mode="legacy" if legacy else "empty",
+        facts=[],
+        legacy=legacy,
+    )
