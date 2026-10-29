@@ -375,6 +375,7 @@ class CharacterProfileSyncService:
             )
 
         await db.commit()
+        stats["characters_updated"] = len(stats.pop("_updated_ids", ()))
         logger.info(
             "档案同步完成: project=%s through=%s 角色%s 更新%s 字段%s 保留%s 跳过%s",
             project_id,
@@ -505,7 +506,8 @@ class CharacterProfileSyncService:
             db=db, character=character, organizations=entry.get("organizations")
         )
         if changed or org_changed:
-            stats["characters_updated"] += 1
+            # 同一角色可能出现在多个章节批次里，按人去重后再计入统计（issue #191）。
+            stats.setdefault("_updated_ids", set()).add(character.id)
 
         if snapshot:
             character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
