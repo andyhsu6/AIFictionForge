@@ -171,6 +171,8 @@ async def get_characters(
             "personality": char.personality,
             "background": char.background,
             "appearance": char.appearance,
+            # issue #190：原始 JSON 文本，由 CharacterResponse 的校验器解析成数组
+            "profile_facts": char.profile_facts,
             "relationships": rel_summary,
             "organization_type": char.organization_type,
             "organization_purpose": char.organization_purpose,
@@ -248,6 +250,8 @@ async def get_project_characters(
             "personality": char.personality,
             "background": char.background,
             "appearance": char.appearance,
+            # issue #190：原始 JSON 文本，由 CharacterResponse 的校验器解析成数组
+            "profile_facts": char.profile_facts,
             "relationships": rel_summary,
             "organization_type": char.organization_type,
             "organization_purpose": char.organization_purpose,
