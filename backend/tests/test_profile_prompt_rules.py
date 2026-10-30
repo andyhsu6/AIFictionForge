@@ -43,6 +43,30 @@ def test_prose_field_boundaries_carry_trait_rule():
     assert "组织特性" in profile_prompt_rules.PROSE_FIELD_BOUNDARIES
 
 
+def test_organisation_rules_and_stances_stay_out_of_personality():
+    """issue #198：门规/立场/伦理属制度，不是性格，规则必须明说排除。
+
+    两轮标注（153 条）里组织的分类失分全部落在这两类内容上——规则允许
+    「价值取向」，评审却一致判为放错字段。这条测试钉住修正后的口径。
+    """
+    for text in (
+        profile_prompt_rules.FACTS_FIELD_BOUNDARIES,
+        profile_prompt_rules.PROSE_FIELD_BOUNDARIES,
+    ):
+        assert "一律不写进 personality" in text
+        assert "行事风格" in text
+        # 旧口径：把「价值取向」列为组织特性，正是误判来源
+        assert "行事风格与价值取向" not in text
+
+
+def test_organisation_appearance_excludes_location_and_interior():
+    """issue #198：地点与内部陈设不是组织的「外貌」。"""
+    text = profile_prompt_rules.FACTS_FIELD_BOUNDARIES
+    assert "不写地理位置" in text
+    assert "内部陈设" in text
+    assert "总部或据点所在" not in text
+
+
 def test_batch_prompts_share_field_rules():
     for name in (
         "CHARACTERS_BATCH_GENERATION",
