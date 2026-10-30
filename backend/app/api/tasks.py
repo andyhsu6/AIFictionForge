@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import case, select, update
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.errors import ApiError
 from app.database import get_db
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/tasks", tags=["后台任务"])
 logger = get_logger(__name__)
 
 
-def _background_task_data(task: BackgroundTask) -> dict:
+def _background_task_data(task: BackgroundTask, include_result: bool = True) -> dict:
     raw_input = task.task_input
     conversation_id = raw_input.get("conversation_id") if isinstance(raw_input, dict) else None
     return {
@@ -37,7 +37,7 @@ def _background_task_data(task: BackgroundTask) -> dict:
         "status_params": task.status_params or None,
         "progress_details": task.progress_details,
         "error_message": task.error_message,
-        "task_result": task.task_result,
+        "task_result": task.task_result if include_result else None,
         "retry_count": task.retry_count or 0,
         "cancel_requested": bool(task.cancel_requested),
         "affected_resources": affected_resources_for_task(task.task_type),
@@ -48,6 +48,14 @@ def _background_task_data(task: BackgroundTask) -> dict:
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
+
+
+def _profile_preview_summary(task: BackgroundTask) -> Optional[dict]:
+    """列表态只透出预览摘要：完整 plan 可能很大，留给详情接口。"""
+    result = task.task_result
+    if isinstance(result, dict) and isinstance(result.get("summary"), dict):
+        return {"summary": result["summary"]}
+    return None
 
 
 def _batch_task_data(task: BatchGenerationTask) -> dict:
@@ -201,7 +209,15 @@ async def get_tasks(
         project_id, user_id, db, task_type=task_type, limit=limit
     )
 
-    items = [_background_task_data(task) for task in bg_tasks]
+    items = []
+    for task in bg_tasks:
+        if task.task_type == "profile_preview":
+            # 预览计划体积大：列表只回摘要，详情接口 GET /tasks/{id} 才给全量 plan。
+            data = _background_task_data(task, include_result=False)
+            data["task_result"] = _profile_preview_summary(task)
+            items.append(data)
+        else:
+            items.append(_background_task_data(task))
 
     # 查询 BatchGenerationTask（不按 task_type 过滤，或过滤 chapter_batch 时才查）
     if not task_type or task_type == 'chapter_batch':
@@ -354,14 +370,26 @@ async def clear_project_tasks(
     if not user_id:
         raise ApiError(code="auth.unauthorized")
 
-    from sqlalchemy import delete as sql_delete
+    from sqlalchemy import and_, delete as sql_delete, not_
+    from datetime import timedelta
 
-    # 清理 BackgroundTask
+    # 档案预览计划的可用窗口从**完成时刻**起算（apply 的 TTL 用 plan.created_at，
+    # 即预览完成时间）；用 created_at 会把「跑了几十分钟、刚完成」的计划误删。
+    # completed_at 为空的已完成任务无法证明仍在窗口内 → 不豁免（照常清理）。
+    profile_plan_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=60)
+
+    # 清理 BackgroundTask（正在跑的任务不在 completed/failed/cancelled 里，不受影响）
     bg_result = await db.execute(
         sql_delete(BackgroundTask).where(
             BackgroundTask.project_id == project_id,
             BackgroundTask.user_id == user_id,
-            BackgroundTask.status.in_(["completed", "failed", "cancelled"])
+            BackgroundTask.status.in_(["completed", "failed", "cancelled"]),
+            not_(and_(
+                BackgroundTask.task_type == "profile_preview",
+                BackgroundTask.status == "completed",
+                BackgroundTask.completed_at.isnot(None),
+                BackgroundTask.completed_at > profile_plan_cutoff,
+            )),
         )
     )
 

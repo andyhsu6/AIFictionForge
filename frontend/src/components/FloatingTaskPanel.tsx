@@ -244,6 +244,8 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
         return t('typeCareerGenerate');
       case 'agent_plan':
         return t('typeAgentPlan');
+      case 'profile_preview':
+        return t('typeProfilePreview');
       default:
         return taskType;
     }

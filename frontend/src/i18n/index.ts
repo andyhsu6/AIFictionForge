@@ -48,6 +48,7 @@ i18n
       'floatingTaskPanel',
       'partialRegenerateModal',
       'projectAgentPanel',
+      'profileRefresh',
     ],
     defaultNS: 'common',
     resources,

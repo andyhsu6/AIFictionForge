@@ -1,0 +1,95 @@
+{
+  "actions": {
+    "add": "Added",
+    "change": "Changed",
+    "preserved": "Preserved",
+    "rejected": "Dropped",
+    "same": "Unchanged"
+  },
+  "aiSuggestion": "AI suggestion: {{suggestion}} (not written)",
+  "applyChanges": "Apply these changes",
+  "applyResult": "Applied to {{applied}} entities / skipped {{skipped}}: changed since preview",
+  "cancel": "Cancel",
+  "close": "Done",
+  "createPreview": "Create preview",
+  "diffTitle": "Profile change preview",
+  "emptyCandidates": "No chapters need refreshing",
+  "emptyDiff": "There are no profile changes to show.",
+  "emptyValue": "(empty)",
+  "estimateFailed": "The estimate is unavailable. Please try again.",
+  "estimateTitle": "Refresh profiles · Estimate",
+  "expandValue": "Click to expand or collapse the text",
+  "factsMerged": "{{count}} profile facts merged",
+  "factsMerged_one": "{{count}} profile fact merged",
+  "factsMerged_other": "{{count}} profile facts merged",
+  "fields": {
+    "age": "Age",
+    "appearance": "Appearance",
+    "background": "Background",
+    "current_state": "Current state",
+    "gender": "Gender",
+    "location": "Location",
+    "motto": "Motto",
+    "organization_purpose": "Purpose",
+    "organization_type": "Organization type",
+    "personality": "Personality",
+    "power_level": "Power level",
+    "role_type": "Role"
+  },
+  "fieldsWritten": "{{count}} fields written",
+  "fieldsWritten_one": "{{count}} field written",
+  "fieldsWritten_other": "{{count}} fields written",
+  "fromChapter": "Start from chapter {{chapter}}",
+  "incrementalEmptyHint": "This is normal in incremental mode when there are no new chapters.",
+  "loadingEstimate": "Calculating estimate…",
+  "metrics": {
+    "batches": "Batches",
+    "calls": "Calls",
+    "candidates": "Candidate entities"
+  },
+  "mode": {
+    "full": "Full",
+    "incremental": "Incremental"
+  },
+  "notes": {
+    "calls": "This is the minimum estimated call count. Content moderation may trigger binary-split retries, so the actual count can be higher.",
+    "full": "Full mode recalculates all chapters with mentions. Your manual edits are kept and marked as “Preserved” in the diff.",
+    "scope": "World settings and organization membership are not included."
+  },
+  "planMissing": "The preview task finished without returning a change plan.",
+  "previewProgress": "Preview running in the background: {{status}}",
+  "reasons": {
+    "chapter_invalid": "Invalid chapter",
+    "claim_invalid": "Invalid fact",
+    "field_invalid": "Invalid field",
+    "inferred_not_allowed": "Inference not allowed",
+    "org_personality_dropped": "Organization personality dropped",
+    "quote_invalid": "Invalid quote",
+    "quote_not_found": "Quote not found"
+  },
+  "rejectionReasons": "Reasons for dropping facts",
+  "scopeNotice": "World settings and organization membership are not included.",
+  "summary": {
+    "add": "Added {{count}}",
+    "add_one": "Added {{count}}",
+    "add_other": "Added {{count}}",
+    "change": "Changed {{count}}",
+    "change_one": "Changed {{count}}",
+    "change_other": "Changed {{count}}",
+    "preserved": "Preserved {{count}}",
+    "preserved_one": "Preserved {{count}}",
+    "preserved_other": "Preserved {{count}}",
+    "rejected": "Dropped {{count}}",
+    "rejected_one": "Dropped {{count}}",
+    "rejected_other": "Dropped {{count}}",
+    "same": "Unchanged {{count}}",
+    "same_one": "Unchanged {{count}}",
+    "same_other": "Unchanged {{count}}"
+  },
+  "taskBatchProgress": "Batch {{current}}/{{total}}",
+  "taskStatus": {
+    "pending": "Pending",
+    "running": "Running"
+  },
+  "toolbarButton": "Refresh profiles"
+}
