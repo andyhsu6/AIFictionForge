@@ -46,7 +46,7 @@
 - 🌍 **国际化**：zh/en 界面，`content_language` 控制 AI 输出语言。
 - 🔐 **登录**：本地账户或 LinuxDO OAuth（自动创建账号）。
 - 📦 **导入 / 导出**：项目数据，以及角色和组织卡片，支持跨项目共享。
-- 🐳 **部署**：Docker Compose，或由后端以单端口 8008 提供构建产物。
+- 💾 **部署**：由后端以单端口 8008 提供构建产物，数据库仅支持 SQLite。
 
 ## 📸 项目预览
 
@@ -74,48 +74,46 @@
 
 ## 🚀 快速开始
 
-**前置要求**：Docker 和 Docker Compose（可选，本地开发无需），以及至少一个 AI 服务的 API Key（OpenAI / Gemini / Claude / 任意 OpenAI 兼容中转），且该模型需具备 >=900,000 token 上下文窗口。
+**前置要求**：Python 3.12 与 Node.js（前端），以及至少一个 AI 服务的 API Key（OpenAI / Gemini / Claude / 任意 OpenAI 兼容中转），且该模型需具备 >=900,000 token 上下文窗口。无需外部数据库：数据存放在本地 SQLite 文件中。
 
-### Docker Compose 部署
+### 克隆与配置
 
 ```bash
 git clone https://github.com/andyhsu6/AIFictionForge.git && cd AIFictionForge
 cp backend/.env.example .env          # 然后填入必要配置
-docker-compose up -d                  # 然后访问 http://localhost:8008
 ```
 
-`docker-compose.yml` 会自动把 `.env` 挂载进容器，`backend/scripts/init_postgres.sql` 会在首次启动时执行并安装所需的 PostgreSQL 扩展。本项目不提供预构建镜像：请用 `docker-compose build` 自行构建，并将 embedding 模型文件放到 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`。
+数据存放在 `backend/data/mumuai_novel.db`（SQLite，首次启动时自动创建）——无需安装数据库服务，也没有需要手动执行的迁移步骤。
+
+从这一步开始最快的方式：`./aistoryforge.sh start`（后端 8008、前端开发服务器 5173；另有 `status` / `stop` / `restart`）。
 
 ### 本地开发 / 从源码构建
 
 先准备 embedding 模型（约 400 MB，放在 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`）。首次启动时会从 Hugging Face 自动下载，也可手动从 <https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2> 获取。
 
 ```bash
-# 后端
-cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env                                 # 然后编辑
-docker run -d --name postgres -e POSTGRES_PASSWORD=your_password \
-  -e POSTGRES_DB=aistoryforge -p 5432:5432 postgres:18-alpine
-python -m uvicorn app.main:app --host localhost --port 8008 --reload
+# 后端 —— 从仓库根目录启动，`.env` 与 SQLite 文件都在根目录解析
+python -m venv backend/.venv && source backend/.venv/bin/activate   # Windows: backend\.venv\Scripts\activate
+pip install -r backend/requirements.txt
+cp backend/.env.example .env      # 然后编辑；pydantic 从仓库根读取 `.env`
+PYTHONPATH=backend python -m uvicorn app.main:app --host localhost --port 8008 --reload
 
 # 前端
-cd ../frontend
+cd frontend
 npm install
 npm run dev    # 开发模式
 npm run build  # 生产构建
 ```
 
+不设置 `DATABASE_URL` 时，后端使用 `backend/data/mumuai_novel.db`；只有在需要指向另一个 SQLite 文件时才设置它（`sqlite+aiosqlite:///<路径>`）。
+
 > **📌 端口说明**：前端开发服务器运行在 **5173**（Vite，代理 `/api` 与 `/generated-assets` 到 `http://localhost:8008`）；后端监听 **8008**。执行 `npm run build` 后，构建产物由后端以单端口 **8008** 入口提供访问。
 
 ## ⚙️ 配置说明
 
-`.env` 必需项：
+`.env` 必需项（`DATABASE_URL` 不是必填项——见上文，不设置时用内置 SQLite 默认值）：
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://aistoryforge:your_password@postgres:5432/aistoryforge
-POSTGRES_PASSWORD=your_secure_password
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
@@ -137,11 +135,11 @@ LINUXDO_REDIRECT_URI=http://localhost:8008/api/auth/callback
 LINUXDO_PROXY_URL=http://127.0.0.1:7890      # 仅 OAuth 专用代理
 AGENT_PLAN_STEP_GRACE_SECONDS=3              # 计划执行器步间等待
 SESSION_COOKIE_SECURE=true                   # HTTP 部署登录 Cookie 不保存时设为 false
-# ALLOW_PRIVATE_AI_ENDPOINTS=true            # 本地 / Docker 内网 LLM
+# ALLOW_PRIVATE_AI_ENDPOINTS=true            # 本地 / 私有网络 LLM
 # ALLOWED_AI_HOSTS=host.docker.internal,127.0.0.1
 ```
 
-> **📌 说明**：HTTPS 部署保持 `SESSION_COOKIE_SECURE=true`（HTTP 部署下浏览器不保存登录 Cookie 时设为 `false`）。如果只有 LinuxDO 登录不可达，优先设置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`；它不影响 AI、SMTP 和数据库调用，Docker 容器内需使用宿主机在 Docker 网络中的地址。本地和 Docker 内网 LLM 端点默认被拒（SSRF 防护），可用 `ALLOW_PRIVATE_AI_ENDPOINTS=true` 开启，或把主机名加入 `ALLOWED_AI_HOSTS`；链路本地地址仍然会被拒绝。
+> **📌 说明**：HTTPS 部署保持 `SESSION_COOKIE_SECURE=true`（HTTP 部署下浏览器不保存登录 Cookie 时设为 `false`）。如果只有 LinuxDO 登录不可达，优先设置 `LINUXDO_PROXY_URL`，不要配置全局 `HTTP_PROXY` / `HTTPS_PROXY`；它不影响 AI、SMTP 和数据库调用。本地和私有网络 LLM 端点（如 Ollama、llama.cpp）默认被拒（SSRF 防护），可用 `ALLOW_PRIVATE_AI_ENDPOINTS=true` 开启，或把主机名加入 `ALLOWED_AI_HOSTS`；链路本地地址仍然会被拒绝。
 
 ## 📁 项目结构
 
@@ -155,14 +153,12 @@ AIFictionForge/
 │   ├── src/                # pages/, components/, services/, store/
 │   └── package.json
 ├── docs/                   # 文档
-├── docker-compose.yml
-├── Dockerfile
 └── README.md
 ```
 
 ## 🛠️ 技术栈
 
-**后端**：FastAPI • PostgreSQL • SQLAlchemy • OpenAI / Claude / Gemini SDK
+**后端**：FastAPI • SQLite • SQLAlchemy • OpenAI / Claude / Gemini SDK
 
 **前端**：React 18 • TypeScript • Ant Design • Zustand • Vite
 
@@ -192,7 +188,7 @@ AIFictionForge/
 - [FastAPI](https://fastapi.tiangolo.com/) - Python Web 框架
 - [React](https://react.dev/) - 前端框架
 - [Ant Design](https://ant.design/) - UI 组件库
-- [PostgreSQL](https://www.postgresql.org/) - 数据库
+- [SQLite](https://www.sqlite.org/) - 数据库
 
 ## 📚 更多文档
 

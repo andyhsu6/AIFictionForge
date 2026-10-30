@@ -13,7 +13,7 @@ Thank you for your interest in contributing! AIFictionForge (灵创) is an AI-po
 
 ## Development setup
 
-Local development uses **SQLite** (`backend/data/mumuai_novel.db`); PostgreSQL is only used for Docker deployments.
+Local development uses **SQLite only** (`backend/data/mumuai_novel.db`); there is no database server to install or start, and Docker deployment is no longer supported — run the app locally as described below.
 
 ### Backend (FastAPI, port 8008)
 

@@ -46,7 +46,7 @@
 - 🌍 **Internationalization**: zh/en UI, with `content_language` controlling the language of AI output.
 - 🔐 **Login**: local account or LinuxDO OAuth (with automatic account creation).
 - 📦 **Import / export**: project data plus character and organization cards, for cross-project sharing.
-- 🐳 **Deployment**: Docker Compose, or a single-port build served by the backend on 8008.
+- 💾 **Deployment**: a single-port build served by the backend on 8008, with SQLite as the only database.
 
 ## 📸 Project Preview
 
@@ -74,48 +74,46 @@
 
 ## 🚀 Quick Start
 
-**Prerequisites**: Docker and Docker Compose (optional; not required for local development), and at least one AI service API key (OpenAI / Gemini / Claude / any OpenAI-compatible relay) for a model with a >=900,000 token context window.
+**Prerequisites**: Python 3.12 and Node.js (for the frontend), plus at least one AI service API key (OpenAI / Gemini / Claude / any OpenAI-compatible relay) for a model with a >=900,000 token context window. No external database is required: data lives in a local SQLite file.
 
-### Docker Compose Deployment
+### Clone and Configure
 
 ```bash
 git clone https://github.com/andyhsu6/AIFictionForge.git && cd AIFictionForge
 cp backend/.env.example .env          # then fill in the required config
-docker-compose up -d                  # then open http://localhost:8008
 ```
 
-`docker-compose.yml` mounts `.env` into the container automatically, and `backend/scripts/init_postgres.sql` runs on first startup to install the required PostgreSQL extensions. No prebuilt images are shipped: build with `docker-compose build`, with the embedding model under `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`.
+Data is stored in `backend/data/mumuai_novel.db` (SQLite, created on first startup) — there is no database server to install and no migration step to run by hand.
+
+Shortest path from here: `./aistoryforge.sh start` (backend on 8008, frontend dev server on 5173; `./aistoryforge.sh status` / `stop` / `restart`).
 
 ### Local Development / Building from Source
 
 Prepare the embedding model first (about 400 MB, under `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`). It is downloaded automatically from Hugging Face on first startup, or you can fetch it manually from <https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2>.
 
 ```bash
-# Backend
-cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env                                 # then edit
-docker run -d --name postgres -e POSTGRES_PASSWORD=your_password \
-  -e POSTGRES_DB=aistoryforge -p 5432:5432 postgres:18-alpine
-python -m uvicorn app.main:app --host localhost --port 8008 --reload
+# Backend — run from the repository root, so that `.env` and the SQLite file resolve there
+python -m venv backend/.venv && source backend/.venv/bin/activate   # Windows: backend\.venv\Scripts\activate
+pip install -r backend/requirements.txt
+cp backend/.env.example .env      # then edit; pydantic reads `.env` from the repo root
+PYTHONPATH=backend python -m uvicorn app.main:app --host localhost --port 8008 --reload
 
 # Frontend
-cd ../frontend
+cd frontend
 npm install
 npm run dev    # development mode
 npm run build  # production build
 ```
 
+If you leave `DATABASE_URL` unset the backend uses `backend/data/mumuai_novel.db`; set it only to point at another SQLite file (`sqlite+aiosqlite:///<path>`).
+
 > **📌 Ports**: the frontend dev server runs on **5173** (Vite, proxying `/api` and `/generated-assets` to `http://localhost:8008`); the backend listens on **8008**. After `npm run build`, the built frontend is served by the backend as a single-port entry on **8008**.
 
 ## ⚙️ Configuration
 
-Required in `.env`:
+Required in `.env` (`DATABASE_URL` is optional — see above, the built-in SQLite default is used when it is unset):
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://aistoryforge:your_password@postgres:5432/aistoryforge
-POSTGRES_PASSWORD=your_secure_password
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
@@ -137,11 +135,11 @@ LINUXDO_REDIRECT_URI=http://localhost:8008/api/auth/callback
 LINUXDO_PROXY_URL=http://127.0.0.1:7890      # OAuth-only proxy
 AGENT_PLAN_STEP_GRACE_SECONDS=3              # plan runner step delay
 SESSION_COOKIE_SECURE=true                   # set false for plain-HTTP login cookies
-# ALLOW_PRIVATE_AI_ENDPOINTS=true            # local / Docker-internal LLM
+# ALLOW_PRIVATE_AI_ENDPOINTS=true            # local / private-network LLM
 # ALLOWED_AI_HOSTS=host.docker.internal,127.0.0.1
 ```
 
-> **📌 Notes**: keep `SESSION_COOKIE_SECURE=true` on HTTPS (set `false` on HTTP if the browser does not persist the login cookie). If only LinuxDO login is unreachable, set `LINUXDO_PROXY_URL` rather than a global `HTTP_PROXY` / `HTTPS_PROXY`; it does not affect AI, SMTP, or database calls, and inside Docker you need the host's address on the Docker network. Local and Docker-internal LLM endpoints are blocked by default (SSRF protection); enable them with `ALLOW_PRIVATE_AI_ENDPOINTS=true` or allowlist the host in `ALLOWED_AI_HOSTS`. Link-local addresses stay blocked.
+> **📌 Notes**: keep `SESSION_COOKIE_SECURE=true` on HTTPS (set `false` on HTTP if the browser does not persist the login cookie). If only LinuxDO login is unreachable, set `LINUXDO_PROXY_URL` rather than a global `HTTP_PROXY` / `HTTPS_PROXY`; it does not affect AI, SMTP, or database calls. Local and private-network LLM endpoints (e.g. Ollama, llama.cpp) are blocked by default (SSRF protection); enable them with `ALLOW_PRIVATE_AI_ENDPOINTS=true` or allowlist the host in `ALLOWED_AI_HOSTS`. Link-local addresses stay blocked.
 
 ## 📁 Project Structure
 
@@ -155,14 +153,12 @@ AIFictionForge/
 │   ├── src/                # pages/, components/, services/, store/
 │   └── package.json
 ├── docs/                   # Documentation
-├── docker-compose.yml
-├── Dockerfile
 └── README.md
 ```
 
 ## 🛠️ Tech Stack
 
-**Backend**: FastAPI • PostgreSQL • SQLAlchemy • OpenAI / Claude / Gemini SDK
+**Backend**: FastAPI • SQLite • SQLAlchemy • OpenAI / Claude / Gemini SDK
 
 **Frontend**: React 18 • TypeScript • Ant Design • Zustand • Vite
 
@@ -192,7 +188,7 @@ This project is licensed under the [GNU General Public License v3.0](LICENSE).
 - [FastAPI](https://fastapi.tiangolo.com/) - Python web framework
 - [React](https://react.dev/) - Frontend framework
 - [Ant Design](https://ant.design/) - UI component library
-- [PostgreSQL](https://www.postgresql.org/) - Database
+- [SQLite](https://www.sqlite.org/) - Database
 
 ## 📚 More Docs
 

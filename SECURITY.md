@@ -21,7 +21,7 @@ Please include as much of the following as possible:
 
 - A clear description of the vulnerability and its impact.
 - Step-by-step instructions or a proof of concept to reproduce it.
-- The affected version (and commit SHA if known), deployment mode (Docker / source), and your environment.
+- The affected version (and commit SHA if known), deployment mode (single-port build on 8008 / Vite dev server on 5173), and your environment.
 - Any suggested mitigation or fix, if you have one.
 
 ### Response expectations
