@@ -13,7 +13,7 @@
 
 ## 开发环境搭建
 
-本地开发使用 **SQLite**（`backend/data/mumuai_novel.db`）；PostgreSQL 仅用于 Docker 部署。
+本地开发只使用 **SQLite**（`backend/data/mumuai_novel.db`）；无需安装或启动数据库服务，Docker 部署方式已下线——按下方说明在本地运行即可。
 
 ### 后端（FastAPI，端口 8008）
 

@@ -25,7 +25,7 @@ A clear and concise description of what the bug is.
 
 - OS: [e.g. macOS 14.5]
 - Browser: [e.g. Chrome 126]
-- Deployment: [e.g. Docker / from source / local dev]
+- Deployment: [e.g. single-port build on 8008 / Vite dev server on 5173]
 - Version: [e.g. 1.5.4]
 
 ### Steps to reproduce
@@ -64,7 +64,7 @@ Add any other context about the problem here.
 
 - 操作系统：[如 macOS 14.5]
 - 浏览器：[如 Chrome 126]
-- 部署方式：[如 Docker / 源码运行 / 本地开发]
+- 部署方式：[如 8008 单端口构建 / 5173 开发服务器]
 - 版本：[如 1.5.4]
 
 ### 复现步骤

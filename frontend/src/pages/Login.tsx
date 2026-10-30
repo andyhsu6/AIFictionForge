@@ -955,8 +955,6 @@ export default function Login() {
                   <Tag color="geekblue">Gemini</Tag>
                   <Tag color="purple">Claude</Tag>
                   <Tag color="cyan">LinuxDO OAuth</Tag>
-                  <Tag color="green">Docker Compose</Tag>
-                  <Tag color="gold">PostgreSQL</Tag>
                 </Space>
               </div>
 

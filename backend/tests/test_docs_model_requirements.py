@@ -9,7 +9,7 @@
    日频复测之间换模型会按旧结论放行。少写一条就是过度承诺 ⇒ 红。
 4. **不写具体推荐模型名**：文档里不得出现兜底示例模型名或「推荐某某模型」条目，
    设置页「模型名称」等字段的提示文案（`form.*Tooltip`）同样不得点名具体模型。
-5. **`DEFAULT_MODEL` 不再被读取**：`docker-compose.yml` / `.env.example` / README
+5. **`DEFAULT_MODEL` 不再被读取**：`.env.example` / README
    都不得再出现**未注释的** `DEFAULT_MODEL=` 赋值（那是宣传一个静默失效的开关），
    且必须写明它已废弃。
 6. **两份 README 结构等价**：章节/表格行/引用块/列表条目数量一致，防止中英漂移。
@@ -55,7 +55,6 @@ def _read(*parts: str) -> str:
 README_EN = _read("README.md")
 README_ZH = _read("README.zh-CN.md")
 ENV_EXAMPLE = _read("backend", ".env.example")
-COMPOSE = _read("docker-compose.yml")
 
 
 def _section(text: str, heading: str) -> str:
@@ -77,9 +76,7 @@ def _counts(block: str) -> dict:
 
 
 def _uncommented_assignments(text: str) -> list:
-    # 同时覆盖 shell 形态（`DEFAULT_MODEL=`）与 compose 的 YAML 列表形态
-    # （`- DEFAULT_MODEL=${DEFAULT_MODEL:-...}`）——变异自证时发现只匹配前者会漏掉 compose。
-    return re.findall(r"^\s*-?\s*DEFAULT_MODEL\s*=", text, flags=re.MULTILINE)
+    return re.findall(r"^\s*DEFAULT_MODEL\s*=", text, flags=re.MULTILINE)
 
 
 def test_readme_states_the_same_floor_as_the_code_constant():
@@ -149,13 +146,12 @@ def test_settings_form_copy_does_not_recommend_specific_models():
 
 def test_default_model_env_var_is_no_longer_advertised_as_a_setting():
     for name, text in (
-        ("docker-compose.yml", COMPOSE),
         ("backend/.env.example", ENV_EXAMPLE),
         ("README.md", README_EN),
         ("README.zh-CN.md", README_ZH),
     ):
         assert not _uncommented_assignments(text), f"{name} 仍有未注释的 DEFAULT_MODEL 赋值"
-    assert "DEFAULT_MODEL" in ENV_EXAMPLE and "DEFAULT_MODEL" in COMPOSE, (
+    assert "DEFAULT_MODEL" in ENV_EXAMPLE, (
         "配置文件须写明该变量已废弃，而不是悄悄删掉让读者找不到"
     )
     assert "DEFAULT_MODEL" in README_EN and "DEFAULT_MODEL" in README_ZH
