@@ -565,3 +565,34 @@ def test_render_profile_equal_form_prefers_longer_text_in_any_order():
     forward = render_profile(_claims("background", "甲家管家", "甲家的管家"))
     backward = render_profile(_claims("background", "甲家的管家", "甲家管家"))
     assert forward == backward == {"background": "甲家的管家"}
+
+
+def test_render_profile_nesting_rejects_postposed_and_detached_negation():
+    """否定不总紧贴在中心语前面：后置补语、能愿动词、副词插入都会把意思改反。
+
+    只按「紧邻前后缀」判否定会漏掉这一整类，所以判定改成通篇扫描极性标记。
+    """
+    for short, long in (
+        ("克制", "克制不了"),
+        ("耐心", "耐心全无"),
+        ("克制", "并不十分克制"),
+        ("耐心", "不太耐心"),
+        ("克制", "不能克制"),
+        ("克制", "未必克制"),
+        ("克制", "何曾克制"),
+    ):
+        rendered = render_profile(_claims("personality", short, long))
+        assert rendered == {"personality": f"{short}、{long}"}, (short, long)
+
+
+def test_render_profile_nesting_skips_mixed_ascii_claim():
+    """混排 claim 里的 ASCII 片段同样没有词边界，作为被吸收方一律豁免。"""
+    rendered = render_profile(_claims("personality", "AI", "AI与术法"))
+    assert rendered == {"personality": "AI、AI与术法"}
+
+
+def test_render_profile_form_equal_ignores_join_separator_in_choice():
+    """择优长度不数「、」：连接符不是信息，且会与渲染分隔符混淆。"""
+    forward = render_profile(_claims("personality", "克制隐忍", "克制、隐忍"))
+    backward = render_profile(_claims("personality", "克制、隐忍", "克制隐忍"))
+    assert forward == backward == {"personality": "克制隐忍"}

@@ -36,6 +36,7 @@ if str(_project_root) not in sys.path:
 
 from app.services.profile_facts import (  # noqa: E402
     FACT_FIELDS,
+    _folded_contains,
     normalize_claim_form,
     normalize_quote,
 )
@@ -158,9 +159,17 @@ def _containment_pairs(claims: list[str]) -> list[tuple[str, str, str]]:
             if index == other_index or not form_a or not form_b:
                 continue
             if form_a == form_b and index < other_index:
-                # 只差标点/结构助词：合并为一条，保留先到者（与 render_profile 一致）
-                pairs.append(("form_equal", claim_b, claim_a))
-            elif form_a != form_b and form_a in form_b:
+                # 只差标点/结构助词：合并为一条。生产的 render_profile 保留原文
+                # 较长者，这里按同一准则报告「被丢的那条 / 留下的那条」。
+                dropped, kept = (
+                    (claim_b, claim_a)
+                    if len(claim_a.replace("、", "")) >= len(claim_b.replace("、", ""))
+                    else (claim_a, claim_b)
+                )
+                pairs.append(("form_equal", dropped, kept))
+            elif form_a != form_b and _folded_contains(form_b, form_a):
+                # 与生产同一判据（复用 _folded_contains，含否定/反问与 ASCII 闸），
+                # 否则报告会列出 render_profile 根本不会合并的对。
                 pairs.append(("contained", claim_a, claim_b))
     return pairs
 

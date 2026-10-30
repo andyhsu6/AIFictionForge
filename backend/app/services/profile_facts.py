@@ -104,12 +104,15 @@ _TRAILING_PUNCT = "。！？；"
 # 嵌套判定时视为措辞差异的结构助词
 _STRUCTURAL_PARTICLES = "的地得"
 
-# 判定「包含关系是不是同一特质」时用的否定标记（见 _folded_contains）。
-# 中文取单字前缀 + 常见双字前缀；ASCII 另有一份，只在纯英文 claim 上起作用。
+# 判定「包含关系是不是同一特质」时用的极性标记（见 _folded_contains）。
+# 只做保守判定：长串里**通篇**出现任一标记就不折叠。中文的否定标记与中心语
+# 之间距离是开放的（副词、能愿动词、后置补语都会插进来，「不」还能出现在中心语
+# 之后），按「紧邻前后缀」枚举追不完，所以改成通篇扫描。
 _NEGATION_CHARS = "不没无非未勿莫别弗"
-_NEGATION_PREFIXES = ("没有", "毫无", "未曾", "从不", "并不", "绝不", "毫不")
-_NEGATION_PREFIXES_ASCII = ("un", "in", "dis", "im", "mis", "non", "anti", "ir", "il")
-_NEGATION_SUFFIXES_ASCII = ("less", "free", "proof")
+# 反问/疑问同样会把「X」写成「X 过吗」「岂能 X」「焉能 X」
+_RHETORICAL_CHARS = "岂焉何"
+_QUESTION_CHARS = "吗呢"
+_QUESTION_MARKS = ("？", "?")
 
 _STAT_KEYS = (
     "facts_in",
@@ -173,45 +176,39 @@ def normalize_claim_form(text: str) -> str:
     )
 
 
-def _is_negated(outer: str, start: int, end: int) -> bool:
-    """判断 ``outer[start:end]`` 这次出现是否处在否定上下文里。"""
-    prefix = outer[:start]
-    suffix = outer[end:]
-    if prefix:
-        if prefix[-1] in _NEGATION_CHARS:
-            return True
-        if prefix.endswith(_NEGATION_PREFIXES):
-            return True
-        if prefix.isascii() and prefix.lower().endswith(_NEGATION_PREFIXES_ASCII):
-            return True
-    if suffix and suffix.isascii() and suffix.lower().startswith(_NEGATION_SUFFIXES_ASCII):
-        return True
-    return False
+def _preferred_text(current: str, candidate: str) -> str:
+    """归一串相同的两条里挑哪条做渲染文本：信息量优先，其次与顺序无关。"""
+    def key(text: str) -> tuple[int, int, str]:
+        return (len(text.replace("、", "")), -text.count("、"), text)
+
+    return candidate if key(candidate) > key(current) else current
 
 
 def _folded_contains(outer: str, inner: str) -> bool:
     """``inner`` 是否可作为 ``outer`` 的重复表述被吸收。
 
-    字面包含不足以判定重复，两道闸：
+    字面包含不足以判定重复：
 
-    1. **否定上下文**：「克制」被「不克制」包含、「耐心」被「没有耐心」包含，
-       说的是相反或另一件事；按字面吸收会静默删掉较短的一条，让档案断言反转。
-       只要有一段出现不在否定语境里，就仍按重复处理（宁可少合并，不要写反）。
-    2. **纯 ASCII 形式不折叠**：英文没有可依赖的词边界（去标点去空格后更没有了），
+    1. **否定与反问**：「克制」被「不克制」「克制不了」「并不十分克制」包含，
+       「耐心」被「耐心全无」「不太耐心」包含，说的都是相反或另一件事；按字面
+       吸收会静默删掉较短的一条，让档案断言反转。中文否定标记与中心语的距离是
+       开放的（`不克制` / `克制不了` / `并不十分克制` / `未必克制`），按紧邻
+       前后缀枚举追不完，所以改成**通篇扫描**：长串里出现任一否定语素或反问
+       标记就不折叠。代价是少数含这些字的正常短语不再合并（宁可少合并，不要写反）。
+    2. **纯 ASCII 不折叠**：英文没有可依赖的词边界（去标点去空格后更没有了），
        「care」在「careless」里、「friend」在「boyfriend」里，都属于不同词而非
-       措辞差异。英文 claim 只享受「归一串相等」这一级合并。
+       措辞差异。被吸收的一方是 ASCII 即豁免——混排 claim 里同样没有词边界。
     3. **单字不折叠**：一个字的表述几乎总是恰好在更长的表述里出现，吸收它只会丢信息。
     """
     if inner == outer or len(inner) < 2:
         return False
-    if inner.isascii() and outer.isascii():
+    if inner.isascii():
         return False
-    start = outer.find(inner)
-    while start >= 0:
-        if not _is_negated(outer, start, start + len(inner)):
-            return True
-        start = outer.find(inner, start + 1)
-    return False
+    if any(char in outer for char in _NEGATION_CHARS + _RHETORICAL_CHARS + _QUESTION_CHARS):
+        return False
+    if any(mark in outer for mark in _QUESTION_MARKS):
+        return False
+    return inner in outer
 
 
 def normalize_chapters(chapters_by_number: dict[int, str]) -> dict[int, str]:
@@ -442,7 +439,10 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
                 by_form[form] = group
                 groups.append(group)
                 continue
-            if len(text) > len(group["text"]):
+            # 择优键不数「、」：连接符本身不是信息，含它的原文反而会与渲染
+            # 结果的分隔符混淆（渲染时就是用「、」连接各条）。键里带上原文本身，
+            # 保证长度打平时结果也与输入顺序无关。
+            if _preferred_text(group["text"], text) == text:
                 group["text"] = text
             group["pos"] = min(group["pos"], pos)
 
@@ -464,6 +464,8 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
                 continue
             owners = [j for j in survivors if _folded_contains(forms[j], form)]
             if not owners:
+                # 不可能发生：折叠要求严格更短，链长严格递增必有存活项。
+                # 若真出现，说明规则被改坏了——宁可少继承一个位置，也不要报错。
                 continue
             owner = min(owners, key=lambda j: (len(forms[j]), groups[j]["pos"]))
             sort_pos[owner] = min(sort_pos[owner], groups[i]["pos"])
