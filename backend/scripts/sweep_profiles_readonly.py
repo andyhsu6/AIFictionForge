@@ -71,6 +71,7 @@ DISCARD_REASON_KEYS = (
     "quote_not_found",
     "chapter_invalid",
     "inferred_not_allowed",
+    "org_personality_dropped",
 )
 
 # 每个实体最多重试 1 次（首次失败 + 1 次重试 = 每批最多 2 次调用）

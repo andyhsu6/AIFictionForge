@@ -2849,7 +2849,7 @@ class BookImportService:
             "有从属关系时逐条给出，organization_name 必须严格取自本次返回的组织名称"
             "（不得用简称、别名或未在本次结果中出现的组织名）；"
             "没有任何从属关系时返回空数组 []，不要省略该字段。"
-            "请为每个实体单独撰写档案字段：personality（性格/组织特性）、"
+            "请为每个实体单独撰写档案字段：personality（只有角色写性格；组织不要输出该字段）、"
             "background（背景经历）、appearance（外貌或外在表现）、"
             f"current_state（在{chapter_span}时的处境与心理状态），"
             "每个字段都要针对该实体具体描写，禁止输出「同上」「见前文」这类占位表述。"
@@ -3070,7 +3070,9 @@ class BookImportService:
                 if not isinstance(item, dict):
                     continue
                 rendered, item_stats, facts = resolve_profile_fields(
-                    item, facts_chapters_by_number
+                    item,
+                    facts_chapters_by_number,
+                    kind="organization" if item.get("is_organization") is True else "character",
                 )
                 for key, value in item_stats.items():
                     profile_facts_stats[key] = profile_facts_stats.get(key, 0) + value

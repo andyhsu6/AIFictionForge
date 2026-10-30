@@ -735,7 +735,11 @@ class CharacterProfileSyncService:
         # issue #190：返回里有 profile_facts 时，档案文本只能由通过引文校验的事实渲染。
         # 一条事实都没通过时 values 为空 dict——宁可这轮不更新，也不落无依据文本。
         if PROFILE_FACTS_PROMPT_ENABLED and chapters_by_number:
-            rendered, facts_stats, facts = resolve_profile_fields(entry, chapters_by_number)
+            rendered, facts_stats, facts = resolve_profile_fields(
+                entry,
+                chapters_by_number,
+                kind="organization" if character.is_organization else "character",
+            )
             if facts_stats.get("payloads_facts"):
                 values = rendered
                 bucket = stats.setdefault("profile_facts", {})

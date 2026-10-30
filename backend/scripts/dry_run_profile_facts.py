@@ -76,6 +76,7 @@ DISCARD_REASON_KEYS = (
     "quote_not_found",
     "chapter_invalid",
     "inferred_not_allowed",
+    "org_personality_dropped",
 )
 # 非丢弃类的统计键
 COUNTER_KEYS = ("facts_in", "facts_accepted", "chapter_corrected")

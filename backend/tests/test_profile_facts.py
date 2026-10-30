@@ -596,3 +596,53 @@ def test_render_profile_form_equal_ignores_join_separator_in_choice():
     forward = render_profile(_claims("personality", "克制隐忍", "克制、隐忍"))
     backward = render_profile(_claims("personality", "克制、隐忍", "克制隐忍"))
     assert forward == backward == {"personality": "克制隐忍"}
+
+
+# 组织不设 personality（issue #210）：代码层按 kind 硬丢弃，不依赖提示词
+def test_organization_personality_fact_is_dropped():
+    payload = {
+        "name": "组织甲",
+        "facts": [
+            _fact(),
+            _fact(
+                field="background",
+                claim="雨夜独行",
+                quote="雨下了一整夜，院子里空无一人",
+                chapter_number=5,
+                inferred=False,
+            ),
+        ],
+    }
+    result = validate_profile_facts(payload, CHAPTERS, kind="organization")
+    assert [f["field"] for f in result.facts] == ["background"]
+    assert result.stats["org_personality_dropped"] == 1
+    assert result.stats["facts_accepted"] == 1
+
+
+def test_character_keeps_personality_fact():
+    result = validate_profile_facts(
+        {"name": "角色甲", "facts": [_fact()]}, CHAPTERS, kind="character"
+    )
+    assert [f["field"] for f in result.facts] == ["personality"]
+    assert result.stats["org_personality_dropped"] == 0
+
+
+def test_render_profile_omits_personality_for_organization():
+    facts = [
+        {
+            "field": "personality",
+            "claim": "隐秘不露",
+            "quote": "他听完只是点了点头",
+            "chapter_number": 3,
+            "inferred": False,
+        },
+        {
+            "field": "background",
+            "claim": "雨夜独行",
+            "quote": "雨下了一整夜，院子里空无一人",
+            "chapter_number": 5,
+            "inferred": False,
+        },
+    ]
+    assert "personality" not in render_profile(facts, kind="organization")
+    assert render_profile(facts, kind="character")["personality"] == "隐秘不露"
