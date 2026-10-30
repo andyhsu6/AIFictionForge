@@ -85,6 +85,8 @@ cp backend/.env.example .env          # 然后填入必要配置
 
 数据存放在 `backend/data/mumuai_novel.db`（SQLite，首次启动时自动创建）——无需安装数据库服务，也没有需要手动执行的迁移步骤。
 
+从这一步开始最快的方式：`./aistoryforge.sh start`（后端 8008、前端开发服务器 5173；另有 `status` / `stop` / `restart`）。
+
 ### 本地开发 / 从源码构建
 
 先准备 embedding 模型（约 400 MB，放在 `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`）。首次启动时会从 Hugging Face 自动下载，也可手动从 <https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2> 获取。
@@ -109,10 +111,9 @@ npm run build  # 生产构建
 
 ## ⚙️ 配置说明
 
-`.env` 必需项：
+`.env` 必需项（`DATABASE_URL` 不是必填项——见上文，不设置时用内置 SQLite 默认值）：
 
 ```bash
-DATABASE_URL=sqlite+aiosqlite:///backend/data/mumuai_novel.db
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai

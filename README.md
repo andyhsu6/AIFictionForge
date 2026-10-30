@@ -85,6 +85,8 @@ cp backend/.env.example .env          # then fill in the required config
 
 Data is stored in `backend/data/mumuai_novel.db` (SQLite, created on first startup) — there is no database server to install and no migration step to run by hand.
 
+Shortest path from here: `./aistoryforge.sh start` (backend on 8008, frontend dev server on 5173; `./aistoryforge.sh status` / `stop` / `restart`).
+
 ### Local Development / Building from Source
 
 Prepare the embedding model first (about 400 MB, under `backend/embedding/models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/`). It is downloaded automatically from Hugging Face on first startup, or you can fetch it manually from <https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2>.
@@ -109,10 +111,9 @@ If you leave `DATABASE_URL` unset the backend uses `backend/data/mumuai_novel.db
 
 ## ⚙️ Configuration
 
-Required in `.env`:
+Required in `.env` (`DATABASE_URL` is optional — see above, the built-in SQLite default is used when it is unset):
 
 ```bash
-DATABASE_URL=sqlite+aiosqlite:///backend/data/mumuai_novel.db
 OPENAI_API_KEY=your_openai_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 DEFAULT_AI_PROVIDER=openai
