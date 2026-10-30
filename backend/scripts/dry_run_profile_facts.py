@@ -203,7 +203,7 @@ def _measure_facts(entities: list[Any], chapters_by_number: dict[int, str]) -> d
     for entity in entities:
         parsed = parse_profile_payload(entity)
         modes[parsed.mode] += 1
-        kind = "organization" if entity.get("is_organization") is True else "character"
+        kind = "organization" if bool(entity.get("is_organization")) else "character"
         result = validate_profile_facts(
             {"name": parsed.entity, "facts": parsed.facts}, chapters_by_number, kind=kind
         )

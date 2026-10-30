@@ -268,6 +268,25 @@ def _is_output_truncated(exc: BaseException) -> bool:
 _profile_sync_tasks: set["asyncio.Task"] = set()
 
 
+def _apply_rendered_profile(
+    item: dict, rendered: dict[str, str], facts: list[dict], is_organization: bool
+) -> bool:
+    """把校验后的档案写回实体 dict，返回是否写入了渲染文本。
+
+    组织分支（issue #210）无条件覆盖 ``profile_facts``：一列全是 personality 事实时
+    校验后为空列表，若沿用「非空才赋值」的写法，模型原始条目会作为溯源落库。
+    """
+    if is_organization:
+        facts = strip_org_personality(item, facts)
+        item["profile_facts"] = facts or None
+    elif facts:
+        item["profile_facts"] = facts
+    if rendered:
+        item.update(rendered)
+        return True
+    return False
+
+
 def _profile_snapshot_json(**values: Any) -> Optional[str]:
     """把刚由 AI 写入的档案字段序列化为「AI 快照」（只收非空字段）。
 
@@ -3081,14 +3100,7 @@ class BookImportService:
                 )
                 for key, value in item_stats.items():
                     profile_facts_stats[key] = profile_facts_stats.get(key, 0) + value
-                if is_org:
-                    # issue #210：组织不设 personality（顶层字段与溯源事实都要剥）
-                    facts = strip_org_personality(item, facts)
-                if facts:
-                    # 溯源：只落通过校验的事实（accepted），渲染文本由它们拼出
-                    item["profile_facts"] = facts
-                if rendered:
-                    item.update(rendered)
+                if _apply_rendered_profile(item, rendered, facts, is_org):
                     rendered_entities += 1
             profile_facts_stats["entities_rendered"] = rendered_entities
             stats["profile_facts"] = profile_facts_stats
@@ -3400,7 +3412,7 @@ class BookImportService:
                 ),
                 # issue #174：登记「档案由 AI 生成」，后续同步才允许覆盖演进
                 ai_profile_snapshot=_profile_snapshot_json(
-                    personality=item.get("personality"),
+                    personality=None if is_organization else item.get("personality"),
                     background=item.get("background"),
                     appearance=item.get("appearance"),
                     current_state=item.get("current_state"),

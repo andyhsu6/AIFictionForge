@@ -700,7 +700,7 @@ async def create_character(
             gender=character_data.gender,
             is_organization=character_data.is_organization,
             role_type=character_data.role_type or "supporting",
-            personality=character_data.personality,
+            personality=None if character_data.is_organization else character_data.personality,  # #210
             background=character_data.background,
             appearance=character_data.appearance,
             organization_type=character_data.organization_type,
@@ -1125,7 +1125,7 @@ async def generate_character_stream(
                 gender=character_data.get("gender"),
                 is_organization=is_organization,
                 role_type=request.role_type or "supporting",
-                personality=character_data.get("personality", ""),
+                personality=None if is_organization else character_data.get("personality", ""),  # #210
                 background=character_data.get("background", ""),
                 appearance=character_data.get("appearance", ""),
                 organization_type=character_data.get("organization_type") if is_organization else None,

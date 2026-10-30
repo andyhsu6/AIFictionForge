@@ -553,3 +553,41 @@ async def test_profile_facts_are_rendered_and_repair_is_skipped(
     facts = json.loads(character.profile_facts)
     assert sorted(f["claim"] for f in facts) == ["中等身材", "沉着克制"]
     assert character.profile_facts_updated_at is not None
+
+
+# issue #210：组织落库前的 personality 剥离（接线层，非 helper 层）
+def test_apply_rendered_profile_drops_all_personality_facts_for_organization():
+    """一列全是 personality 事实时，溯源不能退回模型原始列表。"""
+    from app.services.book_import_service import _apply_rendered_profile
+
+    raw_facts = [{"field": "personality", "claim": "性格甲"}]
+    item = {"name": "占位组织", "personality": "性格甲", "profile_facts": raw_facts}
+    wrote = _apply_rendered_profile(item, {}, [], True)
+    assert wrote is False
+    assert "personality" not in item
+    assert item["profile_facts"] is None
+
+
+def test_apply_rendered_profile_keeps_organization_background_facts():
+    from app.services.book_import_service import _apply_rendered_profile
+
+    item = {"name": "占位组织", "personality": "性格甲"}
+    facts = [
+        {"field": "personality", "claim": "性格甲"},
+        {"field": "background", "claim": "山门立于城北"},
+    ]
+    wrote = _apply_rendered_profile(item, {"background": "山门立于城北"}, facts, True)
+    assert wrote is True
+    assert "personality" not in item
+    assert [f["field"] for f in item["profile_facts"]] == ["background"]
+
+
+def test_apply_rendered_profile_keeps_character_personality():
+    from app.services.book_import_service import _apply_rendered_profile
+
+    item = {"name": "占位角色"}
+    facts = [{"field": "personality", "claim": "性情沉稳"}]
+    wrote = _apply_rendered_profile(item, {"personality": "性情沉稳"}, facts, False)
+    assert wrote is True
+    assert item["personality"] == "性情沉稳"
+    assert [f["field"] for f in item["profile_facts"]] == ["personality"]
