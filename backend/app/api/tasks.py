@@ -373,11 +373,12 @@ async def clear_project_tasks(
     from sqlalchemy import and_, delete as sql_delete, not_
     from datetime import timedelta
 
-    # 60 分钟内的已完成档案预览计划仍可用于 apply，不能被批量清理掉
-    # created_at 是 naive UTC（server_default），这里同基准比较
+    # 档案预览计划的可用窗口从**完成时刻**起算（apply 的 TTL 用 plan.created_at，
+    # 即预览完成时间）；用 created_at 会把「跑了几十分钟、刚完成」的计划误删。
+    # completed_at 为空的已完成任务无法证明仍在窗口内 → 不豁免（照常清理）。
     profile_plan_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=60)
 
-    # 清理 BackgroundTask
+    # 清理 BackgroundTask（正在跑的任务不在 completed/failed/cancelled 里，不受影响）
     bg_result = await db.execute(
         sql_delete(BackgroundTask).where(
             BackgroundTask.project_id == project_id,
@@ -386,7 +387,8 @@ async def clear_project_tasks(
             not_(and_(
                 BackgroundTask.task_type == "profile_preview",
                 BackgroundTask.status == "completed",
-                BackgroundTask.created_at > profile_plan_cutoff,
+                BackgroundTask.completed_at.isnot(None),
+                BackgroundTask.completed_at > profile_plan_cutoff,
             )),
         )
     )

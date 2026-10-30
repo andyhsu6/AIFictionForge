@@ -382,7 +382,7 @@ async def test_bypass_watermark_reaches_synced_project_without_moving_marker(db_
     result = await character_profile_sync_service.apply_plan(
         db=db_session, project_id=PROJECT_ID, plan=plan
     )
-    assert result == {"applied": 1, "fields_written": 1, "stale": []}
+    assert result == {"applied": 1, "fields_written": 1, "facts_merged": 0, "stale": []}
 
     character = await _character(db_session, "角色甲")
     assert character.personality == "占位新性格"
@@ -618,7 +618,7 @@ async def test_unchanged_value_is_planned_as_same_and_stays_idempotent(db_sessio
     result = await character_profile_sync_service.apply_plan(
         db=db_session, project_id=PROJECT_ID, plan=plan
     )
-    assert result == {"applied": 1, "fields_written": 0, "stale": []}
+    assert result == {"applied": 1, "fields_written": 0, "facts_merged": 0, "stale": []}
 
     character = await _character(db_session, "角色甲")
     assert character.personality == "占位同值"
@@ -725,7 +725,7 @@ async def test_apply_merges_facts_even_when_all_rows_rejected(db_session):
     result = await character_profile_sync_service.apply_plan(
         db=db_session, project_id=PROJECT_ID, plan=plan
     )
-    assert result == {"applied": 1, "fields_written": 0, "stale": []}
+    assert result == {"applied": 1, "fields_written": 0, "facts_merged": 1, "stale": []}
 
     character = await _character(db_session, "角色甲")
     assert character.personality == "占位旧性格", "rejected 行不得写字段"
@@ -761,7 +761,7 @@ async def test_apply_plan_returns_busy_without_writing(db_session):
     finally:
         CharacterProfileSyncService._in_progress.discard(PROJECT_ID)
 
-    assert result == {"applied": 0, "fields_written": 0, "stale": [], "busy": True}
+    assert result == {"applied": 0, "fields_written": 0, "facts_merged": 0, "stale": [], "busy": True}
     character = await _character(db_session, "角色甲")
     assert character.personality == "占位旧性格"
     assert character.ai_profile_snapshot is None

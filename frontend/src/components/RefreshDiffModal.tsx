@@ -53,7 +53,12 @@ export default function RefreshDiffModal({ open, plan, applying, result, onCance
           type="success"
           showIcon
           message={t('applyResult', { applied: result.applied, skipped: result.stale.length })}
-          description={t('fieldsWritten', { count: result.fields_written })}
+          description={(
+            <>
+              <div>{t('fieldsWritten', { count: result.fields_written })}</div>
+              {result.facts_merged > 0 && <div>{t('factsMerged', { count: result.facts_merged })}</div>}
+            </>
+          )}
         />
       ) : (
         <>

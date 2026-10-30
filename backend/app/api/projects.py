@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_
-from typing import List, Optional
+from typing import List, Literal, Optional
 import json
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -845,7 +845,7 @@ async def _run_profile_preview_task(task_id: str, user_id: str) -> None:
 async def estimate_character_profile_refresh(
     project_id: str,
     request: Request,
-    mode: str = "incremental",
+    mode: Literal["incremental", "full"] = "incremental",
     from_chapter: int = 1,
     db: AsyncSession = Depends(get_db),
 ):
@@ -916,12 +916,19 @@ async def apply_character_profile_refresh(
                 BackgroundTask.user_id == user_id,
                 BackgroundTask.project_id == project_id,
                 BackgroundTask.task_type == "profile_preview",
-                BackgroundTask.status == "completed",
             )
         )
     ).scalar_one_or_none()
+    if task is None:
+        raise ApiError(code="not_found.profile_plan")
+    if task.status in ("pending", "running"):
+        # 预览还在跑：让用户重新预览只会白跑一次，直接报冲突
+        raise ApiError(code="conflict.profile_refresh_running")
+    if task.status != "completed":
+        # 失败/已取消：没有可回放的计划，重来一次才是正解
+        raise ApiError(code="not_found.profile_plan")
 
-    task_result = task.task_result if task and isinstance(task.task_result, dict) else {}
+    task_result = task.task_result if isinstance(task.task_result, dict) else {}
     plan = task_result.get("plan")
     if not isinstance(plan, dict) or not plan:
         raise ApiError(code="not_found.profile_plan")
@@ -947,7 +954,8 @@ async def apply_character_profile_refresh(
         # apply_plan 内部抢锁失败：项目已在进行重算，整单拒绝且不写 applied_at
         raise ApiError(code="conflict.profile_refresh_running")
 
-    # 计划保留到过期（60 分钟内可重复回放），只补应用痕迹
+    # 计划保留到过期；同一计划重复 apply 时，已写过的实体会因指纹变化自动跳过（计入 stale），
+    # 这里只补应用痕迹
     task.task_result = {
         **task_result,
         "applied_at": _profile_plan_now().isoformat(),

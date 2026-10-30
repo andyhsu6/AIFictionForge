@@ -782,12 +782,19 @@ class CharacterProfileSyncService:
         """
         if project_id in self._in_progress:
             logger.info("档案重算应用被跳过：项目已有同步/预览在运行: project=%s", project_id)
-            return {"applied": 0, "fields_written": 0, "stale": [], "busy": True}
+            return {
+                "applied": 0,
+                "fields_written": 0,
+                "facts_merged": 0,
+                "stale": [],
+                "busy": True,
+            }
 
         self._in_progress.add(project_id)
         try:
             applied = 0
             fields_written = 0
+            facts_merged = 0
             stale: List[Dict[str, Any]] = []
 
             for entity in (plan or {}).get("entities") or []:
@@ -845,11 +852,18 @@ class CharacterProfileSyncService:
                         character.profile_facts, facts_delta
                     )
                     character.profile_facts_updated_at = datetime.utcnow()
+                    # 按传入条数计（merge_profile_facts 的去重/截断不再二次统计）
+                    facts_merged += len(facts_delta)
 
                 applied += 1
 
             await db.commit()
-            return {"applied": applied, "fields_written": fields_written, "stale": stale}
+            return {
+                "applied": applied,
+                "fields_written": fields_written,
+                "facts_merged": facts_merged,
+                "stale": stale,
+            }
         finally:
             self._in_progress.discard(project_id)
 

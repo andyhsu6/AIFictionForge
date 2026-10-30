@@ -54,6 +54,7 @@ export interface RefreshApplyResult {
   applied: number;
   fields_written: number;
   stale: Array<{ id: string; name: string }>;
+  facts_merged: number;
 }
 
 export interface RefreshTaskResponse {

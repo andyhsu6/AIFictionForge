@@ -74,6 +74,38 @@ describe('profile refresh modals', () => {
     expect(screen.getByText('引文未命中 2')).toBeTruthy();
   });
 
+  it('shows merged fact count only when the apply result includes merged facts', () => {
+    const view = render(
+      <AntdApp>
+        <RefreshDiffModal
+          open
+          plan={plan}
+          applying={false}
+          result={{ applied: 2, fields_written: 3, stale: [], facts_merged: 2 }}
+          onCancel={vi.fn()}
+          onApply={vi.fn()}
+        />
+      </AntdApp>,
+    );
+
+    expect(screen.getByText('并合入 2 条档案事实')).toBeTruthy();
+
+    view.rerender(
+      <AntdApp>
+        <RefreshDiffModal
+          open
+          plan={plan}
+          applying={false}
+          result={{ applied: 2, fields_written: 3, stale: [], facts_merged: 0 }}
+          onCancel={vi.fn()}
+          onApply={vi.fn()}
+        />
+      </AntdApp>,
+    );
+
+    expect(screen.queryByText(/并合入/)).toBeNull();
+  });
+
   it('debounces estimate requests when changing mode and input values', async () => {
     vi.mocked(profileRefreshApi.estimate).mockResolvedValue({
       mode: 'incremental', through_chapter: 12, entities_total: 3, candidates: 2,

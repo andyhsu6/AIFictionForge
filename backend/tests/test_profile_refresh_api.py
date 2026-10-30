@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -296,7 +297,12 @@ async def test_apply_replays_plan_and_keeps_task(harness):
             json={"preview_task_id": task["id"]},
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"applied": 1, "fields_written": 1, "stale": []}
+        assert resp.json() == {
+            "applied": 1,
+            "fields_written": 1,
+            "facts_merged": 0,
+            "stale": [],
+        }
 
         still_there = await client.get(f"/tasks/{task['id']}")
         assert still_there.status_code == 200, "apply 后不得删除预览任务"
@@ -435,27 +441,55 @@ async def test_preview_and_apply_conflict_while_refresh_running(harness):
 # --- ⑦ 清理任务时保留新鲜的计划 --------------------------------------------
 
 
+def _naive_utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 async def test_clear_project_tasks_keeps_fresh_profile_plans(harness):
+    """豁免窗口与 apply 的 TTL 同基准（完成时刻），不是创建时刻。"""
     await _seed(
         harness.session_factory,
         chapters=[(1, f"角色甲登场。{QUOTE}。")],
         characters=[{"name": "角色甲"}],
     )
     harness.ai.response = _fields_payload("角色甲", personality="占位新性格")
+    now = _naive_utc_now()
 
     async with harness.client() as client:
         fresh = await _preview(harness, client, mode="full")
 
         async with harness.session_factory() as db:
-            stale = BackgroundTask(
+            # 跑了 70 分钟、10 分钟前才完成 → apply 仍可用，不得被清理
+            long_run = BackgroundTask(
                 user_id=USER_ID,
                 project_id=PROJECT_ID,
                 task_type="profile_preview",
                 status="completed",
                 progress=100,
                 task_result={"summary": {}, "plan_available": True, "plan": {"x": 1}},
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None)
-                - timedelta(minutes=61),
+                created_at=now - timedelta(minutes=70),
+                completed_at=now - timedelta(minutes=10),
+            )
+            # 完成于 70 分钟前 → 计划已过期，可清理
+            expired = BackgroundTask(
+                user_id=USER_ID,
+                project_id=PROJECT_ID,
+                task_type="profile_preview",
+                status="completed",
+                progress=100,
+                task_result={"summary": {}, "plan_available": True, "plan": {"x": 1}},
+                created_at=now - timedelta(minutes=120),
+                completed_at=now - timedelta(minutes=70),
+            )
+            # 已完成但没有 completed_at（存量数据）：无法证明仍在窗口内，不豁免
+            legacy = BackgroundTask(
+                user_id=USER_ID,
+                project_id=PROJECT_ID,
+                task_type="profile_preview",
+                status="completed",
+                progress=100,
+                task_result={"summary": {}, "plan_available": True, "plan": {"x": 1}},
+                created_at=now - timedelta(minutes=5),
             )
             plain = BackgroundTask(
                 user_id=USER_ID,
@@ -464,17 +498,28 @@ async def test_clear_project_tasks_keeps_fresh_profile_plans(harness):
                 status="completed",
                 progress=100,
             )
-            db.add_all([stale, plain])
+            db.add_all([long_run, expired, legacy, plain])
             await db.commit()
-            stale_id, plain_id = stale.id, plain.id
+            long_run_id, expired_id, legacy_id, plain_id = (
+                long_run.id,
+                expired.id,
+                legacy.id,
+                plain.id,
+            )
 
         resp = await client.delete(f"/tasks/project/{PROJECT_ID}/clear")
         assert resp.status_code == 200, resp.text
 
         assert (await client.get(f"/tasks/{fresh['id']}")).status_code == 200, (
-            "60 分钟内的预览计划必须保留"
+            "刚完成的预览计划必须保留"
         )
-        assert (await client.get(f"/tasks/{stale_id}")).status_code == 404
+        assert (await client.get(f"/tasks/{long_run_id}")).status_code == 200, (
+            "按完成时刻豁免：创建早但完成晚的计划仍可 apply"
+        )
+        assert (await client.get(f"/tasks/{expired_id}")).status_code == 404
+        assert (await client.get(f"/tasks/{legacy_id}")).status_code == 404, (
+            "completed_at 为空的已完成任务视为不可豁免"
+        )
         assert (await client.get(f"/tasks/{plain_id}")).status_code == 404
 
 
@@ -654,3 +699,104 @@ async def test_apply_returns_conflict_when_apply_plan_reports_busy(harness, monk
     async with harness.session_factory() as db:
         character = await db.get(Character, task["task_result"]["plan"]["entities"][0]["id"])
         assert character.personality is None
+
+
+# --- ⑪ estimate 的 mode 受校验 ----------------------------------------------
+
+
+async def test_estimate_rejects_unknown_mode(harness):
+    await _seed(
+        harness.session_factory,
+        chapters=[(1, "角色甲登场。")],
+        characters=[{"name": "角色甲"}],
+    )
+
+    async with harness.client() as client:
+        resp = await client.get(
+            f"/projects/{PROJECT_ID}/characters/refresh-estimate", params={"mode": "FULL"}
+        )
+
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"].startswith("errors.validation."), body
+    assert "candidates" not in body, "不得静默按增量算"
+
+
+# --- ⑫ 预览未完成时 apply → 409 --------------------------------------------
+
+
+async def test_apply_on_pending_preview_returns_conflict(harness):
+    """预览还在跑：报 409，而不是让用户白跑一次预览的 404。"""
+    await _seed(
+        harness.session_factory,
+        chapters=[(1, "角色甲登场。")],
+        characters=[{"name": "角色甲"}],
+    )
+
+    async with harness.session_factory() as db:
+        pending = BackgroundTask(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            task_type="profile_preview",
+            status="pending",
+            progress=0,
+            task_input={"mode": "full", "from_chapter": 1},
+        )
+        db.add(pending)
+        await db.commit()
+        pending_id = pending.id
+
+    async with harness.client() as client:
+        resp = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={"preview_task_id": pending_id},
+        )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "conflict.profile_refresh_running"
+
+
+# --- ⑬ apply 回报合并的事实条数 --------------------------------------------
+
+
+async def test_apply_reports_facts_merged(harness):
+    quotes = ["占位正文甲。占位正文乙", "占位正文丙。占位正文丁", "占位正文戊。占位正文己"]
+    content = "角色甲登场。角色乙登场。" + "。".join(quotes) + "。"
+    await _seed(
+        harness.session_factory,
+        chapters=[(1, content)],
+        characters=[{"name": "角色甲"}, {"name": "角色乙"}],
+    )
+    facts = [
+        {
+            "field": "personality",
+            "claim": f"占位特质{index}",
+            "quote": quote,
+            "chapter_number": 1,
+            "inferred": False,
+        }
+        for index, quote in enumerate(quotes, start=1)
+    ]
+    harness.ai.response = {
+        "characters": [
+            {"name": "角色甲", "profile_facts": facts},
+            {"name": "角色乙", "fields": {"personality": "占位乙性格"}, "organizations": []},
+        ]
+    }
+
+    async with harness.client() as client:
+        task = await _preview(harness, client, mode="full")
+        plan = task["task_result"]["plan"]
+        entry = next(e for e in plan["entities"] if e["name"] == "角色甲")
+        assert len(entry["facts_delta"]) == 3, "预览计划应带 3 条事实"
+
+        resp = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={"preview_task_id": task["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["facts_merged"] == 3, "无 facts 的实体不计入"
+
+    async with harness.session_factory() as db:
+        character = await db.get(Character, entry["id"])
+        assert len(json.loads(character.profile_facts)) == 3

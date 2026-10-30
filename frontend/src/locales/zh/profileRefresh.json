@@ -8,19 +8,18 @@
   },
   "aiSuggestion": "AI 建议：{{suggestion}}（未写入）",
   "applyChanges": "应用这些改动",
-  "applyFailed": "应用改动失败，请稍后重试。",
   "applyResult": "已应用 {{applied}} 个实体 / 跳过 {{skipped}} 个：预览后已变更",
   "cancel": "取消",
   "close": "完成",
   "createPreview": "生成差异预览",
   "diffTitle": "档案差异预览",
-  "disabledNoChapterContent": "项目中还没有正文内容",
   "emptyCandidates": "没有需要重算的章节",
   "emptyDiff": "没有需要展示的档案差异。",
   "emptyValue": "（空）",
   "estimateFailed": "预估暂时不可用，请稍后重试。",
   "estimateTitle": "重算档案 · 预估",
   "expandValue": "点击展开或收起内容",
+  "factsMerged": "并合入 {{count}} 条档案事实",
   "fields": {
     "age": "年龄",
     "appearance": "外貌",
@@ -54,7 +53,6 @@
     "scope": "本次不含世界设定与组织成员关系。"
   },
   "planMissing": "预览任务已完成，但没有返回差异计划。",
-  "previewFailed": "预览任务未能完成，请稍后重试。",
   "previewProgress": "预览正在后台处理：{{status}}",
   "reasons": {
     "chapter_invalid": "章节无效",
