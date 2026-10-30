@@ -596,3 +596,76 @@ def test_render_profile_form_equal_ignores_join_separator_in_choice():
     forward = render_profile(_claims("personality", "克制隐忍", "克制、隐忍"))
     backward = render_profile(_claims("personality", "克制、隐忍", "克制隐忍"))
     assert forward == backward == {"personality": "克制隐忍"}
+
+
+# 组织不设 personality（issue #210）：代码层按 kind 硬丢弃，不依赖提示词
+def test_organization_personality_fact_is_dropped():
+    payload = {
+        "name": "组织甲",
+        "facts": [
+            _fact(),
+            _fact(
+                field="background",
+                claim="雨夜独行",
+                quote="雨下了一整夜，院子里空无一人",
+                chapter_number=5,
+                inferred=False,
+            ),
+        ],
+    }
+    result = validate_profile_facts(payload, CHAPTERS, kind="organization")
+    assert [f["field"] for f in result.facts] == ["background"]
+    assert result.stats["org_personality_dropped"] == 1
+    assert result.stats["facts_accepted"] == 1
+
+
+def test_character_keeps_personality_fact():
+    result = validate_profile_facts(
+        {"name": "角色甲", "facts": [_fact()]}, CHAPTERS, kind="character"
+    )
+    assert [f["field"] for f in result.facts] == ["personality"]
+    assert result.stats["org_personality_dropped"] == 0
+
+
+def test_render_profile_omits_personality_for_organization():
+    facts = [
+        {
+            "field": "personality",
+            "claim": "隐秘不露",
+            "quote": "他听完只是点了点头",
+            "chapter_number": 3,
+            "inferred": False,
+        },
+        {
+            "field": "background",
+            "claim": "雨夜独行",
+            "quote": "雨下了一整夜，院子里空无一人",
+            "chapter_number": 5,
+            "inferred": False,
+        },
+    ]
+    assert "personality" not in render_profile(facts, kind="organization")
+    assert render_profile(facts, kind="character")["personality"] == "隐秘不露"
+
+
+# issue #210：组织 personality 的两处落库前剥离（book import / legacy 回流）
+def test_strip_org_personality_drops_field_and_facts():
+    from app.services.profile_facts import strip_org_personality
+
+    item = {"name": "组织甲", "personality": "性情沉稳", "background": "山门"}
+    facts = [
+        {"field": "personality", "claim": "性情沉稳"},
+        {"field": "background", "claim": "山门"},
+    ]
+    kept = strip_org_personality(item, facts)
+    assert "personality" not in item
+    assert [f["field"] for f in kept] == ["background"]
+    assert item["background"] == "山门"
+
+
+def test_filter_org_profile_values_only_touches_organizations():
+    from app.services.profile_facts import filter_org_profile_values
+
+    values = {"personality": "性情沉稳", "background": "山门"}
+    assert filter_org_profile_values(values, True) == {"background": "山门"}
+    assert filter_org_profile_values(values, False) == values

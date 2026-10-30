@@ -57,7 +57,11 @@ from app.services.import_validators import (
     validate_world_building,
 )
 from app.services.prompt_service import PromptService
-from app.services.profile_facts import PROFILE_FACTS_PROMPT_ENABLED, resolve_profile_fields
+from app.services.profile_facts import (
+    PROFILE_FACTS_PROMPT_ENABLED,
+    resolve_profile_fields,
+    strip_org_personality,
+)
 from app.services.profile_prompt_rules import PROSE_TRAIT_HINT
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
@@ -90,7 +94,7 @@ _DEGRADED_EXCERPT_CHARS = 900
 # 触发同一批最多一次补全调用；仍不达标则记入出参统计（不阻塞落库）。
 _PROFILE_REQUIRED_FIELDS = ("personality", "background", "appearance", "current_state")
 # 组织不参与 current_state 追踪（该列语义是角色当前心理/处境），只查三项。
-_ORG_PROFILE_REQUIRED_FIELDS = ("personality", "background", "appearance")
+_ORG_PROFILE_REQUIRED_FIELDS = ("background", "appearance")  # issue #210：组织不设 personality
 _MIN_PROFILE_FIELD_CHARS = 20
 # 占位表述：字段长度可能过阈值但内容不含该实体的具体信息
 _PROFILE_PLACEHOLDER_SNIPPETS = ("同上", "见前文", "见上文", "参见前文", "同前")
@@ -262,6 +266,25 @@ def _is_output_truncated(exc: BaseException) -> bool:
 
 # 导入后档案刷新的后台任务强引用集合（避免被 GC 提前回收）
 _profile_sync_tasks: set["asyncio.Task"] = set()
+
+
+def _apply_rendered_profile(
+    item: dict, rendered: dict[str, str], facts: list[dict], is_organization: bool
+) -> bool:
+    """把校验后的档案写回实体 dict，返回是否写入了渲染文本。
+
+    组织分支（issue #210）无条件覆盖 ``profile_facts``：一列全是 personality 事实时
+    校验后为空列表，若沿用「非空才赋值」的写法，模型原始条目会作为溯源落库。
+    """
+    if is_organization:
+        facts = strip_org_personality(item, facts)
+        item["profile_facts"] = facts or None
+    elif facts:
+        item["profile_facts"] = facts
+    if rendered:
+        item.update(rendered)
+        return True
+    return False
 
 
 def _profile_snapshot_json(**values: Any) -> Optional[str]:
@@ -2849,7 +2872,7 @@ class BookImportService:
             "有从属关系时逐条给出，organization_name 必须严格取自本次返回的组织名称"
             "（不得用简称、别名或未在本次结果中出现的组织名）；"
             "没有任何从属关系时返回空数组 []，不要省略该字段。"
-            "请为每个实体单独撰写档案字段：personality（性格/组织特性）、"
+            "请为每个实体单独撰写档案字段：personality（只有角色写性格；组织不要输出该字段）、"
             "background（背景经历）、appearance（外貌或外在表现）、"
             f"current_state（在{chapter_span}时的处境与心理状态），"
             "每个字段都要针对该实体具体描写，禁止输出「同上」「见前文」这类占位表述。"
@@ -3069,16 +3092,15 @@ class BookImportService:
             for item in generated_entities:
                 if not isinstance(item, dict):
                     continue
+                is_org = bool(item.get("is_organization"))
                 rendered, item_stats, facts = resolve_profile_fields(
-                    item, facts_chapters_by_number
+                    item,
+                    facts_chapters_by_number,
+                    kind="organization" if is_org else "character",
                 )
                 for key, value in item_stats.items():
                     profile_facts_stats[key] = profile_facts_stats.get(key, 0) + value
-                if facts:
-                    # 溯源：只落通过校验的事实（accepted），渲染文本由它们拼出
-                    item["profile_facts"] = facts
-                if rendered:
-                    item.update(rendered)
+                if _apply_rendered_profile(item, rendered, facts, is_org):
                     rendered_entities += 1
             profile_facts_stats["entities_rendered"] = rendered_entities
             stats["profile_facts"] = profile_facts_stats
@@ -3246,8 +3268,8 @@ class BookImportService:
                 f"主题：{project.theme or '未设定'}；类型：{project.genre or '未设定'}\n"
                 f"【待补全实体】{json.dumps(payload, ensure_ascii=False)}\n"
                 "【输出要求】返回纯 JSON 数组，每项形如 "
-                '{"name":"实体名","personality":"...","background":"...",'
-                '"appearance":"...","current_state":"..."}；'
+                '{"name":"实体名","background":"...","appearance":"...",'
+                '"current_state":"..."}（角色可另给 personality，组织不要给）；'
                 f"每个字段至少 {_MIN_PROFILE_FIELD_CHARS} 字、必须是该实体独有的具体描写；"
                 "禁止「同上」「见前文」这类占位表述，禁止抄录原文句子/对话；"
                 "正文没有明确描写时可基于上面的世界观与已有字段合理推断，但不得与之矛盾。\n"
@@ -3372,7 +3394,7 @@ class BookImportService:
                 gender=item.get("gender") if not is_organization else None,
                 is_organization=is_organization,
                 role_type=(item.get("role_type") or "supporting")[:50],
-                personality=item.get("personality"),
+                personality=None if is_organization else item.get("personality"),
                 background=item.get("background"),
                 appearance=item.get("appearance"),
                 # issue #173：current_state 已在提示词里要求生成，旧实现只生成不落库
@@ -3390,7 +3412,7 @@ class BookImportService:
                 ),
                 # issue #174：登记「档案由 AI 生成」，后续同步才允许覆盖演进
                 ai_profile_snapshot=_profile_snapshot_json(
-                    personality=item.get("personality"),
+                    personality=None if is_organization else item.get("personality"),
                     background=item.get("background"),
                     appearance=item.get("appearance"),
                     current_state=item.get("current_state"),

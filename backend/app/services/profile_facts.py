@@ -123,6 +123,7 @@ _STAT_KEYS = (
     "quote_not_found",
     "chapter_invalid",
     "inferred_not_allowed",
+    "org_personality_dropped",
     "chapter_corrected",
 )
 
@@ -287,7 +288,8 @@ def validate_profile_facts(
 ) -> ProfileFactResult:
     """逐条校验实体事实，丢弃不合格的条目并计数，不抛异常。
 
-    ``kind`` 用于区分角色与组织，本阶段的字段集合与谓词规则相同，参数先留位。
+    ``kind="organization"`` 时 ``personality`` 一律丢弃（计入
+    ``org_personality_dropped``）：组织不设性格字段，见 issue #210。
     每条事实任一条件不满足即丢弃并计入对应统计；只有全部通过才进入 facts。
     """
     stats = _new_stats()
@@ -317,6 +319,13 @@ def validate_profile_facts(
         field = raw.get("field")
         if field not in FACT_FIELDS:
             stats["field_invalid"] += 1
+            continue
+
+        # 组织不设 personality（issue #210）：模型分不清「组织作风」与
+        # 「作为/资源/结构/立场」，三轮实测放宽与收紧都会把后四类写成性格。
+        # 这里按 kind 硬丢弃，不依赖提示词——提示词只是让模型少产出，代码才是保证。
+        if kind == "organization" and field == "personality":
+            stats["org_personality_dropped"] += 1
             continue
 
         claim = raw.get("claim")
@@ -399,8 +408,9 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
     事实的**存活集合**与输入顺序无关，但多父簇场景下的相对次序不保证等于源顺序。
     复杂度 O(n²)：落库路径已按字段封顶，单批 payload 未封顶时仍可正常运行。
 
-    ``kind`` 目前不影响结果：组织同样有 appearance 字段、字段集合一致，
-    组织专属的谓词差异在 validate 阶段按 kind 留位处理。
+    ``kind="organization"`` 时不出 ``personality`` 段：该字段对组织已取消
+    （issue #210），这里再兜一道，保证即使调用方绕过了 validate 也不会渲染出来。
+    其余字段的渲染规则与角色相同。
     """
     buckets: dict[str, list[tuple[int, str, str]]] = {field: [] for field in FACT_FIELDS}
     seen: dict[str, set[str]] = {field: set() for field in FACT_FIELDS}
@@ -411,6 +421,8 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
             continue
         field = fact.get("field")
         if field not in FACT_FIELDS:
+            continue
+        if kind == "organization" and field == "personality":
             continue
         claim = fact.get("claim")
         if not isinstance(claim, str):
@@ -547,6 +559,30 @@ def parse_profile_payload(payload: Any) -> ParsedProfile:
         facts=[],
         legacy=legacy,
     )
+
+
+def strip_org_personality(item: dict, facts: list[dict]) -> list[dict]:
+    """组织不设 personality（issue #210）：清掉顶层字段，并过滤溯源事实。
+
+    提示词只能让模型「少产出」，实测三轮都能被近义词绕过；模型还可能完全无视
+    字段说明，直接给出顶层 ``personality``。``validate_profile_facts`` 的 kind 守卫
+    只覆盖 ``facts`` 数组这条车道，所以落库前必须在这里再剥一次。
+
+    原地修改 ``item``，返回过滤后的事实列表（调用方负责写回）。
+    """
+    item.pop("personality", None)
+    return [
+        fact
+        for fact in facts or []
+        if not (isinstance(fact, dict) and fact.get("field") == "personality")
+    ]
+
+
+def filter_org_profile_values(values: dict, is_organization: bool) -> dict:
+    """组织不设 personality：从 legacy/同步回传的字段字典里剔除该键。"""
+    if not is_organization:
+        return values
+    return {key: value for key, value in values.items() if key != "personality"}
 
 
 def resolve_profile_fields(

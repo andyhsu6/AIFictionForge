@@ -125,7 +125,8 @@ class AutoOrganizationService:
             name=organization_data.get("name", "未命名组织"),
             is_organization=True,
             role_type=organization_data.get("role_type", "supporting"),
-            personality=organization_data.get("personality", ""),  # 组织特性
+            # issue #210：组织不设 personality，忽略模型可能给出的值
+            personality=None,
             background=organization_data.get("background", ""),  # 组织背景
             appearance=organization_data.get("appearance", ""),  # 外在表现
             organization_type=organization_data.get("organization_type"),

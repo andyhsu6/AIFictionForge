@@ -76,6 +76,7 @@ DISCARD_REASON_KEYS = (
     "quote_not_found",
     "chapter_invalid",
     "inferred_not_allowed",
+    "org_personality_dropped",
 )
 # 非丢弃类的统计键
 COUNTER_KEYS = ("facts_in", "facts_accepted", "chapter_corrected")
@@ -202,15 +203,16 @@ def _measure_facts(entities: list[Any], chapters_by_number: dict[int, str]) -> d
     for entity in entities:
         parsed = parse_profile_payload(entity)
         modes[parsed.mode] += 1
+        kind = "organization" if bool(entity.get("is_organization")) else "character"
         result = validate_profile_facts(
-            {"name": parsed.entity, "facts": parsed.facts}, chapters_by_number
+            {"name": parsed.entity, "facts": parsed.facts}, chapters_by_number, kind=kind
         )
         totals.update(result.stats)
 
         for fact in result.facts:
             field_facts[fact["field"]] += 1
 
-        rendered = render_profile(result.facts)
+        rendered = render_profile(result.facts, kind=kind)
         rendered_chars = {field: len(rendered.get(field, "")) for field in FACT_FIELDS}
         for field, text in rendered.items():
             field_rendered_chars[field].append(len(text))
