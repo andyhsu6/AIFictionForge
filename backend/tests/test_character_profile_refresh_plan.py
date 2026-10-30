@@ -884,6 +884,235 @@ async def test_cancel_after_first_chunk_stops_without_writing(db_session):
         assert json.loads(character.ai_profile_snapshot) == {"personality": "占位旧性格"}
 
 
+# --- ⑫ 同一实体跨文本批的字段收口 ------------------------------------------
+
+_NARRATION = (
+    "因为她和丈夫不仅是夫妻，还是师兄妹，她的骑术和刀法都不在角色乙之下，"
+    "「占位双刀」的名头她可是占了一半的。"
+)
+
+
+class _RotatingFieldsAIService:
+    """每个文本批返回不同的字段值，用来复现「同一实体被多批返回」。"""
+
+    def __init__(self, values: list[str]) -> None:
+        self.values = values
+        self.calls = 0
+
+    async def call_with_json_retry(self, *, prompt, **kwargs):
+        value = self.values[min(self.calls, len(self.values) - 1)]
+        self.calls += 1
+        return _fields_payload("角色甲", personality=value)
+
+
+async def _three_batch_project(db, monkeypatch) -> None:
+    """3 章各超预算 → 同一实体在 3 个文本批里各返回一次。"""
+    import app.services.character_profile_sync_service as mod
+
+    monkeypatch.setattr(mod, "_PROMPT_CHAR_BUDGET", 100)
+    await _seed(
+        db,
+        chapters=[
+            (number, f"角色甲登场。占位正文{number}。" + "占位正文" * 30)
+            for number in (1, 2, 3)
+        ],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位旧性格",
+                "ai_profile_snapshot": json.dumps({"personality": "占位旧性格"}, ensure_ascii=False),
+            }
+        ],
+    )
+
+
+async def test_same_field_across_batches_collapses_to_last_value(db_session, monkeypatch):
+    await _three_batch_project(db_session, monkeypatch)
+    ai = _RotatingFieldsAIService(["占位性格甲", "占位性格乙", "占位性格丙"])
+
+    collector = ProfileDiffCollector()
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=3,
+        ai_service=ai,
+        dry_run=True,
+        collector=collector,
+    )
+
+    assert ai.calls == 3, "3 个文本批各调用一次"
+    entry = next(iter(collector.entities.values()))
+    assert len(entry["fields"]) == 1, "同一字段只保留一行"
+    row = entry["fields"][0]
+    assert row["field"] == "personality"
+    assert row["action"] == "change"
+    assert row["new"] == "占位性格丙", "后一批的值胜出（与 apply 顺序回放一致）"
+
+
+async def test_rejected_batch_does_not_override_earlier_usable_value(db_session, monkeypatch):
+    await _three_batch_project(db_session, monkeypatch)
+    ai = _RotatingFieldsAIService(["占位新性格", _NARRATION, "占位新性格"])
+
+    collector = ProfileDiffCollector()
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=3,
+        ai_service=ai,
+        dry_run=True,
+        collector=collector,
+    )
+
+    entry = next(iter(collector.entities.values()))
+    assert len(entry["fields"]) == 1
+    assert entry["fields"][0]["action"] == "change"
+    assert entry["fields"][0]["new"] == "占位新性格"
+    assert stats["fields_rejected"] == 1, "rejected 计数是全集，不因收口少计"
+    assert entry["stats"]["fields_rejected"] == 1
+
+
+async def test_all_batches_rejected_keeps_one_rejected_row(db_session, monkeypatch):
+    await _three_batch_project(db_session, monkeypatch)
+    ai = _RotatingFieldsAIService(
+        [
+            f"{_NARRATION}占位甲",
+            f"{_NARRATION}占位乙",
+            f"{_NARRATION}占位丙",
+        ]
+    )
+
+    collector = ProfileDiffCollector()
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=3,
+        ai_service=ai,
+        dry_run=True,
+        collector=collector,
+    )
+
+    entry = next(iter(collector.entities.values()))
+    assert len(entry["fields"]) == 1, "全部被丢弃时也只保留一行"
+    assert entry["fields"][0]["action"] == "rejected"
+    assert entry["fields"][0]["new"].endswith("占位甲"), "保留首次出现的那条"
+    assert stats["fields_rejected"] == 3
+
+
+async def test_collapsed_plan_replay_equals_un_collapsed_replay(db_session):
+    """收口不改变写入结果：两份计划（收口前/后）回放终态必须一致。"""
+    await _seed(
+        db_session,
+        chapters=[(1, "角色甲登场。角色乙登场。占位正文甲。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位原性格",
+                "appearance": "占位手改外貌",
+                "ai_profile_snapshot": json.dumps({"personality": "占位原性格"}, ensure_ascii=False),
+            },
+            {
+                "name": "角色乙",
+                "personality": "占位原性格",
+                "appearance": "占位手改外貌",
+                "ai_profile_snapshot": json.dumps({"personality": "占位原性格"}, ensure_ascii=False),
+            },
+        ],
+    )
+    fact = {
+        "field": "background",
+        "claim": "占位出身背景",
+        "quote": QUOTE,
+        "chapter_number": 1,
+        "inferred": False,
+    }
+    char_a = await _character(db_session, "角色甲")
+    char_b = await _character(db_session, "角色乙")
+
+    # 同一实体被多批返回的字段序列（未收口）：background 两次（后写覆盖），
+    # personality 一次 same，appearance 一次 preserved（用户手改）。
+    script = [
+        {"field": "background", "old": None, "new": "占位背景甲", "action": "add"},
+        {"field": "background", "old": None, "new": "占位背景乙", "action": "change"},
+        {"field": "personality", "old": "占位原性格", "new": "占位原性格", "action": "same"},
+        {"field": "appearance", "old": "占位手改外貌", "new": "占位新外貌", "action": "preserved"},
+    ]
+
+    un_collapsed_plan = _manual_plan(char_a, fields=script, facts_delta=[fact])
+
+    # 收口后的计划由 collector 自己算出来，避免手写「预期收口结果」
+    collector = ProfileDiffCollector()
+    for row in script:
+        collector.record(char_b, row["field"], row["old"], row["new"], row["action"])
+    collapsed_entry = collector.entity_entry(char_b)
+    collapsed_entry["facts_delta"] = [fact]
+    assert [row["field"] for row in collapsed_entry["fields"]] == [
+        "background",
+        "personality",
+        "appearance",
+    ]
+    assert len(collapsed_entry["fields"]) == 3, "4 行收口成 3 行（background 去重）"
+    collapsed_plan = {"entities": [collapsed_entry]}
+
+    await character_profile_sync_service.apply_plan(
+        db=db_session, project_id=PROJECT_ID, plan=un_collapsed_plan
+    )
+    await character_profile_sync_service.apply_plan(
+        db=db_session, project_id=PROJECT_ID, plan=collapsed_plan
+    )
+
+    un_collapsed = await _character(db_session, "角色甲")
+    collapsed = await _character(db_session, "角色乙")
+    for field in ("personality", "background", "appearance", "current_state"):
+        assert getattr(un_collapsed, field) == getattr(collapsed, field), field
+    assert un_collapsed.background == "占位背景乙"
+    assert json.loads(un_collapsed.ai_profile_snapshot) == json.loads(collapsed.ai_profile_snapshot)
+    assert json.loads(un_collapsed.ai_profile_snapshot) == {
+        "background": "占位背景乙",
+        "personality": "占位原性格",
+    }, "preserved 字段不进快照"
+    assert un_collapsed.profile_facts == collapsed.profile_facts
+
+
+async def test_collapse_keeps_first_seen_field_order(db_session, monkeypatch):
+    """`fields` 顺序按字段首次出现的批次固定，后续批次不改变位置。"""
+    await _three_batch_project(db_session, monkeypatch)
+
+    class _ScriptedAIService:
+        def __init__(self, payloads: list[dict]) -> None:
+            self.payloads = payloads
+            self.calls = 0
+
+        async def call_with_json_retry(self, *, prompt, **kwargs):
+            payload = self.payloads[min(self.calls, len(self.payloads) - 1)]
+            self.calls += 1
+            return payload
+
+    ai = _ScriptedAIService(
+        [
+            _fields_payload("角色甲", background="占位背景甲"),
+            _fields_payload("角色甲", personality="占位性格甲"),
+            _fields_payload("角色甲", background="占位背景乙"),
+        ]
+    )
+    collector = ProfileDiffCollector()
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=3,
+        ai_service=ai,
+        dry_run=True,
+        collector=collector,
+    )
+
+    entry = next(iter(collector.entities.values()))
+    assert [row["field"] for row in entry["fields"]] == ["background", "personality"]
+    assert _row(entry, "background")["new"] == "占位背景乙"
+
+
 # --- ⑦ estimate 真算 ------------------------------------------------------
 
 

@@ -363,11 +363,33 @@ class ProfileDiffCollector:
         self, target: Character, field: str, old: Any, new: Any, action: str
     ) -> None:
         entry = self.entity_entry(target)
-        entry["fields"].append(
-            {"field": field, "old": old, "new": new, "action": action}
-        )
         if action == "rejected":
+            # 全量计数（收口不影响 rejected 统计）
             entry["stats"]["fields_rejected"] = entry["stats"].get("fields_rejected", 0) + 1
+
+        rows = entry["fields"]
+        index = next(
+            (position for position, row in enumerate(rows) if row["field"] == field), None
+        )
+        if index is None:
+            # 首次出现：占住该字段在计划里的位置
+            rows.append({"field": field, "old": old, "new": new, "action": action})
+            return
+
+        previous_action = rows[index]["action"]
+        if action in ("add", "change"):
+            # 同一实体可能被多个文本批返回：后者胜出（与 apply 的顺序回放同终态）
+            rows[index] = {"field": field, "old": old, "new": new, "action": action}
+            return
+        # 其余动作（same/preserved/rejected）都不覆盖已有行：真实回放里它们不写字段值，
+        # 保留首行既保证「同一字段只有一行」，也让已有的 add/change 可用值胜出。
+        logger.debug(
+            "同字段多批返回已收口: %s.%s 保留 %s，忽略 %s",
+            entry["name"],
+            field,
+            previous_action,
+            action,
+        )
 
     def set_facts_delta(self, character: Character, facts: List[Dict[str, Any]]) -> None:
         if not facts:
