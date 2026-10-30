@@ -4,6 +4,10 @@
 为什么抽样库里已存的 facts 而不是重跑模型：`profile_facts` 就是流水线真正写进用户档案的
 内容，抽样它最贴近"用户实际看到的分类质量"，且零模型成本、可复现。
 
+例外：验证**新提示词规则**（issue #198）时，库里的历史 facts 是旧规则产物，不能用来
+验证；此时用 `--facts-tsv` 直接读 `backfill_profiles.py --dump-facts` 的 dry-run 导出
+（新提示词生成、已通过校验的原子事实），完全不连数据库。
+
 口径（与上一轮 #190 的集子一致）：
 - 只测**字段分类**（这段文字放在该字段里是否合适）。表达形态、主体归属这两轴测不到。
 - 本集子回答"当前流水线分类准不准"，不回答"比历史现状好多少"。
@@ -12,6 +16,10 @@
     DATABASE_URL="sqlite+aiosqlite:////abs/path/app.db" PYTHONPATH=backend \\
         python backend/scripts/sample_golden_profile_facts.py --out-dir .omo/evidence/golden-198 \\
         --count 80 --exclude-tsv old/golden-set.tsv --label-template old/label.html
+
+    # 不读库：直接从 backfill_profiles.py --dump-facts 的新产物抽样
+    python backend/scripts/sample_golden_profile_facts.py --out-dir /tmp/set \\
+        --facts-tsv /tmp/facts.tsv --label-template old/label.html
 
 输出：
 - <out-dir>/golden-set-198.tsv  列：id, source, entity, field, text, quote, verdict, note
@@ -121,6 +129,44 @@ def _read_facts(db_path: Path) -> list[dict]:
     return items
 
 
+def _read_facts_tsv(path: Path) -> tuple[list[dict], bool]:
+    """从 `backfill_profiles.py --dump-facts` 的 TSV 读候选，返回 (items, 是否有 kind 列)。
+
+    为什么要有这条路：验证新提示词规则时必须用**新提示词重新生成**的 facts，库里旧
+    facts 是旧规则产物；而回填脚本本身支持 dry-run 导出，所以不落库也能抽样
+    （导出时需配 `--include-existing`，否则已有 facts 的实体会被幂等跳过）。
+
+    去重键用 `(project_id, entity)`：同一份 TSV 可能来自多个项目，跨项目的同名实体
+    不是同一个实体，不合并。
+    """
+    if not path.exists():
+        raise SystemExit(f"--facts-tsv 文件不存在：{path}")
+
+    items: list[dict] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        has_kind = "kind" in (reader.fieldnames or [])
+        for row in reader:
+            field = (row.get("field") or "").strip()
+            text = (row.get("claim") or "").strip()
+            if field not in FIELDS or not text:
+                continue
+            entity = (row.get("entity") or "").strip() or "entity-unknown"
+            project_id = (row.get("project_id") or "").strip()
+            # 没有 kind 列的历史 TSV 一律按人物分层（README 会注明）
+            kind = ((row.get("kind") or "").strip().lower() if has_kind else "person")
+            items.append({
+                # TSV 里没有数据库 id；去重按 (project_id, entity)，避免跨项目同名实体合并
+                "entity_id": (project_id, entity),
+                "entity": entity,
+                "is_organization": 1 if kind == "organization" else 0,
+                "field": field,
+                "text": text,
+                "quote": row.get("quote") or "",
+            })
+    return items, has_kind
+
+
 def _read_excluded(paths: list[str]) -> set[str]:
     excluded: set[str] = set()
     for raw in paths:
@@ -136,7 +182,7 @@ def _read_excluded(paths: list[str]) -> set[str]:
 
 
 def _allocate(sizes: dict[tuple[int, str], int], total: int) -> dict[tuple[int, str], int]:
-    """按候选量等比分配配额，并保证每个非空分层至少 1 条。"""
+    """按候选量优先分配配额，尽量让每个非空分层拿到 1 条（条数少于分层数时无法保证）。"""
     keys = [k for k in sorted(sizes) if sizes[k] > 0]
     total = min(total, sum(sizes[k] for k in keys))
     quota = {k: 0 for k in sizes}
@@ -272,25 +318,54 @@ def _write_readme(out_path: Path, rows: list[dict], stats: dict, args: argparse.
     def label(is_org: int, field: str) -> str:
         return f"{'组织' if is_org else '人物'}/{field}"
 
+    # 来源不同会直接影响这批标注能回答什么问题，README 必须写清是哪一种
+    if args.facts_tsv:
+        intro = [
+            f"{len(rows)} 条 claim，来自 `backfill_profiles.py --dump-facts` 导出的 TSV"
+            f"（`{args.facts_tsv}`，**新提示词重跑**产物），不重跑模型。",
+            "",
+            "这与「抽样库里的历史 facts」不同：TSV 是本次按新提示词生成、"
+            "并通过 `validate_profile_facts` 的原子事实，用来验证新规则本身。"
+            "生成 TSV 时须用 `--include-existing`：已有 `profile_facts` 属于旧规则产物，"
+            "既不能当新样本，也会被幂等跳过；`--include-existing` 下 TSV 只含本次新生成内容。",
+        ]
+        source_line = (
+            f"- 来源：`--facts-tsv` 里 `claim` 非空、`field` 合法的条目"
+            f"（{stats['candidates']} 条候选，去重后）"
+        )
+    else:
+        intro = [
+            f"{len(rows)} 条 claim，直接抽样自**生产库已存的** `characters.profile_facts`"
+            "（当前流水线真正写进用户档案的内容），不重跑模型。",
+        ]
+        source_line = (
+            f"- 来源：`characters.profile_facts` 里 `claim` 非空、`field` 合法的条目"
+            f"（{stats['candidates']} 条候选，去重后）"
+        )
+
     lines = [
         "# 档案字段黄金集（第 2 轮，issue #198 复测）",
         "",
         "## 这是什么",
         "",
-        f"{len(rows)} 条 claim，直接抽样自**生产库已存的** `characters.profile_facts`"
-        "（当前流水线真正写进用户档案的内容），不重跑模型。",
+        *intro,
         "",
         "数据来自本地 `.omo/`（已 gitignore），**不要提交到仓库**。",
         "",
         "## 抽样口径",
         "",
-        f"- 来源：`characters.profile_facts` 里 `claim` 非空、`field` 合法的条目（"
-        f"{stats['candidates']} 条候选，去重后）",
-        f"- 分层：`(is_organization, field)` 共 {len([k for k in sizes if sizes[k]])} 个非空分层，"
-        "配额按候选量等比分配，每个分层至少 1 条",
+        source_line,
+        f"- 分层：`(kind, field)` 共 {len([k for k in sizes if sizes[k]])} 个非空分层，"
+        "配额按候选量优先分配，尽量让每个分层都有 1 条（条数不足时无法保证）",
         f"- 随机种子：`{args.seed}`（`random.Random(seed)`，可复现）",
         f"- 目标条数：{args.count}，实际 {len(rows)} 条",
         f"- 已排除上一轮集子里的 {excluded} 条 `text`（避免重复判定）",
+    ]
+    if args.facts_tsv:
+        lines.append("- 去重键：`(project_id, entity)`；跨项目同名实体不合并")
+    if not stats.get("has_kind", True):
+        lines.append("- **输入 TSV 没有 `kind` 列：全部条目按「人物」分层**")
+    lines += [
         "",
         "| 分层 | 候选量 | 抽中 |",
         "|---|---|---|",
@@ -348,17 +423,27 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20261030, help="随机种子（默认 20261030）")
     parser.add_argument("--exclude-tsv", action="append", default=[],
                         help="把该 TSV 里已有的 text 全部排除（可重复）")
+    parser.add_argument("--facts-tsv", default=None,
+                        help=("改从该 TSV（backfill_profiles.py --dump-facts 产物）读候选，不连数据库；"
+                              "该 TSV 应是配 --include-existing 按新提示词重新生成的产物"))
     parser.add_argument("--label-template", default=None, help="label.html 模板，用它的样式生成勾选页")
     args = parser.parse_args()
 
     if args.count <= 0:
         raise SystemExit("--count 必须为正数")
 
-    db_path = _db_path(os.environ.get("DATABASE_URL") or DEFAULT_URL)
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    items = _read_facts(db_path)
+    if args.facts_tsv:
+        # 明确不构造引擎/快照：运行环境不需要库文件
+        source = f"TSV（{args.facts_tsv}）"
+        items, has_kind = _read_facts_tsv(Path(args.facts_tsv).expanduser())
+    else:
+        db_path = _db_path(os.environ.get("DATABASE_URL") or DEFAULT_URL)
+        source = f"数据库（{db_path}）"
+        items = _read_facts(db_path)
+        has_kind = True
     excluded_texts = _read_excluded(args.exclude_tsv)
     if excluded_texts:
         before = len(items)
@@ -368,12 +453,13 @@ def main() -> int:
         excluded_hits = 0
 
     rows, stats = _build_rows(items, args.count, args.seed)
+    stats["has_kind"] = has_kind
 
     tsv_path = out_dir / "golden-set-198.tsv"
     _write_tsv(rows, tsv_path)
     _write_readme(out_dir / "README.md", rows, stats, args, excluded_hits)
 
-    print(f"数据库：{db_path}")
+    print(f"候选来源：{source}")
     print(f"候选（去重后）：{stats['candidates']}｜已排除上一轮文本：{excluded_hits} 条")
     print(f"抽中：{len(rows)} 条（目标 {args.count}）")
     print("\n分层分布（候选量 → 抽中）：")
