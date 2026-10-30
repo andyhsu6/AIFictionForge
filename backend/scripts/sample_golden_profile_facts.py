@@ -18,8 +18,9 @@
 - <out-dir>/label.html          仅当给了 --label-template；除 payload 行外与模板逐字节相同
 - <out-dir>/README.md           口径与分布说明
 
-数据库只读：先把主库快照复制到临时目录再打开（SQLite 直接只读打开 WAL 库会生成
--wal/-shm 旁文件），因此不会改动原库，也不会留下旁文件。
+数据库只读：先把主库**连同 -wal** 一起快照到临时目录再打开（只复制主库会漏掉尚未
+checkpoint 的写入；直接只读打开 WAL 库又会在库目录生成 -wal/-shm 旁文件），因此
+既拿到完整数据，也不改动原库目录。
 """
 from __future__ import annotations
 
