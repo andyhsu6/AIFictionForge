@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,6 +101,19 @@ _WHITESPACE_RE = re.compile(r"[\s\u3000]+")
 # 渲染时剥掉的句末标点
 _TRAILING_PUNCT = "。！？；"
 
+# 嵌套判定时视为措辞差异的结构助词
+_STRUCTURAL_PARTICLES = "的地得"
+
+# 判定「包含关系是不是同一特质」时用的极性标记（见 _folded_contains）。
+# 只做保守判定：长串里**通篇**出现任一标记就不折叠。中文的否定标记与中心语
+# 之间距离是开放的（副词、能愿动词、后置补语都会插进来，「不」还能出现在中心语
+# 之后），按「紧邻前后缀」枚举追不完，所以改成通篇扫描。
+_NEGATION_CHARS = "不没无非未勿莫别弗無沒唔甭"
+# 反问/疑问同样会把「X」写成「X 过吗」「岂能 X」「焉能 X」
+_RHETORICAL_CHARS = "岂焉何"
+_QUESTION_CHARS = "吗呢"
+_QUESTION_MARKS = ("？", "?")
+
 _STAT_KEYS = (
     "facts_in",
     "facts_accepted",
@@ -138,6 +152,68 @@ def normalize_quote(text: str) -> str:
     if not isinstance(text, str):
         return ""
     return _WHITESPACE_RE.sub("", text)
+
+
+def normalize_claim_form(text: str) -> str:
+    """claim 的「措辞归一」串，只用于同一字段内判断两条 claim 是否互相嵌套。
+
+    去空白、去标点、去结构助词（的/地/得）——这些只是同一特质的措辞差异：
+    「甲庄园的管家」与「甲庄园管家」、「甲之妻、乙之母」与「乙之母」
+    说的是同一件事。
+
+    与 ``normalize_quote`` 刻意分开：后者服务于「引文必须在原文里字面存在」这条
+    硬校验，归一得越多越容易放过伪造引用；本函数只回答「是不是同一特质的再次
+    表述」，**不得**外泄到引文校验路径。
+    """
+    if not isinstance(text, str):
+        return ""
+    return "".join(
+        char
+        for char in text
+        if not char.isspace()
+        and not unicodedata.category(char).startswith("P")
+        and char not in _STRUCTURAL_PARTICLES
+    )
+
+
+def _preferred_text(current: str, candidate: str) -> str:
+    """归一串相同的两条里挑哪条做渲染文本：信息量优先，其次与顺序无关。"""
+    def key(text: str) -> tuple[int, int, str]:
+        return (len(text.replace("、", "")), -text.count("、"), text)
+
+    return candidate if key(candidate) > key(current) else current
+
+
+def _folded_contains(outer: str, inner: str) -> bool:
+    """``inner`` 是否可作为 ``outer`` 的重复表述被吸收。
+
+    字面包含不足以判定重复：
+
+    1. **否定与反问**：「克制」被「不克制」「克制不了」「并不十分克制」包含，
+       「耐心」被「耐心全无」「不太耐心」包含，说的都是相反或另一件事；按字面
+       吸收会静默删掉较短的一条，让档案断言反转。中文否定标记与中心语的距离是
+       开放的（`不克制` / `克制不了` / `并不十分克制` / `未必克制`），按紧邻
+       前后缀枚举追不完，所以改成**通篇扫描**：长串里出现任一否定语素或反问
+       标记就不折叠。代价是少数含这些字的正常短语不再合并（宁可少合并，不要写反）。
+       **已知残余**：词汇性否定（「失去X」「缺乏X」「难以X」「否认X」）不含标记字，
+       不在闸内——它们属开放词类，穷举需要句法分析，与「确定性纯函数」的定位冲突；
+       当前语料零命中，如将来出现，用 ``measure_fact_dedupe.py`` 复核后按需扩表。
+    2. **纯 ASCII 不折叠**：英文没有可依赖的词边界（去标点去空格后更没有了），
+       「care」在「careless」里、「friend」在「boyfriend」里，都属于不同词而非
+       措辞差异。被吸收的一方是 ASCII 即豁免——混排 claim 里同样没有词边界。
+    3. **单字不折叠**：一个字的表述几乎总是恰好在更长的表述里出现，吸收它只会丢信息。
+    """
+    if inner == outer or len(inner) < 2:
+        return False
+    if inner.isascii():
+        return False
+    if any(char in outer for char in _NEGATION_CHARS + _RHETORICAL_CHARS + _QUESTION_CHARS):
+        return False
+    # 上游 normalize_claim_form 已剥掉全部标点，这两条只是防御：直接调用本函数
+    # （例如测量脚本）传入未归一文本时仍然成立。
+    if any(mark in outer for mark in _QUESTION_MARKS):
+        return False
+    return inner in outer
 
 
 def normalize_chapters(chapters_by_number: dict[int, str]) -> dict[int, str]:
@@ -299,17 +375,37 @@ def validate_profile_facts(
 def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, str]:
     """把通过校验的事实渲染成 ``personality``/``background``/``appearance`` 文本。
 
-    - 同一字段内按 ``normalize_quote(claim)`` 去重，先到先留；
-    - 每字段最多 ``MAX_FACTS_PER_FIELD`` 条，用 `、` 连接；
-    - 渲染前再剥一次句末标点（`。！？；`），仍为空则跳过该字段；
-    - 没有事实返回 ``{}``。
+    同一字段内做两级去重（都是确定性纯函数，无 IO、无模型调用）：
+
+    1. **精确去重**：按 ``normalize_quote(claim)``，先到先留；
+    2. **嵌套去重**（issue #201 第 2 项）：按 ``normalize_claim_form``（去空白、
+       标点、结构助词）比较。归一串完全相同（只差标点或「的」）合并为一条、保留
+       原文较长者；若甲的归一串是乙的归一串的**真子串**，丢弃甲、保留乙——同存
+       只是同义堆叠。否定语境（「甲」与「不甲」）、纯 ASCII 形式、单字表述一律
+       不折叠，理由见 ``_folded_contains``。三条以上互相嵌套时保留最长者，
+       长度相等但内容不同的串不会互为真子串，因此不会互相吞并。
+
+    这是确定性的字面比较，不做语义判断，所以它只回答「这一条是不是另一条的
+    子串」。刻意不用语义相似度（embedding）：前序实测本地 ONNX 模型对真库 claim
+    全配对时，人工确认过的真实重复相似度低于 0.89 进不了候选档，而 0.90 档里
+    过半是误合并、0.95 档一条都抓不到——误合并率远高于字面规则。两种口径都能用
+    ``backend/scripts/measure_fact_dedupe.py`` 重跑复核。
+
+    两级去重**之后**才按 ``FACT_FIELD_LIMITS`` 截断（被合并掉的重复不占配额），
+    每字段用 `、` 连接；渲染前剥一次句末标点（`。！？；`），仍为空则跳过该字段；
+    没有事实返回 ``{}``。
+
+    排序取存活项所在簇的最早位置；多父簇按「最短的包含者」定归属，因此同一批
+    事实的**存活集合**与输入顺序无关，但多父簇场景下的相对次序不保证等于源顺序。
+    复杂度 O(n²)：落库路径已按字段封顶，单批 payload 未封顶时仍可正常运行。
 
     ``kind`` 目前不影响结果：组织同样有 appearance 字段、字段集合一致，
     组织专属的谓词差异在 validate 阶段按 kind 留位处理。
     """
-    buckets: dict[str, list[str]] = {field: [] for field in FACT_FIELDS}
+    buckets: dict[str, list[tuple[int, str, str]]] = {field: [] for field in FACT_FIELDS}
     seen: dict[str, set[str]] = {field: set() for field in FACT_FIELDS}
 
+    # 阶段 1：按字段收集 + 精确去重
     for fact in facts or []:
         if not isinstance(fact, dict):
             continue
@@ -323,16 +419,70 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
         key = normalize_quote(claim)
         if not key or key in seen[field]:
             continue
-        if len(buckets[field]) >= FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD):
-            continue
         seen[field].add(key)
 
         text = claim.strip().rstrip(_TRAILING_PUNCT).strip()
-        if not text:
+        form = normalize_claim_form(text)
+        if not form:
             continue
-        buckets[field].append(text)
+        buckets[field].append((len(buckets[field]), text, form))
 
-    return {field: "、".join(items) for field, items in buckets.items() if items}
+    rendered: dict[str, str] = {}
+    for field, entries in buckets.items():
+        if not entries:
+            continue
+
+        # 阶段 2：嵌套去重。entries 条数个位数，两两比较足够。
+        # 2a. 归一串相同 → 同一特质的措辞差异（只差标点或「的」）：保留信息量最大的一条，
+        #     也就是原文最长者（长度相同取先到的），位置取该组里最早的。
+        groups: list[dict] = []
+        by_form: dict[str, dict] = {}
+        for pos, text, form in entries:
+            group = by_form.get(form)
+            if group is None:
+                group = {"form": form, "pos": pos, "text": text}
+                by_form[form] = group
+                groups.append(group)
+                continue
+            # 择优键不数「、」：连接符本身不是信息，含它的原文反而会与渲染
+            # 结果的分隔符混淆（渲染时就是用「、」连接各条）。键里带上原文本身，
+            # 保证长度打平时结果也与输入顺序无关。
+            if _preferred_text(group["text"], text) == text:
+                group["text"] = text
+            group["pos"] = min(group["pos"], pos)
+
+        # 2b. 归一串是另一条的**真子串**才折叠；否定上下文与纯 ASCII 形式不折（见
+        #     _folded_contains）。三条以上互相嵌套时只有最长者存活。
+        forms = [group["form"] for group in groups]
+        survivors = [
+            i
+            for i, form in enumerate(forms)
+            if not any(j != i and _folded_contains(forms[j], form) for j in range(len(forms)))
+        ]
+
+        # 2c. 位置继承：每条被吸收项只归属**最短的**包含它的存活项（同长取更早的），
+        #     不能像「凡包含我的都算我的簇」那样合并——一条短串同时被多条长串包含时，
+        #     会让互不相关的簇全部塌到同一个位置，把排在后面的独立事实挤出配额。
+        sort_pos = {i: groups[i]["pos"] for i in survivors}
+        for i, form in enumerate(forms):
+            if i in survivors:
+                continue
+            owners = [j for j in survivors if _folded_contains(forms[j], form)]
+            if not owners:
+                # 不可能发生：折叠要求严格更短，链长严格递增必有存活项。
+                # 若真出现，说明规则被改坏了——宁可少继承一个位置，也不要报错。
+                continue
+            owner = min(owners, key=lambda j: (len(forms[j]), groups[j]["pos"]))
+            sort_pos[owner] = min(sort_pos[owner], groups[i]["pos"])
+
+        survivors.sort(key=lambda i: (sort_pos[i], i))
+
+        limit = FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD)
+        items = [groups[i]["text"] for i in survivors[:limit]]
+        if items:
+            rendered[field] = "、".join(items)
+
+    return rendered
 
 
 # 旧格式（模型直接给三段长文本）与本模块的字段集合一致，直接复用

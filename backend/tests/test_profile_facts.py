@@ -4,6 +4,7 @@ import json
 
 from app.services.profile_facts import (
     FACT_FIELDS,
+    FACT_FIELD_LIMITS,
     MAX_CLAIM_CHARS,
     MAX_FACTS_PER_FIELD,
     MIN_QUOTE_CHARS,
@@ -420,3 +421,178 @@ def test_merge_profile_facts_ignores_invalid_and_empty():
     assert merge_profile_facts("not json", []) is None
     assert merge_profile_facts(None, [{"field": "current_state", "claim": "处境"}]) is None
     assert merge_profile_facts(None, [{"field": "personality"}]) is None
+
+
+# --------------------------------------------------------------------------- #
+# issue #201 第 2 项：render_profile 的嵌套去重（确定性规则，不用语义相似度）
+# --------------------------------------------------------------------------- #
+def _claims(field: str, *claims: str) -> list[dict]:
+    return [{"field": field, "claim": claim} for claim in claims]
+
+
+def test_normalize_claim_form_strips_punct_and_particles():
+    from app.services.profile_facts import normalize_claim_form
+
+    # 只差标点与结构助词 → 同一特质的措辞差异
+    assert normalize_claim_form("山庄的管家、") == normalize_claim_form("山庄管家")
+    assert normalize_claim_form(None) == ""  # type: ignore[arg-type]
+    # 引文校验用的 normalize_quote 语义不受影响（不归一标点）
+    assert normalize_quote("他，点头") != normalize_quote("他。点头")
+
+
+def test_render_profile_nested_dedup_keeps_longer():
+    rendered = render_profile(_claims("personality", "隐忍克制", "克制"))
+    assert rendered == {"personality": "隐忍克制"}
+
+
+def test_render_profile_nested_dedup_merges_equal_form():
+    # 归一后完全相同（只差结构助词）也合并为一条；保留原文较长者，
+    # 与「子串折叠保留最长」保持同一准则（谁活下来不该取决于输入顺序）
+    rendered = render_profile(_claims("background", "甲峰管家", "甲峰的管家"))
+    assert rendered == {"background": "甲峰的管家"}
+
+
+def test_render_profile_nested_three_levels_keeps_longest():
+    rendered = render_profile(
+        _claims("background", "神捕", "六扇门神捕", "六扇门神捕，办案二十年")
+    )
+    assert rendered == {"background": "六扇门神捕，办案二十年"}
+
+
+def test_render_profile_nested_dedup_keeps_earliest_position():
+    # 被丢弃项的位置让给保留下来的那条：长串虽在第 3 位，仍占据簇内最早的第 1 位
+    rendered = render_profile(_claims("personality", "克制", "寡言", "隐忍克制", "沉默"))
+    assert rendered == {"personality": "隐忍克制、寡言、沉默"}
+
+
+def test_render_profile_limit_applies_after_dedup():
+    from app.services.profile_facts import FACT_FIELD_LIMITS
+
+    limit = FACT_FIELD_LIMITS["appearance"]
+    assert limit == 4
+    facts = _claims(
+        "appearance",
+        "黑衣",  # 被下一条吸收，不应占用配额
+        "黑衣与黑长衫",
+        "身形瘦削",
+        "面无血色",
+        "手指纤细",  # 去重后落在第 4 位，必须能进入渲染结果
+    )
+    rendered = render_profile(facts)
+    items = rendered["appearance"].split("、")
+    assert items == ["黑衣与黑长衫", "身形瘦削", "面无血色", "手指纤细"]
+
+
+def test_render_profile_similar_but_unrelated_phrases_not_merged():
+    # 防误合并回归：共字但不互为子串的短语是不同特质
+    rendered = render_profile(_claims("personality", "甲家公子", "乙峰之孙"))
+    assert rendered == {"personality": "甲家公子、乙峰之孙"}
+
+
+def test_render_profile_punctuation_only_claims_ignored():
+    facts = _claims("personality", "。", "！！", "  ", "的地得")
+    facts.append({"field": "appearance", "claim": "。"})
+    rendered = render_profile(facts)
+    assert "personality" not in rendered
+    assert "appearance" not in rendered
+
+
+def test_render_profile_dedup_is_per_field():
+    # 不同字段互不去重：personality 的短串不该吃掉 background 的长串
+    facts = _claims("personality", "克制") + _claims("background", "隐忍克制")
+    rendered = render_profile(facts)
+    assert rendered == {"personality": "克制", "background": "隐忍克制"}
+
+
+def test_render_profile_is_deterministic():
+    facts = _claims("personality", "克制", "寡言", "隐忍克制", "沉默")
+    facts += _claims("background", "甲峰管家", "甲峰的管家")
+    first = render_profile(facts)
+    second = render_profile(facts)
+    assert first == second
+
+
+def test_render_profile_keeps_negated_claim():
+    """否定形式不是「措辞差异」：按字面吸收会把档案写成相反结论。
+
+    独立复核给出的反例：短串是长串的子串，但长串带否定标记。
+    """
+    rendered = render_profile(_claims("personality", "克制", "不克制"))
+    assert rendered == {"personality": "克制、不克制"}
+    rendered = render_profile(_claims("personality", "耐心", "没有耐心"))
+    assert rendered == {"personality": "耐心、没有耐心"}
+
+
+def test_render_profile_does_not_fold_ascii_claims():
+    """纯英文没有可靠词边界，子串折叠会误并不同词。"""
+    rendered = render_profile(_claims("personality", "care", "careless"))
+    assert rendered == {"personality": "care、careless"}
+    rendered = render_profile(_claims("personality", "friend", "boyfriend"))
+    assert rendered == {"personality": "friend、boyfriend"}
+
+
+def test_render_profile_does_not_swallow_single_char_claim():
+    """单字表述几乎总是更长的串的子串，吸收它只会丢信息。"""
+    rendered = render_profile(_claims("personality", "高", "高大威猛"))
+    assert rendered == {"personality": "高、高大威猛"}
+
+
+def test_render_profile_multi_parent_cluster_does_not_starve_independent_fact():
+    """多条长串共享同一个短串时，位置继承不能把独立事实挤出配额。
+
+    旧实现把「凡包含我的都算我的簇」合并，几条存活项全部继承短串的最早位置，
+    排在后面的独立事实因此跌出上限。
+    """
+    limit = FACT_FIELD_LIMITS["appearance"]
+    facts = _claims(
+        "appearance",
+        "黑衣",
+        "黑衣与长发",
+        "甲之独立特征",
+        "黑衣与瘦削",
+        "黑衣与苍白",
+        "黑衣与纹路",
+    )
+    items = render_profile(facts)["appearance"].split("、")
+    assert len(items) == limit
+    assert "甲之独立特征" in items
+    # 短串被吸收后不占配额
+    assert "黑衣" not in items
+
+
+def test_render_profile_equal_form_prefers_longer_text_in_any_order():
+    """归一串相同的两条，谁活下来不应由输入顺序决定。"""
+    forward = render_profile(_claims("background", "甲家管家", "甲家的管家"))
+    backward = render_profile(_claims("background", "甲家的管家", "甲家管家"))
+    assert forward == backward == {"background": "甲家的管家"}
+
+
+def test_render_profile_nesting_rejects_postposed_and_detached_negation():
+    """否定不总紧贴在中心语前面：后置补语、能愿动词、副词插入都会把意思改反。
+
+    只按「紧邻前后缀」判否定会漏掉这一整类，所以判定改成通篇扫描极性标记。
+    """
+    for short, long in (
+        ("克制", "克制不了"),
+        ("耐心", "耐心全无"),
+        ("克制", "并不十分克制"),
+        ("耐心", "不太耐心"),
+        ("克制", "不能克制"),
+        ("克制", "未必克制"),
+        ("克制", "何曾克制"),
+    ):
+        rendered = render_profile(_claims("personality", short, long))
+        assert rendered == {"personality": f"{short}、{long}"}, (short, long)
+
+
+def test_render_profile_nesting_skips_mixed_ascii_claim():
+    """混排 claim 里的 ASCII 片段同样没有词边界，作为被吸收方一律豁免。"""
+    rendered = render_profile(_claims("personality", "AI", "AI与术法"))
+    assert rendered == {"personality": "AI、AI与术法"}
+
+
+def test_render_profile_form_equal_ignores_join_separator_in_choice():
+    """择优长度不数「、」：连接符不是信息，且会与渲染分隔符混淆。"""
+    forward = render_profile(_claims("personality", "克制隐忍", "克制、隐忍"))
+    backward = render_profile(_claims("personality", "克制、隐忍", "克制隐忍"))
+    assert forward == backward == {"personality": "克制隐忍"}
