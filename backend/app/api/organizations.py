@@ -86,7 +86,13 @@ async def get_project_organizations(
                 power_level=org.power_level,
                 location=org.location,
                 motto=org.motto,
-                color=org.color
+                color=org.color,
+                personality=char.personality,
+                background=char.background,
+                appearance=char.appearance,
+                profile_facts=char.profile_facts,
+                profile_facts_updated_at=char.profile_facts_updated_at,
+                updated_at=char.updated_at,
             ))
     
     logger.info(f"获取项目 {project_id} 的组织列表，共 {len(org_list)} 个")

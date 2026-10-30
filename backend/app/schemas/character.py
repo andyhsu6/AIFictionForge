@@ -110,6 +110,9 @@ class CharacterResponse(CharacterBase):
     profile_facts: Optional[List[Dict[str, Any]]] = Field(
         None, description="档案事实溯源：[{field, claim, quote, chapter_number, inferred}]"
     )
+    profile_facts_updated_at: Optional[datetime] = Field(
+        None, description="档案事实最后写入时间；晚于 updated_at 说明文本在依据之后被改过"
+    )
 
     @field_validator("profile_facts", mode="before")
     @classmethod

@@ -1,6 +1,7 @@
 """关系管理相关的Pydantic模型"""
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List
+from pydantic import field_validator, BaseModel, Field, ConfigDict
+import json
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 
@@ -169,6 +170,29 @@ class OrganizationDetailResponse(BaseModel):
     location: Optional[str] = None
     motto: Optional[str] = None
     color: Optional[str] = None
+
+    # issue #190：组织与角色共用 characters 表的档案列，这里一并带出
+    personality: Optional[str] = None
+    background: Optional[str] = None
+    appearance: Optional[str] = None
+    profile_facts: Optional[List[Dict[str, Any]]] = None
+    profile_facts_updated_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @field_validator("profile_facts", mode="before")
+    @classmethod
+    def _parse_profile_facts(cls, value: Any) -> Any:
+        """库里的 JSON 文本 → 数组；损坏时返回 None，不让整个列表挂掉。"""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return None
+            return parsed if isinstance(parsed, list) else None
+        return value
 
 
 # ============ 组织成员相关 ============
