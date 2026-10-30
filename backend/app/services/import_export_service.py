@@ -1445,7 +1445,9 @@ class ImportExportService:
                 "gender": char.gender,
                 "is_organization": char.is_organization or False,
                 "role_type": char.role_type,
-                "personality": char.personality,
+                # 组织不设 personality（issue #210）：与 _export_characters 同口径，
+                # 免得同一个 service 里两条导出口径相反
+                "personality": None if char.is_organization else char.personality,
                 "background": char.background,
                 "appearance": char.appearance,
                 "traits": traits,

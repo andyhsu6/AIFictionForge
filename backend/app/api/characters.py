@@ -35,6 +35,7 @@ from app.services.cascade_cleanup import (
     delete_character_owned_organizations,
     delete_relationship_links,
 )
+from app.services.profile_facts import drop_org_personality_field
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger, safe_preview
 from app.api.settings import get_user_ai_service
@@ -533,8 +534,16 @@ async def update_character(
     # 更新 Character 表字段（排除 relationships 和 organization_members，这些字段现在由结构化表驱动）
     update_data.pop('relationships', None)
     update_data.pop('organization_members', None)
+    # 组织不设 personality（issue #210/#214）：人工 API 是主动指定车道，写入前统一剔除。
+    # 判定必须取「本次请求生效后」的类型——同一次 PUT 可以把角色改成组织，
+    # 用改动前的 is_organization 会漏拦（独立复核实测出来的边界）。
+    is_organization_after = bool(update_data.get("is_organization", character.is_organization))
+    drop_org_personality_field(update_data, is_organization_after)
     for field, value in update_data.items():
         setattr(character, field, value)
+    if character.is_organization:
+        # 角色翻转为组织时，旧性格文本一并作废：组织没有这个字段
+        character.personality = None
     
     # 如果是组织且有需要同步的字段，更新 Organization 表
     if character.is_organization and org_fields:

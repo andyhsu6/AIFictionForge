@@ -19,6 +19,7 @@ from app.services.agent_plan_schema import (
     PROPOSE_PLAN_TOOL_NAME,
 )
 from app.services.relationship_service import relationship_display_names
+from app.services.profile_facts import drop_org_personality_field
 from app.services.project_agent_extended_tools import (
     EXTENDED_TOOL_SPECS,
     READ_TOOL_NAMES,
@@ -440,6 +441,13 @@ class ProjectAgentToolRegistry:
         if name == "update_character":
             entity = await self._find_character(arguments)
             fields = self._pick_fields(arguments, self.CHARACTER_FIELDS)
+            # 组织不设 personality（issue #210/#214）：agent 是主动指定车道，
+            # 在字段准备阶段就剔除，不进入修改预览与落库。
+            drop_org_personality_field(fields, bool(getattr(entity, "is_organization", False)))
+            if not fields:
+                # 只给了被剔除的 personality：与 _pick_fields 的空字段同口径，
+                # 不能让 execute 返回「已更新」却不写入任何字段（issue #94）。
+                raise ValueError("缺少可修改字段")
             self._validate_update_fields(name, fields)
             return entity, fields, self._entity_label(entity)
         if name == "update_chapter":

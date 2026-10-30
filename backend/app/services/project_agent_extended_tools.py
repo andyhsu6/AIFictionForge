@@ -27,6 +27,7 @@ from app.services.cascade_cleanup import (
     delete_organization_children,
     delete_relationship_links,
 )
+from app.services.profile_facts import drop_org_personality_field
 from app.services.project_agent_selectors import (
     clean_identifier,
     find_career,
@@ -665,6 +666,9 @@ class ProjectAgentExtendedTools:
             self.CHARACTER_FIELDS | self.ORGANIZATION_FIELDS,
         )
         self._validate_character_fields(data)
+        # 组织不设 personality（issue #210/#214）：agent 创建车道同样剔除，
+        # 判定口径与同函数下方的组织字段检查一致（truthy）。
+        drop_org_personality_field(data, bool(data.get("is_organization")))
         organization_fields = {key: data[key] for key in data if key in self.ORGANIZATION_FIELDS}
         if organization_fields and not data.get("is_organization"):
             raise ValueError("普通角色不能设置组织专属字段")
@@ -683,6 +687,9 @@ class ProjectAgentExtendedTools:
         org_data = {key: data.pop(key) for key in list(data) if key in self.ORGANIZATION_FIELDS}
         await self._validate_organization_fields(org_data)
         data["name"] = str(data.get("name") or "").strip()
+        # 组织不设 personality（issue #210/#214）：创建车道同样剔除；放这里是因为
+        # is_organization 只能在构造前判定，与 row.is_organization 同源同值。
+        drop_org_personality_field(data, bool(data.get("is_organization")))
         row = Character(project_id=self.project.id, **data)
         self.db.add(row)
         await self.db.flush()
