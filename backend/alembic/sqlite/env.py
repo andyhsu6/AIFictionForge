@@ -37,7 +37,9 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # 配置日志
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False：默认 True 会把进程里已创建的 logger（例如应用模块的）
+    # 全部禁用；在测试里以 Python API 跑迁移时，后续用例的 caplog 就收不到日志了。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # 设置 target_metadata 为应用的 Base.metadata
 target_metadata = Base.metadata
