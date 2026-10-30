@@ -5,8 +5,6 @@ python-multipart==0.0.20
 
 # 数据库
 sqlalchemy==2.0.25
-asyncpg==0.31.0    # PostgreSQL异步驱动（支持 Python 3.14）
-psycopg2-binary  # PostgreSQL同步驱动（用于迁移脚本）
 alembic==1.14.0  # 数据库迁移工具
 aiosqlite==0.22.1
 

@@ -1,65 +1,25 @@
 # Alembic 数据库迁移指南
 
-本项目支持 **PostgreSQL** 和 **SQLite** 两种数据库，使用独立的 Alembic 配置管理迁移。
+本项目**仅支持 SQLite**，迁移链只有一套：`alembic/sqlite/`（配置文件 `alembic-sqlite.ini`）。
 
 ## 📁 目录结构
 
 ```
 backend/
-├── alembic-postgres.ini       # PostgreSQL 配置文件
 ├── alembic-sqlite.ini         # SQLite 配置文件
 ├── alembic/
-│   ├── postgres/              # PostgreSQL 迁移脚本目录
-│   │   ├── env.py
-│   │   ├── script.py.mako
-│   │   └── versions/          # PostgreSQL 迁移版本
-│   │       ├── 20251226_1008_ee0a189f1532_初始数据库结构.py
-│   │       └── 20251226_1102_e411428f00c0_初始化预置数据.py
 │   └── sqlite/                # SQLite 迁移脚本目录
 │       ├── env.py
 │       ├── script.py.mako
-│       └── versions/          # SQLite 迁移版本
-│           └── 20251226_1322_fbeb1038c728_初始化sqlite数据库.py
+│       └── versions/          # 迁移版本
 ```
 
 ## 🚀 使用方法
 
-### 1. PostgreSQL 数据库
-
 #### 配置环境变量
 ```bash
 # .env 文件
-DATABASE_URL=postgresql+asyncpg://username:password@localhost:5432/database_name
-```
-
-#### 生成迁移脚本
-```bash
-cd backend
-alembic -c alembic-postgres.ini revision --autogenerate -m "描述信息"
-```
-
-#### 应用迁移
-```bash
-alembic -c alembic-postgres.ini upgrade head
-```
-
-#### 回退迁移
-```bash
-alembic -c alembic-postgres.ini downgrade -1
-```
-
-#### 查看迁移历史
-```bash
-alembic -c alembic-postgres.ini history
-alembic -c alembic-postgres.ini current
-```
-
-### 2. SQLite 数据库
-
-#### 配置环境变量
-```bash
-# .env 文件
-DATABASE_URL=sqlite+aiosqlite:///./data/mumuai.db
+DATABASE_URL=sqlite+aiosqlite:///./data/mumuai_novel.db
 ```
 
 #### 生成迁移脚本
@@ -84,62 +44,25 @@ alembic -c alembic-sqlite.ini history
 alembic -c alembic-sqlite.ini current
 ```
 
-## ⚙️ 关键配置差异
-
-### PostgreSQL (alembic/postgres/env.py)
-- `render_as_batch=False` - 直接支持 ALTER TABLE
-- 使用 `server_default=sa.text('now()')` 
+## ⚙️ 关键配置
 
 ### SQLite (alembic/sqlite/env.py)
 - `render_as_batch=True` - 通过重建表实现 ALTER TABLE
-- 使用 `server_default=sa.text('(CURRENT_TIMESTAMP)')` - SQLite 格式
+- 使用 `server_default=sa.text('(CURRENT_TIMESTAMP)')` - SQLite 格式（UTC）
 
 ## 📝 注意事项
 
 ### SQLite 限制
-1. **并发写入**：同时只允许一个写操作
+1. **并发写入**：同时只允许一个写操作（WAL 模式下读写可并发）
 2. **ALTER TABLE 限制**：某些操作需要重建表（Alembic 的批处理模式会自动处理）
 3. **类型映射**：
    - `JSON` → `TEXT` (SQLAlchemy 自动处理)
    - `BOOLEAN` → `INTEGER` (0/1)
    - `DEFAULT now()` → `DEFAULT CURRENT_TIMESTAMP`
-
-### PostgreSQL 优势
-1. **高并发支持**：多用户同时读写
-2. **完整的 ALTER TABLE 支持**
-3. **高级特性**：全文搜索、JSON 操作符、数组类型等
-
-## 🔄 切换数据库
-
-只需修改 `.env` 文件中的 `DATABASE_URL`，然后使用对应的配置文件执行迁移：
-
-```bash
-# 切换到 SQLite
-DATABASE_URL=sqlite+aiosqlite:///./data/mumuai.db
-alembic -c alembic-sqlite.ini upgrade head
-
-# 切换到 PostgreSQL
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/db
-alembic -c alembic-postgres.ini upgrade head
-```
+4. **长度约束**：SQLite 不校验 `VARCHAR(n)` 长度，超长写入不会报错 ⇒ 长度上限靠应用层校验
 
 ## 💡 最佳实践
 
-1. **开发环境**：使用 SQLite（简单、无需额外服务）
-2. **生产环境**：使用 PostgreSQL（性能、并发、稳定性）
-3. **保持同步**：两个数据库的模型定义必须一致
-4. **测试迁移**：在两种数据库上都测试迁移脚本
-
-## 🐛 常见问题
-
-### Q: 迁移脚本生成后可以通用吗？
-A: 不行。PostgreSQL 和 SQLite 的迁移脚本是独立的，因为：
-- SQL 语法差异（如 DEFAULT 值）
-- 类型差异（如 JSON、BOOLEAN）
-- ALTER TABLE 能力差异
-
-### Q: 如何从 PostgreSQL 迁移数据到 SQLite？
-A: 需要编写数据导出/导入脚本，不能直接复用迁移脚本。
-
-### Q: 为什么 SQLite 迁移这么慢？
-A: SQLite 的 ALTER TABLE 限制导致需要重建表，这在大表时会很慢。
+1. **保持单一迁移链**：只维护 `alembic/sqlite/`，新增迁移必须在这里生成
+2. **测试迁移**：改动模型后在本地库上跑一遍 `upgrade head`
+3. **不要绕过 Alembic 手改表结构**：`Base.metadata.create_all` 只用于测试

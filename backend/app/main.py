@@ -51,6 +51,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 —— 注册失败不得挡住启动
         logger.warning(f"计划执行器注册失败（批准将返回 501）: {exc}")
 
+    # 配置自检：DATABASE_URL 不是 SQLite 时立刻拒绝启动。
+    # 下面的表检查包在宽 except 里（旧部署没跑迁移也要能启动），若不在这里先验一次，
+    # 配错方言会被降级成一条「不影响启动」的告警，然后每个请求 500。
+    try:
+        from app.database import get_engine
+
+        await get_engine("system")
+    except RuntimeError as exc:
+        logger.error(f"数据库配置无效，拒绝启动: {exc}")
+        raise
+
     # 安全保障：确保后台任务表存在（兼容未执行Alembic迁移的旧部署）
     try:
         await _sweep_interrupted_tasks()

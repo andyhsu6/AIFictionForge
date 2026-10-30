@@ -262,11 +262,10 @@ async def _seed_an_uncommitted_turn_row(db) -> AgentMessage:
 async def test_probe_sql_error_keeps_the_outer_transaction_committable(db_session, monkeypatch):
     """F1：探针里的真实 SQL 异常不得把会话带进不可提交状态。
 
-    app/config.py 的默认 DATABASE_URL 是 postgresql+asyncpg：PG 上语句报错会中止
-    整个事务，没有 SAVEPOINT 时主流程随后的 flush/commit 直接抛 PendingRollbackError
-    ⇒ 用户拿到 500 而不是确认卡。SQLite 不中止事务，所以本用例能证的是
+    当前运行时是 SQLite：语句报错不会中止整个事务，所以本用例能证的是
     "risk 2 + 外层仍可提交 + 本轮未提交的行仍在"（后者专门打掉 db.rollback() 这种修法）；
-    PG 的中止行为本身无法在本机复现。
+    换到会中止事务的方言时，SAVEPOINT 的这层保护才是决定性的，
+    但那类方言的中止行为无法在本机复现，故此处以 SQLite 上可观测的行为为断言。
     """
     chapter = await _seed_chapter(db_session)
     message = await _seed_an_uncommitted_turn_row(db_session)
@@ -282,7 +281,7 @@ async def test_probe_sql_error_keeps_the_outer_transaction_committable(db_sessio
     assert (decision.risk_level, decision.requires_confirmation) == (2, True)
     assert decision.reason == "analysis_probe_failed"
 
-    await db_session.commit()  # 拿掉 SAVEPOINT 的 PG、或改用 db.rollback() 的写法都会在此失败/丢行
+    await db_session.commit()  # 拿掉 SAVEPOINT、或改用 db.rollback() 的写法都会在此失败/丢行
     committed = (await db_session.execute(
         select(AgentMessage).where(AgentMessage.id == message.id)
     )).scalars().all()
