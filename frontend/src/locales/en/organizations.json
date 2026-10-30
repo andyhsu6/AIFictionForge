@@ -60,11 +60,14 @@
     "status": "Status"
   },
   "orgDetail": {
+    "appearance": "Outward Appearance",
+    "background": "Background",
     "color": "Signature Color",
     "location": "Location",
     "memberCount": "Members",
     "motto": "Motto / Slogan",
     "name": "Name",
+    "personality": "Organization Traits",
     "powerLevel": "Power Level",
     "purpose": "Purpose",
     "title": "Organization Details",

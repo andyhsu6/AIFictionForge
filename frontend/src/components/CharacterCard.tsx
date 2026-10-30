@@ -1,14 +1,12 @@
-import { Button, Card, Modal, Space, Tag, Typography, Popconfirm, theme } from 'antd';
+import { Button, Card, Space, Tag, Typography, Popconfirm, theme } from 'antd';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { EditOutlined, DeleteOutlined, UserOutlined, BankOutlined, ExportOutlined, ReadOutlined } from '@ant-design/icons';
 import { characterCardStyles } from './CardStyles';
+import ProfileSourceModal from './ProfileSourceModal';
 import type { Character } from '../types';
 
 const { Text, Paragraph } = Typography;
-
-type ProfileField = 'personality' | 'background' | 'appearance';
-const PROFILE_FIELDS: ProfileField[] = ['personality', 'background', 'appearance'];
 
 interface CharacterCardProps {
   character: Character;
@@ -102,43 +100,14 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
         </Popconfirm>,
       ]}
     >
-      <Modal
+      <ProfileSourceModal
         open={sourcesOpen}
-        onCancel={() => setSourcesOpen(false)}
-        title={`${t('sourceTitle')} - ${character.name}`}
-        width="min(640px, calc(100vw - 32px))"
-        styles={{ body: { maxHeight: '60vh', overflowY: 'auto' } }}
-        footer={<Button onClick={() => setSourcesOpen(false)}>{t('confirm')}</Button>}
-      >
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          {PROFILE_FIELDS.map(field => {
-            const facts = profileFacts.filter(fact => fact.field === field);
-            if (facts.length === 0) return null;
-            return (
-              <div key={field}>
-                <Text strong style={{ display: 'block', marginBottom: 6 }}>{t(field)}</Text>
-                <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                  {facts.map((fact, index) => (
-                    <div key={`${fact.claim}-${fact.chapter_number}-${index}`}>
-                      <Text strong>{fact.claim}</Text>
-                      {fact.quote && (
-                        <Text style={{ display: 'block', marginTop: 2 }}>
-                          {t('quoteLabel')}：「{fact.quote}」
-                        </Text>
-                      )}
-                      {fact.chapter_number != null && (
-                        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-                          {t('chapterNumber', { number: fact.chapter_number })}
-                        </Text>
-                      )}
-                    </div>
-                  ))}
-                </Space>
-              </div>
-            );
-          })}
-        </Space>
-      </Modal>
+        onClose={() => setSourcesOpen(false)}
+        title={character.name}
+        facts={profileFacts}
+        updatedAt={character.updated_at}
+        factsUpdatedAt={character.profile_facts_updated_at}
+      />
       <Card.Meta
         style={{ width: '100%', flexShrink: 0 }}
         avatar={

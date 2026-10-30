@@ -483,6 +483,7 @@ export interface Character {
   background?: string;
   appearance?: string;
   profile_facts?: CharacterProfileFact[];
+  profile_facts_updated_at?: string | null;
   relationships?: string;
   organization_type?: string;
   organization_purpose?: string;

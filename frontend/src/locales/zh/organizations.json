@@ -60,11 +60,14 @@
     "status": "状态"
   },
   "orgDetail": {
+    "appearance": "外在表现",
+    "background": "背景",
     "color": "代表颜色",
     "location": "所在地",
     "memberCount": "成员数量",
     "motto": "格言/口号",
     "name": "组织名称",
+    "personality": "组织特性",
     "powerLevel": "势力等级",
     "purpose": "组织目的",
     "title": "组织详情",

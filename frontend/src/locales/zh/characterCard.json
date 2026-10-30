@@ -23,6 +23,7 @@
   "roleOther": "其他",
   "roleProtagonist": "主角",
   "roleSupporting": "配角",
+  "sourceEditedWarning": "档案文本在生成依据之后被编辑过，以下依据可能不完整",
   "sourceLabel": "查看档案依据",
   "sourceTitle": "档案依据",
   "statusDeceased": "💀 已死亡",
