@@ -65,16 +65,16 @@ export interface RefreshTaskResponse {
 
 export const profileRefreshApi = {
   estimate: (projectId: string, mode: RefreshMode, fromChapter: number) =>
-    api.get<unknown, RefreshEstimate>(`/${projectId}/characters/refresh-estimate`, {
+    api.get<unknown, RefreshEstimate>(`/projects/${projectId}/characters/refresh-estimate`, {
       params: { mode, from_chapter: fromChapter },
     }),
   preview: (projectId: string, mode: RefreshMode, fromChapter: number) =>
-    api.post<unknown, RefreshTaskResponse>(`/${projectId}/characters/refresh-preview`, {
+    api.post<unknown, RefreshTaskResponse>(`/projects/${projectId}/characters/refresh-preview`, {
       mode,
       from_chapter: fromChapter,
     }),
   apply: (projectId: string, previewTaskId: string) =>
-    api.post<unknown, RefreshApplyResult>(`/${projectId}/characters/refresh-apply`, {
+    api.post<unknown, RefreshApplyResult>(`/projects/${projectId}/characters/refresh-apply`, {
       preview_task_id: previewTaskId,
     }),
 };
