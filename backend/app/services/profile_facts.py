@@ -108,7 +108,7 @@ _STRUCTURAL_PARTICLES = "的地得"
 # 只做保守判定：长串里**通篇**出现任一标记就不折叠。中文的否定标记与中心语
 # 之间距离是开放的（副词、能愿动词、后置补语都会插进来，「不」还能出现在中心语
 # 之后），按「紧邻前后缀」枚举追不完，所以改成通篇扫描。
-_NEGATION_CHARS = "不没无非未勿莫别弗"
+_NEGATION_CHARS = "不没无非未勿莫别弗無沒唔甭"
 # 反问/疑问同样会把「X」写成「X 过吗」「岂能 X」「焉能 X」
 _RHETORICAL_CHARS = "岂焉何"
 _QUESTION_CHARS = "吗呢"
@@ -195,6 +195,9 @@ def _folded_contains(outer: str, inner: str) -> bool:
        开放的（`不克制` / `克制不了` / `并不十分克制` / `未必克制`），按紧邻
        前后缀枚举追不完，所以改成**通篇扫描**：长串里出现任一否定语素或反问
        标记就不折叠。代价是少数含这些字的正常短语不再合并（宁可少合并，不要写反）。
+       **已知残余**：词汇性否定（「失去X」「缺乏X」「难以X」「否认X」）不含标记字，
+       不在闸内——它们属开放词类，穷举需要句法分析，与「确定性纯函数」的定位冲突；
+       当前语料零命中，如将来出现，用 ``measure_fact_dedupe.py`` 复核后按需扩表。
     2. **纯 ASCII 不折叠**：英文没有可依赖的词边界（去标点去空格后更没有了），
        「care」在「careless」里、「friend」在「boyfriend」里，都属于不同词而非
        措辞差异。被吸收的一方是 ASCII 即豁免——混排 claim 里同样没有词边界。
@@ -206,6 +209,8 @@ def _folded_contains(outer: str, inner: str) -> bool:
         return False
     if any(char in outer for char in _NEGATION_CHARS + _RHETORICAL_CHARS + _QUESTION_CHARS):
         return False
+    # 上游 normalize_claim_form 已剥掉全部标点，这两条只是防御：直接调用本函数
+    # （例如测量脚本）传入未归一文本时仍然成立。
     if any(mark in outer for mark in _QUESTION_MARKS):
         return False
     return inner in outer
