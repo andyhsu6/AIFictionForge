@@ -55,6 +55,11 @@ from app.services.profile_facts import (  # noqa: E402
     render_profile,
     validate_profile_facts,
 )
+from app.services.profile_mentions import (  # noqa: E402
+    count_mentions,
+    mention_tokens,
+    unique_tokens_by_entity,
+)
 from app.services.prompt_service import PromptService  # noqa: E402
 
 ACTION_UPDATED = "updated"
@@ -118,6 +123,7 @@ async def _load_entity_rows(db: AsyncSession, project_id: str) -> list[Any]:
         select(
             Character.id,
             Character.name,
+            Character.aliases,
             Character.is_organization,
             Character.personality,
             Character.background,
@@ -282,12 +288,19 @@ async def _run_project(
         return record
 
     windows = sweep._split_windows(chapters, args.chapters_per_window)
+    # 唯一性判定必须在**整个项目的实体行**上做（不是 targets 子集）：某个 token
+    # 是否歧义跟本批处理哪些实体无关；唯一性拿不到时 mention_tokens 退回只用 name。
+    unique_map = unique_tokens_by_entity(rows)
     slots: dict[str, dict[str, Any]] = {}
     started = time.perf_counter()
 
     for window_chapters in windows:
         window_text = "".join(c.content or "" for c in window_chapters)
-        window_entities = [e for e in targets if (e.name or "").strip() and e.name in window_text]
+        window_entities = [
+            entity
+            for entity in targets
+            if count_mentions(window_text, mention_tokens(entity, unique_map)) > 0
+        ]
         if not window_entities:
             continue
         chapters_by_number = {c.chapter_number: (c.content or "") for c in window_chapters}
