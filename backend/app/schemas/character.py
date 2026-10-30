@@ -2,7 +2,7 @@
 import json
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 
 
@@ -158,3 +158,17 @@ class CharacterProfileRefreshRequest(BaseModel):
         False,
         description="强制覆盖：忽略历史值与快照对照，整段重写（默认保护用户手改/历史值）",
     )
+
+
+class CharacterProfileRefreshPreviewRequest(BaseModel):
+    """档案重算预览请求（dry-run，只产出差异计划，不写库）。"""
+    mode: Literal["incremental", "full"] = Field(
+        "incremental", description="重算模式：incremental（增量）或 full（全量）"
+    )
+    from_chapter: int = Field(1, ge=1, description="起始章节号")
+
+
+class CharacterProfileRefreshApplyRequest(BaseModel):
+    """档案重算 apply 请求：回放某个预览任务产出的差异计划。"""
+    preview_task_id: str = Field(..., description="预览任务ID")
+

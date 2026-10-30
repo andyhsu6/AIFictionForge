@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_
 from typing import List, Optional
 import json
+from datetime import datetime, timezone
 from urllib.parse import quote
 from app.database import get_db
 from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
@@ -19,6 +20,7 @@ from app.models.foreshadow import Foreshadow
 from app.models.career import Career, CharacterCareer
 from app.models.analysis_task import AnalysisTask
 from app.models.batch_generation_task import BatchGenerationTask
+from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import (
     delete_organization_children,
     delete_project_children,
@@ -31,7 +33,11 @@ from app.schemas.project import (
     ProjectResponse,
     ProjectListResponse
 )
-from app.schemas.character import CharacterProfileRefreshRequest
+from app.schemas.character import (
+    CharacterProfileRefreshRequest,
+    CharacterProfileRefreshPreviewRequest,
+    CharacterProfileRefreshApplyRequest,
+)
 from app.schemas.import_export import (
     ExportOptions,
     ImportValidationResult,
@@ -39,7 +45,11 @@ from app.schemas.import_export import (
 )
 from app.services.import_export_service import ImportExportService
 from app.services.memory_service import memory_service
-from app.services.character_profile_sync_service import character_profile_sync_service
+from app.services.character_profile_sync_service import (
+    character_profile_sync_service,
+    ProfileDiffCollector,
+)
+from app.services.background_task_service import background_task_service
 from app.api.common import verify_project_access
 from app.logger import get_logger
 from app.utils.data_consistency import (
@@ -671,6 +681,281 @@ async def refresh_character_profiles(
         logger.error(f"刷新角色档案失败: {str(e)}", exc_info=True)
         detail = f"刷新档案失败: {str(e)}"
         raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=500, raw=detail)
+
+
+# 预览计划的可用窗口：超时或章节信号变化都必须重新预览（整单拒绝，不做部分应用）
+_PROFILE_PLAN_TTL_SECONDS = 60 * 60
+_PROFILE_REFRESH_MODES = ("incremental", "full")
+
+
+def _profile_refresh_mode(mode: Optional[str]) -> str:
+    """非法 mode 回退增量：预览端点已由 pydantic 校验，这里只兜底任务参数。"""
+    return mode if mode in _PROFILE_REFRESH_MODES else "incremental"
+
+
+def _profile_plan_now() -> datetime:
+    """naive UTC：与 `created_at` 列（server_default 为 UTC）同基准，避免时区偏差。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _profile_plan_created_at(raw: Optional[str]) -> Optional[datetime]:
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _profile_plan_summary(entities: List[dict], *, no_mention: int, skipped_batches: int) -> dict:
+    """计划摘要：按字段 action 计数，供前端在列表态直接展示。"""
+    summary = {
+        "add": 0,
+        "change": 0,
+        "preserved": 0,
+        "rejected": 0,
+        "same": 0,
+        "entities": len(entities),
+        "no_mention": no_mention,
+        "skipped_batches": skipped_batches,
+    }
+    for entry in entities:
+        for row in entry.get("fields") or []:
+            action = row.get("action") if isinstance(row, dict) else None
+            if action in ("add", "change", "preserved", "rejected", "same"):
+                summary[action] += 1
+    return summary
+
+
+async def _run_profile_preview_task(task_id: str, user_id: str) -> None:
+    """档案重算预览（后台）：独立会话跑 dry-run，差异计划写进 task_result。
+
+    `sync(dry_run=True)` 不写库、不推进水位，只把差异收集到 collector。
+    """
+    from app.database import get_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.services.background_task_service import TaskProgressTracker
+
+    tracker = TaskProgressTracker(task_id, user_id, "档案预览")
+    try:
+        engine = await get_engine(user_id)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as bg_db:
+            task = (
+                await bg_db.execute(
+                    select(BackgroundTask).where(BackgroundTask.id == task_id)
+                )
+            ).scalar_one_or_none()
+            if task is None:
+                logger.warning(f"档案预览任务不存在: {task_id[:8]}")
+                return
+
+            task_input = task.task_input if isinstance(task.task_input, dict) else {}
+            project_id = task.project_id
+            mode = _profile_refresh_mode(task_input.get("mode"))
+            from_chapter = int(task_input.get("from_chapter") or 1)
+
+            await tracker.start()
+
+            estimate = await character_profile_sync_service.estimate_refresh(
+                db=bg_db, project_id=project_id, mode=mode, from_chapter=from_chapter
+            )
+            batches_total = int(estimate.get("calls_min") or 0)
+            await tracker.previewing(
+                "preparing", "正在重算档案差异...", 20,
+                batches_done=0, batches_total=batches_total,
+                code="progress.profile_previewing",
+            )
+
+            collector = ProfileDiffCollector()
+
+            async def _on_progress(done: int, total: int) -> None:
+                """每批结束后把批次进度映射到 20→90 的进度区间。"""
+                await tracker.previewing(
+                    "generating", "正在重算档案差异...",
+                    20 + int(70 * done / max(total, 1)),
+                    batches_done=done, batches_total=total,
+                    code="progress.profile_previewing",
+                )
+
+            stats = await character_profile_sync_service.sync(
+                db=bg_db,
+                user_id=user_id,
+                project_id=project_id,
+                bypass_watermark=mode == "full",
+                from_chapter=from_chapter,
+                dry_run=True,
+                collector=collector,
+                on_progress=_on_progress,
+                # tracker 自带独立会话读 cancel_requested，不依赖下面会被 rollback 的 bg_db
+                should_cancel=lambda: tracker.check_cancelled(),
+            )
+
+            if stats.get("cancelled"):
+                # 用户取消：不写计划，任务直接落 cancelled
+                async with session_factory() as cancel_db:
+                    await background_task_service.cancel_task(task_id, user_id, cancel_db)
+                return
+
+            skipped = [item for item in (stats.get("skipped") or []) if isinstance(item, dict)]
+            if any(item.get("reason") == "sync_in_progress" for item in skipped):
+                await tracker.error(
+                    "已有档案重算任务在进行中，请等待完成或先取消",
+                    error_code="conflict.profile_refresh_running",
+                )
+                return
+
+            await tracker.previewing(
+                "saving", "正在整理差异计划...", 90,
+                batches_done=batches_total, batches_total=batches_total,
+            )
+
+            entities = list(collector.entities.values())
+            plan = {
+                "plan_version": 1,
+                "mode": mode,
+                "from_chapter": from_chapter,
+                "through_chapter": int(stats.get("through_chapter") or 0),
+                "created_at": _profile_plan_now().isoformat(),
+                "project_signal": await character_profile_sync_service.project_signal(
+                    bg_db, project_id
+                ),
+                "summary": _profile_plan_summary(
+                    entities,
+                    no_mention=int(estimate.get("no_mention") or 0),
+                    skipped_batches=len(skipped),
+                ),
+                "entities": entities,
+            }
+            await tracker.set_result(
+                {"summary": plan["summary"], "plan_available": True, "plan": plan}
+            )
+            await tracker.complete(
+                "差异预览已生成，请确认后应用", code="progress.profile_preview_ready"
+            )
+    except Exception as e:  # noqa: BLE001 - 后台任务一律落 failed，不能静默
+        logger.error(f"档案重算预览失败: {str(e)}", exc_info=True)
+        await tracker.error_from_exception(e)
+
+
+@router.get("/{project_id}/characters/refresh-estimate", summary="预估档案重算成本（不调模型）")
+async def estimate_character_profile_refresh(
+    project_id: str,
+    request: Request,
+    mode: str = "incremental",
+    from_chapter: int = 1,
+    db: AsyncSession = Depends(get_db),
+):
+    """真算重算成本：候选实体、批次与预计模型调用次数，全程不调模型。"""
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    return await character_profile_sync_service.estimate_refresh(
+        db=db,
+        project_id=project_id,
+        mode=mode,
+        from_chapter=from_chapter,
+    )
+
+
+@router.post("/{project_id}/characters/refresh-preview", summary="档案重算差异预览（后台任务）")
+async def preview_character_profile_refresh(
+    project_id: str,
+    request: Request,
+    payload: Optional[CharacterProfileRefreshPreviewRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """创建后台预览任务，返回任务ID；结果见 `GET /api/tasks/{task_id}` 的 `task_result.plan`。"""
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    if character_profile_sync_service.is_project_busy(project_id):
+        raise ApiError(code="conflict.profile_refresh_running")
+
+    mode = payload.mode if payload else "incremental"
+    from_chapter = payload.from_chapter if payload else 1
+
+    task = await background_task_service.create_task(
+        user_id=user_id,
+        project_id=project_id,
+        task_type="profile_preview",
+        task_input={"mode": mode, "from_chapter": from_chapter},
+        db=db,
+    )
+
+    await background_task_service.spawn_background_task(
+        task.id, user_id, _run_profile_preview_task
+    )
+
+    return {
+        "task_id": task.id,
+        "task_type": "profile_preview",
+        "status": "pending",
+        "message": "预览任务已创建，请通过 GET /api/tasks/{task_id} 查询进度",
+    }
+
+
+@router.post("/{project_id}/characters/refresh-apply", summary="应用档案重算预览计划（同步）")
+async def apply_character_profile_refresh(
+    project_id: str,
+    request: Request,
+    payload: CharacterProfileRefreshApplyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """回放预览计划：不调模型、不推进水位；计划过期或章节变化时整单拒绝。"""
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    task = (
+        await db.execute(
+            select(BackgroundTask).where(
+                BackgroundTask.id == payload.preview_task_id,
+                BackgroundTask.user_id == user_id,
+                BackgroundTask.project_id == project_id,
+                BackgroundTask.task_type == "profile_preview",
+                BackgroundTask.status == "completed",
+            )
+        )
+    ).scalar_one_or_none()
+
+    task_result = task.task_result if task and isinstance(task.task_result, dict) else {}
+    plan = task_result.get("plan")
+    if not isinstance(plan, dict) or not plan:
+        raise ApiError(code="not_found.profile_plan")
+
+    created_at = _profile_plan_created_at(plan.get("created_at"))
+    if created_at is None:
+        raise ApiError(code="conflict.profile_plan_stale")
+    if (_profile_plan_now() - created_at).total_seconds() > _PROFILE_PLAN_TTL_SECONDS:
+        raise ApiError(code="conflict.profile_plan_stale")
+
+    current_signal = await character_profile_sync_service.project_signal(db, project_id)
+    if current_signal != plan.get("project_signal"):
+        raise ApiError(code="conflict.profile_plan_stale")
+
+    if character_profile_sync_service.is_project_busy(project_id):
+        raise ApiError(code="conflict.profile_refresh_running")
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db, project_id=project_id, plan=plan
+    )
+
+    if result.get("busy"):
+        # apply_plan 内部抢锁失败：项目已在进行重算，整单拒绝且不写 applied_at
+        raise ApiError(code="conflict.profile_refresh_running")
+
+    # 计划保留到过期（60 分钟内可重复回放），只补应用痕迹
+    task.task_result = {
+        **task_result,
+        "applied_at": _profile_plan_now().isoformat(),
+        "apply_summary": result,
+    }
+    await db.commit()
+
+    return result
 
 
 @router.post("/{project_id}/export-data", summary="导出项目数据为JSON")

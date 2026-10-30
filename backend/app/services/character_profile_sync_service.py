@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -300,6 +301,89 @@ def _render_chapters(chapters: Iterable[_ChapterSlice]) -> str:
     return "\n\n".join(blocks)
 
 
+def _ordered_mentions(chunk: List[tuple[Character, List[Chapter]]]) -> List[Chapter]:
+    """一个实体批次涉及的去重章节，按章号升序（与 `_sync_chunk` 的喂法一致）。"""
+    mentioned: Dict[str, Chapter] = {}
+    for _, mentions in chunk:
+        for chapter in mentions:
+            mentioned[chapter.id] = chapter
+    return sorted(mentioned.values(), key=lambda item: item.chapter_number)
+
+
+def _iso(moment: Any) -> Optional[str]:
+    if isinstance(moment, datetime):
+        return moment.isoformat()
+    if moment is None:
+        return None
+    return str(moment)
+
+
+def profile_fingerprint(character: Character) -> str:
+    """实体当前状态的指纹：计划预览时烘焙，apply 前比对，不一致就跳过该实体。"""
+    payload: Dict[str, Any] = {
+        "id": character.id,
+        "personality": getattr(character, "personality", None),
+        "background": getattr(character, "background", None),
+        "appearance": getattr(character, "appearance", None),
+        "current_state": getattr(character, "current_state", None),
+        "profile_facts": character.profile_facts,
+        "profile_facts_updated_at": _iso(character.profile_facts_updated_at),
+        "profile_synced_through_chapter": character.profile_synced_through_chapter,
+        "updated_at": _iso(character.updated_at),
+    }
+    raw = json.dumps(payload, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+class ProfileDiffCollector:
+    """dry-run 期间收集逐字段差异与 facts delta，供预览计划与 apply 回放。
+
+    只记录「如果真写会怎样」，不落库；apply 按同一份计划回放写入。
+    """
+
+    def __init__(self) -> None:
+        self.entities: Dict[str, Dict[str, Any]] = {}
+
+    def entity_entry(self, character: Character) -> Dict[str, Any]:
+        entry = self.entities.get(character.id)
+        if entry is None:
+            entry = {
+                "id": character.id,
+                "name": character.name,
+                "kind": "organization" if getattr(character, "is_organization", False) else "character",
+                "fingerprint": profile_fingerprint(character),
+                "fields": [],
+                "facts_delta": None,
+                "stats": {},
+            }
+            self.entities[character.id] = entry
+        return entry
+
+    def record(
+        self, target: Character, field: str, old: Any, new: Any, action: str
+    ) -> None:
+        entry = self.entity_entry(target)
+        entry["fields"].append(
+            {"field": field, "old": old, "new": new, "action": action}
+        )
+        if action == "rejected":
+            entry["stats"]["fields_rejected"] = entry["stats"].get("fields_rejected", 0) + 1
+
+    def set_facts_delta(self, character: Character, facts: List[Dict[str, Any]]) -> None:
+        if not facts:
+            return
+        entry = self.entity_entry(character)
+        if entry["facts_delta"] is None:
+            entry["facts_delta"] = []
+        entry["facts_delta"].extend(facts)
+
+    def add_stats(self, character: Character, stats: Dict[str, int]) -> None:
+        bucket = self.entity_entry(character)["stats"]
+        for key, value in stats.items():
+            if isinstance(value, int):
+                bucket[key] = bucket.get(key, 0) + value
+
+
 def _render_world_profile(project: Any) -> str:
     lines = [
         f"- {field}：{getattr(project, field)}"
@@ -318,6 +402,8 @@ def _apply_profile_values(
     *,
     label: str,
     force: bool = False,
+    dry_run: bool = False,
+    collector: Optional[ProfileDiffCollector] = None,
 ) -> bool:
     """逐字段写回：默认保护历史值，只有确认是 AI 写入过的字段才允许覆盖。
 
@@ -325,10 +411,15 @@ def _apply_profile_values(
     1. 模型返回空 → 跳过（不覆盖、不计数）；
     2. `force=True` → 整段覆盖并刷新快照；
     3. 有快照：当前值 == 快照值 → 覆盖；不相等 → 判定用户手改，保留并计 `fields_preserved`；
-    4. 无快照（历史数据）：当前值为空 → 填入；非空 → 保留并计 `fields_preserved`
-       （不写快照，将来 force 时仍能识别为旧值）。
+    4. 无快照（历史数据）：当前值非空 → 保留并计 `fields_preserved`
+       （不写快照，将来 force 时仍能识别为旧值）；为空 → 填入。
+
+    `dry_run=True` 只关副作用（不 `setattr`、快照写副本），判定仍走同一套分支，
+    差异通过 `collector` 记录——预览与真实写入不允许出现两份判定实现。
     """
     changed = False
+    if dry_run:
+        snapshot = dict(snapshot)
     for field in fields:
         new_value = values.get(field)
         if not isinstance(new_value, str) or not new_value.strip():
@@ -338,15 +429,26 @@ def _apply_profile_values(
         # 还是师兄妹……」写进性格特点）。这类内容一律不落库，宁可留空等下一轮。
         if looks_like_profile_narration(new_value):
             stats["fields_rejected"] = stats.get("fields_rejected", 0) + 1
+            if collector is not None:
+                collector.record(
+                    target, field, getattr(target, field, None), new_value, "rejected"
+                )
             logger.info("丢弃疑似剧情复述的档案字段: %s.%s", label, field)
             continue
         current = getattr(target, field, None)
 
         if force:
             if current != new_value:
-                setattr(target, field, new_value)
+                if collector is not None:
+                    collector.record(
+                        target, field, current, new_value, "change" if current else "add"
+                    )
+                if not dry_run:
+                    setattr(target, field, new_value)
                 stats["fields_updated"] += 1
                 changed = True
+            elif collector is not None:
+                collector.record(target, field, current, new_value, "same")
             snapshot[field] = new_value
             continue
 
@@ -354,9 +456,14 @@ def _apply_profile_values(
             if current:
                 # 历史数据：没有 AI 快照可对照，无法证明是 AI 写的 → 保护用户值
                 stats["fields_preserved"] += 1
+                if collector is not None:
+                    collector.record(target, field, current, new_value, "preserved")
                 logger.debug("保留历史字段（无快照）: %s.%s", label, field)
                 continue
-            setattr(target, field, new_value)
+            if collector is not None:
+                collector.record(target, field, current, new_value, "add")
+            if not dry_run:
+                setattr(target, field, new_value)
             snapshot[field] = new_value
             stats["fields_updated"] += 1
             changed = True
@@ -366,12 +473,21 @@ def _apply_profile_values(
         if current != previous_ai:
             # 用户手改过该字段：保留用户值，也不动快照（否则下次会误判为 AI 值）
             stats["fields_preserved"] += 1
+            if collector is not None:
+                collector.record(target, field, current, new_value, "preserved")
             logger.debug("保留用户手改字段: %s.%s", label, field)
             continue
         if current != new_value:
-            setattr(target, field, new_value)
+            if collector is not None:
+                collector.record(
+                    target, field, current, new_value, "change" if current else "add"
+                )
+            if not dry_run:
+                setattr(target, field, new_value)
             stats["fields_updated"] += 1
             changed = True
+        elif collector is not None:
+            collector.record(target, field, current, new_value, "same")
         snapshot[field] = new_value
     return changed
 
@@ -393,8 +509,20 @@ class CharacterProfileSyncService:
         through_chapter: Optional[int] = None,
         ai_service: Any = None,
         force: bool = False,
+        bypass_watermark: bool = False,
+        from_chapter: int = 1,
+        dry_run: bool = False,
+        collector: Optional[ProfileDiffCollector] = None,
+        on_progress: Optional[Callable[[int, int], Awaitable[None]]] = None,
+        should_cancel: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
-        """同步至 `through_chapter`（默认取项目内已写正文的最大章节号）。"""
+        """同步至 `through_chapter`（默认取项目内已写正文的最大章节号）。
+
+        `bypass_watermark=True` 忽略同步水位（全量重算），`from_chapter` 是章节下限；
+        `dry_run=True` 只产出 `collector` 里的差异计划，不写库也不推进水位。
+        `on_progress(done_chunks, total_chunks)` 与 `should_cancel()` 由预览任务传入；
+        取消时本轮已累积的写入全部回滚（不落库）。
+        """
         guard_key = project_id
         stats: Dict[str, Any] = {
             "characters_considered": 0,
@@ -421,6 +549,12 @@ class CharacterProfileSyncService:
                 ai_service=ai_service,
                 stats=stats,
                 force=force,
+                bypass_watermark=bypass_watermark,
+                from_chapter=from_chapter,
+                dry_run=dry_run,
+                collector=collector,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
             )
         finally:
             self._in_progress.discard(guard_key)
@@ -435,55 +569,28 @@ class CharacterProfileSyncService:
         ai_service: Any,
         stats: Dict[str, Any],
         force: bool = False,
+        bypass_watermark: bool = False,
+        from_chapter: int = 1,
+        dry_run: bool = False,
+        collector: Optional[ProfileDiffCollector] = None,
+        on_progress: Optional[Callable[[int, int], Awaitable[None]]] = None,
+        should_cancel: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
-        through = through_chapter
-        if through is None:
-            max_number = await db.scalar(
-                select(func.max(Chapter.chapter_number)).where(
-                    Chapter.project_id == project_id,
-                    Chapter.content.isnot(None),
-                    Chapter.content != "",
-                )
-            )
-            through = int(max_number or 0)
+        through, chapters, characters = await self._scan_project(db, project_id, through_chapter)
         stats["through_chapter"] = int(through or 0)
         if not through:
             return stats
-
-        chapters = list(
-            (
-                await db.execute(
-                    select(Chapter)
-                    .where(
-                        Chapter.project_id == project_id,
-                        Chapter.chapter_number <= through,
-                        Chapter.content.isnot(None),
-                        Chapter.content != "",
-                    )
-                    .order_by(Chapter.chapter_number)
-                )
-            ).scalars()
-        )
         if not chapters:
             return stats
 
-        characters = list(
-            (await db.execute(select(Character).where(Character.project_id == project_id))).scalars()
+        # 只挑「范围内且正文里确实出现过」的档案；匹配不上就跳过，不硬猜。
+        candidates = self._select_candidates(
+            characters,
+            chapters,
+            through=through,
+            bypass_watermark=bypass_watermark,
+            from_chapter=from_chapter,
         )
-
-        # 只挑「有新章节且正文里确实出现过」的档案；匹配不上就跳过，不硬猜。
-        candidates: List[tuple[Character, List[Chapter]]] = []
-        for character in characters:
-            start = int(character.profile_synced_through_chapter or 0) + 1
-            if start > through:
-                continue
-            mentions = [
-                chapter
-                for chapter in chapters
-                if chapter.chapter_number >= start and _mentioned_in(character, chapter.content or "")
-            ]
-            if mentions:
-                candidates.append((character, mentions))
 
         stats["characters_considered"] = len(candidates)
         if not candidates:
@@ -491,13 +598,32 @@ class CharacterProfileSyncService:
 
         service = ai_service or await self._resolve_ai_service(user_id, db)
 
-        for offset in range(0, len(candidates), _CHARACTERS_PER_CALL):
+        total_chunks = (len(candidates) + _CHARACTERS_PER_CALL - 1) // _CHARACTERS_PER_CALL
+        for index, offset in enumerate(
+            range(0, len(candidates), _CHARACTERS_PER_CALL), start=1
+        ):
+            if should_cancel is not None and await should_cancel():
+                # 取消：已完成的批次由下面的 rollback 一并丢弃（零写入）
+                stats["cancelled"] = True
+                break
             chunk = candidates[offset: offset + _CHARACTERS_PER_CALL]
             await self._sync_chunk(
-                db=db, chunk=chunk, ai_service=service, stats=stats, force=force
+                db=db,
+                chunk=chunk,
+                ai_service=service,
+                stats=stats,
+                force=force,
+                dry_run=dry_run,
+                collector=collector,
             )
+            if on_progress is not None:
+                await on_progress(index, total_chunks)
 
-        await db.commit()
+        if dry_run or stats.get("cancelled"):
+            # 预览不落库；取消同样零写入（回滚兜底，防 autoflush 留下的脏写）
+            await db.rollback()
+        else:
+            await db.commit()
         stats["characters_updated"] = len(stats.pop("_updated_ids", ()))
         logger.info(
             "档案同步完成: project=%s through=%s 角色%s 更新%s 字段%s 保留%s 跳过%s",
@@ -511,6 +637,222 @@ class CharacterProfileSyncService:
         )
         return stats
 
+    @staticmethod
+    async def _scan_project(
+        db: AsyncSession, project_id: str, through_chapter: Optional[int]
+    ) -> Tuple[int, List[Chapter], List[Character]]:
+        """取 through（有正文的最大章号）、范围内带正文的章节与项目内全部实体。"""
+        through = through_chapter
+        if through is None:
+            max_number = await db.scalar(
+                select(func.max(Chapter.chapter_number)).where(
+                    Chapter.project_id == project_id,
+                    Chapter.content.isnot(None),
+                    Chapter.content != "",
+                )
+            )
+            through = int(max_number or 0)
+        through = int(through or 0)
+
+        chapters: List[Chapter] = []
+        if through:
+            chapters = list(
+                (
+                    await db.execute(
+                        select(Chapter)
+                        .where(
+                            Chapter.project_id == project_id,
+                            Chapter.chapter_number <= through,
+                            Chapter.content.isnot(None),
+                            Chapter.content != "",
+                        )
+                        .order_by(Chapter.chapter_number)
+                    )
+                ).scalars()
+            )
+
+        characters = list(
+            (await db.execute(select(Character).where(Character.project_id == project_id))).scalars()
+        )
+        return through, chapters, characters
+
+    @staticmethod
+    def _select_candidates(
+        characters: Iterable[Character],
+        chapters: List[Chapter],
+        *,
+        through: int,
+        bypass_watermark: bool = False,
+        from_chapter: int = 1,
+    ) -> List[tuple[Character, List[Chapter]]]:
+        """候选实体：范围内的章节中，正文逐字出现过名称/别名的档案。"""
+        candidates: List[tuple[Character, List[Chapter]]] = []
+        for character in characters:
+            start = 1 if bypass_watermark else int(character.profile_synced_through_chapter or 0) + 1
+            start = max(start, int(from_chapter or 1))
+            if start > through:
+                continue
+            mentions = [
+                chapter
+                for chapter in chapters
+                if chapter.chapter_number >= start and _mentioned_in(character, chapter.content or "")
+            ]
+            if mentions:
+                candidates.append((character, mentions))
+        return candidates
+
+    @staticmethod
+    def _count_unmentioned(
+        characters: Iterable[Character], chapters: List[Chapter], *, from_chapter: int = 1
+    ) -> int:
+        """范围内正文一次都没出现名称/别名的实体数（忽略水位，用于暴露别名缺口）。"""
+        start = max(1, int(from_chapter or 1))
+        scoped = [chapter for chapter in chapters if chapter.chapter_number >= start]
+        return sum(
+            1
+            for character in characters
+            if not any(_mentioned_in(character, chapter.content or "") for chapter in scoped)
+        )
+
+    async def estimate_refresh(
+        self,
+        *,
+        db: AsyncSession,
+        project_id: str,
+        mode: str = "incremental",
+        from_chapter: int = 1,
+    ) -> Dict[str, Any]:
+        """真算重算成本：候选实体、文本批数与预计调用次数（不调模型）。"""
+        through, chapters, characters = await self._scan_project(db, project_id, None)
+        candidates = self._select_candidates(
+            characters,
+            chapters,
+            through=through,
+            bypass_watermark=mode == "full",
+            from_chapter=from_chapter,
+        )
+
+        calls_min = 0
+        for offset in range(0, len(candidates), _CHARACTERS_PER_CALL):
+            chunk = candidates[offset: offset + _CHARACTERS_PER_CALL]
+            calls_min += len(_batch_by_budget(_ordered_mentions(chunk)))
+
+        return {
+            "mode": mode,
+            "through_chapter": through,
+            "entities_total": len(characters),
+            "candidates": len(candidates),
+            # 正文里从未出现其名/别名（别名解析是 #201 §1，这里只暴露缺口）。
+            # 与水位无关：水位已达标的实体不算「没提及」。
+            "no_mention": self._count_unmentioned(
+                characters, chapters, from_chapter=from_chapter
+            ),
+            "chunks": (len(candidates) + _CHARACTERS_PER_CALL - 1) // _CHARACTERS_PER_CALL,
+            "calls_min": calls_min,
+            # 内容审核二分的最坏倍数，仅用于展示区间
+            "calls_max": calls_min * 3,
+        }
+
+    @classmethod
+    def is_project_busy(cls, project_id: str) -> bool:
+        return project_id in cls._in_progress
+
+    @staticmethod
+    async def project_signal(db: AsyncSession, project_id: str) -> Dict[str, Any]:
+        """项目信号：章节最大更新时间 + 有正文章节数，用于判断计划是否过期。"""
+        conditions = (
+            Chapter.project_id == project_id,
+            Chapter.content.isnot(None),
+            Chapter.content != "",
+        )
+        max_updated = await db.scalar(select(func.max(Chapter.updated_at)).where(*conditions))
+        count = await db.scalar(select(func.count()).select_from(Chapter).where(*conditions))
+        return {
+            "chapters_max_updated_at": max_updated.isoformat() if max_updated else None,
+            "chapters_with_content": int(count or 0),
+        }
+
+    async def apply_plan(
+        self, *, db: AsyncSession, project_id: str, plan: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """回放预览计划：不调模型、不改水位、不碰组织成员。
+
+        逐实体校验 fingerprint，plan 生成后被改动过的实体整体跳过并计入 `stale`。
+        与手动同步/预览互斥：项目已在跑时直接返回 `busy`，零写入。
+        """
+        if project_id in self._in_progress:
+            logger.info("档案重算应用被跳过：项目已有同步/预览在运行: project=%s", project_id)
+            return {"applied": 0, "fields_written": 0, "stale": [], "busy": True}
+
+        self._in_progress.add(project_id)
+        try:
+            applied = 0
+            fields_written = 0
+            stale: List[Dict[str, Any]] = []
+
+            for entity in (plan or {}).get("entities") or []:
+                if not isinstance(entity, dict):
+                    continue
+                character = (
+                    await db.execute(
+                        select(Character).where(
+                            Character.id == entity.get("id"),
+                            Character.project_id == project_id,
+                        )
+                    )
+                ).scalars().first()
+                if character is None or profile_fingerprint(character) != entity.get("fingerprint"):
+                    stale.append(
+                        {
+                            "id": entity.get("id"),
+                            "name": entity.get("name") or getattr(character, "name", None),
+                        }
+                    )
+                    continue
+
+                rows = [row for row in (entity.get("fields") or []) if isinstance(row, dict)]
+                snapshot = _loads_json(character.ai_profile_snapshot, {})
+                if not isinstance(snapshot, dict):
+                    snapshot = {}
+
+                snapshot_touched = False
+                for row in rows:
+                    action = row.get("action")
+                    field = row.get("field")
+                    if field not in PROFILE_FIELDS or action == "rejected":
+                        continue
+                    new_value = row.get("new")
+                    if action in ("add", "change"):
+                        if isinstance(new_value, str) and new_value.strip():
+                            setattr(character, field, new_value.strip())
+                            fields_written += 1
+                        snapshot[field] = new_value
+                        snapshot_touched = True
+                    elif action == "same":
+                        # 等值写入，效果为幂等
+                        snapshot[field] = new_value
+                        snapshot_touched = True
+                    # preserved：字段与快照都不动，否则下轮会误判为 AI 值
+
+                if snapshot_touched:
+                    character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+
+                # 与 _apply_entry 的真实写入保持一致：facts 非空就合并、就 bump 时间，
+                # 不看字段动作（rejected 只是不写文本，不阻断溯源）。
+                facts_delta = entity.get("facts_delta")
+                if isinstance(facts_delta, list) and facts_delta:
+                    character.profile_facts = merge_profile_facts(
+                        character.profile_facts, facts_delta
+                    )
+                    character.profile_facts_updated_at = datetime.utcnow()
+
+                applied += 1
+
+            await db.commit()
+            return {"applied": applied, "fields_written": fields_written, "stale": stale}
+        finally:
+            self._in_progress.discard(project_id)
+
     async def _sync_chunk(
         self,
         *,
@@ -519,16 +861,14 @@ class CharacterProfileSyncService:
         ai_service: Any,
         stats: Dict[str, Any],
         force: bool = False,
+        dry_run: bool = False,
+        collector: Optional[ProfileDiffCollector] = None,
     ) -> None:
         """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。"""
         character_ids = {character.id for character, _ in chunk}
         names = {character.name for character, _ in chunk}
 
-        mentioned: Dict[str, Chapter] = {}
-        for _, mentions in chunk:
-            for chapter in mentions:
-                mentioned[chapter.id] = chapter
-        ordered = sorted(mentioned.values(), key=lambda item: item.chapter_number)
+        ordered = _ordered_mentions(chunk)
         profiles = _render_profiles([character for character, _ in chunk])
         # issue #190：引文校验用**整章全文**（模型看到的是切片，校验可以放宽到整章：
         # 命中说明这句话确实在该章正文里，只是模型看到的部分比切片多）。
@@ -560,6 +900,8 @@ class CharacterProfileSyncService:
                     stats=stats,
                     chapters_by_number=chapters_by_number,
                     force=force,
+                    dry_run=dry_run,
+                    collector=collector,
                 )
             return True
 
@@ -585,6 +927,9 @@ class CharacterProfileSyncService:
                 covered[chapter_id] = covered.get(chapter_id, True) and ok
 
         for character, mentions in chunk:
+            if dry_run:
+                # 预览不推进水位（漏掉这条会让预览静默吃掉增量范围）
+                continue
             # 水位只推进到「该角色提及章节序列里从起点连续成功的最长前缀」的最大章号，
             # 中间失败就停在它前面，下一轮 start = marker + 1 会重新覆盖失败章节。
             contiguous = 0
@@ -728,6 +1073,8 @@ class CharacterProfileSyncService:
         stats: Dict[str, Any],
         chapters_by_number: Optional[Dict[int, str]] = None,
         force: bool = False,
+        dry_run: bool = False,
+        collector: Optional[ProfileDiffCollector] = None,
     ) -> None:
         snapshot = _loads_json(character.ai_profile_snapshot, {})
         if not isinstance(snapshot, dict):
@@ -753,9 +1100,16 @@ class CharacterProfileSyncService:
                 bucket = stats.setdefault("profile_facts", {})
                 for key, value in facts_stats.items():
                     bucket[key] = bucket.get(key, 0) + value
+                if collector is not None:
+                    collector.add_stats(character, facts_stats)
                 if facts:
-                    character.profile_facts = merge_profile_facts(character.profile_facts, facts)
-                    character.profile_facts_updated_at = datetime.utcnow()
+                    if dry_run:
+                        # 预览不写 profile_facts，只把通过校验的事实带进计划
+                        if collector is not None:
+                            collector.set_facts_delta(character, facts)
+                    else:
+                        character.profile_facts = merge_profile_facts(character.profile_facts, facts)
+                        character.profile_facts_updated_at = datetime.utcnow()
 
         changed = _apply_profile_values(
             character,
@@ -765,16 +1119,20 @@ class CharacterProfileSyncService:
             stats,
             label=character.name,
             force=force,
+            dry_run=dry_run,
+            collector=collector,
         )
 
-        org_changed = await self._apply_organizations(
-            db=db, character=character, organizations=entry.get("organizations")
-        )
+        org_changed = False
+        if not dry_run:
+            org_changed = await self._apply_organizations(
+                db=db, character=character, organizations=entry.get("organizations")
+            )
         if changed or org_changed:
             # 同一角色可能出现在多个章节批次里，按人去重后再计入统计（issue #191）。
             stats.setdefault("_updated_ids", set()).add(character.id)
 
-        if snapshot:
+        if snapshot and not dry_run:
             character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
 
     async def _apply_organizations(

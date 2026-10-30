@@ -129,6 +129,28 @@ class TaskProgressTracker:
             }
         )
 
+    async def previewing(self, stage: str, message: str, progress: int,
+                         batches_done: int = 0, batches_total: int = 0,
+                         code: Optional[str] = None):
+        """档案重算预览这类「无逐批回调」的任务：按阶段汇报，附带批次计数。
+
+        `_sync` 不回调进度，所以只给 stage/batches 的估算值，够前端展示即可。
+        """
+        update_kwargs: Dict[str, Any] = dict(
+            progress=max(0, min(int(progress), 100)),
+            status_message=message,
+            progress_details={
+                "stage": stage,
+                "message": message,
+                "batches_done": batches_done,
+                "batches_total": batches_total,
+            },
+        )
+        if code:
+            update_kwargs["status_code"] = code
+            update_kwargs["status_params"] = {}
+        await self._update_task(**update_kwargs)
+
     async def set_result(self, task_result: Dict[str, Any]):
         await self._update_task(task_result=task_result)
 

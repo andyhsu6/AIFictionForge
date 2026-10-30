@@ -37,6 +37,7 @@ const EXPECTED_TASK_TYPES = [
   'career_generate',
   'wizard',
   'agent_plan',
+  'profile_preview',
 ] as const;
 
 /** 从 getTaskTypeLabel 的函数体里抠出 case 标签与它 return 的 t() 键。 */
@@ -61,7 +62,7 @@ describe('FloatingTaskPanel task type labels', () => {
   const en = locale('en');
 
   it('pins the task type value domain literal-for-literal', () => {
-    expect(EXPECTED_TASK_TYPES.length).toBe(14);
+    expect(EXPECTED_TASK_TYPES.length).toBe(15);
     expect(new Set(EXPECTED_TASK_TYPES).size).toBe(EXPECTED_TASK_TYPES.length);
   });
 

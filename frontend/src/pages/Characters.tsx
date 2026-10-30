@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button, Modal, Form, Input, Select, App, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
-import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
 import { charactersPageGridConfig } from '../components/CardStyles';
@@ -11,6 +11,7 @@ import { characterApi } from '../services/api';
 import { SSEPostClient } from '../utils/sseClient';
 import api from '../services/api';
 import { useTranslation } from 'react-i18next';
+import RefreshEstimateModal from '../components/RefreshEstimateModal';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -115,6 +116,7 @@ export default function Characters() {
   const [subCareers, setSubCareers] = useState<Career[]>([]);
   const [selectedCharacters, setSelectedCharacters] = useState<string[]>([]);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isRefreshEstimateOpen, setIsRefreshEstimateOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -627,6 +629,11 @@ export default function Characters() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {contextHolder}
+      <RefreshEstimateModal
+        open={isRefreshEstimateOpen}
+        projectId={currentProject.id}
+        onClose={() => setIsRefreshEstimateOpen(false)}
+      />
       <div style={{
         position: 'sticky',
         top: 0,
@@ -685,6 +692,13 @@ export default function Characters() {
             size={isMobile ? 'small' : 'middle'}
           >
             {t('buttons.aiGenerateOrganization')}
+          </Button>
+          <Button
+            icon={<SyncOutlined />}
+            onClick={() => setIsRefreshEstimateOpen(true)}
+            size={isMobile ? 'small' : 'middle'}
+          >
+            {t('toolbarButton', { ns: 'profileRefresh' })}
           </Button>
           <Button
             icon={<ImportOutlined />}
