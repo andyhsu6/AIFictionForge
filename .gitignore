@@ -135,6 +135,9 @@ backend/app/**/*_test.py
 # contributor guide is the one tracked exception.
 docs/*
 !docs/i18n.md
+# 交付给人和 agent 的计划/交接文档，需要被 @ 文件检索到（索引遵循 .gitignore）；
+# 原始书稿证据仍留在 .omo/，后者保持忽略。
+!docs/handoffs/
 
 # CodeGraph local index (regenerated via `codegraph init`)
 .codegraph/

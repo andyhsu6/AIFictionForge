@@ -22,7 +22,8 @@
 - 使用仓库内的中文模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
 
 ## 文档目录约定
-- 规划产物默认存 `.omo/`（plans/reports/drafts，已 gitignore）；执行时把对外可见的规划文档同步一份到 `docs/`。
+- **交付给人和 agent 的文档放 `docs/handoffs/`**（计划、需求、交接、方案）。该目录已在 `.gitignore` 里显式放行，所以能被 OpenCode 的 `@` 文件检索到；**放进 `.omo/` 的文档检索不到**（索引遵循 .gitignore），`.omo/` 只放原始证据与草稿（含书稿片段，必须保持忽略）。
+- 放入 `docs/handoffs/` 的文档视为可入库：**必须脱敏**（不得出现书名、角色名、原文片段），入库前用库里实体名做一次泄漏扫描。
 - 文档文件名避免中文，使用英文或双语文件名，便于 CI/工具链/IDE 直接阅读。
 
 ## 原文数据脱敏（版权与隐私）
