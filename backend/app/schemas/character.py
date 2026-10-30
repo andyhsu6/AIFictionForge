@@ -1,5 +1,7 @@
 """角色相关的Pydantic模型"""
-from pydantic import BaseModel, Field, ConfigDict
+import json
+
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -103,7 +105,27 @@ class CharacterResponse(CharacterBase):
     # 心理状态追踪字段
     current_state: Optional[str] = Field(None, description="角色当前心理状态")
     state_updated_chapter: Optional[int] = Field(None, description="心理状态最后更新的章节号")
-    
+
+    # 档案事实溯源（issue #190）：库里是 JSON 文本，对外输出解析后的数组
+    profile_facts: Optional[List[Dict[str, Any]]] = Field(
+        None, description="档案事实溯源：[{field, claim, quote, chapter_number, inferred}]"
+    )
+
+    @field_validator("profile_facts", mode="before")
+    @classmethod
+    def _parse_profile_facts(cls, value: Any) -> Any:
+        """把库里的 JSON 文本解析成数组；损坏时返回 None，不让整个响应挂掉。"""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return None
+            return parsed if isinstance(parsed, list) else None
+        return value
+
     model_config = ConfigDict(from_attributes=True)
 
 
