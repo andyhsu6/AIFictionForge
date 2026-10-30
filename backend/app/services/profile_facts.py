@@ -585,6 +585,18 @@ def filter_org_profile_values(values: dict, is_organization: bool) -> dict:
     return {key: value for key, value in values.items() if key != "personality"}
 
 
+def drop_org_personality_field(fields: dict, is_organization: bool) -> dict:
+    """组织不设 personality：写入前去掉该键（原地修改并返回同一 dict）。
+
+    见 issue #210；这条是 issue #214 补的收口：``strip_org_personality`` 与
+    ``filter_org_profile_values`` 拦的是模型/同步/导入导出车道，而人工 API 与
+    agent 工具是「人/agent 主动指定」的车道，需要在这里统一再拦一次。
+    """
+    if is_organization:
+        fields.pop("personality", None)
+    return fields
+
+
 def resolve_profile_fields(
     payload: Any,
     chapters_by_number: dict[int, str],
