@@ -41,6 +41,11 @@ class Character(Base):
     current_state = Column(Text, comment="角色当前心理状态（由分析自动更新）")
     state_updated_chapter = Column(Integer, comment="心理状态最后更新的章节号")
 
+    # issue #190：档案来源事实（JSON 数组，含 claim/quote/chapter_number/inferred）。
+    # 三个档案文本列是这些事实的渲染产物，这里保留可追溯的原文依据。
+    profile_facts = Column(Text, comment="最近一次通过校验的档案事实(JSON 数组)")
+    profile_facts_updated_at = Column(DateTime, comment="档案事实最后写入时间")
+
     # 档案同步追踪（issue #174）：档案随新章节回流时记录同步水位与 AI 上次写入值
     profile_synced_through_chapter = Column(
         Integer, nullable=False, default=0, server_default="0",

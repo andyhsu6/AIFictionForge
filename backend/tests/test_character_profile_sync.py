@@ -891,3 +891,87 @@ async def test_updated_counter_is_per_character_not_per_chunk(db_session, monkey
     assert ai.calls >= 2, "两章应各自成批"
     assert stats["characters_updated"] == 1, "同一角色多批次只算一个人"
     assert stats["fields_updated"] >= 2
+
+
+# --- issue #190：facts 格式回流——只落有原文依据的字段 -----------------------
+
+
+_QUOTE = "占位正文甲。占位正文乙"
+
+
+def _facts_payload(name: str, *, facts: list[dict]) -> dict:
+    return {"characters": [{"name": name, "profile_facts": facts, "organizations": []}]}
+
+
+async def test_profile_facts_are_validated_before_writeback(db_session):
+    await _seed(
+        db_session,
+        chapters=[(1, f"角色甲登场。{_QUOTE}。占位正文丙。")],
+        markers={"角色甲": 0},
+    )
+    ai = FakeAIService(
+        _facts_payload(
+            "角色甲",
+            facts=[
+                {
+                    "field": "personality",
+                    "claim": "占位新特质",
+                    "quote": _QUOTE,
+                    "chapter_number": 1,
+                    "inferred": False,
+                },
+                {
+                    "field": "background",
+                    "claim": "编造的背景",
+                    "quote": "正文里根本没有出现过的句子",
+                    "chapter_number": 1,
+                    "inferred": False,
+                },
+            ],
+        )
+    )
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位新特质"
+    # 引文不存在 → 不落任何文本，旧值保持
+    assert character.background is None
+    assert stats["profile_facts"]["facts_accepted"] == 1
+    assert stats["profile_facts"]["quote_not_found"] == 1
+    facts = json.loads(character.profile_facts)
+    assert [fact["claim"] for fact in facts] == ["占位新特质"]
+    assert character.profile_facts_updated_at is not None
+
+
+async def test_profile_facts_without_evidence_do_not_overwrite(db_session):
+    """一条事实都没通过校验时，本轮不写档案（也不清空旧值）。"""
+    await _seed(
+        db_session,
+        chapters=[(1, f"角色甲登场。{_QUOTE}。")],
+        markers={"角色甲": 0},
+    )
+    ai = FakeAIService(
+        _facts_payload(
+            "角色甲",
+            facts=[
+                {
+                    "field": "personality",
+                    "claim": "纯属编造",
+                    "quote": "这段引文在正文里不存在",
+                    "chapter_number": 1,
+                    "inferred": False,
+                }
+            ],
+        )
+    )
+
+    await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位旧性格"
+    assert character.profile_facts is None

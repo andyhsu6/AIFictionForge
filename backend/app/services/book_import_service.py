@@ -57,6 +57,8 @@ from app.services.import_validators import (
     validate_world_building,
 )
 from app.services.prompt_service import PromptService
+from app.services.profile_facts import PROFILE_FACTS_PROMPT_ENABLED, resolve_profile_fields
+from app.services.profile_prompt_rules import PROSE_TRAIT_HINT
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -92,6 +94,13 @@ _ORG_PROFILE_REQUIRED_FIELDS = ("personality", "background", "appearance")
 _MIN_PROFILE_FIELD_CHARS = 20
 # 占位表述：字段长度可能过阈值但内容不含该实体的具体信息
 _PROFILE_PLACEHOLDER_SNIPPETS = ("同上", "见前文", "见上文", "参见前文", "同前")
+
+# issue #190：档案改为「原子事实 + 原文引用」（prompt_service.CHARACTERS_BATCH_GENERATION_FACTS）。
+# 开关与解析规则集中在 profile_facts；PROFILE_FACTS_PROMPT=0 回退旧提示词，
+# 回退路径与改动前完全一致（facts 解析在 legacy 格式下返回空 dict，不介入）。
+_PROFILE_FACTS_PROMPT_ENABLED = PROFILE_FACTS_PROMPT_ENABLED
+_PROFILE_FACTS_TEMPLATE_KEY = "CHARACTERS_BATCH_GENERATION_FACTS"
+_PROFILE_FACTS_LEGACY_TEMPLATE_KEY = "CHARACTERS_BATCH_GENERATION"
 
 
 def _first_person_core(name: str) -> str:
@@ -2803,7 +2812,14 @@ class BookImportService:
         sub_career_map = {c.name: c for c in sub_careers}
 
         await _notify("👥 正在准备角色生成提示词...", 0.15, code="import.progress.charactersPreparingPrompt")
-        template = await PromptService.get_template("CHARACTERS_BATCH_GENERATION", user_id, db)
+        # issue #190：默认用「原子事实 + 原文引用」版提示词；设 PROFILE_FACTS_PROMPT=0 回退旧模板。
+        # 用户自定义模板只覆盖旧 key，facts 版取系统默认（facts 格式的 schema 不能被打散）。
+        template_key = (
+            _PROFILE_FACTS_TEMPLATE_KEY
+            if _PROFILE_FACTS_PROMPT_ENABLED
+            else _PROFILE_FACTS_LEGACY_TEMPLATE_KEY
+        )
+        template = await PromptService.get_template(template_key, user_id, db)
         # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
 
@@ -3041,6 +3057,40 @@ class BookImportService:
         # 出参统计与 skipped_chapters 同模式：由调用方提供容器并累加，不改 HTTP schema。
         stats: dict[str, Any] = profile_stats if profile_stats is not None else {}
 
+        # issue #190 P4：档案落库前先走「原子事实 → 校验 → 渲染」。
+        # facts 格式才有返回值；旧格式（用户自定义模板/回退开关）返回空 dict，
+        # 实体上的三段文本原样保留，后续仍走旧门禁，行为与改动前一致。
+        profile_facts_stats: dict[str, int] = {}
+        if _PROFILE_FACTS_PROMPT_ENABLED and db_chapters:
+            facts_chapters_by_number = {
+                chapter.chapter_number: (chapter.content or "") for chapter in db_chapters
+            }
+            rendered_entities = 0
+            for item in generated_entities:
+                if not isinstance(item, dict):
+                    continue
+                rendered, item_stats, facts = resolve_profile_fields(
+                    item, facts_chapters_by_number
+                )
+                for key, value in item_stats.items():
+                    profile_facts_stats[key] = profile_facts_stats.get(key, 0) + value
+                if facts:
+                    # 溯源：只落通过校验的事实（accepted），渲染文本由它们拼出
+                    item["profile_facts"] = facts
+                if rendered:
+                    item.update(rendered)
+                    rendered_entities += 1
+            profile_facts_stats["entities_rendered"] = rendered_entities
+            stats["profile_facts"] = profile_facts_stats
+            logger.info(
+                "拆书导入：档案事实校验完成（实体 %s，事实 %s→%s，渲染 %s 个实体，引文未命中 %s）",
+                profile_facts_stats.get("payloads_facts", 0),
+                profile_facts_stats.get("facts_in", 0),
+                profile_facts_stats.get("facts_accepted", 0),
+                rendered_entities,
+                profile_facts_stats.get("quote_not_found", 0),
+            )
+
         entity_by_name: dict[str, dict[str, Any]] = {
             (item.get("name") or "").strip(): item
             for item in generated_entities
@@ -3201,6 +3251,7 @@ class BookImportService:
                 f"每个字段至少 {_MIN_PROFILE_FIELD_CHARS} 字、必须是该实体独有的具体描写；"
                 "禁止「同上」「见前文」这类占位表述，禁止抄录原文句子/对话；"
                 "正文没有明确描写时可基于上面的世界观与已有字段合理推断，但不得与之矛盾。\n"
+                f"{PROSE_TRAIT_HINT}"
                 f"输出语言：{generation_language}。"
             )
             try:
@@ -3252,14 +3303,34 @@ class BookImportService:
             logger.warning("拆书导入：档案字段补全未产出可用内容")
             return "empty"
 
-        profile_repair_note = "not_needed"
-        thin_before = _thin_profiles()
-        if thin_before:
-            profile_repair_note = await _repair_profiles(thin_before)
+        # issue #190：facts 模式下「薄字段补全」必须关闭。补全用的是旧提示词，
+        # 产出的是无法核对的自由文本，会绕过引文校验；facts 的语义本来就是
+        # 「没有原文依据就留空」，用无依据文本填空与方案相悖。
+        if _PROFILE_FACTS_PROMPT_ENABLED and db_chapters:
+            profile_repair_note = "skipped:profile_facts"
+            thin_before: dict[str, list[str]] = {}
+            thin_after: dict[str, list[str]] = {}
+            still_thin_count = sum(
+                1 for item in generated_entities
+                if isinstance(item, dict) and not all(
+                    (item.get(field) or "").strip() for field in _PROFILE_REQUIRED_FIELDS[:3]
+                )
+            )
+            if still_thin_count:
+                logger.info(
+                    "拆书导入：档案事实模式下 %s 个实体仍有必填字段为空（按设计留空）",
+                    still_thin_count,
+                )
+                stats["profiles_still_thin_count"] = still_thin_count
+        else:
+            profile_repair_note = "not_needed"
+            thin_before = _thin_profiles()
+            if thin_before:
+                profile_repair_note = await _repair_profiles(thin_before)
+            thin_after = _thin_profiles()
         stats["profile_repair"] = profile_repair_note
         if thin_before:
             stats["profiles_thin"] = sorted(thin_before)[:20]
-        thin_after = _thin_profiles()
         if thin_after:
             logger.warning(
                 "拆书导入：%s 个实体的必填档案字段补全后仍为空/过薄：%s",
@@ -3323,6 +3394,14 @@ class BookImportService:
                     background=item.get("background"),
                     appearance=item.get("appearance"),
                     current_state=item.get("current_state"),
+                ),
+                # issue #190：档案事实落库做溯源（渲染文本由这些事实拼出）
+                profile_facts=(
+                    json.dumps(item.get("profile_facts"), ensure_ascii=False)
+                    if item.get("profile_facts") else None
+                ),
+                profile_facts_updated_at=(
+                    datetime.utcnow() if item.get("profile_facts") else None
                 ),
                 source=source,
             )

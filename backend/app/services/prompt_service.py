@@ -30,6 +30,12 @@ class WritingStyleManager:
         return f"{base_prompt}\n\n请直接输出章节正文内容，不要包含章节标题和其他说明文字。"
 
 
+from app.services.profile_prompt_rules import (
+    FACTS_FIELD_BOUNDARIES,
+    PROSE_FIELD_BOUNDARIES,
+)
+
+
 class PromptService:
     """提示词模板管理"""
 
@@ -316,6 +322,7 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ✅ 关系网络：角色间形成合理关系
 ✅ 组织合理：组织是推动剧情的关键力量
 ✅ 性格/外貌/背景只写正文有明确依据的内容；正文无描写时输出空字符串 ""；严禁把正文句子/对话/内心独白原样抄入这些字段
+""" + PROSE_FIELD_BOUNDARIES + """
 
 【关系约束】
 ✅ relationships_array只能引用本批次已出现的角色
@@ -339,6 +346,229 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 使用markdown或代码块标记
 ❌ 在描述中使用特殊符号
 </constraints>"""
+
+    # 结构化档案事实版（issue #190 P2）：与 CHARACTERS_BATCH_GENERATION 同结构，
+    # 但档案不再是三段自由文本，而是"原子事实 + 原文引用"数组。
+    # 目的：让"这条内容属于哪个字段"由模型按定义分类，服务端只校验引文是否字面存在。
+    # 与旧模板并存以便 dry-run A/B 对比，切换前不得替换旧模板。
+    CHARACTERS_BATCH_GENERATION_FACTS = """<system>
+你是专业的角色设定师与文本考据员，擅长为{genre}类型的小说创建立体丰满的角色，并能准确引用原文作为依据。
+</system>
+
+<task>
+【生成任务】
+生成{count}个角色和组织实体。
+
+【数量要求 - 严格遵守】
+数组中必须精确包含{count}个对象，不多不少。
+
+【实体类型分配】
+- 至少1个主角（protagonist）
+- 多个配角（supporting）
+- 可包含反派（antagonist）
+- 可包含1-2个高影响力组织（power_level: 70-95）
+</task>
+
+<worldview priority="P0">
+【世界观信息】
+时间背景：{time_period}
+地理位置：{location}
+氛围基调：{atmosphere}
+世界规则：{rules}
+
+主题：{theme}
+类型：{genre}
+</worldview>
+
+<requirements priority="P1">
+【特殊要求】
+{requirements}
+</requirements>
+
+<profile_ontology priority="P0">
+""" + FACTS_FIELD_BOUNDARIES + """
+</profile_ontology>
+
+<output priority="P0">
+【输出格式】
+返回纯JSON数组，每个对象包含：
+
+**角色对象**：
+{{
+  "name": "角色姓名",
+  "aliases": ["别名1", "别名2"],
+  "age": 25,
+  "gender": "男/女/其他",
+  "is_organization": false,
+  "role_type": "protagonist/supporting/antagonist",
+  "profile_facts": [
+    {{
+      "field": "personality",
+      "claim": "性情沉稳",
+      "quote": "他从头到尾没有说一句话，只是点了点头",
+      "chapter_number": 12,
+      "inferred": false
+    }}
+  ],
+  "traits": ["特长1", "特长2", "特长3"],
+  "relationships_array": [
+    {{
+      "target_character_name": "已生成的角色名称",
+      "relationship_type": "关系类型",
+      "intimacy_level": 75,
+      "description": "关系描述"
+    }}
+  ],
+  "organization_memberships": [
+    {{
+      "organization_name": "已生成的组织名称",
+      "position": "职位",
+      "rank": 5,
+      "loyalty": 80
+    }}
+  ]
+}}
+
+**组织对象**：
+{{
+  "name": "组织名称",
+  "is_organization": true,
+  "role_type": "supporting",
+  "profile_facts": [
+    {{
+      "field": "personality",
+      "claim": "内部等级森严，只认业绩",
+      "quote": "堂中论功行赏，不问出身，只看这一年办成了几件事",
+      "chapter_number": 8,
+      "inferred": false
+    }}
+  ],
+  "organization_type": "组织类型",
+  "organization_purpose": "组织目的",
+  "organization_members": ["成员1", "成员2"],
+  "power_level": 85,
+  "location": "所在地或主要活动区域",
+  "motto": "组织格言、口号或宗旨",
+  "color": "代表颜色",
+  "traits": []
+}}
+
+【fact 字段规则 - 逐条遵守】
+1. claim：短语，不是句子。不超过 60 字，不得包含 。！？；!?; 这些句末标点，不得写成第一人称或第三人称叙述。appearance 的 claim 允许 20-45 字，同类外形细节可用一两个逗号连接，但仍不得写成叙述句。
+2. quote：从【章节原文摘录】里**逐字复制**的一段连续原文，至少 8 个字。禁止改写、缩写、拼接、补字，禁止包含省略号（……）。引文必须能在摘录中原样找到，一个字都不能差。
+3. chapter_number：该引文实际所在的章号（摘录里每章开头标有【第N章 …】）。
+4. inferred：只有 personality 允许为 true，表示「性格由行为推断、正文没有直接形容」，此时 quote 仍必须是真实原文。background 与 appearance 必须为 false。
+5. 每个实体的 profile_facts 建议 3-8 条；某字段没有原文依据时，就不要为该字段生成事实（不要编造、不要用空字符串占位）。
+6. 同一实体内不要重复表达同一含义的事实。
+7. 严禁把原文的叙述句、对话、内心独白直接作为 claim；叙述内容只能出现在 quote 里。
+8. personality 的 claim 必须是「形容这个人」的短语，不是「他做了什么」。自检：能接在「他是……」后面才算合格
+   （「他是鄙视江湖人士」✓ / 「他是见弱者受辱便拔剑」✗）。不合格就改写成概括这层性格的短语，写不出短语就整条不要。
+9. 组织的 personality 只写行事风格与价值取向，不得把首领或成员的个人特质写成组织特性。
+
+aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称谓）。例如 主角 李四 的 aliases 为 ["四哥","小李"]；女主角 王芳 的 aliases 为 ["小芳","姐姐","王老师"]。若没有别名给空数组 []。
+
+【关系类型参考】
+- 家族：父亲、母亲、兄弟、姐妹、子女、配偶、恋人
+- 社交：师父、徒弟、朋友、同学、同事、邻居、知己
+- 职业：上司、下属、合作伙伴
+- 敌对：敌人、仇人、竞争对手、宿敌
+
+【数值范围】
+- intimacy_level：-100到100（负值表示敌对）
+- loyalty：0到100
+- rank：0到10（职位等级）
+- power_level：70到95（组织影响力）
+</output>
+
+<constraints>
+【必须遵守】
+✅ 数量精确：数组必须包含{count}个对象
+✅ 符合世界观：角色设定与世界观一致
+✅ 关系网络：角色间形成合理关系
+✅ 组织合理：组织是推动剧情的关键力量
+✅ 每条事实都必须有真实 quote：正文找不到依据的内容，宁可不写
+✅ 事实归字段遵循 profile_ontology：能力/身份/归属归 background，不归 personality
+
+【关系约束】
+✅ relationships_array只能引用本批次已出现的角色
+✅ organization_memberships只能引用本批次的组织
+✅ 第一个角色的relationships_array必须为空[]
+✅ 禁止幻觉：不引用不存在的角色或组织
+
+【实体唯一性约束】
+✅ 同一实体（同一人物）只生成一条记录：name用正文中最正式/最常见的名字，其余称呼（昵称、亲属称谓如"姐姐/妈妈/爸"、职业称谓）放入aliases，禁止把同一人物拆成多条
+✅ 禁止使用无信息量的代词/泛称（他/她/男人/女人/小家伙/陌生人）作为name——若正文未给出明确人名，宁可不生成该角色
+
+【格式约束】
+✅ 纯JSON数组输出，无markdown标记
+✅ claim 中严禁使用引号、方括号、书名号等特殊符号
+✅ 专有名词直接书写，不使用符号包裹
+
+【禁止事项】
+❌ 生成数量不符（多于或少于{count}个）
+❌ quote 非逐字原文（改写、拼接、省略、补字）
+❌ 编造引文或不存在的章号
+❌ 把身份/能力/经历写成 personality
+❌ 引用不存在的角色或组织
+❌ 使用markdown或代码块标记
+</constraints>"""
+
+    # 档案回填（全量整理）版：`_PROMPT_TEMPLATE_FACTS` 是「有新章节了，给现有档案补几条」
+    # 的增量语境，模型看到档案里已有就不输出，导致新写档案普遍比旧文本短、甚至清空原值。
+    # 本模板显式改成「整体整理、不是增量补充」，用于一次性回填/批量试跑。
+    PROFILE_BACKFILL_SYSTEM = (
+        "你是小说设定档案整理助手。只依据给定正文摘录归纳，不得臆造摘录中没有出现的信息。"
+        "输出严格 JSON，不要额外解释。"
+    )
+
+    PROFILE_BACKFILL_FACTS = """<system>
+你是小说档案整理助手。你的任务不是"根据新章节补几条新事实"，而是为一组已知实体整理出尽可能完整的档案事实。
+</system>
+
+<task>
+【任务】下面是若干已知实体与一段正文摘录。请为每个实体输出其档案事实（profile_facts）。
+
+【重要】这是整体整理，不是增量补充：
+- 不要因为该实体现有档案里已经写了某条，就把那条省略；凡是正文里有依据的事实，都要以 field/claim/quote/chapter_number/inferred 的形式重新给出。
+- 一段正文里对某个实体只能支撑几条事实，这很正常；但不要因为"档案里已经有了"而少给。
+- 每个字段尽量给足：personality 最多 6 条、background 最多 8 条、appearance 最多 4 条；确实没有依据的字段给空数组。
+- 越稳定、越能代表该实体的排在前面。
+</task>
+
+<context priority="P1">
+【已知实体】
+{profiles}
+
+【正文摘录】
+{chapters}
+</context>
+
+<profile_ontology priority="P0">
+""" + FACTS_FIELD_BOUNDARIES + """
+</profile_ontology>
+
+<output priority="P0">
+返回 JSON 对象，形如：
+{{
+  "characters": [
+    {{
+      "name": "实体名（必须与【已知实体】里的名字逐字一致）",
+      "profile_facts": [
+        {{"field": "personality", "claim": "仗义护弱", "quote": "正文里逐字存在的连续片段", "chapter_number": 1, "inferred": false}}
+      ]
+    }}
+  ]
+}}
+quote 必须是【正文摘录】里逐字存在的连续片段：不改写、不拼接、不概括。
+</output>
+
+<rules>
+1. chapter_number 必须是该 quote 所属章的章号（摘录里每章都有标注）。
+2. 只输出 personality / background / appearance 三个字段，不要 current_state，不要新增实体。
+3. 正文没有依据的字段输出空数组，不要编造。
+4. 同一实体同一字段不要重复表达同一个特质。
+</rules>
+"""
 
     # 大纲生成提示词 V2（RTCO框架）
     OUTLINE_CREATE = """<system>
@@ -992,6 +1222,7 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 在描述中使用特殊符号（引号、方括号等）
 ❌ 引用不存在的角色或组织
 ❌ 脸谱化的角色设定
+""" + PROSE_FIELD_BOUNDARIES + """
 </constraints>"""
 
     # 单个组织生成提示词 V2（RTCO框架）
@@ -1061,6 +1292,7 @@ aliases说明：同一角色的其他称呼（昵称、亲属称谓、职业称�
 ❌ 在描述中使用特殊符号（引号、方括号等）
 ❌ 过于理想化或脸谱化的设定
 ❌ 空泛的描述
+""" + PROSE_FIELD_BOUNDARIES + """
 </constraints>"""
 
     # 情节分析提示词 V2（RTCO框架 + 伏笔ID追踪）
