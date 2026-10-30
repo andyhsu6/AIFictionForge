@@ -104,6 +104,13 @@ _TRAILING_PUNCT = "。！？；"
 # 嵌套判定时视为措辞差异的结构助词
 _STRUCTURAL_PARTICLES = "的地得"
 
+# 判定「包含关系是不是同一特质」时用的否定标记（见 _folded_contains）。
+# 中文取单字前缀 + 常见双字前缀；ASCII 另有一份，只在纯英文 claim 上起作用。
+_NEGATION_CHARS = "不没无非未勿莫别弗"
+_NEGATION_PREFIXES = ("没有", "毫无", "未曾", "从不", "并不", "绝不", "毫不")
+_NEGATION_PREFIXES_ASCII = ("un", "in", "dis", "im", "mis", "non", "anti", "ir", "il")
+_NEGATION_SUFFIXES_ASCII = ("less", "free", "proof")
+
 _STAT_KEYS = (
     "facts_in",
     "facts_accepted",
@@ -164,6 +171,47 @@ def normalize_claim_form(text: str) -> str:
         and not unicodedata.category(char).startswith("P")
         and char not in _STRUCTURAL_PARTICLES
     )
+
+
+def _is_negated(outer: str, start: int, end: int) -> bool:
+    """判断 ``outer[start:end]`` 这次出现是否处在否定上下文里。"""
+    prefix = outer[:start]
+    suffix = outer[end:]
+    if prefix:
+        if prefix[-1] in _NEGATION_CHARS:
+            return True
+        if prefix.endswith(_NEGATION_PREFIXES):
+            return True
+        if prefix.isascii() and prefix.lower().endswith(_NEGATION_PREFIXES_ASCII):
+            return True
+    if suffix and suffix.isascii() and suffix.lower().startswith(_NEGATION_SUFFIXES_ASCII):
+        return True
+    return False
+
+
+def _folded_contains(outer: str, inner: str) -> bool:
+    """``inner`` 是否可作为 ``outer`` 的重复表述被吸收。
+
+    字面包含不足以判定重复，两道闸：
+
+    1. **否定上下文**：「克制」被「不克制」包含、「耐心」被「没有耐心」包含，
+       说的是相反或另一件事；按字面吸收会静默删掉较短的一条，让档案断言反转。
+       只要有一段出现不在否定语境里，就仍按重复处理（宁可少合并，不要写反）。
+    2. **纯 ASCII 形式不折叠**：英文没有可依赖的词边界（去标点去空格后更没有了），
+       「care」在「careless」里、「friend」在「boyfriend」里，都属于不同词而非
+       措辞差异。英文 claim 只享受「归一串相等」这一级合并。
+    3. **单字不折叠**：一个字的表述几乎总是恰好在更长的表述里出现，吸收它只会丢信息。
+    """
+    if inner == outer or len(inner) < 2:
+        return False
+    if inner.isascii() and outer.isascii():
+        return False
+    start = outer.find(inner)
+    while start >= 0:
+        if not _is_negated(outer, start, start + len(inner)):
+            return True
+        start = outer.find(inner, start + 1)
+    return False
 
 
 def normalize_chapters(chapters_by_number: dict[int, str]) -> dict[int, str]:
@@ -330,22 +378,24 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
     1. **精确去重**：按 ``normalize_quote(claim)``，先到先留；
     2. **嵌套去重**（issue #201 第 2 项）：按 ``normalize_claim_form``（去空白、
        标点、结构助词）比较。归一串完全相同（只差标点或「的」）合并为一条、保留
-       先到者；若 A 的归一串是 B 的归一串的**真子串**（``A != B and A in B``），
-       丢弃 A、保留 B——「隐忍克制」与「克制」、
-       「对子占有欲强」与「占有欲强」、「甲庄园的管家」与「甲庄园管家」
-       是同一特质的两种说法，同存只是同义堆叠。三条以上互相嵌套时保留信息量
-       最大的最长者；长度相等但内容不同的串不合并（防误合并）。保留项取该簇中
-       最早的原始位置，被丢弃项的位置让给保留下来的那条，从而维持阅读顺序。
+       原文较长者；若甲的归一串是乙的归一串的**真子串**，丢弃甲、保留乙——同存
+       只是同义堆叠。否定语境（「甲」与「不甲」）、纯 ASCII 形式、单字表述一律
+       不折叠，理由见 ``_folded_contains``。三条以上互相嵌套时保留最长者，
+       长度相等但内容不同的串不会互为真子串，因此不会互相吞并。
 
-    刻意不用语义相似度（embedding）判定重复：前序实测本地 ONNX 模型对真库 claim
-    全配对时，已知真实重复（同一件外套写两次）相似度仅 0.8895，进不了 0.90 档；
-    而 0.90 以上的 5 对里 3 对是**误合并**（不同特质被当成重复），0.95 档则一对都
-    抓不到。确定性嵌套规则在同一批数据上命中 11 对、人工核对零误合并。可复现证据见
-    ``backend/scripts/measure_fact_dedupe.py``（两种口径都可重跑）。
+    这是确定性的字面比较，不做语义判断，所以它只回答「这一条是不是另一条的
+    子串」。刻意不用语义相似度（embedding）：前序实测本地 ONNX 模型对真库 claim
+    全配对时，人工确认过的真实重复相似度低于 0.89 进不了候选档，而 0.90 档里
+    过半是误合并、0.95 档一条都抓不到——误合并率远高于字面规则。两种口径都能用
+    ``backend/scripts/measure_fact_dedupe.py`` 重跑复核。
 
     两级去重**之后**才按 ``FACT_FIELD_LIMITS`` 截断（被合并掉的重复不占配额），
     每字段用 `、` 连接；渲染前剥一次句末标点（`。！？；`），仍为空则跳过该字段；
     没有事实返回 ``{}``。
+
+    排序取存活项所在簇的最早位置；多父簇按「最短的包含者」定归属，因此同一批
+    事实的**存活集合**与输入顺序无关，但多父簇场景下的相对次序不保证等于源顺序。
+    复杂度 O(n²)：落库路径已按字段封顶，单批 payload 未封顶时仍可正常运行。
 
     ``kind`` 目前不影响结果：组织同样有 appearance 字段、字段集合一致，
     组织专属的谓词差异在 validate 阶段按 kind 留位处理。
@@ -380,28 +430,48 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
         if not entries:
             continue
 
-        # 阶段 2：嵌套去重（entries 条数个位数，两级循环足够）。
-        # 先按归一串折叠：归一串相同即同一特质的措辞差异（如多了「的」），保留首条。
-        order: list[str] = []
-        first_pos: dict[str, int] = {}
-        text_of: dict[str, str] = {}
+        # 阶段 2：嵌套去重。entries 条数个位数，两两比较足够。
+        # 2a. 归一串相同 → 同一特质的措辞差异（只差标点或「的」）：保留信息量最大的一条，
+        #     也就是原文最长者（长度相同取先到的），位置取该组里最早的。
+        groups: list[dict] = []
+        by_form: dict[str, dict] = {}
         for pos, text, form in entries:
-            if form not in first_pos:
-                first_pos[form] = pos
-                order.append(form)
-                text_of[form] = text
+            group = by_form.get(form)
+            if group is None:
+                group = {"form": form, "pos": pos, "text": text}
+                by_form[form] = group
+                groups.append(group)
+                continue
+            if len(text) > len(group["text"]):
+                group["text"] = text
+            group["pos"] = min(group["pos"], pos)
 
-        # 归一串是另一条的**真子串** → 被吸收；长度相等但内容不同的串不会互为子串。
-        # 三条以上互相嵌套时只有最长者存活（子串关系可传递）。
+        # 2b. 归一串是另一条的**真子串**才折叠；否定上下文与纯 ASCII 形式不折（见
+        #     _folded_contains）。三条以上互相嵌套时只有最长者存活。
+        forms = [group["form"] for group in groups]
         survivors = [
-            form for form in order
-            if not any(form != other and form in other for other in order)
+            i
+            for i, form in enumerate(forms)
+            if not any(j != i and _folded_contains(forms[j], form) for j in range(len(forms)))
         ]
-        # 位置取簇内最早：凡归一串被本条包含的项都算本簇成员，从而继承其阅读位置
-        survivors.sort(key=lambda form: min(first_pos[other] for other in order if other in form))
+
+        # 2c. 位置继承：每条被吸收项只归属**最短的**包含它的存活项（同长取更早的），
+        #     不能像「凡包含我的都算我的簇」那样合并——一条短串同时被多条长串包含时，
+        #     会让互不相关的簇全部塌到同一个位置，把排在后面的独立事实挤出配额。
+        sort_pos = {i: groups[i]["pos"] for i in survivors}
+        for i, form in enumerate(forms):
+            if i in survivors:
+                continue
+            owners = [j for j in survivors if _folded_contains(forms[j], form)]
+            if not owners:
+                continue
+            owner = min(owners, key=lambda j: (len(forms[j]), groups[j]["pos"]))
+            sort_pos[owner] = min(sort_pos[owner], groups[i]["pos"])
+
+        survivors.sort(key=lambda i: (sort_pos[i], i))
 
         limit = FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD)
-        items = [text_of[form] for form in survivors[:limit]]
+        items = [groups[i]["text"] for i in survivors[:limit]]
         if items:
             rendered[field] = "、".join(items)
 
