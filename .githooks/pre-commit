@@ -1,0 +1,17 @@
+#!/bin/sh
+# 交接/计划文档必须能被 OpenCode 的 @ 检索到，因此 docs/handoffs/ 在 .gitignore
+# 里被显式放行（索引遵循 gitignore，忽略的目录检索不到）。这类文档仍然不应该
+# 入库：本钩子阻止把它们提交进去。确需提交（例如要对外发布）时：
+#   ALLOW_HANDOFF_COMMIT=1 git commit ...
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep '^docs/handoffs/' || true)
+if [ -z "$staged" ]; then
+  exit 0
+fi
+if [ "${ALLOW_HANDOFF_COMMIT:-}" = "1" ]; then
+  exit 0
+fi
+echo "拒绝提交 docs/handoffs/ 下的文档：" >&2
+echo "$staged" | sed 's/^/  - /' >&2
+echo "" >&2
+echo "这些文件留在本地即可（它们已能被 @ 检索）。确需入库请用 ALLOW_HANDOFF_COMMIT=1。" >&2
+exit 1
