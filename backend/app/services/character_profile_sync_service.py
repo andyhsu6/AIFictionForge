@@ -40,6 +40,7 @@ from app.services.profile_prompt_rules import (
 )
 from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
+    filter_org_profile_values,
     merge_profile_facts,
     resolve_profile_fields,
 )
@@ -91,7 +92,7 @@ _PROMPT_TEMPLATE = """请根据下列章节正文，更新角色/组织档案。
     {{
       "name": "档案名称（必须与上面列出的名称完全一致）",
       "fields": {{
-        "personality": "稳定的性格特质（形容词/短句），无新信息填 null",
+        "personality": "稳定的性格特质（形容词/短句），无新信息填 null；组织不要输出该字段",
         "background": "背景故事，无新信息填 null",
         "appearance": "稳定的外貌与常驻装束，无新信息填 null",
         "current_state": "当前处境与心理状态，无新信息填 null"
@@ -278,6 +279,9 @@ def _render_profiles(characters: Iterable[Character]) -> str:
         if aliases:
             lines.append(f"  别名：{'、'.join(aliases)}")
         for field in PROFILE_FIELDS:
+            # issue #210：组织不设 personality，存量值也不再喂回模型（否则 prompt 自相矛盾）
+            if character.is_organization and field == "personality":
+                continue
             value = getattr(character, field, None)
             if value:
                 lines.append(f"  {field}：{value}")
@@ -734,6 +738,10 @@ class CharacterProfileSyncService:
 
         # issue #190：返回里有 profile_facts 时，档案文本只能由通过引文校验的事实渲染。
         # 一条事实都没通过时 values 为空 dict——宁可这轮不更新，也不落无依据文本。
+        # issue #210：组织不设 personality。legacy 与 facts 两条来源都可能带回该字段，
+        # 统一在这里剔除；_apply_profile_values 不写空值，循环无需改动。
+        values = filter_org_profile_values(values, bool(getattr(character, "is_organization", False)))
+
         if PROFILE_FACTS_PROMPT_ENABLED and chapters_by_number:
             rendered, facts_stats, facts = resolve_profile_fields(
                 entry,

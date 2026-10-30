@@ -646,3 +646,26 @@ def test_render_profile_omits_personality_for_organization():
     ]
     assert "personality" not in render_profile(facts, kind="organization")
     assert render_profile(facts, kind="character")["personality"] == "隐秘不露"
+
+
+# issue #210：组织 personality 的两处落库前剥离（book import / legacy 回流）
+def test_strip_org_personality_drops_field_and_facts():
+    from app.services.profile_facts import strip_org_personality
+
+    item = {"name": "组织甲", "personality": "性情沉稳", "background": "山门"}
+    facts = [
+        {"field": "personality", "claim": "性情沉稳"},
+        {"field": "background", "claim": "山门"},
+    ]
+    kept = strip_org_personality(item, facts)
+    assert "personality" not in item
+    assert [f["field"] for f in kept] == ["background"]
+    assert item["background"] == "山门"
+
+
+def test_filter_org_profile_values_only_touches_organizations():
+    from app.services.profile_facts import filter_org_profile_values
+
+    values = {"personality": "性情沉稳", "background": "山门"}
+    assert filter_org_profile_values(values, True) == {"background": "山门"}
+    assert filter_org_profile_values(values, False) == values

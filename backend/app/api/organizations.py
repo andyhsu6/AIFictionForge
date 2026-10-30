@@ -591,7 +591,7 @@ async def generate_organization_stream(
                 name=organization_data.get("name", gen_request.name or "未命名组织"),
                 is_organization=True,
                 role_type="supporting",
-                personality=organization_data.get("personality", ""),
+                personality=None,  # issue #210：组织不设 personality
                 background=organization_data.get("background", ""),
                 appearance=organization_data.get("appearance", ""),
                 organization_type=organization_data.get("organization_type"),

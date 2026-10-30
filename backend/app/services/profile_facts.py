@@ -561,6 +561,30 @@ def parse_profile_payload(payload: Any) -> ParsedProfile:
     )
 
 
+def strip_org_personality(item: dict, facts: list[dict]) -> list[dict]:
+    """组织不设 personality（issue #210）：清掉顶层字段，并过滤溯源事实。
+
+    提示词只能让模型「少产出」，实测三轮都能被近义词绕过；模型还可能完全无视
+    字段说明，直接给出顶层 ``personality``。``validate_profile_facts`` 的 kind 守卫
+    只覆盖 ``facts`` 数组这条车道，所以落库前必须在这里再剥一次。
+
+    原地修改 ``item``，返回过滤后的事实列表（调用方负责写回）。
+    """
+    item.pop("personality", None)
+    return [
+        fact
+        for fact in facts or []
+        if not (isinstance(fact, dict) and fact.get("field") == "personality")
+    ]
+
+
+def filter_org_profile_values(values: dict, is_organization: bool) -> dict:
+    """组织不设 personality：从 legacy/同步回传的字段字典里剔除该键。"""
+    if not is_organization:
+        return values
+    return {key: value for key, value in values.items() if key != "personality"}
+
+
 def resolve_profile_fields(
     payload: Any,
     chapters_by_number: dict[int, str],

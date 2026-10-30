@@ -975,7 +975,7 @@ async def characters_generator(
                 gender=char_data.get("gender") if not is_organization else None,
                 is_organization=is_organization,
                 role_type=char_data.get("role_type", "supporting"),
-                personality=char_data.get("personality", ""),
+                personality=None if is_organization else char_data.get("personality", ""),  # #210
                 background=char_data.get("background", ""),
                 appearance=char_data.get("appearance", ""),
                 relationships=relationships_text,

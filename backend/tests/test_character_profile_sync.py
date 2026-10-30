@@ -975,3 +975,74 @@ async def test_profile_facts_without_evidence_do_not_overwrite(db_session):
     character = await _character(db_session, "角色甲")
     assert character.personality == "占位旧性格"
     assert character.profile_facts is None
+
+
+def _stats():
+    return {"fields_updated": 0, "fields_preserved": 0, "fields_rejected": 0}
+
+
+# issue #210：组织不设 personality —— 三条写入车道的接线守卫
+def test_org_entry_drops_personality_from_legacy_fields():
+    """legacy 格式（fields 字典）带回 personality 时不得写入组织。"""
+    org = Character(name="占位组织", is_organization=True, personality=None)
+    entry = {"fields": {"personality": "性情沉稳", "background": "山门立于城北"}}
+    asyncio.run(
+        character_profile_sync_service._apply_entry(
+            db=None, character=org, entry=entry, stats=_stats()
+        )
+    )
+    assert org.personality is None
+    assert org.background == "山门立于城北"
+
+
+def test_org_entry_drops_personality_from_facts():
+    """facts 格式同样不得给组织写 personality（validate 的 kind 守卫 + 落库前再剥）。"""
+    org = Character(name="占位组织", is_organization=True, personality=None)
+    entry = {
+        "profile_facts": [
+            {
+                "field": "personality",
+                "claim": "性情沉稳",
+                "quote": "雨下了一整夜，院子里空无一人",
+                "chapter_number": 1,
+                "inferred": False,
+            },
+            {
+                "field": "background",
+                "claim": "雨夜独行",
+                "quote": "雨下了一整夜，院子里空无一人",
+                "chapter_number": 1,
+                "inferred": False,
+            },
+        ]
+    }
+    chapters = {1: "雨下了一整夜，院子里空无一人。"}
+    asyncio.run(
+        character_profile_sync_service._apply_entry(
+            db=None, character=org, entry=entry, stats=_stats(), chapters_by_number=chapters
+        )
+    )
+    assert org.personality is None
+    assert org.background == "雨夜独行"
+
+
+def test_character_entry_still_accepts_personality():
+    """回归：角色路径不受影响。"""
+    person = Character(name="占位角色", is_organization=False, personality=None)
+    entry = {"fields": {"personality": "性情沉稳"}}
+    asyncio.run(
+        character_profile_sync_service._apply_entry(
+            db=None, character=person, entry=entry, stats=_stats()
+        )
+    )
+    assert person.personality == "性情沉稳"
+
+
+def test_render_profiles_omits_organization_personality():
+    """喂回模型的档案列表不包含组织 personality（否则 prompt 自相矛盾）。"""
+    from app.services.character_profile_sync_service import _render_profiles
+
+    org = Character(name="占位组织", is_organization=True, personality="性情沉稳", background="山门")
+    rendered = _render_profiles([org])
+    assert "personality" not in rendered
+    assert "background" in rendered
