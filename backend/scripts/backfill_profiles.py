@@ -13,17 +13,27 @@
 2. 有快照且 `snapshot[field]` 存在且当前值 != 快照值 → 判定用户手改，保留现值；
 3. 其余（含无快照的历史数据）→ 用新文本覆盖；文本与现值相同记 `unchanged`。
 
+**验证新提示词规则的前置条件**：要测新规则必须用新提示词**重新生成**，而库里已有的
+`profile_facts` 是旧规则产物——它既不能当新样本，也会让幂等跳过把大部分实体挡在门外。
+所以重新生成时要配 `--include-existing`（忽略已有 facts、合并基准按空）或先自行清空；
+忽略模式下 `--dump-facts` / `report.md` 只反映本次新生成内容。本脚本永不自动清库，
+且默认 dry-run。
+
 用法::
 
     DATABASE_URL=... PYTHONPATH=backend backend/.venv/bin/python \\
         backend/scripts/backfill_profiles.py \\
         --user-id <uid> --only-empty --out-dir /tmp/backfill-empty
+
+    # 只看组织，并把本次通过校验的原子事实导成标注 TSV（dry-run 也写）
+    ... --kind organization --include-existing --dump-facts /tmp/facts.tsv
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import sys
 import time
@@ -93,6 +103,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=0, help="最多处理 N 个实体（0 = 不限）")
     parser.add_argument(
+        "--kind",
+        choices=("all", "person", "organization"),
+        default="all",
+        help=(
+            "只处理该类型的实体（all=全部，默认）；按 characters.is_organization 过滤。"
+            "测新提示词规则必须按类型重新生成，库里旧的 profile_facts 不能当新样本"
+        ),
+    )
+    parser.add_argument(
+        "--include-existing",
+        action="store_true",
+        help=(
+            "不因已有 profile_facts 而跳过，且合并基准视为空（dump/报告只反映本次新生成内容）。"
+            "测新规则必须重新生成、旧的 facts 是旧规则产物，所以需要它或先自行清空。"
+            "⚠ 与 --apply 同时使用时，实体既有的 profile_facts 会被本次结果整列替换、旧值丢弃；"
+            "只做测量请保持默认 dry-run"
+        ),
+    )
+    parser.add_argument(
+        "--dump-facts",
+        default=None,
+        help=(
+            "把本次生成且通过校验的原子事实写成 TSV（dry-run 也写），便于人工标注字段归类。"
+            "注意：要拿到「新规则」样本需配 --include-existing，否则已有 facts 的实体被跳过"
+        ),
+    )
+    parser.add_argument(
         "--apply",
         nargs="?",
         const=True,
@@ -108,6 +145,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--entities-per-call 必须为正数")
     if args.limit < 0:
         parser.error("--limit 不能为负")
+    if args.dump_facts is not None and not args.dump_facts.strip():
+        parser.error("--dump-facts 不能为空路径")
     return args
 
 
@@ -139,6 +178,51 @@ async def _load_entity_rows(db: AsyncSession, project_id: str) -> list[Any]:
 
 def _is_blank_entity(entity: Any) -> bool:
     return not any((getattr(entity, field, None) or "").strip() for field in FACT_FIELDS)
+
+
+def _keep_kind(entity: Any, kind: str) -> bool:
+    """`--kind` 过滤：作用在「本次要处理的实体集合」上，窗口/分批逻辑保持原样。"""
+    if kind == "all":
+        return True
+    return bool(entity.is_organization) == (kind == "organization")
+
+
+def _select_targets(
+    rows: list[Any],
+    *,
+    kind: str,
+    include_existing: bool,
+    only_empty: bool,
+    budget: dict[str, int],
+    record: dict[str, Any],
+) -> list[Any]:
+    """挑出本次要处理的实体（`--kind` → 幂等 / `--include-existing` → `--only-empty` → `--limit`）。
+
+    `--include-existing` 只影响"是否跳过"和计数；旧 facts 不进入任何统计或合并基准。
+    """
+    targets: list[Any] = []
+    for entity in rows:
+        if not _keep_kind(entity, kind):
+            # 类型过滤优先于其它跳过原因：非本次范围的实体不应计入"已有 facts"等统计
+            record["skipped_kind"] += 1
+            continue
+        has_existing = bool((entity.profile_facts or "").strip())
+        if has_existing and not include_existing:
+            # 幂等：已有溯源事实的实体不再回填（避免重复累加）
+            record["skipped_existing"] += 1
+            continue
+        if only_empty and not _is_blank_entity(entity):
+            record["skipped_not_empty"] += 1
+            continue
+        if budget["remaining"] is not None and budget["remaining"] <= 0:
+            record["skipped_limit"] += 1
+            continue
+        targets.append(entity)
+        if has_existing:
+            record["included_existing"] += 1
+        if budget["remaining"] is not None:
+            budget["remaining"] -= 1
+    return targets
 
 
 def _loads_snapshot(raw: Any) -> dict[str, Any]:
@@ -217,8 +301,12 @@ def _plan_entity(
     }
 
 
-async def _write_entity(db: AsyncSession, plan: dict[str, Any]) -> None:
-    """真正写库（只在 --apply 下调用）：ORM 对象 + 字段覆盖 + 溯源 + 快照。"""
+async def _write_entity(db: AsyncSession, plan: dict[str, Any], *, replace_facts: bool = False) -> None:
+    """真正写库（只在 --apply 下调用）：ORM 对象 + 字段覆盖 + 溯源 + 快照。
+
+    ``replace_facts=True``（`--include-existing`）时合并基准按空处理，`profile_facts`
+    只保留本次新生成的事实——旧 facts 属于旧规则产物，混进来就不是"重新生成"了。
+    """
     orm = await db.get(Character, plan["entity_id"])
     if orm is None:
         return
@@ -226,7 +314,8 @@ async def _write_entity(db: AsyncSession, plan: dict[str, Any]) -> None:
         if row["action"] == ACTION_UPDATED:
             setattr(orm, row["field"], row["new_text"])
     if plan["facts"]:
-        merged = merge_profile_facts(orm.profile_facts, plan["facts"])
+        base = None if replace_facts else orm.profile_facts
+        merged = merge_profile_facts(base, plan["facts"])
         if merged:
             orm.profile_facts = merged
             orm.profile_facts_updated_at = datetime.utcnow()
@@ -249,7 +338,9 @@ async def _run_project(
         "project_id": project.id,
         "title": project.title,
         "entity_total": 0,
+        "skipped_kind": 0,
         "skipped_existing": 0,
+        "included_existing": 0,
         "skipped_not_empty": 0,
         "skipped_limit": 0,
         "processed": 0,
@@ -257,6 +348,7 @@ async def _run_project(
         "failures": 0,
         "violent_loss_blocked": 0,
         "fields": [],
+        "fact_rows": [],
         "error": "",
     }
 
@@ -267,21 +359,14 @@ async def _run_project(
         record["error"] = "skip: 没有正文非空的章节或没有实体"
         return record
 
-    targets: list[Any] = []
-    for entity in rows:
-        if (entity.profile_facts or "").strip():
-            # 幂等：已有溯源事实的实体不再回填（避免重复累加）
-            record["skipped_existing"] += 1
-            continue
-        if args.only_empty and not _is_blank_entity(entity):
-            record["skipped_not_empty"] += 1
-            continue
-        if budget["remaining"] is not None and budget["remaining"] <= 0:
-            record["skipped_limit"] += 1
-            continue
-        targets.append(entity)
-        if budget["remaining"] is not None:
-            budget["remaining"] -= 1
+    targets = _select_targets(
+        rows,
+        kind=args.kind,
+        include_existing=args.include_existing,
+        only_empty=args.only_empty,
+        budget=budget,
+        record=record,
+    )
 
     record["processed"] = len(targets)
     if not targets:
@@ -354,13 +439,26 @@ async def _run_project(
         plan["failed"] = slot["failed"]
         plan["error"] = slot["error"]
         record["fields"].extend(plan["fields"])
+        # 事实本身即落库口径：这里拿到的是 merge 后、已通过 validate_profile_facts 的集合
+        for fact in facts:
+            record["fact_rows"].append(
+                {
+                    "project_id": project.id,
+                    "kind": plan["kind"],
+                    "entity": entity.name,
+                    "field": fact["field"],
+                    "claim": fact["claim"],
+                    "quote": fact["quote"],
+                    "chapter_number": fact["chapter_number"],
+                }
+            )
         record["violent_loss_blocked"] += sum(
             1
             for row in plan["fields"]
             if row["action"] == ACTION_SKIPPED_EMPTY and row["old_text"].strip()
         )
         if args.apply and (plan["changed"] or plan["facts"]):
-            await _write_entity(db, plan)
+            await _write_entity(db, plan, replace_facts=args.include_existing)
 
     record["seconds"] = round(time.perf_counter() - started, 1)
     return record
@@ -398,6 +496,46 @@ def _write_plan(path: Path, projects: list[dict[str, Any]]) -> int:
     return len(lines) - 1
 
 
+FACT_DUMP_COLUMNS = (
+    "project_id",
+    "kind",
+    "entity",
+    "field",
+    "claim",
+    "quote",
+    "chapter_number",
+)
+
+
+def _write_facts_dump(path: Path, projects: list[dict[str, Any]]) -> int:
+    """把本次通过校验的原子事实落成 TSV（dry-run 也写：这套口径就是人工标注的输入）。
+
+    写侧用 `csv.writer`（与读侧 `csv.DictReader` 同一方言）：claim / quote 里的引号、
+    制表符、换行交给 csv 引用规则处理，**不摊平**——quote 是原文逐字摘录，摊平会丢原文；
+    而只摊平写侧、读侧仍按 csv 解析，还会让以 `"` 开头的字段错位吞列。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
+        writer.writerow(FACT_DUMP_COLUMNS)
+        for project in projects:
+            for row in project.get("fact_rows", []):
+                writer.writerow(
+                    [
+                        row["project_id"],
+                        row["kind"],
+                        row["entity"],
+                        row["field"],
+                        row["claim"],
+                        row["quote"],
+                        row["chapter_number"],
+                    ]
+                )
+                written += 1
+    return written
+
+
 def _counts(projects: list[dict[str, Any]]) -> dict[str, Any]:
     actions: Counter = Counter()
     to_update = 0
@@ -429,6 +567,8 @@ def _write_report(
     actions = counts["actions"]
     processed = sum(project["processed"] for project in projects)
     skipped_existing = sum(project["skipped_existing"] for project in projects)
+    included_existing = sum(project.get("included_existing", 0) for project in projects)
+    skipped_kind = sum(project.get("skipped_kind", 0) for project in projects)
     skipped_not_empty = sum(project["skipped_not_empty"] for project in projects)
     skipped_limit = sum(project["skipped_limit"] for project in projects)
     failures = sum(project["failures"] for project in projects)
@@ -443,6 +583,13 @@ def _write_report(
         else "> **本次运行 = `--apply`：已按逐项目 `commit()` 写库。**"
     )
     lines.append("")
+    if args.include_existing:
+        # 这条直接决定数字怎么读：合并基准按空 + 旧 facts 不参与统计
+        lines.append(
+            "> **本次忽略已有 `profile_facts`**（`--include-existing`）：合并基准按空处理，"
+            "`report.md` 与 `--dump-facts` 只统计「本次新生成」的内容。"
+        )
+        lines.append("")
     lines.append("## 运行参数")
     lines.append("")
     lines.append(
@@ -454,8 +601,11 @@ def _write_report(
                 ["chapters_per_window", args.chapters_per_window],
                 ["entities_per_call", args.entities_per_call],
                 ["only_empty", args.only_empty],
+                ["kind", args.kind],
+                ["include_existing", args.include_existing],
                 ["limit", args.limit or "不限"],
                 ["apply", args.apply],
+                ["dump_facts", args.dump_facts or "（不导出）"],
                 ["prompt", "`PROFILE_BACKFILL_FACTS` + `PROFILE_BACKFILL_SYSTEM`"],
                 ["out_dir", args.out_dir],
             ],
@@ -470,7 +620,9 @@ def _write_report(
             [
                 ["项目数", len(projects)],
                 ["实体数（本次处理）", processed],
+                ["跳过：类型过滤（--kind）", skipped_kind],
                 ["跳过：已有 profile_facts（幂等）", skipped_existing],
+                ["其中因 --include-existing 被纳入（已有 facts）", included_existing],
                 ["跳过：非全空（--only-empty）", skipped_not_empty],
                 ["跳过：--limit 截断", skipped_limit],
                 ["需要更新实体数（≥1 字段 updated）", counts["to_update"]],
@@ -497,6 +649,7 @@ def _write_report(
             [
                 f"`{project['project_id']}`",
                 project["entity_total"],
+                project.get("skipped_kind", 0),
                 project["skipped_existing"],
                 project["skipped_not_empty"],
                 project["processed"],
@@ -515,6 +668,7 @@ def _write_report(
             [
                 "project_id",
                 "实体总数",
+                "跳过(类型)",
                 "跳过(已有facts)",
                 "跳过(非空)",
                 "处理实体",
@@ -543,6 +697,7 @@ def _write_report(
         "to_update": counts["to_update"],
         "preserved": actions.get(ACTION_PRESERVED, 0),
         "skipped_empty": actions.get(ACTION_SKIPPED_EMPTY, 0),
+        "included_existing": included_existing,
     }
 
 
@@ -592,7 +747,8 @@ async def run(args: argparse.Namespace) -> int:
                     print(
                         f"[project] {project.id} entities={record['processed']} "
                         f"calls={record['calls']} failures={record['failures']} "
-                        f"skipped_existing={record['skipped_existing']}",
+                        f"skipped_existing={record['skipped_existing']} "
+                        f"included_existing={record.get('included_existing', 0)}",
                         flush=True,
                     )
                     if args.apply:
@@ -615,6 +771,9 @@ async def run(args: argparse.Namespace) -> int:
                 pass
 
     plan_rows = _write_plan(out_dir / "plan.tsv", projects)
+    fact_rows = 0
+    if args.dump_facts:
+        fact_rows = _write_facts_dump(Path(args.dump_facts).expanduser(), projects)
     summary = _write_report(
         out_dir / "report.md",
         args=args,
@@ -624,6 +783,13 @@ async def run(args: argparse.Namespace) -> int:
     )
 
     print(f"OUT {out_dir} plan_rows={plan_rows}")
+    if args.include_existing:
+        print(
+            f"INCLUDE_EXISTING 本次忽略已有 profile_facts，仅统计新生成内容 "
+            f"included_existing={summary['included_existing']}"
+        )
+    if args.dump_facts:
+        print(f"FACTS {Path(args.dump_facts).expanduser()} rows={fact_rows}")
     for item in failed_projects:
         print(f"PROJECT_FAILED {item['project_id']} {item['error']}", file=sys.stderr)
     print(
