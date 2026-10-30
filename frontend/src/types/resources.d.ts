@@ -953,6 +953,7 @@ export default interface Resources {
     "roleOther": "其他",
     "roleProtagonist": "主角",
     "roleSupporting": "配角",
+    "sourceEditedWarning": "档案文本在生成依据之后被编辑过，以下依据可能不完整",
     "sourceLabel": "查看档案依据",
     "sourceTitle": "档案依据",
     "statusDeceased": "💀 已死亡",
@@ -2290,11 +2291,14 @@ export default interface Resources {
       "total": "共 {{n}} 名成员"
     },
     "orgDetail": {
+      "appearance": "外在表现",
+      "background": "背景",
       "color": "代表颜色",
       "location": "所在地",
       "memberCount": "成员数量",
       "motto": "格言/口号",
       "name": "组织名称",
+      "personality": "组织特性",
       "powerLevel": "势力等级",
       "purpose": "组织目的",
       "title": "组织详情",

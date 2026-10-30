@@ -23,6 +23,7 @@
   "roleOther": "Other",
   "roleProtagonist": "Protagonist",
   "roleSupporting": "Supporting",
+  "sourceEditedWarning": "The profile was edited after its sources were generated, so the sources may be incomplete.",
   "sourceLabel": "View profile sources",
   "sourceTitle": "Profile sources",
   "statusDeceased": "💀 Deceased",

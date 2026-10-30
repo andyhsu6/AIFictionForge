@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, App, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer, theme } from 'antd';
-import { PlusOutlined, UserOutlined, EditOutlined, DeleteOutlined, UnorderedListOutlined, BankOutlined } from '@ant-design/icons';
+import { Card, Table, Tag, Button, Space, App, Modal, Form, Select, InputNumber, Input, Descriptions, Drawer, theme, Typography } from 'antd';
+import { PlusOutlined, UserOutlined, EditOutlined, DeleteOutlined, UnorderedListOutlined, BankOutlined, ReadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { useCharacterSync } from '../store/hooks';
 import axios from 'axios';
 import { eventBus, EventNames } from '../store/eventBus';
 import { useTranslation } from 'react-i18next';
+import ProfileSourceModal from '../components/ProfileSourceModal';
+import type { CharacterProfileFact } from '../types';
 
 interface Organization {
   id: string;
@@ -19,6 +21,12 @@ interface Organization {
   location?: string;
   motto?: string;
   color?: string;
+  personality?: string;
+  background?: string;
+  appearance?: string;
+  profile_facts?: CharacterProfileFact[];
+  profile_facts_updated_at?: string | null;
+  updated_at?: string | null;
 }
 
 interface OrganizationMember {
@@ -44,6 +52,7 @@ interface Character {
 export default function Organizations() {
   const { message } = App.useApp();
   const { t } = useTranslation('organizations');
+  const { t: tCharacterCard } = useTranslation('characterCard');
   const { projectId } = useParams<{ projectId: string }>();
   const { currentProject } = useStore();
   const { refreshCharacters } = useCharacterSync();
@@ -62,6 +71,7 @@ export default function Organizations() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [modal, contextHolder] = Modal.useModal();
   const [orgListVisible, setOrgListVisible] = useState(false);
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const { token } = theme.useToken();
 
   useEffect(() => {
@@ -533,8 +543,48 @@ export default function Organizations() {
                     <Descriptions.Item label={t('orgDetail.purpose')} span={2}>
                       {selectedOrg.purpose}
                     </Descriptions.Item>
+                    {selectedOrg.personality && (
+                      <Descriptions.Item label={t('orgDetail.personality')} span={2}>
+                        <Typography.Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {selectedOrg.personality}
+                        </Typography.Text>
+                      </Descriptions.Item>
+                    )}
+                    {selectedOrg.background && (
+                      <Descriptions.Item label={t('orgDetail.background')} span={2}>
+                        <Typography.Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {selectedOrg.background}
+                        </Typography.Text>
+                      </Descriptions.Item>
+                    )}
+                    {selectedOrg.appearance && (
+                      <Descriptions.Item label={t('orgDetail.appearance')} span={2}>
+                        <Typography.Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {selectedOrg.appearance}
+                        </Typography.Text>
+                      </Descriptions.Item>
+                    )}
                   </Descriptions>
+                  {(selectedOrg.profile_facts?.length ?? 0) > 0 && (
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<ReadOutlined />}
+                      aria-label={tCharacterCard('sourceLabel')}
+                      onClick={() => setSourceModalOpen(true)}
+                    >
+                      {tCharacterCard('sourceLabel')}
+                    </Button>
+                  )}
                 </Card>
+                <ProfileSourceModal
+                  open={sourceModalOpen}
+                  onClose={() => setSourceModalOpen(false)}
+                  title={selectedOrg.name}
+                  facts={selectedOrg.profile_facts ?? []}
+                  updatedAt={selectedOrg.updated_at}
+                  factsUpdatedAt={selectedOrg.profile_facts_updated_at}
+                />
 
                 <Card
                   title={t('members.titleWithCount', { n: members.length })}
