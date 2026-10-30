@@ -54,6 +54,12 @@ from app.services.profile_facts import (  # noqa: E402
     render_profile,
     validate_profile_facts,
 )
+from app.services.profile_mentions import (  # noqa: E402
+    count_mentions,
+    mention_tokens,
+    parse_aliases,
+    unique_tokens_by_entity,
+)
 from app.services.prompt_service import PromptService  # noqa: E402
 
 # 丢弃原因（与 profile_facts.validate_profile_facts 的统计键一致）
@@ -159,6 +165,7 @@ async def _load_entities(db: AsyncSession, project_id: str) -> list[Any]:
         select(
             Character.id,
             Character.name,
+            Character.aliases,
             Character.is_organization,
             Character.personality,
             Character.background,
@@ -182,20 +189,25 @@ def _assign_entities(
 ) -> tuple[dict[int, list[Any]], list[Any]]:
     """每个实体只进一个窗口：出现次数最多的窗口；并列取最早。
 
+    匹配口径与生产同步链路一致：``name + aliases``（别名只在项目内唯一时才参与，
+    见 ``profile_mentions.unique_tokens_by_entity``）——正文只用简称/称谓的实体
+    以前会被误判成"从未出现"。
+
     从未在任何窗口正文中出现的实体不参与调用（无依据可更新），单独返回，
     仍会在 comparison.tsv 里占位（new 为空），保证「行数 = 实体数 × 3」。
     """
     window_texts = ["".join(c.content or "" for c in window) for window in windows]
+    unique_map = unique_tokens_by_entity(entities)
     assigned: dict[int, list[Any]] = defaultdict(list)
     unmentioned: list[Any] = []
 
     for entity in entities:
-        name = (entity.name or "").strip()
+        tokens = mention_tokens(entity, unique_map)
         best_index: int | None = None
         best_count = 0
-        if name:
+        if tokens:
             for index, text in enumerate(window_texts):
-                count = text.count(name)
+                count = count_mentions(text, tokens)
                 # 严格大于：并列时保留更早的窗口（首次出现优先）
                 if count > best_count:
                     best_count, best_index = count, index
@@ -207,11 +219,16 @@ def _assign_entities(
 
 
 def _render_profiles(entities: list[Any]) -> str:
-    """该批实体现有档案的 JSON（与模板 {profiles} 占位符对应）。"""
+    """该批实体现有档案的 JSON（与模板 {profiles} 占位符对应）。
+
+    ``aliases`` 用全部别名（不做唯一性过滤）：这里是给模型看的上下文，
+    与生产 ``_render_profiles`` 列出别名的做法一致；唯一性只影响"正文命中归属"判定。
+    """
     payload = [
         {
             "name": entity.name,
             "is_organization": bool(entity.is_organization),
+            "aliases": parse_aliases(entity.aliases),
             "personality": entity.personality or "",
             "background": entity.background or "",
             "appearance": entity.appearance or "",
@@ -287,8 +304,19 @@ async def _call_batch(
 
 
 def _entry_map(entries: Any, batch: list[Any]) -> tuple[dict[str, dict], list[str]]:
-    """按档案名精确对齐批次实体；批次外的名字单独记下（不改库、不猜）。"""
+    """按档案名对齐批次实体；批次外的名字单独记下（不改库、不猜）。
+
+    模型有时回的是正文里的简称/称谓而不是档案主名，先按 name 精确命中，未命中时
+    按**本批次内唯一**的 token（别名）解析回实体主名。同名或歧义 token 不解析
+    （``unique_tokens_by_entity`` 已把歧义 token 排除），仍进 ``unmatched``。
+    """
     by_name = {entity.name: entity for entity in batch}
+    unique_map = unique_tokens_by_entity(batch)
+    by_token: dict[str, Any] = {}
+    for entity in batch:
+        for token in unique_map.get(entity.id) or []:
+            by_token[token] = entity
+
     matched: dict[str, dict] = {}
     unmatched: list[str] = []
     if not isinstance(entries, list):
@@ -297,10 +325,15 @@ def _entry_map(entries: Any, batch: list[Any]) -> tuple[dict[str, dict], list[st
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
-        if isinstance(name, str) and name in by_name:
-            matched.setdefault(name, entry)
-        elif isinstance(name, str):
+        if not isinstance(name, str):
+            continue
+        entity = by_name.get(name)
+        if entity is None:
+            entity = by_token.get(name)
+        if entity is None:
             unmatched.append(name)
+        else:
+            matched.setdefault(entity.name, entry)
     return matched, unmatched
 
 
@@ -507,6 +540,9 @@ async def _run_project_backfill(
 
     windows = _split_windows(chapters, args.chapters_per_window)
     record["windows"] = len(windows)
+    # 唯一性判定必须在**整个项目的实体列表**上做（不是窗口内的子集）：某个 token
+    # 是否歧义跟本次只看哪些实体无关；唯一性拿不到时 mention_tokens 退回只用 name。
+    unique_map = unique_tokens_by_entity(entities)
 
     # 实体名 → 跨窗口累积槽位
     slots: dict[str, dict[str, Any]] = {}
@@ -517,7 +553,7 @@ async def _run_project_backfill(
         window_entities = [
             entity
             for entity in entities
-            if (entity.name or "").strip() and entity.name in window_text
+            if count_mentions(window_text, mention_tokens(entity, unique_map)) > 0
         ]
         if not window_entities:
             continue
