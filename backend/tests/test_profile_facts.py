@@ -420,3 +420,91 @@ def test_merge_profile_facts_ignores_invalid_and_empty():
     assert merge_profile_facts("not json", []) is None
     assert merge_profile_facts(None, [{"field": "current_state", "claim": "处境"}]) is None
     assert merge_profile_facts(None, [{"field": "personality"}]) is None
+
+
+# --------------------------------------------------------------------------- #
+# issue #201 第 2 项：render_profile 的嵌套去重（确定性规则，不用语义相似度）
+# --------------------------------------------------------------------------- #
+def _claims(field: str, *claims: str) -> list[dict]:
+    return [{"field": field, "claim": claim} for claim in claims]
+
+
+def test_normalize_claim_form_strips_punct_and_particles():
+    from app.services.profile_facts import normalize_claim_form
+
+    # 只差标点与结构助词 → 同一特质的措辞差异
+    assert normalize_claim_form("山庄的管家、") == normalize_claim_form("山庄管家")
+    assert normalize_claim_form(None) == ""  # type: ignore[arg-type]
+    # 引文校验用的 normalize_quote 语义不受影响（不归一标点）
+    assert normalize_quote("他，点头") != normalize_quote("他。点头")
+
+
+def test_render_profile_nested_dedup_keeps_longer():
+    rendered = render_profile(_claims("personality", "隐忍克制", "克制"))
+    assert rendered == {"personality": "隐忍克制"}
+
+
+def test_render_profile_nested_dedup_merges_equal_form():
+    # 归一后完全相同（只差结构助词）也合并为一条，保留先到者
+    rendered = render_profile(_claims("background", "甲峰管家", "甲峰的管家"))
+    assert rendered == {"background": "甲峰管家"}
+
+
+def test_render_profile_nested_three_levels_keeps_longest():
+    rendered = render_profile(
+        _claims("background", "神捕", "六扇门神捕", "六扇门神捕，办案二十年")
+    )
+    assert rendered == {"background": "六扇门神捕，办案二十年"}
+
+
+def test_render_profile_nested_dedup_keeps_earliest_position():
+    # 被丢弃项的位置让给保留下来的那条：长串虽在第 3 位，仍占据簇内最早的第 1 位
+    rendered = render_profile(_claims("personality", "克制", "寡言", "隐忍克制", "沉默"))
+    assert rendered == {"personality": "隐忍克制、寡言、沉默"}
+
+
+def test_render_profile_limit_applies_after_dedup():
+    from app.services.profile_facts import FACT_FIELD_LIMITS
+
+    limit = FACT_FIELD_LIMITS["appearance"]
+    assert limit == 4
+    facts = _claims(
+        "appearance",
+        "黑衣",  # 被下一条吸收，不应占用配额
+        "黑衣与黑长衫",
+        "身形瘦削",
+        "面无血色",
+        "手指纤细",  # 去重后落在第 4 位，必须能进入渲染结果
+    )
+    rendered = render_profile(facts)
+    items = rendered["appearance"].split("、")
+    assert items == ["黑衣与黑长衫", "身形瘦削", "面无血色", "手指纤细"]
+
+
+def test_render_profile_similar_but_unrelated_phrases_not_merged():
+    # 防误合并回归：共字但不互为子串的短语是不同特质
+    rendered = render_profile(_claims("personality", "甲家公子", "乙峰之孙"))
+    assert rendered == {"personality": "甲家公子、乙峰之孙"}
+
+
+def test_render_profile_punctuation_only_claims_ignored():
+    facts = _claims("personality", "。", "！！", "  ", "的地得")
+    facts.append({"field": "appearance", "claim": "。"})
+    rendered = render_profile(facts)
+    assert "personality" not in rendered
+    assert "appearance" not in rendered
+
+
+def test_render_profile_dedup_is_per_field():
+    # 不同字段互不去重：personality 的短串不该吃掉 background 的长串
+    facts = _claims("personality", "克制") + _claims("background", "隐忍克制")
+    rendered = render_profile(facts)
+    assert rendered == {"personality": "克制", "background": "隐忍克制"}
+
+
+def test_render_profile_is_deterministic():
+    facts = _claims("personality", "克制", "寡言", "隐忍克制", "沉默")
+    facts += _claims("background", "甲峰管家", "甲峰的管家")
+    first = render_profile(facts)
+    second = render_profile(facts)
+    assert first == second

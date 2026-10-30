@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,6 +101,9 @@ _WHITESPACE_RE = re.compile(r"[\s\u3000]+")
 # 渲染时剥掉的句末标点
 _TRAILING_PUNCT = "。！？；"
 
+# 嵌套判定时视为措辞差异的结构助词
+_STRUCTURAL_PARTICLES = "的地得"
+
 _STAT_KEYS = (
     "facts_in",
     "facts_accepted",
@@ -138,6 +142,28 @@ def normalize_quote(text: str) -> str:
     if not isinstance(text, str):
         return ""
     return _WHITESPACE_RE.sub("", text)
+
+
+def normalize_claim_form(text: str) -> str:
+    """claim 的「措辞归一」串，只用于同一字段内判断两条 claim 是否互相嵌套。
+
+    去空白、去标点、去结构助词（的/地/得）——这些只是同一特质的措辞差异：
+    「甲庄园的管家」与「甲庄园管家」、「甲之妻、乙之母」与「乙之母」
+    说的是同一件事。
+
+    与 ``normalize_quote`` 刻意分开：后者服务于「引文必须在原文里字面存在」这条
+    硬校验，归一得越多越容易放过伪造引用；本函数只回答「是不是同一特质的再次
+    表述」，**不得**外泄到引文校验路径。
+    """
+    if not isinstance(text, str):
+        return ""
+    return "".join(
+        char
+        for char in text
+        if not char.isspace()
+        and not unicodedata.category(char).startswith("P")
+        and char not in _STRUCTURAL_PARTICLES
+    )
 
 
 def normalize_chapters(chapters_by_number: dict[int, str]) -> dict[int, str]:
@@ -299,17 +325,35 @@ def validate_profile_facts(
 def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, str]:
     """把通过校验的事实渲染成 ``personality``/``background``/``appearance`` 文本。
 
-    - 同一字段内按 ``normalize_quote(claim)`` 去重，先到先留；
-    - 每字段最多 ``MAX_FACTS_PER_FIELD`` 条，用 `、` 连接；
-    - 渲染前再剥一次句末标点（`。！？；`），仍为空则跳过该字段；
-    - 没有事实返回 ``{}``。
+    同一字段内做两级去重（都是确定性纯函数，无 IO、无模型调用）：
+
+    1. **精确去重**：按 ``normalize_quote(claim)``，先到先留；
+    2. **嵌套去重**（issue #201 第 2 项）：按 ``normalize_claim_form``（去空白、
+       标点、结构助词）比较。归一串完全相同（只差标点或「的」）合并为一条、保留
+       先到者；若 A 的归一串是 B 的归一串的**真子串**（``A != B and A in B``），
+       丢弃 A、保留 B——「隐忍克制」与「克制」、
+       「对子占有欲强」与「占有欲强」、「甲庄园的管家」与「甲庄园管家」
+       是同一特质的两种说法，同存只是同义堆叠。三条以上互相嵌套时保留信息量
+       最大的最长者；长度相等但内容不同的串不合并（防误合并）。保留项取该簇中
+       最早的原始位置，被丢弃项的位置让给保留下来的那条，从而维持阅读顺序。
+
+    刻意不用语义相似度（embedding）判定重复：前序实测本地 ONNX 模型对真库 claim
+    全配对时，已知真实重复（同一件外套写两次）相似度仅 0.8895，进不了 0.90 档；
+    而 0.90 以上的 5 对里 3 对是**误合并**（不同特质被当成重复），0.95 档则一对都
+    抓不到。确定性嵌套规则在同一批数据上命中 11 对、人工核对零误合并。可复现证据见
+    ``backend/scripts/measure_fact_dedupe.py``（两种口径都可重跑）。
+
+    两级去重**之后**才按 ``FACT_FIELD_LIMITS`` 截断（被合并掉的重复不占配额），
+    每字段用 `、` 连接；渲染前剥一次句末标点（`。！？；`），仍为空则跳过该字段；
+    没有事实返回 ``{}``。
 
     ``kind`` 目前不影响结果：组织同样有 appearance 字段、字段集合一致，
     组织专属的谓词差异在 validate 阶段按 kind 留位处理。
     """
-    buckets: dict[str, list[str]] = {field: [] for field in FACT_FIELDS}
+    buckets: dict[str, list[tuple[int, str, str]]] = {field: [] for field in FACT_FIELDS}
     seen: dict[str, set[str]] = {field: set() for field in FACT_FIELDS}
 
+    # 阶段 1：按字段收集 + 精确去重
     for fact in facts or []:
         if not isinstance(fact, dict):
             continue
@@ -323,16 +367,45 @@ def render_profile(facts: list[dict], *, kind: str = "character") -> dict[str, s
         key = normalize_quote(claim)
         if not key or key in seen[field]:
             continue
-        if len(buckets[field]) >= FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD):
-            continue
         seen[field].add(key)
 
         text = claim.strip().rstrip(_TRAILING_PUNCT).strip()
-        if not text:
+        form = normalize_claim_form(text)
+        if not form:
             continue
-        buckets[field].append(text)
+        buckets[field].append((len(buckets[field]), text, form))
 
-    return {field: "、".join(items) for field, items in buckets.items() if items}
+    rendered: dict[str, str] = {}
+    for field, entries in buckets.items():
+        if not entries:
+            continue
+
+        # 阶段 2：嵌套去重（entries 条数个位数，两级循环足够）。
+        # 先按归一串折叠：归一串相同即同一特质的措辞差异（如多了「的」），保留首条。
+        order: list[str] = []
+        first_pos: dict[str, int] = {}
+        text_of: dict[str, str] = {}
+        for pos, text, form in entries:
+            if form not in first_pos:
+                first_pos[form] = pos
+                order.append(form)
+                text_of[form] = text
+
+        # 归一串是另一条的**真子串** → 被吸收；长度相等但内容不同的串不会互为子串。
+        # 三条以上互相嵌套时只有最长者存活（子串关系可传递）。
+        survivors = [
+            form for form in order
+            if not any(form != other and form in other for other in order)
+        ]
+        # 位置取簇内最早：凡归一串被本条包含的项都算本簇成员，从而继承其阅读位置
+        survivors.sort(key=lambda form: min(first_pos[other] for other in order if other in form))
+
+        limit = FACT_FIELD_LIMITS.get(field, MAX_FACTS_PER_FIELD)
+        items = [text_of[form] for form in survivors[:limit]]
+        if items:
+            rendered[field] = "、".join(items)
+
+    return rendered
 
 
 # 旧格式（模型直接给三段长文本）与本模块的字段集合一致，直接复用
