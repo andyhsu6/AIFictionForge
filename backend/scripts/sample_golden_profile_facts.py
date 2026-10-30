@@ -66,11 +66,23 @@ def _db_path(database_url: str) -> Path:
 
 
 def _read_facts(db_path: Path) -> list[dict]:
-    """只读快照读取 facts；返回 [{entity_id, entity, is_organization, field, text, quote}]。"""
+    """只读快照读取 facts；返回 [{entity_id, entity, is_organization, field, text, quote}]。
+
+    快照把主库**连同 -wal 一起**复制到临时目录再打开，两个理由：
+    1. 应用常驻开着 WAL，未 checkpoint 的写入只在 -wal 里，只复制主库会漏掉它们，
+       抽样集就偏向旧状态；
+    2. 直接对原库开连接（哪怕 `mode=ro`）也会在库目录生成 -wal/-shm，这条路只在
+       临时目录里留痕，不自作主张改用户的库目录。
+    复制期间若有写入进程正在活动，理论上可能拿到半截 WAL；抽样是只读测量用途，
+    这种情况重跑即可，不会影响数据。
+    """
     tmp = Path(tempfile.mkdtemp(prefix="golden-facts-"))
     try:
         snapshot = tmp / "snapshot.db"
         shutil.copy2(db_path, snapshot)
+        wal = db_path.with_name(db_path.name + "-wal")
+        if wal.exists():
+            shutil.copy2(wal, snapshot.with_name(snapshot.name + "-wal"))
         conn = sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)
         try:
             rows = conn.execute(
