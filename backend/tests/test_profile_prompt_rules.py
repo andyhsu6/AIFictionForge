@@ -67,6 +67,25 @@ def test_organisation_appearance_excludes_location_and_interior():
     assert "总部或据点所在" not in text
 
 
+def test_no_template_keeps_a_private_copy_of_the_old_organisation_wording():
+    """拼装后的完整提示词里不能再残留旧口径。
+
+    独立复核（换了一个模型）发现的漏网：共享常量改对了，但事实抽取主路径的
+    模板里另有一份**手写副本**仍写「行事风格与价值取向」，同一 prompt 内新旧
+    指令互相抵消——只断言常量内容看不到这类副本。所以这里直接扫整个提示词
+    模块的源码，以及拼装后的主路径 prompt。
+    """
+    import app.services.prompt_service as ps
+
+    source = Path(ps.__file__).read_text(encoding="utf-8")
+    for stale in ("行事风格与价值取向", "总部位置"):
+        assert stale not in source, f"提示词模块里仍有旧口径：{stale}"
+
+    rendered = _formatted(PromptService.CHARACTERS_BATCH_GENERATION_FACTS)
+    assert "一律不写进 personality" in rendered
+    assert "行事风格与价值取向" not in rendered
+
+
 def test_batch_prompts_share_field_rules():
     for name in (
         "CHARACTERS_BATCH_GENERATION",
