@@ -463,6 +463,14 @@ export interface OutlineImportResult {
 }
 
 // 角色类型定义
+export interface CharacterProfileFact {
+  field: 'personality' | 'background' | 'appearance';
+  claim: string;
+  quote: string | null;
+  chapter_number: number | null;
+  inferred: boolean;
+}
+
 export interface Character {
   id: string;
   project_id: string;
@@ -474,6 +482,7 @@ export interface Character {
   personality?: string;
   background?: string;
   appearance?: string;
+  profile_facts?: CharacterProfileFact[];
   relationships?: string;
   organization_type?: string;
   organization_purpose?: string;
@@ -1303,4 +1312,3 @@ export interface BookImportRetryResult {
   retry_results: Record<string, number>;
   still_failed: BookImportStepFailure[];
 }
-
