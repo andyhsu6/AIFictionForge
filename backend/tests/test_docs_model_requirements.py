@@ -87,13 +87,20 @@ def test_readme_states_the_same_floor_as_the_code_constant():
 
 
 def test_breaking_change_notice_is_at_the_top_of_both_readmes():
+    """破坏性公告必须在特性章节之前，且点名具体版本号。
+
+    具体版本号**不再硬编码**：写死 `v1.5.4` 这类字面量会让这条断言在每个发版提交上变红，
+    而断言的真实目的只是「不许含糊说『新版』」——因此只要求出现形如 `vX.Y.Z` 的版本号。
+    理由见 issue #145。
+    """
     en_head = README_EN.index("## ✨ Features")
     zh_head = README_ZH.index("## ✨ 特性")
     assert "Breaking change" in README_EN[:en_head], "破坏性公告不在 README 顶部"
     assert "破坏性变更" in README_ZH[:zh_head], "破坏性公告不在 README 顶部"
-    # 版本号说明：必须点名最近的已发布版本，而不是含糊说「新版」
-    assert "v1.5.4" in README_EN[:en_head]
-    assert "v1.5.4" in README_ZH[:zh_head]
+    # 版本号说明：必须点名一个具体版本，而不是含糊说「新版」
+    version = r"v\d+\.\d+\.\d+"
+    assert re.search(version, README_EN[:en_head]), "破坏性公告未点名具体版本号"
+    assert re.search(version, README_ZH[:zh_head]), "破坏性公告未点名具体版本号"
 
 
 def test_both_readmes_disclose_the_two_probe_blind_spots():

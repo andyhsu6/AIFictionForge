@@ -18,12 +18,30 @@
 
 ---
 
+> **⚠️ Breaking change** (after `v1.5.5`): **PostgreSQL and Docker deployments are no longer supported.** SQLite is the only database, and the Docker / Docker Compose path has been removed. If you deployed with PostgreSQL or Docker, stay on `v1.5.5` or export your data yourself before upgrading; new installs run locally or use the single-port build on port 8008.
+
+---
+
 ## 🧠 Model Requirements
+
+| Context window | Status |
+|---|---|
+| >= 900,000 tokens | ✅ Supported |
+| Measured below the floor | ❌ Rejected on save, and on every request that would dispatch that model |
+| Probe could not reach a verdict | ❌ Also rejected: unknown counts as unqualified, until you declare `context_window_tokens >= 900,000` |
 
 - Every AI feature requires a backing model with a context window of **at least 900,000 tokens**. Below that floor the model is refused when you save it and on every request that would dispatch it.
 - There is **no implicit fallback model** and no tiered "128K mode". A fresh install has no usable AI model until you add one in **Settings**, where its window is probed against your own endpoint.
 - `DEFAULT_MODEL` is retired and no longer read by the backend. Configure the model per account in the app.
 - For how the window is measured, and the blind spots the probe still has, see [docs/model-requirements.md](docs/model-requirements.md).
+
+> **Blind spot 1: a silent-truncating gateway can pass.** Compatibility relays often do not error on an oversized request, they just cut it down; such an endpoint answers the probe as if it accepted the scale and is recorded as qualified. The needle tier (tier 3) is not wired up in this iteration, so nothing separates "the endpoint accepted the request" from "the model really read the window". If output quality is worse than the reported window suggests, suspect the gateway, not the model name.
+
+> **Blind spot 2: a stale verdict is never re-checked.** Verdicts are cached per (provider, base URL, model name) triple and are not refreshed automatically — not on a UTC schedule, not on dispatch. Requests keep being admitted under the stale verdict, and a gateway-side downgrade stays invisible, until you change one of the three triple parts or run the manual Re-check.
+
+> **What even a correct verdict cannot tell you**: accepting the probe scale is not the same as using the window well. Long-range consistency in the middle of a novel stays a per-model property, so judge a new model on your own text before committing to it.
+
+> **What this page does not claim**: supporting an API protocol is not the same as meeting the window requirement — the SDKs listed under Tech Stack describe transport compatibility only. Nor is it true that the floor can never be bypassed: a silent-truncating relay or a stale verdict can still admit a smaller window, which is why the blind spots above are written down.
 
 ---
 
