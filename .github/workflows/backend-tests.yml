@@ -1,0 +1,52 @@
+name: Backend Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          # pytest/anyio are intentionally not in requirements.txt (see CONTRIBUTING.md),
+          # versions pinned to match the local dev venv.
+          pip install pytest==9.1.1 anyio==4.14.2
+
+      # NOTE: this is a CURATED SUBSET, not the full suite.
+      # Selected because they cover the prompt rules / profile facts / migration
+      # parity / docs consistency paths AND none of them touch the embedding model
+      # or a real AI service.
+      # The full suite (`pytest backend/tests`) is a known unresolved item for CI:
+      # several modules import memory_service, which downloads a 457MB embedding
+      # model that is not in the repo (`backend/embedding/` is gitignored), and the
+      # full run also takes >15 minutes.
+      - name: Run curated backend test subset
+        env:
+          ONNX_EMBEDDING_OFFLINE: '1'
+          PYTHONPATH: backend
+        run: |
+          pytest \
+            backend/tests/test_profile_facts.py \
+            backend/tests/test_profile_mentions.py \
+            backend/tests/test_profile_prompt_rules.py \
+            backend/tests/test_profile_measurement_scripts.py \
+            backend/tests/test_migration_schema_parity.py \
+            backend/tests/test_docs_model_requirements.py \
+            -q
