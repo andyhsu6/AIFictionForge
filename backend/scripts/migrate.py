@@ -54,43 +54,43 @@ def create_migration(message: str = None):
         if not message:
             message = "auto_migration"
     
-    cmd = ["alembic", "-c", ALEMBIC_INI, "revision", "--autogenerate", "-m", message]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "revision", "--autogenerate", "-m", message]
     return run_command(cmd, f"生成迁移: {message}")
 
 
 def upgrade_database(revision: str = "head"):
     """升级数据库到指定版本"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "upgrade", revision]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "upgrade", revision]
     return run_command(cmd, f"升级数据库到: {revision}")
 
 
 def downgrade_database(revision: str = "-1"):
     """降级数据库到指定版本"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "downgrade", revision]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "downgrade", revision]
     return run_command(cmd, f"降级数据库到: {revision}")
 
 
 def show_current():
     """显示当前数据库版本"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "current"]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "current"]
     return run_command(cmd, "查看当前版本")
 
 
 def show_history():
     """显示迁移历史"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "history", "--verbose"]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "history", "--verbose"]
     return run_command(cmd, "查看迁移历史")
 
 
 def show_heads():
     """显示最新版本"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "heads"]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "heads"]
     return run_command(cmd, "查看最新版本")
 
 
 def stamp_database(revision: str = "head"):
     """标记数据库版本（不执行迁移）"""
-    cmd = ["alembic", "-c", ALEMBIC_INI, "stamp", revision]
+    cmd = [sys.executable, "-m", "alembic", "-c", ALEMBIC_INI, "stamp", revision]
     return run_command(cmd, f"标记数据库版本: {revision}")
 
 
