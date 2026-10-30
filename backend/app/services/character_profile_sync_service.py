@@ -43,6 +43,7 @@ from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
     filter_org_profile_values,
     merge_profile_facts,
+    render_profile,
     resolve_profile_fields,
 )
 
@@ -620,6 +621,12 @@ class CharacterProfileSyncService:
 
         service = ai_service or await self._resolve_ai_service(user_id, db)
 
+        # 全量模式：档案文本必须由「全部批次的通过事实合并后」渲染一次。
+        # 逐批渲染会让最后一批的片段覆盖整份档案（实测 56 字的性格被写成 9 字）。
+        pending_facts: Optional[Dict[str, List[Dict[str, Any]]]] = (
+            {} if bypass_watermark else None
+        )
+
         total_chunks = (len(candidates) + _CHARACTERS_PER_CALL - 1) // _CHARACTERS_PER_CALL
         for index, offset in enumerate(
             range(0, len(candidates), _CHARACTERS_PER_CALL), start=1
@@ -637,9 +644,20 @@ class CharacterProfileSyncService:
                 force=force,
                 dry_run=dry_run,
                 collector=collector,
+                pending_facts=pending_facts,
             )
             if on_progress is not None:
                 await on_progress(index, total_chunks)
+
+        if pending_facts and not stats.get("cancelled"):
+            await self._finalize_pending_facts(
+                db=db,
+                pending_facts=pending_facts,
+                stats=stats,
+                force=force,
+                dry_run=dry_run,
+                collector=collector,
+            )
 
         if dry_run or stats.get("cancelled"):
             # 预览不落库；取消同样零写入（回滚兜底，防 autoflush 留下的脏写）
@@ -899,6 +917,7 @@ class CharacterProfileSyncService:
         force: bool = False,
         dry_run: bool = False,
         collector: Optional[ProfileDiffCollector] = None,
+        pending_facts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> None:
         """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。"""
         character_ids = {character.id for character, _ in chunk}
@@ -938,6 +957,7 @@ class CharacterProfileSyncService:
                     force=force,
                     dry_run=dry_run,
                     collector=collector,
+                    pending_facts=pending_facts,
                 )
             return True
 
@@ -1111,6 +1131,7 @@ class CharacterProfileSyncService:
         force: bool = False,
         dry_run: bool = False,
         collector: Optional[ProfileDiffCollector] = None,
+        pending_facts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> None:
         snapshot = _loads_json(character.ai_profile_snapshot, {})
         if not isinstance(snapshot, dict):
@@ -1132,12 +1153,18 @@ class CharacterProfileSyncService:
                 kind="organization" if character.is_organization else "character",
             )
             if facts_stats.get("payloads_facts"):
-                values = rendered
                 bucket = stats.setdefault("profile_facts", {})
                 for key, value in facts_stats.items():
                     bucket[key] = bucket.get(key, 0) + value
                 if collector is not None:
                     collector.add_stats(character, facts_stats)
+                if pending_facts is not None:
+                    # 全量模式：只攒事实，本批不渲染也不写字段。逐批渲染会让最后一批的
+                    # 片段覆盖整份档案（人设被写残），收尾时统一合并渲染一次。
+                    if facts:
+                        pending_facts.setdefault(character.id, []).extend(facts)
+                    return
+                values = rendered
                 if facts:
                     if dry_run:
                         # 预览不写 profile_facts，只把通过校验的事实带进计划
@@ -1170,6 +1197,67 @@ class CharacterProfileSyncService:
 
         if snapshot and not dry_run:
             character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+
+    async def _finalize_pending_facts(
+        self,
+        *,
+        db: AsyncSession,
+        pending_facts: Dict[str, List[Dict[str, Any]]],
+        stats: Dict[str, Any],
+        force: bool = False,
+        dry_run: bool = False,
+        collector: Optional[ProfileDiffCollector] = None,
+    ) -> None:
+        """全量模式收尾：把各批事实合并进档案后**统一渲染一次**并走同一套判定。
+
+        渲染源与 `profile_facts` 同源（同一份 merged），因此字段文本不会与溯源
+        事实脱节；手改保护仍由 `_apply_profile_values` 的快照比对负责。
+        """
+        for character_id, facts in pending_facts.items():
+            if not facts:
+                continue
+            character = (
+                await db.execute(select(Character).where(Character.id == character_id))
+            ).scalars().first()
+            if character is None:
+                continue
+
+            merged = merge_profile_facts(character.profile_facts, facts)
+            merged_facts = json.loads(merged) if merged else []
+            kind = "organization" if character.is_organization else "character"
+            rendered = filter_org_profile_values(
+                render_profile(merged_facts, kind=kind), bool(character.is_organization)
+            )
+
+            snapshot = _loads_json(character.ai_profile_snapshot, {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+
+            changed = _apply_profile_values(
+                character,
+                rendered,
+                snapshot,
+                PROFILE_FIELDS,
+                stats,
+                label=character.name,
+                force=force,
+                dry_run=dry_run,
+                collector=collector,
+            )
+
+            if dry_run:
+                # 预览不落库：事实进计划，由 apply 回放时合并成同一份 merged
+                if collector is not None:
+                    collector.set_facts_delta(character, facts)
+                continue
+
+            if merged is not None:
+                character.profile_facts = merged
+                character.profile_facts_updated_at = datetime.utcnow()
+            if snapshot:
+                character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+            if changed:
+                stats.setdefault("_updated_ids", set()).add(character.id)
 
     async def _apply_organizations(
         self,

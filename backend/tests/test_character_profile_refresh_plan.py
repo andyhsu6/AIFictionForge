@@ -34,6 +34,7 @@ from app.services.character_profile_sync_service import (
     character_profile_sync_service,
     profile_fingerprint,
 )
+from app.services.profile_facts import render_profile
 
 PROJECT_ID = "proj-pr-1"
 USER_ID = "user-pr-1"
@@ -70,6 +71,19 @@ def _fields_payload(name: str, **fields) -> dict:
             }
         ]
     }
+
+
+class _ScriptedAIService:
+    """按调用顺序返回预置 payload 的桩（超出末尾后重复最后一个）。"""
+
+    def __init__(self, payloads: list[dict]) -> None:
+        self.payloads = payloads
+        self.calls = 0
+
+    async def call_with_json_retry(self, *, prompt, **kwargs):
+        payload = self.payloads[min(self.calls, len(self.payloads) - 1)]
+        self.calls += 1
+        return payload
 
 
 @pytest.fixture
@@ -1080,16 +1094,6 @@ async def test_collapse_keeps_first_seen_field_order(db_session, monkeypatch):
     """`fields` 顺序按字段首次出现的批次固定，后续批次不改变位置。"""
     await _three_batch_project(db_session, monkeypatch)
 
-    class _ScriptedAIService:
-        def __init__(self, payloads: list[dict]) -> None:
-            self.payloads = payloads
-            self.calls = 0
-
-        async def call_with_json_retry(self, *, prompt, **kwargs):
-            payload = self.payloads[min(self.calls, len(self.payloads) - 1)]
-            self.calls += 1
-            return payload
-
     ai = _ScriptedAIService(
         [
             _fields_payload("角色甲", background="占位背景甲"),
@@ -1111,6 +1115,206 @@ async def test_collapse_keeps_first_seen_field_order(db_session, monkeypatch):
     entry = next(iter(collector.entities.values()))
     assert [row["field"] for row in entry["fields"]] == ["background", "personality"]
     assert _row(entry, "background")["new"] == "占位背景乙"
+
+
+# --- ⑬ 全量模式：先攒事实、统一合并渲染 -------------------------------------
+
+_Q1 = "他听完只是点了点头"
+_Q2 = "他每走一步都先看清脚下"
+
+
+def _fact(field: str, claim: str, quote: str, chapter_number: int) -> dict:
+    return {
+        "field": field,
+        "claim": claim,
+        "quote": quote,
+        "chapter_number": chapter_number,
+        "inferred": False,
+    }
+
+
+def _facts_only_payload(name: str, facts: list[dict]) -> dict:
+    return {"characters": [{"name": name, "profile_facts": facts, "organizations": []}]}
+
+
+# 第 1 批只给 personality，第 2 批再给一个 personality + 一个 background：
+# 逐批渲染时最后一批会把 personality 覆盖成「行事谨慎」，这是实测的写残路径。
+_BATCH_ONE = _facts_only_payload("角色甲", [_fact("personality", "性情沉稳", _Q1, 1)])
+_BATCH_TWO = _facts_only_payload(
+    "角色甲",
+    [
+        _fact("personality", "行事谨慎", _Q2, 2),
+        _fact("background", "山门弟子出身", _Q2, 2),
+    ],
+)
+
+
+async def _two_batch_facts_project(db, monkeypatch, **character_kwargs) -> None:
+    """2 章各超预算 → 同一实体在两个文本批里各返回一次（每次返回不同 facts）。"""
+    import app.services.character_profile_sync_service as mod
+
+    monkeypatch.setattr(mod, "_PROMPT_CHAR_BUDGET", 100)
+    await _seed(
+        db,
+        chapters=[
+            (1, f"角色甲登场。{_Q1}，没有多说一句。" + "占位正文" * 20),
+            (2, f"角色甲再次登场。{_Q2}再迈出去。" + "占位正文" * 20),
+        ],
+        characters=[{"name": "角色甲", **character_kwargs}],
+    )
+
+
+async def test_full_mode_renders_all_batches_together(db_session, monkeypatch):
+    await _two_batch_facts_project(db_session, monkeypatch)
+    ai = _ScriptedAIService([_BATCH_ONE, _BATCH_TWO])
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=ai,
+        bypass_watermark=True,
+    )
+
+    assert ai.calls == 2, "两个文本批各返回一次"
+    assert stats["characters_updated"] == 1
+    character = await _character(db_session, "角色甲")
+    assert character.personality is not None
+    assert "性情沉稳" in character.personality, "第 1 批的信息不得被后一批覆盖掉"
+    assert "行事谨慎" in character.personality
+    assert character.personality != "行事谨慎", "逐批渲染会只剩最后一批的片段"
+    assert character.background == "山门弟子出身"
+
+    # 字段文本与 profile_facts 同源
+    rendered = render_profile(json.loads(character.profile_facts))
+    assert rendered == {
+        "personality": character.personality,
+        "background": character.background,
+    }
+
+
+async def test_full_mode_preview_rows_match_real_write(db_session, monkeypatch):
+    await _two_batch_facts_project(
+        db_session,
+        monkeypatch,
+        personality="占位旧性格",
+        ai_profile_snapshot=json.dumps({"personality": "占位旧性格"}, ensure_ascii=False),
+    )
+
+    collector = ProfileDiffCollector()
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=_ScriptedAIService([_BATCH_ONE, _BATCH_TWO]),
+        bypass_watermark=True,
+        dry_run=True,
+        collector=collector,
+    )
+    plan = {"entities": list(collector.entities.values())}
+    assert len(plan["entities"]) == 1
+
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=_ScriptedAIService([_BATCH_ONE, _BATCH_TWO]),
+        bypass_watermark=True,
+    )
+
+    character = await _character(db_session, "角色甲")
+    snapshot = json.loads(character.ai_profile_snapshot or "{}")
+    for row in plan["entities"][0]["fields"]:
+        actual = getattr(character, row["field"])
+        if row["action"] in ("add", "change"):
+            assert actual == row["new"], row["field"]
+            assert snapshot[row["field"]] == row["new"]
+        elif row["action"] == "preserved":
+            assert actual == row["old"], row["field"]
+        else:  # same
+            assert actual == row["old"] == row["new"], row["field"]
+            assert snapshot[row["field"]] == row["new"]
+
+    facts = json.loads(character.profile_facts)
+    assert {fact["claim"] for fact in facts} == {"性情沉稳", "行事谨慎", "山门弟子出身"}
+    assert render_profile(facts) == {
+        "personality": character.personality,
+        "background": character.background,
+    }
+
+
+async def test_full_mode_legacy_response_still_written_per_batch(db_session, monkeypatch):
+    """没有 facts 的 legacy 响应无法合并，退回逐批写入，不丢更新。"""
+    await _two_batch_facts_project(
+        db_session,
+        monkeypatch,
+        personality="占位旧性格",
+        ai_profile_snapshot=json.dumps({"personality": "占位旧性格"}, ensure_ascii=False),
+    )
+    ai = _ScriptedAIService(
+        [
+            _fields_payload("角色甲", personality="占位性格甲"),
+            _fields_payload("角色甲", personality="占位性格乙"),
+        ]
+    )
+
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=ai,
+        bypass_watermark=True,
+    )
+
+    assert ai.calls == 2
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位性格乙", "legacy 响应仍按批写入，末批生效"
+
+
+async def test_full_mode_respects_manual_edits(db_session, monkeypatch):
+    await _two_batch_facts_project(
+        db_session,
+        monkeypatch,
+        personality="占位用户手改",
+        ai_profile_snapshot=json.dumps({"personality": "占位旧AI值"}, ensure_ascii=False),
+    )
+
+    collector = ProfileDiffCollector()
+    await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=_ScriptedAIService([_BATCH_ONE, _BATCH_TWO]),
+        bypass_watermark=True,
+        dry_run=True,
+        collector=collector,
+    )
+    plan = {"entities": list(collector.entities.values())}
+    entry = next(iter(collector.entities.values()))
+
+    personality_row = _row(entry, "personality")
+    assert personality_row["action"] == "preserved"
+    assert personality_row["old"] == "占位用户手改"
+    assert "性情沉稳" in personality_row["new"] and "行事谨慎" in personality_row["new"]
+    assert _row(entry, "background")["action"] == "add"
+
+    await character_profile_sync_service.apply_plan(
+        db=db_session, project_id=PROJECT_ID, plan=plan
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位用户手改", "手改字段在全量模式下同样受保护"
+    snapshot = json.loads(character.ai_profile_snapshot)
+    assert snapshot["personality"] == "占位旧AI值", "preserved 字段不得刷新快照"
+    assert snapshot["background"] == "山门弟子出身"
+    assert character.background == "山门弟子出身"
+    # 写入的字段与 profile_facts 同源（preserved 字段不参与）
+    assert render_profile(json.loads(character.profile_facts))["background"] == character.background
 
 
 # --- ⑦ estimate 真算 ------------------------------------------------------
