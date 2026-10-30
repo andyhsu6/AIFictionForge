@@ -1,10 +1,14 @@
-import { Card, Space, Tag, Typography, Popconfirm, theme } from 'antd';
+import { Button, Card, Modal, Space, Tag, Typography, Popconfirm, theme } from 'antd';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { EditOutlined, DeleteOutlined, UserOutlined, BankOutlined, ExportOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, UserOutlined, BankOutlined, ExportOutlined, ReadOutlined } from '@ant-design/icons';
 import { characterCardStyles } from './CardStyles';
 import type { Character } from '../types';
 
 const { Text, Paragraph } = Typography;
+
+type ProfileField = 'personality' | 'background' | 'appearance';
+const PROFILE_FIELDS: ProfileField[] = ['personality', 'background', 'appearance'];
 
 interface CharacterCardProps {
   character: Character;
@@ -16,6 +20,7 @@ interface CharacterCardProps {
 export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit, onDelete, onExport }) => {
   const { token } = theme.useToken();
   const { t } = useTranslation('characterCard');
+  const [sourcesOpen, setSourcesOpen] = useState(false);
 
   const getRoleTypeColor = (roleType?: string) => {
     const roleColors: Record<string, string> = {
@@ -38,6 +43,19 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
   const isOrganization = character.is_organization;
   const charStatus = character.status || 'active';
   const isInactive = charStatus !== 'active';
+  const profileFacts = character.profile_facts ?? [];
+  const renderSourceButton = () => {
+    if (profileFacts.length === 0) return null;
+    return (
+      <Button
+        type="text"
+        size="small"
+        aria-label={t('sourceLabel')}
+        icon={<ReadOutlined />}
+        onClick={() => setSourcesOpen(true)}
+      />
+    );
+  };
 
   const getStatusTag = () => {
     const statusConfig: Record<string, { color: string; label: string }> = {
@@ -72,6 +90,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
       actions={[
         ...(onEdit ? [<EditOutlined key="edit" onClick={() => onEdit(character)} />] : []),
         ...(onExport ? [<ExportOutlined key="export" onClick={onExport} />] : []),
+        ...(profileFacts.length > 0 ? [<span key="source">{renderSourceButton()}</span>] : []),
         <Popconfirm
           key="delete"
           title={t('deleteConfirm', { type: isOrganization ? t('organization') : t('character') })}
@@ -83,7 +102,45 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
         </Popconfirm>,
       ]}
     >
+      <Modal
+        open={sourcesOpen}
+        onCancel={() => setSourcesOpen(false)}
+        title={`${t('sourceTitle')} - ${character.name}`}
+        width="min(640px, calc(100vw - 32px))"
+        styles={{ body: { maxHeight: '60vh', overflowY: 'auto' } }}
+        footer={<Button onClick={() => setSourcesOpen(false)}>{t('confirm')}</Button>}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {PROFILE_FIELDS.map(field => {
+            const facts = profileFacts.filter(fact => fact.field === field);
+            if (facts.length === 0) return null;
+            return (
+              <div key={field}>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>{t(field)}</Text>
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  {facts.map((fact, index) => (
+                    <div key={`${fact.claim}-${fact.chapter_number}-${index}`}>
+                      <Text strong>{fact.claim}</Text>
+                      {fact.quote && (
+                        <Text style={{ display: 'block', marginTop: 2 }}>
+                          {t('quoteLabel')}：「{fact.quote}」
+                        </Text>
+                      )}
+                      {fact.chapter_number != null && (
+                        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                          {t('chapterNumber', { number: fact.chapter_number })}
+                        </Text>
+                      )}
+                    </div>
+                  ))}
+                </Space>
+              </div>
+            );
+          })}
+        </Space>
+      </Modal>
       <Card.Meta
+        style={{ width: '100%', flexShrink: 0 }}
         avatar={
           isOrganization ? (
             <BankOutlined style={{ fontSize: 32, color: token.colorSuccess }} />
@@ -107,7 +164,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
           </Space>
         }
         description={
-          <div style={characterCardStyles.descriptionBlock}>
+          <div style={{ ...characterCardStyles.descriptionBlock, width: 'calc(100% + 48px)', marginLeft: -48 }}>
             {/* 角色特有字段 */}
             {!isOrganization && (
               <>

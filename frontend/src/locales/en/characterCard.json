@@ -1,6 +1,7 @@
 {
   "age": "Age:",
   "appearance": "Appearance:",
+  "background": "Background:",
   "cancel": "Cancel",
   "character": "character",
   "confirm": "Confirm",
@@ -20,6 +21,10 @@
   "roleOther": "Other",
   "roleProtagonist": "Protagonist",
   "roleSupporting": "Supporting",
+  "sourceLabel": "View profile sources",
+  "sourceTitle": "Profile sources",
+  "quoteLabel": "Original text",
+  "chapterNumber": "Chapter {{number}}",
   "statusDeceased": "💀 Deceased",
   "statusDestroyed": "💀 Destroyed",
   "statusMissing": "❓ Missing",

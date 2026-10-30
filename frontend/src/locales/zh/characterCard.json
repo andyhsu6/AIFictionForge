@@ -1,6 +1,7 @@
 {
   "age": "年龄：",
   "appearance": "外貌：",
+  "background": "背景：",
   "cancel": "取消",
   "character": "角色",
   "confirm": "确定",
@@ -20,6 +21,10 @@
   "roleOther": "其他",
   "roleProtagonist": "主角",
   "roleSupporting": "配角",
+  "sourceLabel": "查看档案依据",
+  "sourceTitle": "档案依据",
+  "quoteLabel": "原文",
+  "chapterNumber": "第 {{number}} 章",
   "statusDeceased": "💀 已死亡",
   "statusDestroyed": "💀 已覆灭",
   "statusMissing": "❓ 已失踪",
