@@ -112,13 +112,11 @@ async def resolve_tool_risk(
         and action == "analyze_chapter"
         and risk < CONFIRMATION_RISK
     ):
-        # 探针必须整体跑在 SAVEPOINT 里，不能只靠 except 收口：
-        # app/config.py 的默认 DATABASE_URL 是 postgresql+asyncpg，而 PostgreSQL
-        # 上一条语句报错会**中止整个事务**，此后主流程的 flush/commit 直接抛
-        # PendingRollbackError ⇒ 用户拿到 500，而不是设计要求的确认卡。
-        # begin_nested() 只回滚保存点（SAVEPOINT 在报错语句之前发出，本轮已 flush
-        # 的 user 消息与 step 留在外层事务里不受影响）；改用 db.rollback() 虽然也
-        # 能清掉中止状态，但会把本轮已写的行一起丢掉，是更糟的修法。
+        # 探针必须整体跑在 SAVEPOINT 里，不能只靠 except 收口：探针失败时只撤销
+        # 探测语句自身的读写，本轮已 flush 的 user 消息与 step 必须留在外层事务里，
+        # 且外层事务要保持可提交（否则用户拿到 500，而不是设计要求的确认卡）。
+        # begin_nested() 只回滚保存点（SAVEPOINT 在报错语句之前发出）；改用
+        # db.rollback() 虽然也能清掉错误状态，但会把本轮已写的行一起丢掉，是更糟的修法。
         try:
             async with db.begin_nested():
                 chapter = await _resolve_chapter(db, project.id, arguments)

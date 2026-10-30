@@ -194,8 +194,8 @@ async def test_plan_row_is_written_even_after_generic_cancel_freeze(env):
 
 @pytest.mark.anyio
 async def test_status_message_is_clipped_to_120_chars(env):
-    """status_message 是 String(500)，而项目支持 Postgres（SQLite 静默截断、PG 报错）
-    ⇒ 摘要硬上限 120 字，详情进 progress_details。"""
+    """status_message 是 String(500)：SQLite 不校验 VARCHAR 长度，写超长不会当场报错
+    （换到严格校验的方言就会）⇒ 摘要硬上限 120 字，详情进 progress_details。"""
     await runner._write_plan_row(
         env.factory, env.plan_task_id, status_message="长" * 400
     )

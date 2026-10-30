@@ -14,11 +14,14 @@ DATA_DIR.mkdir(exist_ok=True)
 # 配置模块使用标准logging（在logger.py初始化之前）
 config_logger = logging.getLogger(__name__)
 
-# 数据库配置：PostgreSQL
-# 从环境变量获取数据库URL
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://aistoryforge:password@localhost:5432/aistoryforge")
+# 数据库配置：SQLite（本项目仅支持 SQLite）
+# 从环境变量获取数据库URL，默认落在 backend/data/ 下的库文件
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"sqlite+aiosqlite:///{DATA_DIR / 'mumuai_novel.db'}",
+)
 
-config_logger.debug(f"数据库类型: PostgreSQL")
+config_logger.debug("数据库类型: SQLite")
 config_logger.debug(f"数据库URL: {DATABASE_URL}")
 
 class Settings(BaseSettings):
@@ -42,21 +45,11 @@ class Settings(BaseSettings):
     # CORS配置
     cors_origins: list[str] = ["http://localhost:8008", "http://127.0.0.1:8008", "http://localhost:5173", "http://127.0.0.1:5173"]
     
-    # 数据库配置 - PostgreSQL
+    # 数据库配置 - SQLite（仅支持 SQLite）
     database_url: str = DATABASE_URL
-    
-    # PostgreSQL连接池配置（优化后支持150-200并发用户）
-    database_pool_size: int = 50  # 核心连接池大小（优化：从30提升到50）
-    database_max_overflow: int = 30  # 最大溢出连接数（优化：从20提升到30）
-    database_pool_timeout: int = 90  # 连接池超时秒数（优化：从60提升到90）
-    database_pool_recycle: int = 1800  # 连接回收时间秒数（30分钟，防止长时间连接失效）
-    database_pool_pre_ping: bool = True  # 连接前ping检测，确保连接有效
-    database_pool_use_lifo: bool = True  # 使用LIFO策略提高连接复用率
-    
-    # 连接池高级配置
+
+    # 连接池日志开关（create_async_engine 的 echo_pool 参数）
     database_echo_pool: bool = False  # 是否记录连接池日志（调试用）
-    database_pool_reset_on_return: str = "rollback"  # 连接归还时的重置策略：rollback/commit/none
-    database_max_identifier_length: int = 128  # PostgreSQL标识符最大长度
     
     # 会话监控配置
     database_session_max_active: int = 50  # 活跃会话警告阈值（从100降低到50）

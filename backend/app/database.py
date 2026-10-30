@@ -1,4 +1,4 @@
-"""数据库连接和会话管理 - PostgreSQL 多用户数据隔离"""
+"""数据库连接和会话管理 - SQLite 单库文件，按 user_id 隔离数据"""
 import asyncio
 from typing import Dict, Any
 from datetime import datetime
@@ -47,106 +47,62 @@ _session_stats = {
 
 async def get_engine(user_id: str):
     """获取或创建用户专属的数据库引擎（线程安全）
-    
-    PostgreSQL: 所有用户共享一个数据库，通过user_id字段隔离数据
-    
+
+    SQLite: 所有用户共享同一个库文件（进程内同一引擎），通过 user_id 字段隔离数据
+
     Args:
         user_id: 用户ID
-        
+
     Returns:
         用户专属的异步引擎
     """
-    # PostgreSQL模式：所有用户共享同一个引擎
-    cache_key = "shared_postgres"
+    cache_key = "shared_sqlite"
     if cache_key in _engine_cache:
         return _engine_cache[cache_key]
-    
+
     async with _cache_lock:
         if cache_key not in _engine_cache:
-            # 检测数据库类型
-            is_sqlite = 'sqlite' in settings.database_url.lower()
-            
-            # 基础引擎参数
+            # 本项目仅支持 SQLite：静默按其他方言连会以更难懂的方式失败，故显式拦截
+            if "sqlite" not in settings.database_url.lower():
+                raise RuntimeError(
+                    "仅支持 SQLite，请检查 DATABASE_URL"
+                    f"（当前值不是 sqlite 方言：{settings.database_url.split(':')[0]}）"
+                )
+
             engine_args = {
                 "echo": settings.database_echo_pool,
                 "echo_pool": settings.database_echo_pool,
                 "future": True,
-            }
-            
-            if is_sqlite:
-                # SQLite 配置（使用 NullPool，不支持连接池参数）
-                engine_args["connect_args"] = {
+                "connect_args": {
                     "check_same_thread": False,
                     "timeout": 30.0,  # 等待锁释放的超时时间（秒）
-                }
+                },
                 # 启用连接前检测以支持更好的并发
-                engine_args["pool_pre_ping"] = True
-                
-                logger.info("📊 使用 SQLite 数据库（NullPool，超时30秒，WAL模式）")
-            else:
-                # PostgreSQL 配置（完整连接池支持）
-                connect_args = {
-                    "server_settings": {
-                        "application_name": settings.app_name,
-                        "jit": "off",
-                        "search_path": "public",
-                        # 钉定会话时区：agent 表的 created_at 是 `timestamp without time zone`，
-                        # 其 server_default=now() 会按**会话时区**投值，而 ORM 侧默认值写的是
-                        # naive UTC。不钉 UTC ⇒ 同一列混两种基准，非 UTC 会话下
-                        # ORDER BY created_at 对不同写入路径的行颠倒排序（护栏 3）。
-                        "TimeZone": "UTC",
-                    },
-                    "command_timeout": 60,
-                    "statement_cache_size": 500,
-                }
-                
-                engine_args.update({
-                    "pool_size": settings.database_pool_size,
-                    "max_overflow": settings.database_max_overflow,
-                    "pool_timeout": settings.database_pool_timeout,
-                    "pool_pre_ping": settings.database_pool_pre_ping,
-                    "pool_recycle": settings.database_pool_recycle,
-                    "pool_use_lifo": settings.database_pool_use_lifo,
-                    "pool_reset_on_return": settings.database_pool_reset_on_return,
-                    "max_identifier_length": settings.database_max_identifier_length,
-                    "connect_args": connect_args
-                })
-                
-                total_connections = settings.database_pool_size + settings.database_max_overflow
-                estimated_concurrent_users = total_connections * 2
-                
-                logger.info(
-                    f"📊 PostgreSQL 连接池配置:\n"
-                    f"   ├─ 核心连接: {settings.database_pool_size}\n"
-                    f"   ├─ 溢出连接: {settings.database_max_overflow}\n"
-                    f"   ├─ 总连接数: {total_connections}\n"
-                    f"   ├─ 获取超时: {settings.database_pool_timeout}秒\n"
-                    f"   ├─ 连接回收: {settings.database_pool_recycle}秒\n"
-                    f"   └─ 预估并发: {estimated_concurrent_users}+用户"
-                )
-            
+                "pool_pre_ping": True,
+            }
+
+            logger.info("📊 使用 SQLite 数据库（超时30秒，WAL模式）")
+
             engine = create_async_engine(settings.database_url, **engine_args)
             _engine_cache[cache_key] = engine
-            
-            # 如果是 SQLite，启用 WAL 模式以支持读写并发
-            if is_sqlite:
-                try:
-                    from sqlalchemy import event
-                    from sqlalchemy.pool import NullPool
-                    
-                    @event.listens_for(engine.sync_engine, "connect")
-                    def set_sqlite_pragma(dbapi_conn, connection_record):
-                        cursor = dbapi_conn.cursor()
-                        cursor.execute("PRAGMA journal_mode=WAL")
-                        cursor.execute("PRAGMA synchronous=NORMAL")
-                        cursor.execute("PRAGMA cache_size=-64000")  # 64MB 缓存
-                        cursor.execute("PRAGMA busy_timeout=30000")  # 30秒超时
-                        cursor.close()
-                    
-                    logger.info("✅ SQLite WAL 模式已启用（支持读写并发）")
-                except Exception as e:
-                    logger.warning(f"⚠️ 启用 WAL 模式失败: {e}，使用默认配置")
-        
+
+            # 启用 WAL 模式以支持读写并发
+            try:
+                from sqlalchemy import event
+
+                @event.listens_for(engine.sync_engine, "connect")
+                def set_sqlite_pragma(dbapi_conn, connection_record):
+                    cursor = dbapi_conn.cursor()
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA cache_size=-64000")  # 64MB 缓存
+                    cursor.execute("PRAGMA busy_timeout=30000")  # 30秒超时
+                    cursor.close()
+
+                logger.info("✅ SQLite WAL 模式已启用（支持读写并发）")
+            except Exception as e:
+                logger.warning(f"⚠️ 启用 WAL 模式失败: {e}，使用默认配置")
+
         return _engine_cache[cache_key]
 
 
@@ -267,30 +223,12 @@ async def close_db():
 
 async def get_database_stats():
     """获取数据库连接和会话统计信息
-    
+
     Returns:
         dict: 包含数据库统计信息的字典
     """
     from app.config import settings
-    
-    # 获取连接池详细状态
-    pool_stats = {}
-    cache_key = "shared_postgres"
-    if cache_key in _engine_cache:
-        engine = _engine_cache[cache_key]
-        try:
-            pool = engine.pool
-            pool_stats = {
-                "size": pool.size(),  # 当前连接池大小
-                "checked_in": pool.checkedin(),  # 可用连接数
-                "checked_out": pool.checkedout(),  # 正在使用的连接数
-                "overflow": pool.overflow(),  # 溢出连接数
-                "usage_percent": (pool.checkedout() / (settings.database_pool_size + settings.database_max_overflow)) * 100,
-            }
-        except Exception as e:
-            logger.warning(f"获取连接池状态失败: {e}")
-            pool_stats = {"error": str(e)}
-    
+
     stats = {
         "session_stats": {
             "created": _session_stats["created"],
@@ -300,18 +238,12 @@ async def get_database_stats():
             "generator_exits": _session_stats["generator_exits"],
             "last_check": _session_stats["last_check"],
         },
-        "pool_stats": pool_stats,  # 新增：连接池实时状态
         "engine_cache": {
             "total_engines": len(_engine_cache),
             "engine_keys": list(_engine_cache.keys()),
         },
         "config": {
-            "database_type": "PostgreSQL",
-            "pool_size": settings.database_pool_size,
-            "max_overflow": settings.database_max_overflow,
-            "total_connections": settings.database_pool_size + settings.database_max_overflow,
-            "pool_timeout": settings.database_pool_timeout,
-            "pool_recycle": settings.database_pool_recycle,
+            "database_type": "SQLite",
             "session_max_active_threshold": settings.database_session_max_active,
             "session_leak_threshold": settings.database_session_leak_threshold,
         },
@@ -321,7 +253,7 @@ async def get_database_stats():
             "errors": [],
         }
     }
-    
+
     # 健康检查
     if _session_stats["active"] > settings.database_session_leak_threshold:
         stats["health"]["status"] = "critical"
@@ -333,38 +265,28 @@ async def get_database_stats():
         stats["health"]["warnings"].append(
             f"活跃会话数 {_session_stats['active']} 超过警告阈值 {settings.database_session_max_active}"
         )
-    
+
     if _session_stats["active"] < 0:
         stats["health"]["status"] = "error"
         stats["health"]["errors"].append(f"活跃会话数异常: {_session_stats['active']}")
-    
-    # 连接池使用率检查
-    if pool_stats and "usage_percent" in pool_stats:
-        usage = pool_stats["usage_percent"]
-        if usage > 90:
-            stats["health"]["status"] = "warning"
-            stats["health"]["warnings"].append(f"连接池使用率过高: {usage:.1f}%")
-        elif usage > 95:
-            stats["health"]["status"] = "critical"
-            stats["health"]["errors"].append(f"连接池几乎耗尽: {usage:.1f}%")
-    
+
     error_rate = (_session_stats["errors"] / max(_session_stats["created"], 1)) * 100
     if error_rate > 5:
         if stats["health"]["status"] == "healthy":
             stats["health"]["status"] = "warning"
         stats["health"]["warnings"].append(f"会话错误率过高: {error_rate:.2f}%")
-    
+
     stats["health"]["error_rate"] = f"{error_rate:.2f}%"
-    
+
     return stats
 
 
 async def check_database_health(user_id: str = None) -> dict:
     """检查数据库连接健康状态
-    
+
     Args:
         user_id: 可选的用户ID，如果提供则检查特定用户的数据库
-        
+
     Returns:
         dict: 健康检查结果
     """
@@ -373,10 +295,10 @@ async def check_database_health(user_id: str = None) -> dict:
         "checks": {},
         "timestamp": datetime.now().isoformat()
     }
-    
+
     try:
         # 检查引擎是否存在
-        cache_key = "shared_postgres"
+        cache_key = "shared_sqlite"
         if user_id:
             engine = await get_engine(user_id)
         else:
@@ -384,37 +306,19 @@ async def check_database_health(user_id: str = None) -> dict:
                 result["checks"]["engine"] = {"status": "not_initialized", "healthy": True}
                 return result
             engine = _engine_cache[cache_key]
-        
+
         # 测试数据库连接
         AsyncSessionLocal = async_sessionmaker(
             engine,
             class_=AsyncSession,
             expire_on_commit=False
         )
-        
+
         async with AsyncSessionLocal() as session:
             # 执行简单查询测试连接
             await session.execute(text("SELECT 1"))
             result["checks"]["connection"] = {"status": "ok", "healthy": True}
-            
-        # 检查连接池状态（仅PostgreSQL）
-        if hasattr(engine.pool, 'size'):
-            pool_status = {
-                "size": engine.pool.size(),
-                "checked_in": engine.pool.checkedin(),
-                "checked_out": engine.pool.checkedout(),
-                "overflow": engine.pool.overflow(),
-                "healthy": True
-            }
-            
-            # 连接池健康检查
-            if engine.pool.overflow() >= settings.database_max_overflow:
-                pool_status["healthy"] = False
-                pool_status["warning"] = "连接池溢出已满"
-                result["healthy"] = False
-            
-            result["checks"]["pool"] = pool_status
-        
+
     except Exception as e:
         result["healthy"] = False
         result["checks"]["error"] = {
@@ -423,7 +327,7 @@ async def check_database_health(user_id: str = None) -> dict:
             "healthy": False
         }
         logger.error(f"数据库健康检查失败: {str(e)}", exc_info=True)
-    
+
     return result
 
 

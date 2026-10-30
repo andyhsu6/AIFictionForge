@@ -16,6 +16,9 @@ from app.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 本项目仅支持 SQLite：指定迁移链对应的 Alembic 配置（backend/ 下没有默认 alembic.ini）
+ALEMBIC_INI = "alembic-sqlite.ini"
+
 
 def run_command(cmd: list, description: str) -> bool:
     """运行命令并返回是否成功"""
@@ -51,43 +54,43 @@ def create_migration(message: str = None):
         if not message:
             message = "auto_migration"
     
-    cmd = ["alembic", "revision", "--autogenerate", "-m", message]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "revision", "--autogenerate", "-m", message]
     return run_command(cmd, f"生成迁移: {message}")
 
 
 def upgrade_database(revision: str = "head"):
     """升级数据库到指定版本"""
-    cmd = ["alembic", "upgrade", revision]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "upgrade", revision]
     return run_command(cmd, f"升级数据库到: {revision}")
 
 
 def downgrade_database(revision: str = "-1"):
     """降级数据库到指定版本"""
-    cmd = ["alembic", "downgrade", revision]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "downgrade", revision]
     return run_command(cmd, f"降级数据库到: {revision}")
 
 
 def show_current():
     """显示当前数据库版本"""
-    cmd = ["alembic", "current"]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "current"]
     return run_command(cmd, "查看当前版本")
 
 
 def show_history():
     """显示迁移历史"""
-    cmd = ["alembic", "history", "--verbose"]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "history", "--verbose"]
     return run_command(cmd, "查看迁移历史")
 
 
 def show_heads():
     """显示最新版本"""
-    cmd = ["alembic", "heads"]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "heads"]
     return run_command(cmd, "查看最新版本")
 
 
 def stamp_database(revision: str = "head"):
     """标记数据库版本（不执行迁移）"""
-    cmd = ["alembic", "stamp", revision]
+    cmd = ["alembic", "-c", ALEMBIC_INI, "stamp", revision]
     return run_command(cmd, f"标记数据库版本: {revision}")
 
 
