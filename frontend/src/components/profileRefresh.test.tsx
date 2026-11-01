@@ -48,6 +48,7 @@ const plan = {
       { field: 'personality', old: 'Edited personality', new: 'Suggested personality', action: 'preserved' as const },
       { field: 'current_state', old: 'Same state', new: 'Same state', action: 'same' as const },
       { field: 'appearance', old: 'Kept appearance', new: '', action: 'preserved' as const },
+      { field: 'background', old: 'Current background text', new: 'Discarded AI background text', action: 'rejected' as const },
     ],
     facts_delta: null,
     stats: { quote_not_found: 2 },
@@ -62,10 +63,13 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 describe('profile refresh modals', () => {
-  it('renders the diff summary, change row, and existing rejection reason labels', () => {
+  it('renders the diff summary, change summary, and existing rejection reason labels', () => {
     render(<AntdApp><RefreshDiffModal open plan={plan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
     expect(screen.getByText('新增 1')).toBeTruthy();
-    expect(screen.getByText('Old background → New background')).toBeTruthy();
+    // 变更行折叠态只显示变化片段，不再拼「旧 → 新」整段
+    expect(screen.getByText('− Old background')).toBeTruthy();
+    expect(screen.getByText('＋ New background')).toBeTruthy();
+    expect(screen.getByText('AI 建议（已丢弃）：Discarded AI background text')).toBeTruthy();
     expect(screen.getByText('Edited personality')).toBeTruthy();
     expect(screen.getByText('AI 建议：Suggested personality（未写入）')).toBeTruthy();
     expect(screen.getByText('Same state')).toBeTruthy();
@@ -74,6 +78,48 @@ describe('profile refresh modals', () => {
     expect(screen.queryByText(/批未完成/)).toBeNull();
     fireEvent.click(screen.getByText('丢弃原因'));
     expect(screen.getByText('引文未命中 2')).toBeTruthy();
+  });
+
+  it('expands a change row into old/new blocks with full values', () => {
+    render(<AntdApp><RefreshDiffModal open plan={plan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
+    fireEvent.click(screen.getByText('− Old background'));
+    expect(screen.getByText('旧值')).toBeTruthy();
+    expect(screen.getByText('新值')).toBeTruthy();
+    expect(screen.getByText('Old background')).toBeTruthy();
+    expect(screen.getByText('New background')).toBeTruthy();
+  });
+
+  it('summarizes wholesale rewrites by character counts and reveals full values on expand', () => {
+    const rewritePlan = {
+      ...plan,
+      summary: { ...plan.summary, change: 1, rejected: 0 },
+      entities: [{
+        ...plan.entities[0],
+        id: 'e2',
+        fields: [{
+          field: 'personality',
+          old: '她自幼在温暖的家庭里长大，性格温和，喜欢读书，也很在意别人的评价。',
+          new: '北境佣兵出身，沉默寡言，擅长追踪与潜行，几乎不信任任何人。',
+          action: 'change' as const,
+        }],
+        stats: {},
+      }],
+    };
+    render(<AntdApp><RefreshDiffModal open plan={rewritePlan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
+    expect(screen.getByText(/整段重写（旧 \d+ 字 → 新 \d+ 字）/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/整段重写/));
+    expect(screen.getByText('旧值')).toBeTruthy();
+    expect(screen.getByText('新值')).toBeTruthy();
+    expect(screen.getByText(/她自幼在温暖的家庭里长大/)).toBeTruthy();
+    expect(screen.getByText(/北境佣兵出身/)).toBeTruthy();
+  });
+
+  it('labels rejected rows as discarded AI suggestions instead of a change arrow', () => {
+    render(<AntdApp><RefreshDiffModal open plan={plan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
+    fireEvent.click(screen.getByText('AI 建议（已丢弃）：Discarded AI background text'));
+    expect(screen.getByText('当前值')).toBeTruthy();
+    expect(screen.getByText('Current background text')).toBeTruthy();
+    expect(screen.getByText('AI 建议（已丢弃）')).toBeTruthy();
   });
 
   it('warns about skipped batches with sorted chapter numbers and localized reason labels', () => {
@@ -98,7 +144,7 @@ describe('profile refresh modals', () => {
     expect(
       screen.getByText('有 1 批未完成（第 — 章）：—。差异仅覆盖其余章节，可重新预览补齐。'),
     ).toBeTruthy();
-    expect(screen.getByText('Old background → New background')).toBeTruthy();
+    expect(screen.getByText('＋ New background')).toBeTruthy();
   });
 
   it('shows merged fact count only when the apply result includes merged facts', () => {
@@ -161,7 +207,7 @@ describe('profile refresh modals', () => {
     await waitFor(() => expect(screen.getByText('候选实体')).toBeTruthy());
     fireEvent.click(await screen.findByText('生成差异预览'));
     expect(await screen.findByText('档案差异预览')).toBeTruthy();
-    expect(screen.getByText('Old background → New background')).toBeTruthy();
+    expect(screen.getByText('＋ New background')).toBeTruthy();
   });
 
   it('shows batch progress from preview task details', async () => {

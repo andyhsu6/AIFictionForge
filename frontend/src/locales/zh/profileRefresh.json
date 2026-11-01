@@ -12,7 +12,9 @@
   "cancel": "取消",
   "close": "完成",
   "createPreview": "生成差异预览",
+  "currentValue": "当前值",
   "diffTitle": "档案差异预览",
+  "discardedSuggestion": "AI 建议（已丢弃）",
   "emptyCandidates": "没有需要重算的章节",
   "emptyDiff": "没有需要展示的档案差异。",
   "emptyValue": "（空）",
@@ -47,11 +49,13 @@
     "full": "全量",
     "incremental": "增量"
   },
+  "newValue": "新值",
   "notes": {
     "calls": "预估为最小调用数，若命中内容审核会二分重试，实际可能更多。",
     "full": "全量会重算所有含提及的章节，你的手工修改会被保留（将在差异里标为「保留」）。",
     "scope": "本次不含世界设定与组织成员关系。"
   },
+  "oldValue": "旧值",
   "planMissing": "预览任务已完成，但没有返回差异计划。",
   "previewProgress": "预览正在后台处理：{{status}}",
   "reasons": {
@@ -64,6 +68,7 @@
     "quote_not_found": "引文未命中"
   },
   "rejectionReasons": "丢弃原因",
+  "rewritten": "整段重写（旧 {{old}} 字 → 新 {{new}} 字）",
   "scopeNotice": "本次不含世界设定与组织成员关系",
   "skippedBatches": "有 {{count}} 批未完成（第 {{chapters}} 章）：{{reasons}}。差异仅覆盖其余章节，可重新预览补齐。",
   "skipReasons": {

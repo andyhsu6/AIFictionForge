@@ -12,7 +12,9 @@
   "cancel": "Cancel",
   "close": "Done",
   "createPreview": "Create preview",
+  "currentValue": "Current",
   "diffTitle": "Profile change preview",
+  "discardedSuggestion": "AI suggestion (discarded)",
   "emptyCandidates": "No chapters need refreshing",
   "emptyDiff": "There are no profile changes to show.",
   "emptyValue": "(empty)",
@@ -51,11 +53,13 @@
     "full": "Full",
     "incremental": "Incremental"
   },
+  "newValue": "New",
   "notes": {
     "calls": "This is the minimum estimated call count. Content moderation may trigger binary-split retries, so the actual count can be higher.",
     "full": "Full mode recalculates all chapters with mentions. Your manual edits are kept and marked as “Preserved” in the diff.",
     "scope": "World settings and organization membership are not included."
   },
+  "oldValue": "Old",
   "planMissing": "The preview task finished without returning a change plan.",
   "previewProgress": "Preview running in the background: {{status}}",
   "reasons": {
@@ -68,6 +72,7 @@
     "quote_not_found": "Quote not found"
   },
   "rejectionReasons": "Reasons for dropping facts",
+  "rewritten": "Rewritten (old {{old}} chars → new {{new}} chars)",
   "scopeNotice": "World settings and organization membership are not included.",
   "skippedBatches": "{{count}} batches did not finish (chapters {{chapters}}): {{reasons}}. The diff covers only the remaining chapters; preview again to fill the gaps.",
   "skippedBatches_one": "{{count}} batch did not finish (chapters {{chapters}}): {{reasons}}. The diff covers only the remaining chapters; preview again to fill the gap.",
