@@ -65,6 +65,12 @@
   },
   "rejectionReasons": "丢弃原因",
   "scopeNotice": "本次不含世界设定与组织成员关系",
+  "skippedBatches": "有 {{count}} 批未完成（第 {{chapters}} 章）：{{reasons}}。差异仅覆盖其余章节，可重新预览补齐。",
+  "skipReasons": {
+    "ai.content_filtered": "内容审核拦截",
+    "ai.output_truncated": "输出被截断",
+    "ai.timeout": "模型网关超时"
+  },
   "summary": {
     "add": "新增 {{count}}",
     "change": "变更 {{count}}",

@@ -45,6 +45,17 @@ export default function RefreshDiffModal({ open, plan, applying, result, onCance
     if (open) setExpanded({});
   }, [open, plan]);
 
+  // 后端可能跳过部分批次（如上游超时/内容审核）；旧计划没有 `skipped` 字段。
+  const skippedBatches = plan.skipped ?? [];
+  const skippedBatchCount = plan.summary.skipped_batches || skippedBatches.length;
+  const skippedChapters = Array.from(
+    new Set(skippedBatches.flatMap(batch => batch.chapter_numbers ?? [])),
+  ).sort((a, b) => a - b);
+  const skippedReasons = Array.from(new Set(skippedBatches.map(batch => batch.code)))
+    .map(code => t(`skipReasons.${code}`, { defaultValue: code }))
+    .join('、');
+  const hasSkippedBatches = skippedBatchCount > 0 || skippedBatches.length > 0;
+
   const content = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Alert type="info" showIcon message={t('scopeNotice')} style={{ position: 'sticky', top: 0, zIndex: 2 }} />
@@ -62,6 +73,17 @@ export default function RefreshDiffModal({ open, plan, applying, result, onCance
         />
       ) : (
         <>
+          {hasSkippedBatches && (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('skippedBatches', {
+                count: skippedBatchCount,
+                chapters: skippedChapters.join('、') || '—',
+                reasons: skippedReasons || '—',
+              })}
+            />
+          )}
           <Space wrap size={[8, 8]}>
             <Tag color="blue">{t('summary.add', { count: plan.summary.add })}</Tag>
             <Tag color="orange">{t('summary.change', { count: plan.summary.change })}</Tag>

@@ -13,8 +13,15 @@
 - 异常：`ai.content_filtered` 按「多章对半拆批 → 单章正文二分」降级重试（issue #193），
   降到最小粒度仍被拦才记入 `skipped`；`ai.output_truncated` 不重试、直接记 `skipped`；
   其余异常照常上抛。
+- 超时：单次模型调用带看门狗 `_PROFILE_CALL_TIMEOUT_SECONDS`，超时/httpx 超时重试
+  `_PROFILE_CALL_TIMEOUT_RETRIES` 次；仍超时则记 `ai.timeout` 到 `skipped` 并继续其余批
+  （不二分、不上抛），水位停在该批之前。
+- 大章：单章正文超过 `_MAX_SINGLE_CALL_CHARS` 时先按段落边界递归对半切到上限内，
+  再按 `_PROMPT_CHAR_BUDGET` 归批；切片渲染带「第 x/y 段」标注。
 - 水位只按连续覆盖推进：某章的切片全部成功才算 covered，水位停在该档案提及章节序列里
   「从起点连续成功的最长前缀」的最大章号，失败章节下一轮 `start = marker + 1` 会重新覆盖。
+- 进度：`on_progress(done_batches, total_batches)` 按文本批回调（含已 skipped 的批），
+  批总数与 `estimate_refresh()["calls_min"]` 同源同算法。
 """
 from __future__ import annotations
 
@@ -25,6 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,15 +64,24 @@ PROFILE_FIELDS = ("personality", "background", "appearance", "current_state")
 WORLD_FIELDS = ("world_time_period", "world_location", "world_atmosphere", "world_rules")
 
 # 不可重试的错误码：记入 skipped 后继续处理其他批次
-NON_RETRYABLE_CODES = frozenset({"ai.content_filtered", "ai.output_truncated"})
+# （`ai.timeout` 是看门狗耗尽重试后自产的降级码：不二分、不上抛、只记 skipped）
+NON_RETRYABLE_CODES = frozenset({"ai.content_filtered", "ai.output_truncated", "ai.timeout"})
 
 # 只有内容审核拦截允许降级重试；`ai.output_truncated` 语义不变（不重试）
 CONTENT_FILTERED_CODE = "ai.content_filtered"
+# 单次模型调用连续超时后的降级错误码
+TIMEOUT_CODE = "ai.timeout"
+
+# 单次模型调用的看门狗时限（秒）与超时重试次数（1 → 最多 2 次尝试）
+_PROFILE_CALL_TIMEOUT_SECONDS = 180.0
+_PROFILE_CALL_TIMEOUT_RETRIES = 1
 
 # 单次 AI 调用最多覆盖的角色数，避免提示词里塞进整本项目
 _CHARACTERS_PER_CALL = 5
 # 单次 AI 调用的章节正文预算（字符）。超出的章节拆分到下一批，不截断正文。
 _PROMPT_CHAR_BUDGET = 8000
+# 单章正文超过该上限时先按段落边界对半切分（避免单次调用喂进 8 万字符卡死上游）
+_MAX_SINGLE_CALL_CHARS = 24000
 # 单章正文二分后的最小切片长度（字符）：短于等于该值不再切，直接记 skipped。
 _MIN_SLICE_CHARS = 600
 
@@ -204,18 +221,6 @@ class _ChapterSlice:
     parts: Optional[int] = None
 
 
-def _as_slices(chapters: Iterable[Chapter]) -> List[_ChapterSlice]:
-    return [
-        _ChapterSlice(
-            id=chapter.id,
-            chapter_number=chapter.chapter_number,
-            title=chapter.title,
-            content=chapter.content or "",
-        )
-        for chapter in chapters
-    ]
-
-
 def _split_content(content: str) -> Optional[Tuple[str, str]]:
     """在段落边界把单章正文切成两片；正文不长于切片下限时返回 None（不再切）。"""
     if len(content) <= _MIN_SLICE_CHARS:
@@ -229,6 +234,47 @@ def _split_content(content: str) -> Optional[Tuple[str, str]]:
         if left and right:
             return left, right
     return content[:mid], content[mid:]
+
+
+def _split_to_limit(content: str) -> List[str]:
+    """把超过 `_MAX_SINGLE_CALL_CHARS` 的正文按段落边界递归对半切到上限内。
+
+    `_split_content` 返回 None（已到最小粒度）即停止，保留原片段不再切。
+    """
+    if len(content) <= _MAX_SINGLE_CALL_CHARS:
+        return [content]
+    halves = _split_content(content)
+    if halves is None:
+        return [content]
+    left, right = halves
+    return _split_to_limit(left) + _split_to_limit(right)
+
+
+def _chapter_slices(chapter: Chapter) -> List[_ChapterSlice]:
+    """把一章转成喂给模型的一片或数片：超长章按段落边界切分并标注 part/parts。"""
+    content = chapter.content or ""
+    pieces = _split_to_limit(content)
+    if len(pieces) <= 1:
+        return [
+            _ChapterSlice(
+                id=chapter.id,
+                chapter_number=chapter.chapter_number,
+                title=chapter.title,
+                content=content,
+            )
+        ]
+    parts = len(pieces)
+    return [
+        _ChapterSlice(
+            id=chapter.id,
+            chapter_number=chapter.chapter_number,
+            title=chapter.title,
+            content=piece,
+            part=index,
+            parts=parts,
+        )
+        for index, piece in enumerate(pieces, start=1)
+    ]
 
 
 def _loads_json(raw: Optional[str], fallback: Any) -> Any:
@@ -255,18 +301,23 @@ def _mentioned_in(character: Character, content: str) -> bool:
     return any(name in content for name in _character_names(character))
 
 
-def _batch_by_budget(chapters: List[Chapter]) -> List[List[Chapter]]:
-    """按字符预算切分章节；单章超预算时独占一批（不截断正文）。"""
-    batches: List[List[Chapter]] = []
-    current: List[Chapter] = []
+def _batch_by_budget(chapters: List[Chapter]) -> List[List[_ChapterSlice]]:
+    """按字符预算把章节切片归批。
+
+    先按 `_MAX_SINGLE_CALL_CHARS` 把超大单章切到上限内，再按 `_PROMPT_CHAR_BUDGET`
+    归批：单切片超预算时独占一批（不截断正文）。批次数与真实模型调用次数同源。
+    """
+    batches: List[List[_ChapterSlice]] = []
+    current: List[_ChapterSlice] = []
     current_size = 0
     for chapter in chapters:
-        size = len(chapter.content or "")
-        if current and current_size + size > _PROMPT_CHAR_BUDGET:
-            batches.append(current)
-            current, current_size = [], 0
-        current.append(chapter)
-        current_size += size
+        for piece in _chapter_slices(chapter):
+            size = len(piece.content)
+            if current and current_size + size > _PROMPT_CHAR_BUDGET:
+                batches.append(current)
+                current, current_size = [], 0
+            current.append(piece)
+            current_size += size
     if current:
         batches.append(current)
     return batches
@@ -543,8 +594,10 @@ class CharacterProfileSyncService:
 
         `bypass_watermark=True` 忽略同步水位（全量重算），`from_chapter` 是章节下限；
         `dry_run=True` 只产出 `collector` 里的差异计划，不写库也不推进水位。
-        `on_progress(done_chunks, total_chunks)` 与 `should_cancel()` 由预览任务传入；
-        取消时本轮已累积的写入全部回滚（不落库）。
+        `on_progress(done_batches, total_batches)` 由预览任务传入：每处理完一个文本批
+        （含被 skipped 的批）回调一次，`total_batches` 与 `estimate_refresh()["calls_min"]`
+        同源同算法，最后一次回调必定是 `(total_batches, total_batches)`；
+        `should_cancel()` 在每批角色 chunk 之间检查，取消时本轮已累积的写入全部回滚（不落库）。
         """
         guard_key = project_id
         stats: Dict[str, Any] = {
@@ -627,15 +680,28 @@ class CharacterProfileSyncService:
             {} if bypass_watermark else None
         )
 
-        total_chunks = (len(candidates) + _CHARACTERS_PER_CALL - 1) // _CHARACTERS_PER_CALL
-        for index, offset in enumerate(
-            range(0, len(candidates), _CHARACTERS_PER_CALL), start=1
-        ):
+        chunks = [
+            candidates[offset: offset + _CHARACTERS_PER_CALL]
+            for offset in range(0, len(candidates), _CHARACTERS_PER_CALL)
+        ]
+        # 文本批总数与 estimate_refresh 用同一算法（含超大章节切分后的批），
+        # 保证进度分母 == 预估 calls_min == 真实调用次数（忽略二分/超时重试）。
+        total_batches = sum(
+            len(_batch_by_budget(_ordered_mentions(chunk))) for chunk in chunks
+        )
+        done_batches = 0
+
+        async def _on_batch() -> None:
+            nonlocal done_batches
+            done_batches += 1
+            if on_progress is not None:
+                await on_progress(done_batches, total_batches)
+
+        for chunk in chunks:
             if should_cancel is not None and await should_cancel():
                 # 取消：已完成的批次由下面的 rollback 一并丢弃（零写入）
                 stats["cancelled"] = True
                 break
-            chunk = candidates[offset: offset + _CHARACTERS_PER_CALL]
             await self._sync_chunk(
                 db=db,
                 chunk=chunk,
@@ -645,9 +711,8 @@ class CharacterProfileSyncService:
                 dry_run=dry_run,
                 collector=collector,
                 pending_facts=pending_facts,
+                on_batch=_on_batch,
             )
-            if on_progress is not None:
-                await on_progress(index, total_chunks)
 
         if pending_facts and not stats.get("cancelled"):
             await self._finalize_pending_facts(
@@ -918,8 +983,12 @@ class CharacterProfileSyncService:
         dry_run: bool = False,
         collector: Optional[ProfileDiffCollector] = None,
         pending_facts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        on_batch: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
-        """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。"""
+        """处理一批角色：按正文预算分批调用模型，逐字段走写回策略。
+
+        `on_batch` 在每个文本批处理完（含 skipped 的批）后回调，供上层按批上报进度。
+        """
         character_ids = {character.id for character, _ in chunk}
         names = {character.name for character, _ in chunk}
 
@@ -970,7 +1039,7 @@ class CharacterProfileSyncService:
 
         for text_batch in _batch_by_budget(ordered):
             results = await self._call_with_bisect(
-                pieces=_as_slices(text_batch),
+                pieces=text_batch,
                 build_prompt=lambda pieces: prompt_template.format(
                     profiles=profiles, chapters=_render_chapters(pieces)
                 ),
@@ -981,6 +1050,8 @@ class CharacterProfileSyncService:
             )
             for chapter_id, ok in results.items():
                 covered[chapter_id] = covered.get(chapter_id, True) and ok
+            if on_batch is not None:
+                await on_batch()
 
         for character, mentions in chunk:
             if dry_run:
@@ -1008,17 +1079,19 @@ class CharacterProfileSyncService:
     ) -> Dict[str, bool]:
         """调用模型处理一段正文，返回 {章节 id: 该章是否全部切片都成功}。
 
+        单次调用带看门狗：超时 → 重试 `_PROFILE_CALL_TIMEOUT_RETRIES` 次；仍超时记
+        `ai.timeout` 到 `skipped` 并返回 False（不二分、不上抛，其余批继续）。
         `ai.content_filtered` 时二分降级（issue #193）：多章对半拆批，单章按段落边界
         把正文切成两片；降到最小粒度仍被拦才记 `skipped` 并返回 False。
         `ai.output_truncated` 语义不变：不重试、记 `skipped`。
         """
+        prompt = build_prompt(pieces)
         try:
-            response = await ai_service.call_with_json_retry(
-                prompt=build_prompt(pieces),
+            response = await self._call_with_watchdog(
+                prompt=prompt,
                 system_prompt=system_prompt,
-                max_retries=2,
-                expected_type="object",
-                auto_mcp=False,
+                ai_service=ai_service,
+                pieces=pieces,
             )
         except ApiError as exc:
             if exc.code not in NON_RETRYABLE_CODES:
@@ -1050,6 +1123,61 @@ class CharacterProfileSyncService:
 
         ok = await apply_response(response)
         return {piece.id: ok for piece in pieces}
+
+    @staticmethod
+    async def _call_with_watchdog(
+        *,
+        prompt: str,
+        system_prompt: str,
+        ai_service: Any,
+        pieces: List[_ChapterSlice],
+    ) -> Any:
+        """带超时看门狗的单次模型调用（prompt 只 build 一次，重试复用）。
+
+        超时（`asyncio.wait_for` 触发的 `asyncio.TimeoutError` 或上游抛出的
+        `httpx.TimeoutException`）重试 `_PROFILE_CALL_TIMEOUT_RETRIES` 次；仍超时抛
+        `ApiError(code="ai.timeout")`，由 `_call_with_bisect` 统一降级为 skipped。
+        非超时异常（含 ApiError）原样上抛，不吞、不重试。
+        """
+        attempts = _PROFILE_CALL_TIMEOUT_RETRIES + 1
+        numbers = sorted({piece.chapter_number for piece in pieces})
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.wait_for(
+                    ai_service.call_with_json_retry(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        max_retries=2,
+                        expected_type="object",
+                        auto_mcp=False,
+                    ),
+                    timeout=_PROFILE_CALL_TIMEOUT_SECONDS,
+                )
+            except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    logger.warning(
+                        "档案同步模型调用超时（%.0fs），重试 %d/%d: chapters=%s",
+                        _PROFILE_CALL_TIMEOUT_SECONDS,
+                        attempt,
+                        attempts - 1,
+                        numbers,
+                    )
+        logger.warning(
+            "档案同步模型调用连续超时，跳过该批: chapters=%s error=%s",
+            numbers,
+            type(last_exc).__name__ if last_exc is not None else "unknown",
+        )
+        # raw 只放诊断元信息（异常类型/超时秒数/尝试次数），绝不放 prompt 或原文内容
+        raise ApiError(
+            code=TIMEOUT_CODE,
+            params={"chapter_numbers": numbers},
+            raw=(
+                f"{type(last_exc).__name__ if last_exc is not None else 'TimeoutError'}"
+                f" timeout={_PROFILE_CALL_TIMEOUT_SECONDS}s attempts={attempts}"
+            ),
+        )
 
     @staticmethod
     def _bisect(
@@ -1509,7 +1637,7 @@ class CharacterProfileSyncService:
 
         for text_batch in _batch_by_budget(chapters):
             results = await self._call_with_bisect(
-                pieces=_as_slices(text_batch),
+                pieces=text_batch,
                 build_prompt=lambda pieces: _WORLD_PROMPT_TEMPLATE.format(
                     profile=_render_world_profile(project),
                     chapters=_render_chapters(pieces),

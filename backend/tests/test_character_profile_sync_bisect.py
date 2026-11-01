@@ -1,4 +1,4 @@
-"""档案同步：内容审核二分降级与水位连续覆盖（issue #193）。
+"""档案同步：内容审核二分降级、超时看门狗、超大单章切分与水位连续覆盖（issue #193）。
 
 钉死契约：
 (a) 多章批次命中 `ai.content_filtered` → 对半拆批重试，不丢整批；
@@ -8,16 +8,23 @@
 (e) 水位只按「该档案提及章节序列里从起点连续成功的最长前缀」推进，
     提及章节不连续时也按该档案自己的序列算；
 (f) `ai.output_truncated` 语义不变：不重试、不二分、不推进水位；
-(g) 世界设定同样二分降级。
+(g) 世界设定同样二分降级；
+(h) 单次调用超时（asyncio 看门狗 / httpx 超时）重试 1 次；两次都超时记
+    `ai.timeout` skipped 且不二分、不上抛，其余批继续，水位停在该章之前；
+    非超时异常仍然上抛、不重试；
+(i) 单章正文超过 `_MAX_SINGLE_CALL_CHARS` 时先按段落边界切到上限内，切分后的批数
+    与 `estimate_refresh()["calls_min"]` 一致，同一章多切片必须全部成功才推进水位。
 
 夹具与断言文本全部为中性占位（AGENTS.md 脱敏硬约束）。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -27,6 +34,7 @@ from app.database import Base
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.project import Project
+from app.services import character_profile_sync_service as profile_sync_module
 from app.services.character_profile_sync_service import (
     CharacterProfileSyncService,
     character_profile_sync_service,
@@ -94,6 +102,36 @@ def _long_chapter(paragraphs: int = 4) -> str:
     return "\n\n".join(
         f"占位段落{index}：{_CHAPTER_PARAGRAPH * 5}" for index in range(paragraphs)
     )
+
+
+def _huge_chapter(paragraphs: int = 16, paragraph_chars: int = 2000) -> str:
+    """超过单次调用上限（24000 字符）且带段落边界的一章正文。"""
+    filler = "占位正文" * (paragraph_chars // 4)
+    return "\n\n".join(
+        f"占位段落{index}：角色甲登场。{filler}" for index in range(paragraphs)
+    )
+
+
+class _WatchdogAIService:
+    """按调用顺序出结果的桩；float 项表示「这次调用挂起这么久」以触发看门狗。
+
+    `asyncio.wait_for` 超时时会取消挂起调用，睡眠不会真的跑完——用例靠
+    monkeypatch 看门狗常量（如 0.05s）秒级完成，绝不真等 180s。
+    """
+
+    def __init__(self, script: list):
+        self.script = list(script)
+        self.calls: list[str] = []
+
+    async def call_with_json_retry(self, *, prompt: str, **kwargs):
+        self.calls.append(prompt)
+        item = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
+        if isinstance(item, (int, float)):
+            await asyncio.sleep(item)
+            raise AssertionError("看门狗应在挂起调用返回前取消它")
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 @pytest.fixture
@@ -353,3 +391,133 @@ async def test_world_batch_filtered_is_bisected(db_session):
     assert project.world_profile_synced_through_chapter == 2, "两章都成功 → 水位推进到 2"
     assert stats["fields_updated"] >= 4
     assert stats["skipped"] == []
+
+
+# --- ⑧ 超时看门狗：重试一次后降级为 skipped ---------------------------------
+
+
+async def test_timeout_twice_is_skipped_after_one_retry(db_session, monkeypatch):
+    """某批两次都超时 → 重试 1 次后记 skipped，其余批继续，水位停在该章之前。"""
+    monkeypatch.setattr(profile_sync_module, "_PROFILE_CALL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(profile_sync_module, "_PROMPT_CHAR_BUDGET", 10)  # 每章单独成批
+    await _seed(
+        db_session,
+        chapters=[
+            (1, "第1章占位正文。角色甲登场。"),
+            (2, "第2章占位正文。角色甲再次登场。"),
+        ],
+        markers={"角色甲": 0},
+    )
+    ai = _WatchdogAIService(
+        [
+            0.5,  # 第 1 章首次尝试：看门狗超时
+            0.5,  # 第 1 章重试：再次超时 → 记 skipped（不二分、不上抛）
+            _payload("角色甲", personality="占位新性格"),
+        ]
+    )
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=2, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert len(ai.calls) == 3, "超时批重试 1 次后记 skipped，另一批照常调用"
+    assert len(stats["skipped"]) == 1
+    assert stats["skipped"][0]["code"] == "ai.timeout"
+    assert stats["skipped"][0]["chapter_numbers"] == [1]
+    assert stats["skipped"][0]["characters"] == ["角色甲"]
+    assert character.personality == "占位新性格", "其余批继续写回"
+    assert character.profile_synced_through_chapter == 0, "水位停在超时章节之前"
+
+
+async def test_httpx_timeout_then_retry_succeeds(db_session):
+    """首次尝试抛 httpx 超时、重试成功 → 不 skip，调用次数=2，正常写回。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。角色甲登场。")], markers={"角色甲": 0})
+    ai = _WatchdogAIService(
+        [
+            httpx.ReadTimeout("占位上游读超时"),
+            _payload("角色甲", personality="占位新性格"),
+        ]
+    )
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert len(ai.calls) == 2, "首发超时后重试一次"
+    assert character.personality == "占位新性格"
+    assert character.profile_synced_through_chapter == 1
+    assert stats["skipped"] == []
+
+
+async def test_non_timeout_exception_is_reraised_without_retry(db_session):
+    """非超时类异常照旧上抛：不重试、不吞、不记 skipped。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。角色甲登场。")], markers={"角色甲": 0})
+    ai = ScriptedAIService([RuntimeError("占位上游客户端崩溃")])
+
+    with pytest.raises(RuntimeError):
+        await character_profile_sync_service.sync(
+            db=db_session,
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            through_chapter=1,
+            ai_service=ai,
+        )
+
+    assert len(ai.calls) == 1, "非超时异常不得重试"
+
+
+# --- ⑨ 超大单章切分 ---------------------------------------------------------
+
+
+async def test_oversized_chapter_is_split_to_limit_and_counted_in_estimate(db_session):
+    """单章 > 24000 字符 → 按段落边界切到上限内；调用次数 == estimate.calls_min。"""
+    content = _huge_chapter()
+    assert len(content) > profile_sync_module._MAX_SINGLE_CALL_CHARS
+    await _seed(db_session, chapters=[(7, content)], markers={"角色甲": 0})
+    ai = ScriptedAIService([_payload("角色甲", personality="占位新性格")])
+
+    estimate = await character_profile_sync_service.estimate_refresh(
+        db=db_session, project_id=PROJECT_ID, mode="incremental"
+    )
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=7, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert estimate["calls_min"] == 2, "32200+ 字符对半切成 2 片 → 2 批"
+    assert len(ai.calls) == estimate["calls_min"], "预估与实际调用次数必须一致"
+    assert "（第 1/2 段）" in ai.calls[0]
+    assert "（第 2/2 段）" in ai.calls[1]
+    assert character.personality == "占位新性格"
+    assert character.profile_synced_through_chapter == 7, "全部切片成功 → 水位正常推进"
+    assert stats["skipped"] == []
+
+
+async def test_oversized_chapter_partial_failure_stops_watermark(db_session):
+    """同一章多切片：任一片失败则 covered=False，水位不得越过该章。"""
+    await _seed(db_session, chapters=[(7, _huge_chapter())], markers={"角色甲": 0})
+    ai = ScriptedAIService(
+        [
+            _payload("角色甲", personality="占位新性格"),
+            ApiError(code="ai.output_truncated"),
+        ]
+    )
+
+    stats = await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=7, ai_service=ai
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert len(ai.calls) == 2
+    assert character.profile_synced_through_chapter == 0, "多切片必须全部成功才推进水位"
+    assert stats["skipped"][0]["chapter_numbers"] == [7]
+
+    # 下一轮 start=1 仍会重新覆盖该章（水位没被误推进）
+    retry = ScriptedAIService([_payload("角色甲", personality="占位新性格")])
+    await character_profile_sync_service.sync(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=7, ai_service=retry
+    )
+    assert len(retry.calls) == 2, "整章重新切两片重跑"
+    assert (await _character(db_session, "角色甲")).profile_synced_through_chapter == 7

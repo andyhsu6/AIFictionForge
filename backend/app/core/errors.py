@@ -29,12 +29,13 @@ DYNAMIC_DETAIL_CODE = "dynamic_detail"
 HTTP_ERROR_FALLBACK_CODE = "http_error"
 
 # 错误码 registry: code -> (默认中文 detail, 默认 HTTP status)
-# 全量码表（todo 11 CSV registry 落库，207 码 + 4 个 handler 专用码，共 211）。
+# 全量码表（todo 11 CSV registry 落库，208 码 + 4 个 handler 专用码，共 212）。
 # 默认 detail 即该 code 的 original_detail（静态站逐字、参数化站含 i18next 占位符
 # {{param}}，参数化站点 raise 时必须显式传原文案 detail 以保证旧客户端 byte-identity）。
 ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "ai.content_filtered": ("本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容", 400),
     "ai.output_truncated": ("模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容", 400),
+    "ai.timeout": ("模型网关响应超时，请重试；本次已跳过超时批次", 504),
     "auth.admin_required": ("需要管理员权限", 403),
     "auth.email_already_registered": ("该邮箱已注册", 400),
     "auth.email_not_registered": ("该邮箱尚未注册", 404),

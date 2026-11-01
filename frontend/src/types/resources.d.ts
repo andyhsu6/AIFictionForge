@@ -1223,7 +1223,8 @@ export default interface Resources {
   "errors": {
     "ai": {
       "content_filtered": "本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容",
-      "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容"
+      "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容",
+      "timeout": "模型网关响应超时，请重试；本次已跳过超时批次"
     },
     "auth": {
       "admin_required": "需要管理员权限",
@@ -2741,6 +2742,12 @@ export default interface Resources {
     },
     "rejectionReasons": "丢弃原因",
     "scopeNotice": "本次不含世界设定与组织成员关系",
+    "skipReasons": {
+      "ai.content_filtered": "内容审核拦截",
+      "ai.output_truncated": "输出被截断",
+      "ai.timeout": "模型网关超时"
+    },
+    "skippedBatches": "有 {{count}} 批未完成（第 {{chapters}} 章）：{{reasons}}。差异仅覆盖其余章节，可重新预览补齐。",
     "summary": {
       "add": "新增 {{count}}",
       "change": "变更 {{count}}",

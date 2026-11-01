@@ -1,7 +1,8 @@
 {
   "ai": {
     "content_filtered": "The upstream provider's content filter blocked this generation. Switch to another model channel or skip this part of the content.",
-    "output_truncated": "The model output was cut off because the token budget ran out. Increase the max output tokens or split the content."
+    "output_truncated": "The model output was cut off because the token budget ran out. Increase the max output tokens or split the content.",
+    "timeout": "The model gateway timed out. Please retry; the timed-out batches were skipped this time."
   },
   "auth": {
     "admin_required": "Administrator privileges required",

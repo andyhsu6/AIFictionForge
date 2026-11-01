@@ -31,6 +31,12 @@ export interface RefreshEntity {
   stats: Record<string, number>;
 }
 
+export interface RefreshSkippedBatch {
+  chapter_numbers: number[];
+  code: string;
+  characters?: string[];
+}
+
 export interface RefreshPlan {
   plan_version: number;
   mode: RefreshMode;
@@ -47,6 +53,8 @@ export interface RefreshPlan {
     no_mention: number;
     skipped_batches: number;
   };
+  /** 未完成的批次；旧计划没有该字段（可选，读不到时按空数组处理）。 */
+  skipped?: RefreshSkippedBatch[];
   entities: RefreshEntity[];
 }
 

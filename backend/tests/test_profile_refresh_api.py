@@ -262,6 +262,7 @@ async def test_preview_creates_task_with_plan_and_list_returns_summary_only(harn
         assert [entry["name"] for entry in plan["entities"]] == ["角色甲"]
         assert plan["summary"]["add"] == 1
         assert plan["summary"]["entities"] == 1
+        assert plan["skipped"] == [], "全部批次成功时 skipped 为空数组（字段恒存在，前端可向后兼容）"
         assert task["progress_details"]["stage"] == "complete"
         assert task["status_code"] == "progress.profile_preview_ready"
 
@@ -275,6 +276,50 @@ async def test_preview_creates_task_with_plan_and_list_returns_summary_only(harn
     async with harness.session_factory() as db:
         character = (await db.get(Character, plan["entities"][0]["id"]))
         assert character.personality is None
+
+
+async def test_preview_degrades_timed_out_batches_to_skipped(harness):
+    """单批上游超时 → 重试 1 次后记 skipped，任务仍 completed 并产出部分计划。
+
+    钉死：一次卡死的模型调用不能再毁掉整次预览（原缺陷：ReadTimeout 上抛 → 整单 failed）。
+    """
+    filler = "占位正文补充。"  # 每章 > 4000 字符 ⇒ 三章各占一个文本批（8000 预算）
+    await _seed(
+        harness.session_factory,
+        chapters=[
+            (number, f"角色甲登场。{QUOTE}。" + filler * 1200) for number in (1, 2, 3)
+        ],
+        characters=[{"name": "角色甲"}],
+    )
+    harness.ai.response = _fields_payload("角色甲", personality="占位新性格")
+    original_call = harness.ai.call_with_json_retry
+    timeout_attempts = {"count": 0}
+
+    async def timeout_on_chapter_two(*, prompt, **kwargs):
+        if "【第2章 " in prompt:
+            timeout_attempts["count"] += 1
+            raise asyncio.TimeoutError("simulated upstream stall")
+        return await original_call(prompt=prompt, **kwargs)
+
+    harness.ai.call_with_json_retry = timeout_on_chapter_two
+
+    async with harness.client() as client:
+        task = await _preview(harness, client, mode="full", from_chapter=1)
+
+    plan = task["task_result"]["plan"]
+    assert plan["skipped"] == [
+        {"chapter_numbers": [2], "code": "ai.timeout", "characters": ["角色甲"]}
+    ], "超时批应以结构化 skipped 记录，而不是让整单失败"
+    assert plan["summary"]["skipped_batches"] == 1
+    assert [entry["name"] for entry in plan["entities"]] == ["角色甲"], "其余批次照常出差异"
+    assert plan["summary"]["add"] == 1
+    assert task["progress_details"]["stage"] == "complete"
+    # 第 2 章批：首次超时 + 1 次重试超时 = 2 次尝试；第 1/3 章各 1 次成功调用
+    assert timeout_attempts["count"] == 2
+    assert len(harness.ai.calls) == 2
+    async with harness.session_factory() as db:
+        character = await db.get(Character, plan["entities"][0]["id"])
+        assert character.personality is None, "dry-run 不写库"
 
 
 # --- ③ apply 正常回放 -------------------------------------------------------

@@ -828,6 +828,9 @@ async def _run_profile_preview_task(task_id: str, user_id: str) -> None:
                     no_mention=int(estimate.get("no_mention") or 0),
                     skipped_batches=len(skipped),
                 ),
+                # 未完成的批次（超时/内容审核/截断）：前端在差异弹窗里显式提示，
+                # 避免用户把「部分差异」误当成全书完整差异。纯增量字段，旧计划没有它。
+                "skipped": skipped,
                 "entities": entities,
             }
             await tracker.set_result(

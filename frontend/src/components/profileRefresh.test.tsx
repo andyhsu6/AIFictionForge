@@ -70,8 +70,35 @@ describe('profile refresh modals', () => {
     expect(screen.getByText('AI 建议：Suggested personality（未写入）')).toBeTruthy();
     expect(screen.getByText('Same state')).toBeTruthy();
     expect(screen.queryByText('Kept appearance → （空）')).toBeNull();
+    // Pristine plans carry no skipped batches, so no warning banner appears.
+    expect(screen.queryByText(/批未完成/)).toBeNull();
     fireEvent.click(screen.getByText('丢弃原因'));
     expect(screen.getByText('引文未命中 2')).toBeTruthy();
+  });
+
+  it('warns about skipped batches with sorted chapter numbers and localized reason labels', () => {
+    const planWithSkipped = {
+      ...plan,
+      summary: { ...plan.summary, skipped_batches: 2 },
+      skipped: [
+        { chapter_numbers: [5, 3], code: 'ai.timeout' },
+        { chapter_numbers: [7], code: 'ai.unknown_code' },
+      ],
+    };
+    render(<AntdApp><RefreshDiffModal open plan={planWithSkipped} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
+    expect(
+      screen.getByText('有 2 批未完成（第 3、5、7 章）：模型网关超时、ai.unknown_code。差异仅覆盖其余章节，可重新预览补齐。'),
+    ).toBeTruthy();
+    expect(screen.getByText('新增 1')).toBeTruthy();
+  });
+
+  it('keeps older plans without a skipped field working (count-only fallback)', () => {
+    const countOnlyPlan = { ...plan, summary: { ...plan.summary, skipped_batches: 1 } };
+    render(<AntdApp><RefreshDiffModal open plan={countOnlyPlan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} /></AntdApp>);
+    expect(
+      screen.getByText('有 1 批未完成（第 — 章）：—。差异仅覆盖其余章节，可重新预览补齐。'),
+    ).toBeTruthy();
+    expect(screen.getByText('Old background → New background')).toBeTruthy();
   });
 
   it('shows merged fact count only when the apply result includes merged facts', () => {

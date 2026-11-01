@@ -69,6 +69,14 @@
   },
   "rejectionReasons": "Reasons for dropping facts",
   "scopeNotice": "World settings and organization membership are not included.",
+  "skippedBatches": "{{count}} batches did not finish (chapters {{chapters}}): {{reasons}}. The diff covers only the remaining chapters; preview again to fill the gaps.",
+  "skippedBatches_one": "{{count}} batch did not finish (chapters {{chapters}}): {{reasons}}. The diff covers only the remaining chapters; preview again to fill the gap.",
+  "skippedBatches_other": "{{count}} batches did not finish (chapters {{chapters}}): {{reasons}}. The diff covers only the remaining chapters; preview again to fill the gaps.",
+  "skipReasons": {
+    "ai.content_filtered": "Content filter blocked",
+    "ai.output_truncated": "Output truncated",
+    "ai.timeout": "Model gateway timed out"
+  },
   "summary": {
     "add": "Added {{count}}",
     "add_one": "Added {{count}}",

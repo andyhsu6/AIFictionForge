@@ -7,7 +7,9 @@
 (d) fingerprint 不一致的实体在 apply 时跳过并计入 stale；
 (e) 组织 personality 恒不出现在计划里，apply 后仍为空；
 (f) 手改字段标记 preserved 且 apply 不改；
-(g) estimate.calls_min 与真实模型调用次数相等。
+(g) estimate.calls_min 与真实模型调用次数相等（含超大单章切分后的批数）；
+(h) `on_progress(done_batches, total_batches)` 每文本批回调一次（含 skipped 的批），
+    序列单调递增、最后一次为 `(total, total)` 且 `total == estimate.calls_min`。
 
 夹具与断言文本全部为中性占位（AGENTS.md 脱敏硬约束）。
 """
@@ -23,6 +25,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.errors import ApiError
 from app.database import Base
 from app.models.chapter import Chapter
 from app.models.character import Character
@@ -830,6 +833,99 @@ async def test_progress_callback_reports_each_chunk(db_session):
     assert progress == [(1, 2), (2, 2)], "6 个实体 = 2 个 chunk，进度逐批上报"
     assert len(ai.calls) == 2
     assert stats["characters_updated"] == 6
+
+
+class _SkipFirstBatchAIService:
+    """第 1 批抛不可重试错误，其余批正常返回。"""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    async def call_with_json_retry(self, *, prompt, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise ApiError(code="ai.output_truncated")
+        return self.payload
+
+
+async def test_progress_advances_per_text_batch_and_total_matches_estimate(
+    db_session, monkeypatch
+):
+    """进度分母 = 文本批数（与 estimate.calls_min 同源），最后回调必为 (total,total)。"""
+    import app.services.character_profile_sync_service as mod
+
+    monkeypatch.setattr(mod, "_PROMPT_CHAR_BUDGET", 200)
+
+    names = [f"角色{index}" for index in range(1, 7)]
+    filler = "占位正文" * 60
+    chapters = [(number, "、".join(names) + "登场。" + filler) for number in (1, 2, 3)]
+    await _seed(
+        db_session,
+        chapters=chapters,
+        characters=[{"name": name} for name in names],
+    )
+
+    estimate = await character_profile_sync_service.estimate_refresh(
+        db=db_session, project_id=PROJECT_ID, mode="incremental"
+    )
+    assert estimate["calls_min"] == 6, "2 个 chunk × 3 个文本批"
+
+    progress: list[tuple[int, int]] = []
+
+    async def _on_progress(done: int, total: int) -> None:
+        progress.append((done, total))
+
+    ai = FakeAIService(_six_character_payload(names))
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=3,
+        ai_service=ai,
+        on_progress=_on_progress,
+    )
+
+    assert progress == [(index, 6) for index in range(1, 7)], "每批一次，单调递增"
+    assert progress[-1] == (6, 6), "最后一个回调 == (total, total)"
+    assert progress[-1][1] == estimate["calls_min"]
+    assert len(ai.calls) == estimate["calls_min"]
+    assert stats["characters_updated"] == 6
+
+
+async def test_progress_counts_skipped_batches_as_done(db_session, monkeypatch):
+    """被 skipped 的文本批同样按「已处理」计入进度。"""
+    import app.services.character_profile_sync_service as mod
+
+    monkeypatch.setattr(mod, "_PROMPT_CHAR_BUDGET", 10)  # 每章单独成批
+    await _seed(
+        db_session,
+        chapters=[
+            (1, "第1章占位正文。角色甲登场。"),
+            (2, "第2章占位正文。角色甲再次登场。"),
+        ],
+        characters=[{"name": "角色甲"}],
+    )
+
+    progress: list[tuple[int, int]] = []
+
+    async def _on_progress(done: int, total: int) -> None:
+        progress.append((done, total))
+
+    ai = _SkipFirstBatchAIService(_fields_payload("角色甲", personality="占位新性格"))
+    stats = await character_profile_sync_service.sync(
+        db=db_session,
+        user_id=USER_ID,
+        project_id=PROJECT_ID,
+        through_chapter=2,
+        ai_service=ai,
+        on_progress=_on_progress,
+    )
+
+    assert progress == [(1, 2), (2, 2)], "第 1 批被 skipped 也计入已处理"
+    assert len(stats["skipped"]) == 1
+    assert stats["skipped"][0]["code"] == "ai.output_truncated"
+    assert stats["skipped"][0]["chapter_numbers"] == [1]
 
 
 class _CancelSecondChunk:
