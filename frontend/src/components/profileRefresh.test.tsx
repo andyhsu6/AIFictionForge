@@ -272,7 +272,8 @@ describe('profile refresh modals', () => {
     await waitFor(() => expect(screen.getByText('候选实体')).toBeTruthy());
     fireEvent.click(await screen.findByText('生成差异预览'));
     await waitFor(() => expect(mapTaskStatusMessage).toHaveBeenCalledWith(expect.objectContaining({ status_message: 'failed' })));
-    expect(screen.getByText('Preview task failed with a useful reason')).toBeTruthy();
+    // antd message 是异步挂载的：CI 上比本地慢一拍，这里必须用 findByText 等它出现。
+    expect(await screen.findByText('Preview task failed with a useful reason')).toBeTruthy();
   });
 });
 
