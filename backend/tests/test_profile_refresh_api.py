@@ -725,7 +725,7 @@ async def test_apply_returns_conflict_when_apply_plan_reports_busy(harness, monk
     async with harness.client() as client:
         task = await _preview(harness, client, mode="full")
 
-        async def _busy_apply(*, db, project_id, plan):
+        async def _busy_apply(*, db, project_id, plan, selection=None):
             return {"applied": 0, "fields_written": 0, "stale": [], "busy": True}
 
         monkeypatch.setattr(character_profile_sync_service, "apply_plan", _busy_apply)
@@ -845,3 +845,153 @@ async def test_apply_reports_facts_merged(harness):
     async with harness.session_factory() as db:
         character = await db.get(Character, entry["id"])
         assert len(json.loads(character.profile_facts)) == 3
+
+
+# --- ⑭ selection：按字段应用（API 接线） ------------------------------------
+
+
+async def _selection_preview(harness, client) -> tuple[dict, str]:
+    """两个档案字段都有旧值的计划：返回 (task, entity_id)。"""
+    await _seed(
+        harness.session_factory,
+        chapters=[(1, "角色甲登场。占位正文甲。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位旧性格",
+                "background": "占位旧背景",
+                "ai_profile_snapshot": json.dumps(
+                    {"personality": "占位旧性格", "background": "占位旧背景"},
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+    )
+    harness.ai.response = _fields_payload(
+        "角色甲", personality="占位新性格", background="占位新背景"
+    )
+    task = await _preview(harness, client, mode="full")
+    entity_id = task["task_result"]["plan"]["entities"][0]["id"]
+    return task, entity_id
+
+
+async def test_apply_with_selection_writes_only_selected_fields(harness):
+    async with harness.client() as client:
+        task, entity_id = await _selection_preview(harness, client)
+
+        first = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={
+                "preview_task_id": task["id"],
+                "selection": [{"entity_id": entity_id, "fields": ["personality"]}],
+            },
+        )
+        assert first.status_code == 200, first.text
+        assert first.json() == {
+            "applied": 1,
+            "fields_written": 1,
+            "facts_merged": 0,
+            "stale": [],
+        }
+
+        # 同一计划再应用另一个字段：第一次部分应用改了快照/更新时间，第二次仍须成功
+        second = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={
+                "preview_task_id": task["id"],
+                "selection": [{"entity_id": entity_id, "fields": ["background"]}],
+            },
+        )
+        assert second.status_code == 200, second.text
+        assert second.json() == {
+            "applied": 1,
+            "fields_written": 1,
+            "facts_merged": 0,
+            "stale": [],
+        }
+
+        detail = await client.get(f"/tasks/{task['id']}")
+        assert detail.json()["task_result"]["apply_summary"] == second.json()
+
+        # 不传 selection：回到整单口径（实体级 fingerprint），此处已被部分应用改过
+        whole = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={"preview_task_id": task["id"]},
+        )
+        assert whole.status_code == 200, whole.text
+        assert whole.json() == {
+            "applied": 0,
+            "fields_written": 0,
+            "facts_merged": 0,
+            "stale": [{"id": entity_id, "name": "角色甲"}],
+        }, "旧行为保持：不传 selection 时用实体级 fingerprint 判 stale"
+
+    async with harness.session_factory() as db:
+        character = await db.get(Character, entity_id)
+        assert character.personality == "占位新性格"
+        assert character.background == "占位新背景"
+        assert json.loads(character.ai_profile_snapshot) == {
+            "personality": "占位新性格",
+            "background": "占位新背景",
+        }
+
+
+async def test_apply_empty_selection_writes_nothing(harness):
+    async with harness.client() as client:
+        task, entity_id = await _selection_preview(harness, client)
+
+        resp = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={"preview_task_id": task["id"], "selection": []},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "applied": 0,
+            "fields_written": 0,
+            "facts_merged": 0,
+            "stale": [],
+        }, "空列表 = 什么都不写"
+
+        detail = await client.get(f"/tasks/{task['id']}")
+        assert detail.json()["task_result"]["apply_summary"] == resp.json()
+
+    async with harness.session_factory() as db:
+        character = await db.get(Character, entity_id)
+        assert character.personality == "占位旧性格"
+        assert character.background == "占位旧背景"
+        assert json.loads(character.ai_profile_snapshot) == {
+            "personality": "占位旧性格",
+            "background": "占位旧背景",
+        }
+
+
+async def test_apply_selection_ignores_unknown_entity_and_field(harness):
+    async with harness.client() as client:
+        task, entity_id = await _selection_preview(harness, client)
+
+        resp = await client.post(
+            f"/projects/{PROJECT_ID}/characters/refresh-apply",
+            json={
+                "preview_task_id": task["id"],
+                "selection": [
+                    {"entity_id": "missing-entity", "fields": ["personality"]},
+                    {"entity_id": entity_id, "fields": ["unknown_field"]},
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "applied": 0,
+            "fields_written": 0,
+            "facts_merged": 0,
+            "stale": [],
+        }, "未知实体/字段一律忽略，不进 stale、不写库"
+
+    async with harness.session_factory() as db:
+        character = await db.get(Character, entity_id)
+        assert character.personality == "占位旧性格"
+        assert character.background == "占位旧背景"
+        assert json.loads(character.ai_profile_snapshot) == {
+            "personality": "占位旧性格",
+            "background": "占位旧背景",
+        }

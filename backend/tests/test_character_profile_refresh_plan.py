@@ -1460,3 +1460,283 @@ async def test_estimate_calls_min_matches_actual_calls(db_session, monkeypatch):
     )
 
     assert len(ai.calls) == estimate["calls_min"]
+
+
+# --- ⑭ 字段级 selection：只应用选中的 entity+field --------------------------
+
+
+async def _selection_fixture(db) -> tuple[Character, dict, ProfileDiffCollector]:
+    """两个档案字段都有旧值/旧快照的最小计划夹具。"""
+    await _seed(
+        db,
+        chapters=[(1, "角色甲登场。占位正文甲。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位旧性格",
+                "background": "占位旧背景",
+                "ai_profile_snapshot": json.dumps(
+                    {"personality": "占位旧性格", "background": "占位旧背景"},
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+    )
+    plan, collector, _stats = await _preview(
+        db,
+        FakeAIService(
+            _fields_payload("角色甲", personality="占位新性格", background="占位新背景")
+        ),
+    )
+    # preview 结尾 rollback 会 expire ORM 对象，回读后再取 id / 字段
+    character = await _character(db, "角色甲")
+    return character, plan, collector
+
+
+async def test_partial_apply_writes_only_selected_field_and_snapshot(db_session):
+    """只应用 personality：未选字段的值、快照、facts 都不动。"""
+    q_background = "占位正文丙。占位正文丁"
+    await _seed(
+        db_session,
+        chapters=[(1, f"角色甲登场。{QUOTE}。{q_background}。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位旧性格",
+                "background": "占位旧背景",
+                "ai_profile_snapshot": json.dumps(
+                    {"personality": "占位旧性格", "background": "占位旧背景"},
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+    )
+    payload = _facts_only_payload(
+        "角色甲",
+        [
+            _fact("personality", "占位新性格", QUOTE, 1),
+            _fact("background", "占位出身背景", q_background, 1),
+        ],
+    )
+    plan, collector, _stats = await _preview(db_session, FakeAIService(payload))
+    character = await _character(db_session, "角色甲")
+    entry = collector.entities[character.id]
+    assert {row["field"] for row in entry["fields"]} == {"personality", "background"}
+    assert len(entry["facts_delta"]) == 2
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["personality"]}],
+    )
+    assert result == {"applied": 1, "fields_written": 1, "facts_merged": 1, "stale": []}
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位新性格"
+    assert character.background == "占位旧背景", "未选字段的值不得改"
+    assert json.loads(character.ai_profile_snapshot) == {
+        "personality": "占位新性格",
+        "background": "占位旧背景",
+    }, "未选字段的快照不得改"
+    assert [fact["claim"] for fact in json.loads(character.profile_facts)] == ["占位新性格"], (
+        "未选字段的事实不得合并"
+    )
+    assert character.profile_facts_updated_at is not None
+
+
+async def test_two_partial_applies_on_same_plan_both_succeed(db_session):
+    """先 personality、再 background：第二次不得被实体 fingerprint 误判 stale。"""
+    character, plan, _collector = await _selection_fixture(db_session)
+
+    first = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["personality"]}],
+    )
+    assert first == {"applied": 1, "fields_written": 1, "facts_merged": 0, "stale": []}
+
+    second = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["background"]}],
+    )
+    assert second == {"applied": 1, "fields_written": 1, "facts_merged": 0, "stale": []}, (
+        "第一次部分应用改了快照/更新时间，第二次不得因此 stale"
+    )
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位新性格"
+    assert character.background == "占位新背景"
+    assert json.loads(character.ai_profile_snapshot) == {
+        "personality": "占位新性格",
+        "background": "占位新背景",
+    }
+
+
+async def test_partial_apply_marks_changed_field_stale_and_skips_unselected_facts(db_session):
+    """选中字段被外部改过 → 该字段 stale，其余选中字段照写；未选字段的事实不合并。"""
+    q_background = "占位正文丙。占位正文丁"
+    q_appearance = "占位正文戊。占位正文己"
+    await _seed(
+        db_session,
+        chapters=[(1, f"角色甲登场。{QUOTE}。{q_background}。{q_appearance}。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位旧性格",
+                "background": "占位旧背景",
+                "ai_profile_snapshot": json.dumps(
+                    {"personality": "占位旧性格", "background": "占位旧背景"},
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+    )
+    payload = _facts_only_payload(
+        "角色甲",
+        [
+            _fact("personality", "占位新性格", QUOTE, 1),
+            _fact("background", "占位出身背景", q_background, 1),
+            _fact("appearance", "身材修长", q_appearance, 1),
+        ],
+    )
+    plan, collector, _stats = await _preview(db_session, FakeAIService(payload))
+    character = await _character(db_session, "角色甲")
+    assert len(collector.entities[character.id]["facts_delta"]) == 3
+
+    # 外部手改：计划里的 personality 旧值失配
+    character.personality = "占位外部修改"
+    await db_session.commit()
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[
+            {"entity_id": character.id, "fields": ["personality", "background"]}
+        ],
+    )
+    assert result["stale"] == [
+        {"id": character.id, "name": "角色甲", "fields": ["personality"]}
+    ], "失配字段进 stale，带 fields 列表"
+    assert result["applied"] == 1
+    assert result["fields_written"] == 1, "只有 background 被写"
+    assert result["facts_merged"] == 2, "选中字段的事实合并，未选字段（appearance）不合并"
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位外部修改", "stale 字段保持外部值"
+    assert character.background == "占位出身背景"
+    snapshot = json.loads(character.ai_profile_snapshot)
+    assert snapshot["personality"] == "占位旧性格", "stale 字段的快照不动"
+    assert snapshot["background"] == "占位出身背景"
+    assert "appearance" not in snapshot
+    claims = {fact["claim"] for fact in json.loads(character.profile_facts)}
+    assert "占位出身背景" in claims
+    assert "身材修长" not in claims, "未选字段的事实不得合并"
+
+
+async def test_apply_without_selection_still_uses_entity_fingerprint(db_session):
+    """不传 selection 的旧行为保持：部分应用改了快照 → 整单 apply 判 stale。"""
+    character, plan, _collector = await _selection_fixture(db_session)
+
+    await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["personality"]}],
+    )
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session, project_id=PROJECT_ID, plan=plan
+    )
+    assert result == {
+        "applied": 0,
+        "fields_written": 0,
+        "facts_merged": 0,
+        "stale": [{"id": character.id, "name": "角色甲"}],
+    }, "不传 selection 仍是实体级 fingerprint 校验"
+
+
+async def test_empty_selection_writes_nothing(db_session):
+    character, plan, _collector = await _selection_fixture(db_session)
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session, project_id=PROJECT_ID, plan=plan, selection=[]
+    )
+    assert result == {"applied": 0, "fields_written": 0, "facts_merged": 0, "stale": []}
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位旧性格"
+    assert character.background == "占位旧背景"
+    assert json.loads(character.ai_profile_snapshot) == {
+        "personality": "占位旧性格",
+        "background": "占位旧背景",
+    }
+    assert character.profile_facts is None
+
+
+async def test_selection_same_row_counts_as_processed_without_writing(db_session):
+    """same 行：只刷新快照，计入 `applied`、不计 `fields_written`。"""
+    await _seed(
+        db_session,
+        chapters=[(1, "角色甲登场。占位正文甲。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位同值",
+                "ai_profile_snapshot": json.dumps({"personality": "占位同值"}, ensure_ascii=False),
+            }
+        ],
+    )
+    plan, collector, _stats = await _preview(
+        db_session, FakeAIService(_fields_payload("角色甲", personality="占位同值"))
+    )
+    character = await _character(db_session, "角色甲")
+    assert _row(collector.entities[character.id], "personality")["action"] == "same"
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["personality"]}],
+    )
+    assert result == {"applied": 1, "fields_written": 0, "facts_merged": 0, "stale": []}
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位同值"
+    assert json.loads(character.ai_profile_snapshot) == {"personality": "占位同值"}
+
+
+async def test_selection_skips_preserved_row_without_stale(db_session):
+    """preserved 行：选中也不写、不进 stale（不是失配，是本来就保留用户值）。"""
+    await _seed(
+        db_session,
+        chapters=[(1, "角色甲登场。占位正文甲。")],
+        characters=[
+            {
+                "name": "角色甲",
+                "personality": "占位手改",
+                "ai_profile_snapshot": json.dumps({"personality": "占位旧AI值"}, ensure_ascii=False),
+            }
+        ],
+    )
+    plan, collector, _stats = await _preview(
+        db_session, FakeAIService(_fields_payload("角色甲", personality="占位新性格"))
+    )
+    character = await _character(db_session, "角色甲")
+    assert _row(collector.entities[character.id], "personality")["action"] == "preserved"
+
+    result = await character_profile_sync_service.apply_plan(
+        db=db_session,
+        project_id=PROJECT_ID,
+        plan=plan,
+        selection=[{"entity_id": character.id, "fields": ["personality"]}],
+    )
+    assert result == {"applied": 0, "fields_written": 0, "facts_merged": 0, "stale": []}
+
+    character = await _character(db_session, "角色甲")
+    assert character.personality == "占位手改"
+    assert json.loads(character.ai_profile_snapshot) == {"personality": "占位旧AI值"}

@@ -1,9 +1,24 @@
-import { useEffect, useState } from 'react';
-import { Alert, Button, Collapse, Drawer, Modal, Space, Tag, Typography } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Button, Checkbox, Collapse, Drawer, Modal, Space, Tag, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
-import type { RefreshApplyResult, RefreshEntity, RefreshPlan } from '../services/profileRefreshService';
+import type {
+  RefreshApplyResult,
+  RefreshApplySelection,
+  RefreshEntity,
+  RefreshField,
+  RefreshPlan,
+} from '../services/profileRefreshService';
 import { summarizeFieldChange } from '../utils/profileFieldDiff';
 import type { FieldChangeSummary } from '../utils/profileFieldDiff';
+
+/** 只有 add/change 行会被写入，其余（preserved/same/rejected）不可勾选。 */
+function isSelectableField(field: RefreshField): boolean {
+  return field.action === 'add' || field.action === 'change';
+}
+
+function selectionKey(entityId: string, field: string): string {
+  return `${entityId}:${field}`;
+}
 
 /**
  * 折叠态的变化摘要：
@@ -70,7 +85,8 @@ interface RefreshDiffModalProps {
   applying: boolean;
   result: RefreshApplyResult | null;
   onCancel: () => void;
-  onApply: () => void;
+  /** 只应用用户勾选的字段；selection 非空且仅含 add/change 字段。 */
+  onApply: (selection: RefreshApplySelection[]) => void;
 }
 
 const ACTION_COLORS = {
@@ -96,15 +112,55 @@ export default function RefreshDiffModal({ open, plan, applying, result, onCance
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
 
+  // 可应用字段的勾选状态，key = `${entityId}:${field}`；默认全选 add/change。
+  const defaultSelected = useMemo(() => {
+    const keys = new Set<string>();
+    for (const entity of plan.entities) {
+      for (const field of entity.fields) {
+        if (isSelectableField(field)) keys.add(selectionKey(entity.id, field.field));
+      }
+    }
+    return keys;
+  }, [plan]);
+
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(defaultSelected));
+
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // open/plan 变化时重置展开态与勾选态（默认重新全选）。
   useEffect(() => {
-    if (open) setExpanded({});
-  }, [open, plan]);
+    if (!open) return;
+    setExpanded({});
+    setSelected(new Set(defaultSelected));
+  }, [open, defaultSelected]);
+
+  const toggleField = (key: string) => {
+    setSelected(current => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const applySelection = () => {
+    if (selected.size === 0) return;
+    const selection: RefreshApplySelection[] = [];
+    for (const entity of plan.entities) {
+      const fields: string[] = [];
+      for (const field of entity.fields) {
+        if (!isSelectableField(field)) continue;
+        if (!selected.has(selectionKey(entity.id, field.field))) continue;
+        if (!fields.includes(field.field)) fields.push(field.field);
+      }
+      if (fields.length > 0) selection.push({ entity_id: entity.id, fields });
+    }
+    onApply(selection);
+  };
 
   // 后端可能跳过部分批次（如上游超时/内容审核）；旧计划没有 `skipped` 字段。
   const skippedBatches = plan.skipped ?? [];
@@ -154,118 +210,159 @@ export default function RefreshDiffModal({ open, plan, applying, result, onCance
           </Space>
           {plan.entities.length === 0 ? (
             <Typography.Text type="secondary">{t('emptyDiff')}</Typography.Text>
-          ) : plan.entities.map((entity: RefreshEntity) => (
-            <section key={entity.id} style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', overflow: 'hidden', border: '1px solid var(--color-border-secondary)', borderRadius: 8, padding: 12 }}>
-              <Typography.Text strong>{entity.name}</Typography.Text>
-              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {entity.fields.map((field, index) => {
-                  const key = `${entity.id}:${index}`;
-                  const isChange = field.action === 'change';
-                  const isRejected = field.action === 'rejected';
-                  const changeSummary = isChange ? summarizeFieldChange(field.old, field.new) : null;
-                  const value = field.action === 'preserved'
-                    ? field.old || t('emptyValue')
-                    : field.action === 'same'
+          ) : plan.entities.map((entity: RefreshEntity) => {
+            const entityKeys = Array.from(new Set(
+              entity.fields.filter(isSelectableField).map(field => selectionKey(entity.id, field.field)),
+            ));
+            const entitySelectedCount = entityKeys.filter(key => selected.has(key)).length;
+            const entityAllSelected = entityKeys.length > 0 && entitySelectedCount === entityKeys.length;
+            const entityIndeterminate = entitySelectedCount > 0 && !entityAllSelected;
+            const toggleEntity = () => {
+              setSelected(current => {
+                const next = new Set(current);
+                if (entityAllSelected) entityKeys.forEach(key => next.delete(key));
+                else entityKeys.forEach(key => next.add(key));
+                return next;
+              });
+            };
+            return (
+              <section key={entity.id} style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', overflow: 'hidden', border: '1px solid var(--color-border-secondary)', borderRadius: 8, padding: 12 }}>
+                <Space size={8} align="center">
+                  {entityKeys.length > 0 && (
+                    <Checkbox
+                      checked={entityAllSelected}
+                      indeterminate={entityIndeterminate}
+                      onChange={toggleEntity}
+                      aria-label={t('selectEntity', { name: entity.name })}
+                    />
+                  )}
+                  <Typography.Text strong>{entity.name}</Typography.Text>
+                </Space>
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {entity.fields.map((field, index) => {
+                    const key = `${entity.id}:${index}`;
+                    const isChange = field.action === 'change';
+                    const isRejected = field.action === 'rejected';
+                    const isSelectable = isSelectableField(field);
+                    const fieldKey = selectionKey(entity.id, field.field);
+                    const fieldLabel = t(`fields.${field.field}`, { defaultValue: field.field });
+                    const changeSummary = isChange ? summarizeFieldChange(field.old, field.new) : null;
+                    const value = field.action === 'preserved'
                       ? field.old || t('emptyValue')
-                      : [field.old || t('emptyValue'), field.new || t('emptyValue')].join(' → ');
-                  const isExpanded = expanded[key] ?? false;
-                  const toggle = () => setExpanded(current => ({ ...current, [key]: !isExpanded }));
-                  return (
-                    <div key={key} style={{ minWidth: 0 }}>
-                      <Space size={6} wrap>
-                        <Typography.Text type="secondary">{t(`fields.${field.field}`, { defaultValue: field.field })}</Typography.Text>
-                        <Tag color={ACTION_COLORS[field.action]}>{t(`actions.${field.action}`)}</Tag>
-                      </Space>
-                      <div
-                        onClick={toggle}
-                        style={{
-                          width: '100%',
-                          maxWidth: '100%',
-                          boxSizing: 'border-box',
-                          margin: '4px 0 0',
-                          cursor: 'pointer',
-                          overflowWrap: 'anywhere',
-                          whiteSpace: isExpanded ? 'normal' : 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          display: 'block',
-                        }}
-                        title={t('expandValue')}
-                      >
-                        {isChange && isExpanded ? (
-                          <OldNewBlocks
-                            oldLabel={t('oldValue')}
-                            newLabel={t('newValue')}
-                            oldText={field.old}
-                            newText={field.new}
-                            isMobile={isMobile}
-                          />
-                        ) : isChange && changeSummary ? (
-                          <ChangeSummaryLine summary={changeSummary} />
-                        ) : isRejected && isExpanded ? (
-                          <OldNewBlocks
-                            oldLabel={t('currentValue')}
-                            newLabel={t('discardedSuggestion')}
-                            oldText={field.old}
-                            newText={field.new}
-                            isMobile={isMobile}
-                          />
-                        ) : isRejected ? (
-                          <Typography.Text type="secondary">
-                            {t('discardedSuggestion')}：{field.new || t('emptyValue')}
+                      : field.action === 'same'
+                        ? field.old || t('emptyValue')
+                        : [field.old || t('emptyValue'), field.new || t('emptyValue')].join(' → ');
+                    const isExpanded = expanded[key] ?? false;
+                    const toggle = () => setExpanded(current => ({ ...current, [key]: !isExpanded }));
+                    return (
+                      <div key={key} style={{ minWidth: 0 }}>
+                        <Space size={6} wrap>
+                          {isSelectable && (
+                            // 勾选只切换选中态，不触发行展开/收起。
+                            <span onClick={event => event.stopPropagation()}>
+                              <Checkbox
+                                checked={selected.has(fieldKey)}
+                                onChange={() => toggleField(fieldKey)}
+                                aria-label={t('selectField', { field: fieldLabel })}
+                              />
+                            </span>
+                          )}
+                          <Typography.Text type="secondary">{fieldLabel}</Typography.Text>
+                          <Tag color={ACTION_COLORS[field.action]}>{t(`actions.${field.action}`)}</Tag>
+                        </Space>
+                        <div
+                          onClick={toggle}
+                          style={{
+                            width: '100%',
+                            maxWidth: '100%',
+                            boxSizing: 'border-box',
+                            margin: '4px 0 0',
+                            cursor: 'pointer',
+                            overflowWrap: 'anywhere',
+                            whiteSpace: isExpanded ? 'normal' : 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            display: 'block',
+                          }}
+                          title={t('expandValue')}
+                        >
+                          {isChange && isExpanded ? (
+                            <OldNewBlocks
+                              oldLabel={t('oldValue')}
+                              newLabel={t('newValue')}
+                              oldText={field.old}
+                              newText={field.new}
+                              isMobile={isMobile}
+                            />
+                          ) : isChange && changeSummary ? (
+                            <ChangeSummaryLine summary={changeSummary} />
+                          ) : isRejected && isExpanded ? (
+                            <OldNewBlocks
+                              oldLabel={t('currentValue')}
+                              newLabel={t('discardedSuggestion')}
+                              oldText={field.old}
+                              newText={field.new}
+                              isMobile={isMobile}
+                            />
+                          ) : isRejected ? (
+                            <Typography.Text type="secondary">
+                              {t('discardedSuggestion')}：{field.new || t('emptyValue')}
+                            </Typography.Text>
+                          ) : (
+                            value
+                          )}
+                        </div>
+                        {field.action === 'preserved' && field.new && (
+                          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, overflowWrap: 'anywhere' }}>
+                            {t('aiSuggestion', { suggestion: field.new })}
                           </Typography.Text>
-                        ) : (
-                          value
                         )}
                       </div>
-                      {field.action === 'preserved' && field.new && (
-                        <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, overflowWrap: 'anywhere' }}>
-                          {t('aiSuggestion', { suggestion: field.new })}
-                        </Typography.Text>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {REJECTION_KEYS.some(key => (entity.stats[key] || 0) > 0) && (
-                <Collapse
-                  ghost
-                  size="small"
-                  style={{ marginTop: 8 }}
-                  items={[{
-                    key: 'reasons',
-                    label: t('rejectionReasons'),
-                    children: (
-                      <Space wrap>
-                        {REJECTION_KEYS.filter(key => (entity.stats[key] || 0) > 0).map(key => (
-                          <Tag color="red" key={key}>{t(`reasons.${key}`)} {entity.stats[key]}</Tag>
-                        ))}
-                      </Space>
-                    ),
-                  }]}
-                />
-              )}
-            </section>
-          ))}
+                    );
+                  })}
+                </div>
+                {REJECTION_KEYS.some(key => (entity.stats[key] || 0) > 0) && (
+                  <Collapse
+                    ghost
+                    size="small"
+                    style={{ marginTop: 8 }}
+                    items={[{
+                      key: 'reasons',
+                      label: t('rejectionReasons'),
+                      children: (
+                        <Space wrap>
+                          {REJECTION_KEYS.filter(key => (entity.stats[key] || 0) > 0).map(key => (
+                            <Tag color="red" key={key}>{t(`reasons.${key}`)} {entity.stats[key]}</Tag>
+                          ))}
+                        </Space>
+                      ),
+                    }]}
+                  />
+                )}
+              </section>
+            );
+          })}
         </>
       )}
     </div>
   );
+
+  const applyButtonLabel = t('applySelected', { count: selected.size });
 
   const footer = result ? (
     <Button type="primary" onClick={onCancel}>{t('close')}</Button>
   ) : isMobile ? (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Button block onClick={onCancel}>{t('cancel')}</Button>
-      <Button block type="primary" loading={applying} onClick={onApply} disabled={plan.entities.length === 0}>
-        {t('applyChanges')}
+      <Button block type="primary" loading={applying} onClick={applySelection} disabled={selected.size === 0}>
+        {applyButtonLabel}
       </Button>
     </Space>
   ) : (
     <Space>
       <Button onClick={onCancel}>{t('cancel')}</Button>
-      <Button type="primary" loading={applying} onClick={onApply} disabled={plan.entities.length === 0}>
-        {t('applyChanges')}
+      <Button type="primary" loading={applying} onClick={applySelection} disabled={selected.size === 0}>
+        {applyButtonLabel}
       </Button>
     </Space>
   );

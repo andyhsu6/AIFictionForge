@@ -878,11 +878,25 @@ class CharacterProfileSyncService:
         }
 
     async def apply_plan(
-        self, *, db: AsyncSession, project_id: str, plan: Dict[str, Any]
+        self,
+        *,
+        db: AsyncSession,
+        project_id: str,
+        plan: Dict[str, Any],
+        selection: Optional[Iterable[Any]] = None,
     ) -> Dict[str, Any]:
         """回放预览计划：不调模型、不改水位、不碰组织成员。
 
-        逐实体校验 fingerprint，plan 生成后被改动过的实体整体跳过并计入 `stale`。
+        两种回放口径：
+
+        - `selection is None`（旧行为）：逐实体校验 fingerprint，plan 生成后被改动过的
+          实体整体跳过并计入 `stale`，全部字段与 facts 照旧回放；
+        - 传了 `selection`（含空列表）：只回放选中的 entity+field。**不校验实体
+          fingerprint**（第一次部分应用会改快照/更新时间，第二次部分应用不能因此被误判
+          stale），改按「当前字段值 == 计划里的 old」逐字段校验：只处理 action ∈
+          {add, change, same} 的行；不相等的字段跳过并进 `stale`（元素带 `fields`）；
+          只更新选中字段的快照，facts 也只合并 `field` 在选中集合内的条目。
+
         与手动同步/预览互斥：项目已在跑时直接返回 `busy`，零写入。
         """
         if project_id in self._in_progress:
@@ -897,80 +911,245 @@ class CharacterProfileSyncService:
 
         self._in_progress.add(project_id)
         try:
-            applied = 0
-            fields_written = 0
-            facts_merged = 0
-            stale: List[Dict[str, Any]] = []
-
-            for entity in (plan or {}).get("entities") or []:
-                if not isinstance(entity, dict):
-                    continue
-                character = (
-                    await db.execute(
-                        select(Character).where(
-                            Character.id == entity.get("id"),
-                            Character.project_id == project_id,
-                        )
-                    )
-                ).scalars().first()
-                if character is None or profile_fingerprint(character) != entity.get("fingerprint"):
-                    stale.append(
-                        {
-                            "id": entity.get("id"),
-                            "name": entity.get("name") or getattr(character, "name", None),
-                        }
-                    )
-                    continue
-
-                rows = [row for row in (entity.get("fields") or []) if isinstance(row, dict)]
-                snapshot = _loads_json(character.ai_profile_snapshot, {})
-                if not isinstance(snapshot, dict):
-                    snapshot = {}
-
-                snapshot_touched = False
-                for row in rows:
-                    action = row.get("action")
-                    field = row.get("field")
-                    if field not in PROFILE_FIELDS or action == "rejected":
-                        continue
-                    new_value = row.get("new")
-                    if action in ("add", "change"):
-                        if isinstance(new_value, str) and new_value.strip():
-                            setattr(character, field, new_value.strip())
-                            fields_written += 1
-                        snapshot[field] = new_value
-                        snapshot_touched = True
-                    elif action == "same":
-                        # 等值写入，效果为幂等
-                        snapshot[field] = new_value
-                        snapshot_touched = True
-                    # preserved：字段与快照都不动，否则下轮会误判为 AI 值
-
-                if snapshot_touched:
-                    character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
-
-                # 与 _apply_entry 的真实写入保持一致：facts 非空就合并、就 bump 时间，
-                # 不看字段动作（rejected 只是不写文本，不阻断溯源）。
-                facts_delta = entity.get("facts_delta")
-                if isinstance(facts_delta, list) and facts_delta:
-                    character.profile_facts = merge_profile_facts(
-                        character.profile_facts, facts_delta
-                    )
-                    character.profile_facts_updated_at = datetime.utcnow()
-                    # 按传入条数计（merge_profile_facts 的去重/截断不再二次统计）
-                    facts_merged += len(facts_delta)
-
-                applied += 1
-
+            if selection is None:
+                result = await self._apply_plan_whole(
+                    db=db, project_id=project_id, plan=plan
+                )
+            else:
+                result = await self._apply_plan_selection(
+                    db=db, project_id=project_id, plan=plan, selection=selection
+                )
             await db.commit()
+            return result
+        finally:
+            self._in_progress.discard(project_id)
+
+    @staticmethod
+    async def _plan_character(
+        db: AsyncSession, project_id: str, entity_id: Any
+    ) -> Optional[Character]:
+        """取计划实体在当前项目内的档案行（不存在=已删除或跨项目）。"""
+        if not isinstance(entity_id, str) or not entity_id:
+            return None
+        return (
+            await db.execute(
+                select(Character).where(
+                    Character.id == entity_id,
+                    Character.project_id == project_id,
+                )
+            )
+        ).scalars().first()
+
+    async def _apply_plan_whole(
+        self, *, db: AsyncSession, project_id: str, plan: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """整单回放（旧行为）：实体级 fingerprint 校验，通过后回放全部字段与 facts。"""
+        applied = 0
+        fields_written = 0
+        facts_merged = 0
+        stale: List[Dict[str, Any]] = []
+
+        for entity in (plan or {}).get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            character = await self._plan_character(db, project_id, entity.get("id"))
+            if character is None or profile_fingerprint(character) != entity.get("fingerprint"):
+                stale.append(
+                    {
+                        "id": entity.get("id"),
+                        "name": entity.get("name") or getattr(character, "name", None),
+                    }
+                )
+                continue
+
+            rows = [row for row in (entity.get("fields") or []) if isinstance(row, dict)]
+            snapshot = _loads_json(character.ai_profile_snapshot, {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+
+            snapshot_touched = False
+            for row in rows:
+                action = row.get("action")
+                field = row.get("field")
+                if field not in PROFILE_FIELDS or action == "rejected":
+                    continue
+                new_value = row.get("new")
+                if action in ("add", "change"):
+                    if isinstance(new_value, str) and new_value.strip():
+                        setattr(character, field, new_value.strip())
+                        fields_written += 1
+                    snapshot[field] = new_value
+                    snapshot_touched = True
+                elif action == "same":
+                    # 等值写入，效果为幂等
+                    snapshot[field] = new_value
+                    snapshot_touched = True
+                # preserved：字段与快照都不动，否则下轮会误判为 AI 值
+
+            if snapshot_touched:
+                character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+
+            # 与 _apply_entry 的真实写入保持一致：facts 非空就合并、就 bump 时间，
+            # 不看字段动作（rejected 只是不写文本，不阻断溯源）。
+            facts_delta = entity.get("facts_delta")
+            if isinstance(facts_delta, list) and facts_delta:
+                character.profile_facts = merge_profile_facts(
+                    character.profile_facts, facts_delta
+                )
+                character.profile_facts_updated_at = datetime.utcnow()
+                # 按传入条数计（merge_profile_facts 的去重/截断不再二次统计）
+                facts_merged += len(facts_delta)
+
+            applied += 1
+
+        return {
+            "applied": applied,
+            "fields_written": fields_written,
+            "facts_merged": facts_merged,
+            "stale": stale,
+        }
+
+    @staticmethod
+    def _normalize_selection(selection: Iterable[Any]) -> Dict[str, set[str]]:
+        """把 selection 收成 `{entity_id: {field}}`。
+
+        未知字段（不在 `PROFILE_FIELDS`）直接丢弃；未知实体由回放时的计划遍历自然忽略。
+        兼容 dict 与带 `entity_id`/`fields` 属性的对象（API 层直接传 pydantic 模型也成立）。
+        """
+        selected: Dict[str, set[str]] = {}
+        for item in selection or []:
+            if isinstance(item, dict):
+                entity_id = item.get("entity_id")
+                fields = item.get("fields")
+            else:
+                entity_id = getattr(item, "entity_id", None)
+                fields = getattr(item, "fields", None)
+            if not isinstance(entity_id, str) or not entity_id.strip():
+                continue
+            if not isinstance(fields, (list, tuple, set)):
+                continue
+            bucket = selected.setdefault(entity_id.strip(), set())
+            for field in fields:
+                if isinstance(field, str) and field in PROFILE_FIELDS:
+                    bucket.add(field)
+        return selected
+
+    async def _apply_plan_selection(
+        self,
+        *,
+        db: AsyncSession,
+        project_id: str,
+        plan: Dict[str, Any],
+        selection: Iterable[Any],
+    ) -> Dict[str, Any]:
+        """字段级回放：只处理选中的 entity+field，逐字段校验旧值后写入。"""
+        selected = self._normalize_selection(selection)
+        applied = 0
+        fields_written = 0
+        facts_merged = 0
+        stale: List[Dict[str, Any]] = []
+
+        if not selected:
             return {
                 "applied": applied,
                 "fields_written": fields_written,
                 "facts_merged": facts_merged,
                 "stale": stale,
             }
-        finally:
-            self._in_progress.discard(project_id)
+
+        for entity in (plan or {}).get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            entity_id = entity.get("id")
+            wanted = selected.get(entity_id) if isinstance(entity_id, str) else None
+            if not wanted:
+                # 未选中的实体整条跳过：字段、快照、facts 都不动
+                continue
+
+            character = await self._plan_character(db, project_id, entity_id)
+            if character is None:
+                stale.append(
+                    {
+                        "id": entity_id,
+                        "name": entity.get("name") or getattr(character, "name", None),
+                    }
+                )
+                continue
+
+            snapshot = _loads_json(character.ai_profile_snapshot, {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+
+            snapshot_touched = False
+            processed = False
+            stale_fields: List[str] = []
+            for row in entity.get("fields") or []:
+                if not isinstance(row, dict):
+                    continue
+                field = row.get("field")
+                if field not in wanted:
+                    # 未知字段/未选中字段：忽略，既不改值也不进 stale
+                    continue
+                action = row.get("action")
+                if action not in ("add", "change", "same"):
+                    # preserved/rejected：选中也不写（与整单口径一致）
+                    continue
+                current = getattr(character, field, None)
+                if action in ("add", "change"):
+                    # 逐字段旧值校验：计划生成后该字段被改过 → 跳过该字段（实体其余字段照写）
+                    if (current or "") != (row.get("old") or ""):
+                        stale_fields.append(field)
+                        continue
+                    new_value = row.get("new")
+                    if isinstance(new_value, str) and new_value.strip():
+                        setattr(character, field, new_value.strip())
+                        fields_written += 1
+                    snapshot[field] = new_value
+                    snapshot_touched = True
+                    processed = True
+                else:  # same：当前值等于 new 时只刷新快照（幂等）
+                    if (current or "") != (row.get("new") or ""):
+                        stale_fields.append(field)
+                        continue
+                    snapshot[field] = row.get("new")
+                    snapshot_touched = True
+                    processed = True
+
+            if snapshot_touched:
+                character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+
+            # facts 只并入选中字段的条目；未选字段的溯源与快照都不动。
+            facts_delta = entity.get("facts_delta")
+            if isinstance(facts_delta, list) and facts_delta:
+                picked = [
+                    fact
+                    for fact in facts_delta
+                    if isinstance(fact, dict) and fact.get("field") in wanted
+                ]
+                if picked:
+                    character.profile_facts = merge_profile_facts(
+                        character.profile_facts, picked
+                    )
+                    character.profile_facts_updated_at = datetime.utcnow()
+                    facts_merged += len(picked)
+
+            if stale_fields:
+                stale.append(
+                    {
+                        "id": entity_id,
+                        "name": entity.get("name") or getattr(character, "name", None),
+                        "fields": list(dict.fromkeys(stale_fields)),
+                    }
+                )
+            if processed:
+                applied += 1
+
+        return {
+            "applied": applied,
+            "fields_written": fields_written,
+            "facts_merged": facts_merged,
+            "stale": stale,
+        }
 
     async def _sync_chunk(
         self,

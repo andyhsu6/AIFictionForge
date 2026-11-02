@@ -5,7 +5,13 @@ import { getTaskStatus } from '../services/backgroundTaskService';
 import type { TaskStatus } from '../services/backgroundTaskService';
 import { mapTaskStatusMessage } from '../services/errorMapper';
 import { profileRefreshApi } from '../services/profileRefreshService';
-import type { RefreshApplyResult, RefreshEstimate, RefreshMode, RefreshPlan } from '../services/profileRefreshService';
+import type {
+  RefreshApplyResult,
+  RefreshApplySelection,
+  RefreshEstimate,
+  RefreshMode,
+  RefreshPlan,
+} from '../services/profileRefreshService';
 import { eventBus, EventNames } from '../store/eventBus';
 import { useCharacterSync } from '../store/hooks';
 import RefreshDiffModal from './RefreshDiffModal';
@@ -122,11 +128,11 @@ export default function RefreshEstimateModal({ open, projectId, onClose }: Refre
     }
   };
 
-  const applyPlan = async () => {
+  const applyPlan = async (selection: RefreshApplySelection[]) => {
     if (!plan || !previewTaskId) return;
     setApplying(true);
     try {
-      const result = await profileRefreshApi.apply(projectId, previewTaskId);
+      const result = await profileRefreshApi.apply(projectId, previewTaskId, selection);
       setApplyResult(result);
       await refreshCharacters();
     } catch {

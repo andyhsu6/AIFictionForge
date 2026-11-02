@@ -65,6 +65,15 @@ export interface RefreshApplyResult {
   facts_merged: number;
 }
 
+/**
+ * 逐字段应用范围：只写入选中实体的选中字段。
+ * 省略该参数时后端沿用旧行为（应用整份计划）。
+ */
+export interface RefreshApplySelection {
+  entity_id: string;
+  fields: string[];
+}
+
 export interface RefreshTaskResponse {
   id?: string;
   task_id?: string;
@@ -81,8 +90,10 @@ export const profileRefreshApi = {
       mode,
       from_chapter: fromChapter,
     }),
-  apply: (projectId: string, previewTaskId: string) =>
+  apply: (projectId: string, previewTaskId: string, selection?: RefreshApplySelection[]) =>
     api.post<unknown, RefreshApplyResult>(`/projects/${projectId}/characters/refresh-apply`, {
       preview_task_id: previewTaskId,
+      // 无 selection 时保持旧请求体形状（后端按整份计划应用）。
+      ...(selection ? { selection } : {}),
     }),
 };

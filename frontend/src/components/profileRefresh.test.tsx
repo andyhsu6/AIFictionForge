@@ -55,6 +55,36 @@ const plan = {
   }],
 };
 
+const selectablePlan = {
+  plan_version: 1,
+  mode: 'full' as const,
+  from_chapter: 1,
+  through_chapter: 12,
+  created_at: '2026-10-30T00:00:00Z',
+  summary: { add: 1, change: 2, preserved: 1, rejected: 0, same: 1, entities: 2, no_mention: 0, skipped_batches: 0 },
+  entities: [
+    {
+      id: 'e1', name: 'Entity One', kind: 'character', fingerprint: 'fp1',
+      fields: [
+        { field: 'background', old: 'Old background', new: 'New background', action: 'change' as const },
+        { field: 'personality', old: 'Old personality', new: 'New personality', action: 'change' as const },
+        { field: 'appearance', old: 'Edited appearance', new: 'Suggested appearance', action: 'preserved' as const },
+      ],
+      facts_delta: null,
+      stats: {},
+    },
+    {
+      id: 'e2', name: 'Entity Two', kind: 'organization', fingerprint: 'fp2',
+      fields: [
+        { field: 'location', old: null, new: 'New location', action: 'add' as const },
+        { field: 'motto', old: 'Same motto', new: 'Same motto', action: 'same' as const },
+      ],
+      facts_delta: null,
+      stats: {},
+    },
+  ],
+};
+
 beforeEach(async () => {
   vi.clearAllMocks();
   await i18n.changeLanguage('zh');
@@ -243,5 +273,136 @@ describe('profile refresh modals', () => {
     fireEvent.click(await screen.findByText('生成差异预览'));
     await waitFor(() => expect(mapTaskStatusMessage).toHaveBeenCalledWith(expect.objectContaining({ status_message: 'failed' })));
     expect(screen.getByText('Preview task failed with a useful reason')).toBeTruthy();
+  });
+});
+
+describe('profile refresh field selection', () => {
+  it('defaults to every add/change field and only offers checkboxes for those rows', () => {
+    const onApply = vi.fn();
+    render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={onApply} />
+      </AntdApp>,
+    );
+
+    expect(screen.getByLabelText('选择 Entity One 的全部字段')).toBeTruthy();
+    expect(screen.getByLabelText('选择 背景')).toBeTruthy();
+    expect(screen.getByLabelText('选择 性格')).toBeTruthy();
+    expect(screen.getByLabelText('选择 所在地')).toBeTruthy();
+    // preserved / same 行不可应用，也不出现勾选框。
+    expect(screen.queryByLabelText('选择 外貌')).toBeNull();
+    expect(screen.queryByLabelText('选择 口号')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '应用选中的 3 项' }));
+    expect(onApply).toHaveBeenCalledWith([
+      { entity_id: 'e1', fields: ['background', 'personality'] },
+      { entity_id: 'e2', fields: ['location'] },
+    ]);
+  });
+
+  it('only applies the remaining fields after unchecking one field row', () => {
+    const onApply = vi.fn();
+    render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={onApply} />
+      </AntdApp>,
+    );
+
+    fireEvent.click(screen.getByLabelText('选择 性格'));
+    fireEvent.click(screen.getByRole('button', { name: '应用选中的 2 项' }));
+    expect(onApply).toHaveBeenCalledWith([
+      { entity_id: 'e1', fields: ['background'] },
+      { entity_id: 'e2', fields: ['location'] },
+    ]);
+  });
+
+  it('keeps the row collapsed when clicking its checkbox', () => {
+    render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} />
+      </AntdApp>,
+    );
+
+    fireEvent.click(screen.getByLabelText('选择 背景'));
+    expect(screen.queryByText('旧值')).toBeNull();
+    expect(screen.queryByText('新值')).toBeNull();
+  });
+
+  it('uses a three-state entity checkbox to select and clear a whole entity', () => {
+    render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} />
+      </AntdApp>,
+    );
+
+    const entityCheckbox = screen.getByLabelText('选择 Entity One 的全部字段');
+    fireEvent.click(screen.getByLabelText('选择 性格'));
+    expect(entityCheckbox.closest('.ant-checkbox')?.className).toContain('ant-checkbox-indeterminate');
+
+    fireEvent.click(entityCheckbox);
+    expect(screen.getByRole('button', { name: '应用选中的 3 项' })).toBeTruthy();
+
+    fireEvent.click(entityCheckbox);
+    expect(screen.getByRole('button', { name: '应用选中的 1 项' })).toBeTruthy();
+  });
+
+  it('disables apply and never calls onApply when every field is unchecked', () => {
+    const onApply = vi.fn();
+    render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={onApply} />
+      </AntdApp>,
+    );
+
+    fireEvent.click(screen.getByLabelText('选择 Entity One 的全部字段'));
+    fireEvent.click(screen.getByLabelText('选择 Entity Two 的全部字段'));
+
+    const applyButton = screen.getByRole('button', { name: '应用选中的 0 项' }) as HTMLButtonElement;
+    expect(applyButton.disabled).toBe(true);
+    fireEvent.click(applyButton);
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it('resets to select-all when a new plan arrives', () => {
+    const view = render(
+      <AntdApp>
+        <RefreshDiffModal open plan={selectablePlan} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} />
+      </AntdApp>,
+    );
+
+    fireEvent.click(screen.getByLabelText('选择 性格'));
+    expect(screen.getByRole('button', { name: '应用选中的 2 项' })).toBeTruthy();
+
+    view.rerender(
+      <AntdApp>
+        <RefreshDiffModal open plan={{ ...selectablePlan }} applying={false} result={null} onCancel={vi.fn()} onApply={vi.fn()} />
+      </AntdApp>,
+    );
+    expect(screen.getByRole('button', { name: '应用选中的 3 项' })).toBeTruthy();
+  });
+
+  it('passes the selected fields from the estimate modal to the apply API', async () => {
+    vi.mocked(profileRefreshApi.estimate).mockResolvedValue({
+      mode: 'incremental', through_chapter: 12, entities_total: 3, candidates: 2,
+      no_mention: 1, chunks: 1, calls_min: 1, calls_max: 3,
+    });
+    vi.mocked(profileRefreshApi.preview).mockResolvedValue({ id: 'task-4', task_type: 'profile_preview' });
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      id: 'task-4', task_type: 'profile_preview', project_id: 'project-1', status: 'completed',
+      task_result: { plan }, progress: 100,
+    } as never);
+    vi.mocked(profileRefreshApi.apply).mockResolvedValue({ applied: 1, fields_written: 1, stale: [], facts_merged: 0 });
+
+    render(<AntdApp><RefreshEstimateModal open projectId="project-1" onClose={vi.fn()} /></AntdApp>);
+    await waitFor(() => expect(screen.getByText('候选实体')).toBeTruthy());
+    fireEvent.click(await screen.findByText('生成差异预览'));
+    expect(await screen.findByText('档案差异预览')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '应用选中的 1 项' }));
+    await waitFor(() => expect(profileRefreshApi.apply).toHaveBeenCalledWith(
+      'project-1',
+      'task-4',
+      [{ entity_id: 'e1', fields: ['background'] }],
+    ));
   });
 });

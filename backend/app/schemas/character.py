@@ -168,7 +168,23 @@ class CharacterProfileRefreshPreviewRequest(BaseModel):
     from_chapter: int = Field(1, ge=1, description="起始章节号")
 
 
+class CharacterProfileRefreshSelectionItem(BaseModel):
+    """apply 的字段级选择：只回放该实体的这些档案字段。"""
+    entity_id: str = Field(..., description="实体ID（角色/组织）")
+    fields: List[str] = Field(
+        default_factory=list,
+        description="要应用的档案字段（personality/background/appearance/current_state）",
+    )
+
+
 class CharacterProfileRefreshApplyRequest(BaseModel):
     """档案重算 apply 请求：回放某个预览任务产出的差异计划。"""
     preview_task_id: str = Field(..., description="预览任务ID")
+    selection: Optional[List[CharacterProfileRefreshSelectionItem]] = Field(
+        None,
+        description=(
+            "可选的字段级选择：只应用列出的 entity+field（含空列表=什么都不写）。"
+            "不传/null 时保持整单回放（实体级 fingerprint 校验）"
+        ),
+    )
 

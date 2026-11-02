@@ -2686,6 +2686,7 @@ export default interface Resources {
     "aiSuggestion": "AI 建议：{{suggestion}}（未写入）",
     "applyChanges": "应用这些改动",
     "applyResult": "已应用 {{applied}} 个实体 / 跳过 {{skipped}} 个：预览后已变更",
+    "applySelected": "应用选中的 {{count}} 项",
     "cancel": "取消",
     "close": "完成",
     "createPreview": "生成差异预览",
@@ -2747,6 +2748,8 @@ export default interface Resources {
     "rejectionReasons": "丢弃原因",
     "rewritten": "整段重写（旧 {{old}} 字 → 新 {{new}} 字）",
     "scopeNotice": "本次不含世界设定与组织成员关系",
+    "selectEntity": "选择 {{name}} 的全部字段",
+    "selectField": "选择 {{field}}",
     "skipReasons": {
       "ai.content_filtered": "内容审核拦截",
       "ai.output_truncated": "输出被截断",

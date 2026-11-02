@@ -908,7 +908,11 @@ async def apply_character_profile_refresh(
     payload: CharacterProfileRefreshApplyRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """回放预览计划：不调模型、不推进水位；计划过期或章节变化时整单拒绝。"""
+    """回放预览计划：不调模型、不推进水位；计划过期或章节变化时整单拒绝。
+
+    可选 `selection`（`[{entity_id, fields}]`）：只应用选中的实体字段，逐字段校验旧值；
+    不传时保持整单回放与实体级 fingerprint 校验。
+    """
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(project_id, user_id, db)
 
@@ -950,7 +954,14 @@ async def apply_character_profile_refresh(
         raise ApiError(code="conflict.profile_refresh_running")
 
     result = await character_profile_sync_service.apply_plan(
-        db=db, project_id=project_id, plan=plan
+        db=db,
+        project_id=project_id,
+        plan=plan,
+        selection=(
+            [item.model_dump() for item in payload.selection]
+            if payload.selection is not None
+            else None
+        ),
     )
 
     if result.get("busy"):
