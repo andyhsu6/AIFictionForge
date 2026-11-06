@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     agent_history_budget_max_chars: int = 400_000
     # 中文≈1 字符/token 的保守近似；定义源仍是 CHARS_PER_TOKEN，此处仅为运维可调。
     agent_chars_per_token: float = 1.0
+
+    # --- 跨会话用户原话注入（v0，见 docs/handoffs/agent-cross-session-memory-plan.md §2）
+    # 把本项目**其它会话**里用户说过的原话按时间顺序注入系统提示词，不做蒸馏、不落库。
+    # max=6000：实测最大项目 5495 字符，约合典型预算的 14.5%；再大旧约定会稀释注意力，
+    # 收益转负 —— 到那时应走计划 §4 的压缩路径，而不是继续加大上限。
+    # 关闭开关时 prompt 必须与注入功能上线前逐字节一致（含 Skill 命中回合）。
+    agent_user_history_enabled: bool = True
+    agent_user_history_max_chars: int = 6000
     
     # LinuxDO OAuth2 配置
     LINUXDO_CLIENT_ID: Optional[str] = None
