@@ -53,6 +53,61 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
 ID = {"type": "string", "minLength": 1, "pattern": r".*\S.*"}
 DATA = {"type": "object", "additionalProperties": True}
 
+# 伏笔「写库字段」（issue #223）：create/update 真正落进 Foreshadow 模型的 21 个字段。
+# 与 ProjectAgentExtendedTools.FORESHADOW_FIELDS / STRICT_DATA_FIELDS 同源。
+_FORESHADOW_WRITE_FIELD_SCHEMAS: dict[str, Any] = {
+    "title": {"type": "string", "description": "伏笔标题"},
+    "content": {"type": "string", "description": "伏笔详细内容"},
+    "hint_text": {"type": "string", "description": "埋入时的暗示文本"},
+    "resolution_text": {"type": "string", "description": "回收时的揭示文本"},
+    "plant_chapter_number": {"type": "integer", "minimum": 1, "description": "计划埋入章节号（create/update）"},
+    "target_resolve_chapter_number": {"type": "integer", "minimum": 1, "description": "计划回收章节号（create/update）"},
+    "status": {
+        "type": "string",
+        "enum": ["pending", "planted", "resolved", "partially_resolved", "abandoned"],
+        "description": "伏笔状态",
+    },
+    "is_long_term": {"type": "boolean", "description": "是否长线伏笔"},
+    "importance": {"type": "number", "minimum": 0, "maximum": 1, "description": "重要性 0-1"},
+    "strength": {"type": "integer", "minimum": 1, "maximum": 10, "description": "伏笔强度 1-10"},
+    "subtlety": {"type": "integer", "minimum": 1, "maximum": 10, "description": "隐藏度 1-10"},
+    "urgency": {"type": "integer", "minimum": 0, "maximum": 2, "description": "紧急度 0-2"},
+    "related_characters": {"type": "array", "items": {"type": "string"}, "description": "关联角色名列表"},
+    "related_foreshadow_ids": {"type": "array", "items": {"type": "string"}, "description": "关联伏笔ID列表"},
+    "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"},
+    "category": {"type": "string", "description": "分类"},
+    "notes": {"type": "string", "description": "创作备注"},
+    "resolution_notes": {"type": "string", "description": "回收方式说明"},
+    "auto_remind": {"type": "boolean", "description": "章节生成时是否自动提醒"},
+    "remind_before_chapters": {"type": "integer", "minimum": 0, "description": "提前几章提醒回收"},
+    "include_in_context": {"type": "boolean", "description": "是否包含在生成上下文中"},
+}
+
+# plant/resolve/abandon 的「上下文键」：运行期由 handler 从 data 直接读取，不写进
+# Foreshadow 模型，因此**不得**并入 FORESHADOW_FIELDS（否则 create/update 会把它们
+# 当写库字段塞进模型构造）。但必须出现在 schema 的 properties 里：plant/resolve
+# 的章节定位用的是 chapter_id / chapter_number，若模型只看到 plant_chapter_number
+# 且描述说“章节号只能用 plant_chapter_number”，就会写出提案期通过、执行期必失败的
+# 步骤（PR review 实测复现）。is_partial 用于 resolve，reason 用于 abandon/delete。
+_FORESHADOW_CONTEXT_FIELD_SCHEMAS: dict[str, Any] = {
+    "chapter_id": {"type": "string", "description": "plant/resolve 定位的实际章节 ID"},
+    "chapter_number": {"type": "integer", "minimum": 1, "description": "plant/resolve 定位的实际章节号"},
+    "is_partial": {"type": "boolean", "description": "resolve 是否只部分回收"},
+    "reason": {"type": "string", "description": "abandon/delete 的退役原因"},
+}
+
+# additionalProperties 保持 true：plant/resolve/abandon/delete 运行期只读已知键，
+# 提案期必须继续 fail-open（见 test_plan_step_argument_contract.py 的 (g5)）；
+# create/update 的严格性由 STRICT_DATA_FIELDS 在提案期同判，不靠 JSON Schema。
+FORESHADOW_DATA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_FORESHADOW_WRITE_FIELD_SCHEMAS,
+        **_FORESHADOW_CONTEXT_FIELD_SCHEMAS,
+    },
+    "additionalProperties": True,
+}
+
 # 关系工具 data 字段显式 Schema，避免 LLM 猜错字段名
 RELATIONSHIP_DATA = {
     "type": "object",
@@ -169,8 +224,12 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
             "确需从台账彻底移除时才用 action=\"delete\"（行被删除，原因只保留在结果消息里）；"
             "两个动作都必须给出目标自身的 foreshadow_id（支持唯一前缀），"
             "并在 data.reason 写明退役原因。"
+            "data 的合法字段见本工具 schema 的 properties："
+            "create/update 用 plant_chapter_number / target_resolve_chapter_number 指定计划章节；"
+            "plant/resolve 用 chapter_id 或 chapter_number 指定实际发生的章节；"
+            "abandon/delete 的退役原因写入 data.reason。"
         ),
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "plant", "resolve", "abandon"]}, "foreshadow_id": ID, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "plant", "resolve", "abandon"]}, "foreshadow_id": ID, "data": FORESHADOW_DATA}, ["action"]),
         "risk_level": 2,
         "resources": ("foreshadows",),
     },
@@ -229,13 +288,9 @@ class ProjectAgentExtendedTools:
     }
     ORGANIZATION_FIELDS = {"parent_org_id", "level", "power_level", "location", "motto", "color"}
     MEMBER_FIELDS = {"position", "rank", "status", "joined_at", "left_at", "loyalty", "contribution", "notes"}
-    FORESHADOW_FIELDS = {
-        "title", "content", "hint_text", "resolution_text", "plant_chapter_number",
-        "target_resolve_chapter_number", "status", "is_long_term", "importance",
-        "strength", "subtlety", "urgency", "related_characters",
-        "related_foreshadow_ids", "tags", "category", "notes", "resolution_notes",
-        "auto_remind", "remind_before_chapters", "include_in_context",
-    }
+    # 只取「写库字段」——plant/resolve 的上下文键（chapter_id/chapter_number/
+    # is_partial/reason）不在此列，它们由 handler 单独读取（issue #223 review）。
+    FORESHADOW_FIELDS = set(_FORESHADOW_WRITE_FIELD_SCHEMAS)
     CAREER_FIELDS = {
         "name", "type", "description", "category", "stages", "max_stage",
         "requirements", "special_abilities", "worldview_rules", "attribute_bonuses",
@@ -1197,14 +1252,20 @@ class ProjectAgentExtendedTools:
     # --- 伏笔管理 ---
 
     async def _manage_foreshadow_preview_create(self, arguments: dict[str, Any]):
-        fields = self._fields(self._data(arguments), self.FORESHADOW_FIELDS)
+        fields = self._fields(
+            normalize_data_aliases("manage_foreshadow", self._data(arguments)),
+            self.FORESHADOW_FIELDS,
+        )
         self._validate_foreshadow_fields(fields)
         if not str(fields.get("title") or "").strip() or not str(fields.get("content") or "").strip():
             raise ValueError("创建伏笔需要 title 和 content")
         return {}, fields, f"创建伏笔《{fields['title']}》"
 
     async def _manage_foreshadow_create(self, arguments: dict[str, Any]):
-        fields = self._fields(self._data(arguments), self.FORESHADOW_FIELDS)
+        fields = self._fields(
+            normalize_data_aliases("manage_foreshadow", self._data(arguments)),
+            self.FORESHADOW_FIELDS,
+        )
         self._validate_foreshadow_fields(fields)
         row = Foreshadow(project_id=self.project.id, source_type="manual", **fields)
         self.db.add(row)
@@ -1213,13 +1274,21 @@ class ProjectAgentExtendedTools:
 
     async def _manage_foreshadow_preview_update(self, arguments: dict[str, Any]):
         row = await self._find_foreshadow(arguments)
-        fields = self._fields(self._data(arguments), self.FORESHADOW_FIELDS)
+        fields = self._fields(
+            normalize_data_aliases("manage_foreshadow", self._data(arguments)),
+            self.FORESHADOW_FIELDS,
+        )
         self._validate_foreshadow_fields(fields)
         return _snapshot(row, set(fields)), fields, f"更新伏笔《{row.title}》"
 
     async def _manage_foreshadow_update(self, arguments: dict[str, Any]):
         row = await self._find_foreshadow(arguments)
-        fields = self._fields(self._data(arguments), self.FORESHADOW_FIELDS)
+        # 别名归一必须在 _fields 之前（issue #223）：提案期已归一的别名若运行期不归
+        # 一，计划批准后会在 _fields 的未知字段守卫上失败。
+        fields = self._fields(
+            normalize_data_aliases("manage_foreshadow", self._data(arguments)),
+            self.FORESHADOW_FIELDS,
+        )
         self._validate_foreshadow_fields(fields)
         for key, value in fields.items(): setattr(row, key, value)
         return row.id, _snapshot(row, set(fields)), f"已更新伏笔《{row.title}》"
@@ -1540,6 +1609,14 @@ STRICT_DATA_FIELDS: dict[str, dict[str, frozenset[str]]] = {
 # 按工具登记，避免误伤 manage_career 的 type（main/sub 是合法字段）。
 DATA_KEY_ALIASES: dict[str, dict[str, str]] = {
     "manage_character": {"type": "organization_type", "purpose": "organization_purpose"},
+    # 伏笔章节号的语义别名（issue #223）：模型按语义写 plant_chapter / target_chapter，
+    # 规范字段是 plant_chapter_number / target_resolve_chapter_number。
+    # 不登记 resolve_chapter：它既可能指计划回收章节也可能指实际回收章节，
+    # 归一到任一字段都会让另一语义悄悄写错。
+    "manage_foreshadow": {
+        "plant_chapter": "plant_chapter_number",
+        "target_chapter": "target_resolve_chapter_number",
+    },
 }
 
 

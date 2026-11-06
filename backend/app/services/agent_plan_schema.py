@@ -545,6 +545,13 @@ def validate_plan(
     schemas = tool_schemas if isinstance(tool_schemas, dict) else {}
 
     raw_steps = arguments.get("steps")
+    if isinstance(raw_steps, str):
+        # issue #223：模型把数组写成了 JSON 字符串。只回「必须是非空数组」时重试轮
+        # 拿不到可操作信息，实测模型会原样复制上一轮的畸形序列化（6091→6092 字符）。
+        raise PlanValidationError(
+            "steps 必须是 JSON 数组本身，不能是数组的字符串形式："
+            '请直接给 [{"id":"s1","tool":"...","arguments":{...}}]，不要再序列化一次'
+        )
     if not isinstance(raw_steps, list) or not raw_steps:
         raise PlanValidationError("steps 必须是非空数组")
     if len(raw_steps) > MAX_PLAN_STEPS:
