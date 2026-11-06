@@ -527,6 +527,14 @@ class ProjectAgentService:
                 approval_prompt=approval_prompt,
                 skill_content=skill_content,
             )
+            # issue #222：上面两个 step 只 flush 未提交，紧随其后的 MCP 工具加载
+            # （缓存未命中时走网络）与窗口补测（模型窗口无结论时同步补测）都是
+            # 网络 IO，带着写事务等它们同样会把全库写锁攥住。只在命中 skill 的
+            # 分支内提交：非 skill 路径此刻没有待写事务，无条件提交会白跑一次
+            # 提交（并打乱 test_project_agent_inline_task.py 的提交计数断言）。
+            # 刻意代价：若随后的预算门禁抛错，这两条 step（均为 completed）会作为
+            # 失败回合的轨迹留在库里而非被 rollback —— 有意为之，不加补偿逻辑。
+            await self.db.commit()
 
         try:
             prepare_mcp = getattr(self.ai_service, "_prepare_mcp_tools", None)
@@ -654,6 +662,11 @@ class ProjectAgentService:
                 and not self.ai_service.is_thinking_model_active()
                 else "auto"
             )
+            # SQLite 单写者：本轮的 thought / 预算留痕 step 由 _create_step/_update_step
+            # 只 flush 不 commit，若跨 LLM 调用（实测 30~190s）持有写事务，本进程内所有
+            # 并发写都会在 busy_timeout(30s) 后抛 "database is locked"（issue #222）。
+            # 长 IO 前必须先落盘释放写锁。
+            await self.db.commit()
             response = await self._call_round(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
@@ -997,6 +1010,10 @@ class ProjectAgentService:
                             yield {"type": "step_update", "data": self._step_data(tool_step)}
                             continue
 
+                    # 同 issue #222：本节之前的 assistant(tool_calls) 消息、本轮工具
+                    # 记录与步骤只 flush 未提交，MCP 执行是外部网络 IO（可能十几秒，
+                    # 无上限），带着写事务等它同样会把全库写锁攥住。
+                    await self.db.commit()
                     try:
                         mcp_result = await execute_mcp_tool_call(
                             self.user_id, name, arguments, record.id
