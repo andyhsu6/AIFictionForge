@@ -407,9 +407,11 @@ async def test_read_only_tool_does_not_commit_inside_the_tool_loop(db_session):
 
     回合末本来就有一次提交（持久化 assistant 的 tool_calls 与 role=tool 响应），
     把循环内的提交收窄到"要通知前端刷新之前"才不把一次 WAL 提交摊给每个只读调用。
-    断言取每次模型调用前的累计提交次数：
-    1 = stream_chat 开头提交 user 消息；2 = 工具轮末尾提交本回合消息。
-    提交挪回无条件执行（未收窄形态）⇒ 第二个数字变 3，本用例红。
+    断言取每次模型调用前的累计提交次数（issue #222 后每轮多一次"长 IO 前释放
+    写锁"的提交，故水位整体上移）：
+    1 = stream_chat 开头提交 user 消息；2 = 第一轮进入 LLM 调用前释放写锁；
+    3 = 工具轮末尾提交本回合消息；4 = 第二轮进入 LLM 调用前释放写锁 ⇒ [2, 4]。
+    只读工具若被无条件单独提交，第二次模型调用前会变 5（[2, 5]），本用例红。
     """
     await seed_project_and_chapter(db_session)
     conversation = await make_conversation(db_session)
@@ -436,7 +438,7 @@ async def test_read_only_tool_does_not_commit_inside_the_tool_loop(db_session):
     ]
 
     assert [e for e in events if e["type"] == "tool_executed"] == []
-    assert commits_before_model_call == [1, 2]
+    assert commits_before_model_call == [2, 4]
 
 
 @pytest.mark.anyio
@@ -510,9 +512,9 @@ async def test_tool_executed_is_emitted_only_after_the_agent_rows_are_committed(
 
     assert events, "没有任何事件"
     assert [e for e in events if e["type"] == "tool_executed"], "免确认任务未下发 tool_executed"
-    # 1 = stream_chat 开头写入 user 消息后那次提交（见 stream_chat 里 add(user_message)
-    # 之后的 commit）；工具循环本身在调用工具前不得再提交任何行。
-    assert commits_at_execute == [1]
+    # 2 = stream_chat 开头写入 user 消息后那次提交 + 进入 LLM 调用前释放写锁的
+    # 提交（issue #222）；工具循环本身在调用工具前不得再提交任何行（否则变 3）。
+    assert commits_at_execute == [2]
     assert commits_at_event and commits_at_event[0] > commits_at_execute[0]
 
 
