@@ -67,6 +67,7 @@
       "requirements": "Writing style requirements:\n1. Build oppressive tension\n2. Short sentences, faster rhythm\n3. Set up suspense and foreshadowing\n4. Detail-oriented, planting clues"
     }
   },
+  "profileHint": "Writing-style features extracted automatically from this book on import. Editable; once edited, it is no longer overwritten automatically.",
   "tag": {
     "default": "Default"
   },
@@ -84,6 +85,8 @@
   },
   "type": {
     "custom": "Custom",
-    "preset": "Preset"
+    "preset": "Preset",
+    "profile": "Writing-style profile",
+    "profileEdited": "Writing-style profile (edited)"
   }
 }

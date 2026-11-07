@@ -39,6 +39,7 @@ from app.schemas.import_export import (
     ImportResult
 )
 from app.logger import get_logger
+from app.services.style_profile import is_profile_preset_id
 
 logger = get_logger(__name__)
 
@@ -435,6 +436,8 @@ class ImportExportService:
         )
         styles = result.scalars().all()
         
+        # 画像属于项目而非用户级风格（issue #254）：不进任何项目导出包，
+        # 避免 A 项目的画像随导出包串入其他项目
         return [
             WritingStyleExportData(
                 name=style.name,
@@ -445,6 +448,7 @@ class ImportExportService:
                 order_index=style.order_index or 0
             )
             for style in styles
+            if not is_profile_preset_id(style.preset_id)
         ]
     
     @staticmethod
@@ -647,6 +651,10 @@ class ImportExportService:
         
         if row:
             _, style = row
+            # 项目默认风格是画像时不导出（issue #254）：导出包不含画像行，
+            # 导入端按 name 回关联会找不到风格；画像本身也不应随包迁移
+            if is_profile_preset_id(style.preset_id):
+                return None
             return ProjectDefaultStyleExportData(style_name=style.name)
         
         return None
@@ -1171,6 +1179,10 @@ class ImportExportService:
         
         count = 0
         for style_data in styles_data:
+            # 旧导出包/异常包可能含画像行（issue #254）：P0 不在导入端重建画像，
+            # 避免 A 项目的画像串入 B 项目
+            if is_profile_preset_id(style_data.get("preset_id")):
+                continue
             # 检查是否已存在同名风格（避免重复导入）
             existing = await db.execute(
                 select(WritingStyle).where(

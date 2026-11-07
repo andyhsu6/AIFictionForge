@@ -17,6 +17,11 @@ from ..schemas.writing_style import (
     SetDefaultStyleRequest
 )
 from ..logger import get_logger
+from ..services.style_profile import (
+    PROFILE_EDITED_STYLE_TYPE,
+    is_profile_preset_id,
+    profile_preset_id,
+)
 
 router = APIRouter(prefix="/writing-styles", tags=["writing-styles"])
 logger = get_logger(__name__)
@@ -177,8 +182,12 @@ async def get_user_styles(
     )
     custom_styles = list(result.scalars().all())
     
-    # 合并：预设风格 + 自定义风格
-    all_styles = preset_styles + custom_styles
+    # 合并：预设风格 + 自定义风格；画像属于项目（issue #254），
+    # 用户级风格库不返回任何画像行，避免泄漏到其他项目
+    all_styles = [
+        style for style in preset_styles + custom_styles
+        if not is_profile_preset_id(style.preset_id)
+    ]
     
     # 转换为响应格式
     styles_with_default = []
@@ -250,8 +259,14 @@ async def get_project_styles(
     )
     custom_styles = list(result.scalars().all())
     
-    # 合并：预设风格 + 自定义风格
-    all_styles = preset_styles + custom_styles
+    # 合并：预设风格 + 自定义风格；画像只在所属项目上下文可见（issue #254），
+    # 过滤掉其他项目的画像行，仅保留 preset_id == profile_preset_id(project_id) 的那条
+    project_profile_id = profile_preset_id(project_id)
+    all_styles = [
+        style for style in preset_styles + custom_styles
+        if not is_profile_preset_id(style.preset_id)
+        or style.preset_id == project_profile_id
+    ]
     
     # 为每个风格添加 is_default 标记（用于前端显示）
     styles_with_default = []
@@ -349,9 +364,14 @@ async def update_writing_style(
     # 更新字段
     update_data = style_data.model_dump(exclude_unset=True)
     
-    # 如果修改了内容，将 style_type 改为 custom
+    # 如果修改了内容，将 style_type 改为 custom；画像行改为 profile_edited（issue #254），
+    # 以便自动重抽时区分机器画像与用户改过的画像
     if any(key in update_data for key in ["name", "description", "prompt_content"]):
-        update_data["style_type"] = "custom"
+        update_data["style_type"] = (
+            PROFILE_EDITED_STYLE_TYPE
+            if is_profile_preset_id(style.preset_id)
+            else "custom"
+        )
     
     for key, value in update_data.items():
         setattr(style, key, value)

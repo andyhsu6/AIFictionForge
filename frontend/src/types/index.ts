@@ -734,7 +734,7 @@ export interface WritingStyle {
   id: number;
   user_id: string | null;  // NULL 表示全局预设风格
   name: string;
-  style_type: 'preset' | 'custom';
+  style_type: 'preset' | 'custom' | 'profile' | 'profile_edited';
   preset_id?: string;
   description?: string;
   prompt_content: string;
@@ -746,7 +746,7 @@ export interface WritingStyle {
 
 export interface WritingStyleCreate {
   name: string;
-  style_type?: 'preset' | 'custom';
+  style_type?: 'preset' | 'custom' | 'profile' | 'profile_edited';
   preset_id?: string;
   description?: string;
   prompt_content: string;

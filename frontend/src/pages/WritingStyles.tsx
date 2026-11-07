@@ -163,11 +163,15 @@ export default function WritingStyles() {
   };
 
   const getStyleTypeColor = (styleType: string) => {
+    if (styleType === 'profile' || styleType === 'profile_edited') return 'cyan';
     return styleType === 'preset' ? 'blue' : 'purple';
   };
 
   const getStyleTypeLabel = (styleType: string) => {
-    return styleType === 'preset' ? t('type.preset') : t('type.custom');
+    if (styleType === 'preset') return t('type.preset');
+    if (styleType === 'profile') return t('type.profile');
+    if (styleType === 'profile_edited') return t('type.profileEdited');
+    return t('type.custom');
   };
 
   return (
@@ -215,6 +219,7 @@ export default function WritingStyles() {
                     prompt_content: tPreset(`preset.${rawStyle.preset_id}.requirements`, { defaultValue: rawStyle.prompt_content }),
                   }
                 : rawStyle;
+              const isProfileStyle = style.style_type === 'profile' || style.style_type === 'profile_edited';
               return (
               <Col
                 xs={gridConfig.xs}
@@ -320,6 +325,12 @@ export default function WritingStyles() {
                     >
                       {style.prompt_content}
                     </Paragraph>
+
+                    {isProfileStyle && (
+                      <Text type="secondary" style={{ fontSize: 12, marginTop: 8 }}>
+                        {t('profileHint')}
+                      </Text>
+                    )}
                   </div>
                 </Card>
               </Col>
