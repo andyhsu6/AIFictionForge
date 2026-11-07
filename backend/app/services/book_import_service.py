@@ -2609,6 +2609,10 @@ class BookImportService:
                 if ai_written:
                     snapshot.update(ai_written)
                     project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+                # 新建/覆盖导入：一条有效设定都没抽到属于失败，交给上层记失败步骤并重试；
+                # append/重试允许 0 条（已有设定无需补写）。
+                if updated == 0 and not merge_existing:
+                    raise ValueError("世界观抽取未产生任何有效字段（全部为原文未提及或空值）")
             else:
                 for field, value in values.items():
                     if value:
