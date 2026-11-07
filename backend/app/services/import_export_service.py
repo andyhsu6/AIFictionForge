@@ -43,11 +43,28 @@ from app.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+    """把导入 JSON 里的计数值安全转为非负整数。
+
+    接受 int、整数值浮点（3.0 -> 3）与整数值字符串；bool（JSON true/false）、
+    非整数浮点、负数与脏数据一律回退默认值，避免 `True -> 1`、`3.9 -> 3`
+    这类静默变质，也避免单个可选字段的问题中断整次导入（issue #244）。
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, float) and not value.is_integer():
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class ImportExportService:
     """导入导出服务类"""
     
-    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0"]  # 支持的版本列表
-    CURRENT_VERSION = "1.1.0"  # 当前导出版本
+    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0", "1.2.0"]  # 支持的版本列表
+    CURRENT_VERSION = "1.2.0"  # 当前导出版本（1.2.0 起携带世界设定同步凭证，issue #244）
     
     @staticmethod
     async def export_project(
@@ -95,6 +112,10 @@ class ImportExportService:
             "world_location": project.world_location,
             "world_atmosphere": project.world_atmosphere,
             "world_rules": project.world_rules,
+            # issue #244：世界设定同步凭证（issue #175 引入）必须随导出往返，
+            # 否则导入后 snapshot 为空、水位为 0，自动同步会把现有值当历史值永久保护。
+            "ai_world_profile_snapshot": project.ai_world_profile_snapshot,
+            "world_profile_synced_through_chapter": int(project.world_profile_synced_through_chapter or 0),
             "chapter_count": project.chapter_count,
             "narrative_perspective": project.narrative_perspective,
             "character_count": project.character_count,
@@ -730,6 +751,22 @@ class ImportExportService:
             
             # 创建项目
             project_data = data["project"]
+            # issue #244：恢复世界设定同步凭证；旧版导出无此键 → 保持 None/0 默认行为。
+            world_snapshot = project_data.get("ai_world_profile_snapshot")
+            if not isinstance(world_snapshot, str) or not world_snapshot.strip():
+                world_snapshot = None
+            else:
+                # 快照是 JSON 文本：不可解析的脏数据降级为 None（等价"无快照"），
+                # 否则同步侧 _loads_json 会把它静默当成空对象（issue #244）。
+                try:
+                    parsed_snapshot = json.loads(world_snapshot)
+                except (TypeError, ValueError):
+                    parsed_snapshot = None
+                # 快照契约是 JSON object（字段 -> AI 写入值）；标量 JSON 虽可解析，
+                # 但同步侧会按空对象处理，这里一并降级为 None 并告警。
+                if not isinstance(parsed_snapshot, dict):
+                    warnings.append("世界设定同步快照不是合法对象，已忽略")
+                    world_snapshot = None
             new_project = Project(
                 user_id=user_id,  # 设置为当前用户ID
                 title=project_data.get("title"),
@@ -742,6 +779,10 @@ class ImportExportService:
                 world_location=project_data.get("world_location"),
                 world_atmosphere=project_data.get("world_atmosphere"),
                 world_rules=project_data.get("world_rules"),
+                ai_world_profile_snapshot=world_snapshot,
+                world_profile_synced_through_chapter=_coerce_non_negative_int(
+                    project_data.get("world_profile_synced_through_chapter")
+                ),
                 chapter_count=project_data.get("chapter_count"),
                 narrative_perspective=project_data.get("narrative_perspective"),
                 character_count=project_data.get("character_count"),
