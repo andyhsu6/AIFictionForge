@@ -792,6 +792,24 @@ export interface StyleProfileReextractResult {
   degraded?: boolean;
 }
 
+// issue #254 P2：生成后文笔画像一致性自检（后端可选返回，缺省不影响生成流程）
+export interface StyleCheckAlert {
+  metric: string;
+  expected: number;
+  actual: number;
+  deviation: number;
+  level: 'warning';
+}
+
+export interface StyleCheckResult {
+  available: boolean;
+  metrics?: Record<string, number | Record<string, number>>;
+  alerts?: StyleCheckAlert[];
+  score?: number;
+  ok?: boolean;
+  compared_metrics?: number;
+}
+
 export interface PresetStyle {
   id: string;
   name: string;

@@ -84,6 +84,7 @@
     "confidence": "Confidence",
     "degraded": "Extraction fell back to local statistics; treat it as a rough reference.",
     "diffTitle": "Re-extract writing-style profile",
+    "generatedAt": "Generated at",
     "keptByUser": "Your manual edits were detected, so nothing was overwritten. Check “Overwrite my manual edits” to force it.",
     "metrics": {
       "avgSentence": "Avg. sentence length (chars)",

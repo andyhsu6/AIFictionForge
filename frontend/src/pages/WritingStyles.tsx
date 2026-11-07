@@ -70,6 +70,12 @@ const formatPercent = (value: unknown): string => {
   return num === null ? '-' : `${Math.round(num * 1000) / 10}%`;
 };
 
+const formatDateTime = (value?: string | null): string => {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+};
+
 export default function WritingStyles() {
   const { message } = App.useApp();
   const { t } = useTranslation('writingStyles');
@@ -534,6 +540,9 @@ export default function WritingStyles() {
                                 {formatPercent(profileConfidence)}
                               </Descriptions.Item>
                             )}
+                            <Descriptions.Item label={t('profile.generatedAt')}>
+                              {formatDateTime(style.updated_at)}
+                            </Descriptions.Item>
                           </Descriptions>
                         )}
 

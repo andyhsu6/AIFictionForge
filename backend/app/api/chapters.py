@@ -66,7 +66,11 @@ from app.services.prompt_service import prompt_service, PromptService, WritingSt
 from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
-from app.services.chapter_regenerator import ChapterRegenerator
+from app.services.chapter_regenerator import (
+    ChapterRegenerator,
+    STYLE_CHECK_UNAVAILABLE,
+    compute_style_check_safely,
+)
 from app.services.language_resolver import resolve_user_generation_language
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
@@ -118,6 +122,23 @@ def _append_full_book_context(prompt: str, full_book_context: Optional[str]) -> 
         + full_book_context
         + "\n</full_book_context>"
     )
+
+
+def _build_style_anchor_override(
+    *,
+    enabled: Optional[bool] = None,
+    chars: Optional[int] = None,
+    count: Optional[int] = None,
+) -> Optional[dict]:
+    """构造本次生成的锚点覆盖参数；全为 None 时返回 None（沿用项目设置）。"""
+    override: dict = {}
+    if enabled is not None:
+        override["enabled"] = enabled
+    if chars is not None:
+        override["chars"] = chars
+    if count is not None:
+        override["count"] = count
+    return override or None
 
 
 def _schedule_analysis_background(coroutine) -> asyncio.Task:
@@ -1623,6 +1644,11 @@ async def generate_chapter_content_stream(
                     project=project,
                     style_content=style_content,
                     before_chapter_number=current_chapter.chapter_number,
+                    override=_build_style_anchor_override(
+                        enabled=generate_request.style_anchor_enabled,
+                        chars=generate_request.style_anchor_chars,
+                        count=generate_request.style_anchor_count,
+                    ),
                 )
                 
                 # 🚀 根据大纲模式选择独立的上下文构建器
@@ -1980,13 +2006,19 @@ async def generate_chapter_content_stream(
                 
                 yield await tracker.saving("章节保存完成", 0.8)
                 
+                # issue #254 P2：生成后文笔一致性自检（只读，失败降级为 available=False）
+                style_check = await compute_style_check_safely(
+                    db_session, project, full_content
+                )
+                
                 # === 完成阶段 ===
                 yield await tracker.complete("创作完成！", code="progress.done")
                 
                 # 发送结果数据
                 yield await tracker.result({
                     'word_count': new_word_count,
-                    'analysis_task_id': task_id
+                    'analysis_task_id': task_id,
+                    'style_check': style_check,
                 })
                 
                 # 发送分析开始事件（使用自定义事件）
@@ -2095,6 +2127,9 @@ async def generate_chapter_content_background(
             "narrative_perspective": generate_request.narrative_perspective,
             "skill_key": generate_request.skill_key,
             "content_language": generate_request.content_language,
+            "style_anchor_enabled": generate_request.style_anchor_enabled,
+            "style_anchor_chars": generate_request.style_anchor_chars,
+            "style_anchor_count": generate_request.style_anchor_count,
         },
         db=db
     )
@@ -2126,6 +2161,9 @@ async def generate_chapter_content_background(
                         "narrative_perspective": generate_request.narrative_perspective,
                         "skill_key": generate_request.skill_key,
                         "content_language": generate_request.content_language,
+                        "style_anchor_enabled": generate_request.style_anchor_enabled,
+                        "style_anchor_chars": generate_request.style_anchor_chars,
+                        "style_anchor_count": generate_request.style_anchor_count,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2224,6 +2262,11 @@ async def _run_chapter_generation_bg(
         project=project,
         style_content=style_content,
         before_chapter_number=current_chapter.chapter_number,
+        override=_build_style_anchor_override(
+            enabled=task_input.get("style_anchor_enabled"),
+            chars=task_input.get("style_anchor_chars"),
+            count=task_input.get("style_anchor_count"),
+        ),
     )
 
     # === 构建上下文 ===
@@ -2639,6 +2682,9 @@ async def generate_chapter_content_background_legacy(
             "model": generate_request.model,
             "narrative_perspective": generate_request.narrative_perspective,
             "content_language": generate_request.content_language,
+            "style_anchor_enabled": generate_request.style_anchor_enabled,
+            "style_anchor_chars": generate_request.style_anchor_chars,
+            "style_anchor_count": generate_request.style_anchor_count,
         },
         db=db
     )
@@ -2669,6 +2715,9 @@ async def generate_chapter_content_background_legacy(
                         "model": generate_request.model,
                         "narrative_perspective": generate_request.narrative_perspective,
                         "content_language": generate_request.content_language,
+                        "style_anchor_enabled": generate_request.style_anchor_enabled,
+                        "style_anchor_chars": generate_request.style_anchor_chars,
+                        "style_anchor_count": generate_request.style_anchor_count,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2768,6 +2817,11 @@ async def _run_chapter_generation_bg(
         project=project,
         style_content=style_content,
         before_chapter_number=current_chapter.chapter_number,
+        override=_build_style_anchor_override(
+            enabled=task_input.get("style_anchor_enabled"),
+            chars=task_input.get("style_anchor_chars"),
+            count=task_input.get("style_anchor_count"),
+        ),
     )
 
     # === 构建上下文 ===
@@ -3056,10 +3110,14 @@ async def _run_chapter_generation_bg(
 
     logger.info(f"📋 后台生成：已创建分析任务: {analysis_task.id}")
 
+    # issue #254 P2：生成后文笔一致性自检（只读，失败降级为 available=False）
+    style_check = await compute_style_check_safely(db, project, full_content)
+
     await tracker.set_result({
         "chapter_id": chapter_id,
         "word_count": new_word_count,
         "analysis_task_id": analysis_task.id,
+        "style_check": style_check,
     })
     await tracker.analyzing(0, "章节创作完成，准备分析...")
 
@@ -3793,7 +3851,16 @@ async def batch_generate_chapters_in_order(
         total_chapters=len(chapters_to_generate),
         completed_chapters=0,
         failed_chapters=[],
-        current_retry_count=0
+        current_retry_count=0,
+        anchor_settings={
+            key: value
+            for key, value in {
+                "enabled": batch_request.style_anchor_enabled,
+                "chars": batch_request.style_anchor_chars,
+                "count": batch_request.style_anchor_count,
+            }.items()
+            if value is not None
+        } or None,
     )
     db.add(batch_task)
     await db.commit()
@@ -3870,6 +3937,7 @@ async def get_batch_generation_status(
         current_retry_count=task.current_retry_count,
         max_retries=task.max_retries,
         failed_chapters=task.failed_chapters or [],
+        style_check=task.style_check,
         created_at=task.created_at.isoformat() if task.created_at else None,
         started_at=task.started_at.isoformat() if task.started_at else None,
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
@@ -4086,7 +4154,7 @@ async def execute_batch_generation_in_order(
                     
                     # 生成章节内容（复用现有流式生成逻辑的核心部分），传递model参数
                     # 并获取生成后的摘要（如果生成函数支持返回）
-                    generated_summary = await generate_single_chapter_for_batch(
+                    chapter_generation = await generate_single_chapter_for_batch(
                         db_session=db_session,
                         chapter=chapter,
                         user_id=user_id,
@@ -4100,10 +4168,23 @@ async def execute_batch_generation_in_order(
                         batch_id=batch_id,
                         enable_mcp=enable_mcp,
                         temp_narrative_perspective=narrative_perspective,
-                        content_language=content_language
-                    )
+                        content_language=content_language,
+                        anchor_override=task.anchor_settings,
+                    ) or {}
 
+                    # issue #254 P2：批量生成后的文笔一致性自检结果
+                    generated_summary = chapter_generation.get("summary")
+                    batch_style_check = chapter_generation.get("style_check") or {}
+                    if batch_style_check.get("alerts"):
+                        logger.warning(
+                            f"🎨 批量生成 - 第{chapter.chapter_number}章文笔一致性告警 "
+                            f"{len(batch_style_check['alerts'])} 项"
+                        )
                     await db_session.refresh(task)
+                    if batch_style_check:
+                        # 必须在 refresh 之后赋值：refresh 会用 DB 值覆盖未提交的
+                        # in-memory 变更（issue #254 审核 BLOCKER）。
+                        task.style_check = batch_style_check
                     if task.status == 'cancelled':
                         logger.info(f"🛑 批量生成任务已被取消，跳过后续处理: {batch_id}")
                         return
@@ -4275,14 +4356,15 @@ async def generate_single_chapter_for_batch(
     batch_id: Optional[str] = None,
     enable_mcp: bool = True,
     temp_narrative_perspective: Optional[str] = None,
-    content_language: Optional[str] = None
-) -> Optional[str]:
+    content_language: Optional[str] = None,
+    anchor_override: Optional[dict] = None,
+) -> dict:
     """
     为批量生成执行单个章节的生成（非流式）
     复用现有生成逻辑的核心部分
     
     Returns:
-        生成章节的摘要（前200字）
+        {"summary": 生成章节的摘要（前200字）, "style_check": 文笔一致性自检结果}
     """
     # 获取项目信息
     project_result = await db_session.execute(
@@ -4321,12 +4403,13 @@ async def generate_single_chapter_for_batch(
             if style.user_id is None or style.user_id == user_id:
                 style_content = style.prompt_content or ""
 
-    # issue #254 P1：批量生成路径注入本书原文语感锚点
+    # issue #254 P1：批量生成路径注入本书原文语感锚点（批量任务无 per-gen 覆盖，沿用项目设置）
     style_content = await append_project_style_anchors(
         db_session,
         project=project,
         style_content=style_content,
         before_chapter_number=chapter.chapter_number,
+        override=anchor_override,
     )
     
     # 🚀 根据大纲模式选择独立的上下文构建器（批量生成）
@@ -4592,6 +4675,9 @@ async def generate_single_chapter_for_batch(
     
     # 生成简短摘要返回
     summary_preview = _build_lightweight_chapter_summary(full_content)
+
+    # issue #254 P2：生成后文笔一致性自检（只读，失败降级为 available=False）
+    style_check = await compute_style_check_safely(db_session, project, full_content)
     
     # 🔮 批量生成后自动标记计划在本章埋入的伏笔
     try:
@@ -4608,7 +4694,7 @@ async def generate_single_chapter_for_batch(
     except Exception as plant_error:
         logger.warning(f"⚠️ 批量生成 - 自动标记伏笔埋入失败: {str(plant_error)}")
         
-    return summary_preview
+    return {"summary": summary_preview, "style_check": style_check}
 
 
 
@@ -4858,6 +4944,9 @@ async def regenerate_chapter_stream(
                     estimated_total=estimated_total
                 )
                 
+                # issue #254 P2：重生成后的文笔一致性自检（由 regenerator 计算，失败为 available=False）
+                style_check = dict(STYLE_CHECK_UNAVAILABLE)
+
                 async for event in regenerator.regenerate_with_feedback(
                     chapter=chapter,
                     analysis=analysis,
@@ -4883,6 +4972,8 @@ async def regenerate_chapter_stream(
                             )
                     elif event['type'] == 'progress':
                         # 进度更新 - 映射到对应阶段
+                        if event.get('style_check') is not None:
+                            style_check = event['style_check']
                         progress = event.get('progress', 0)
                         message = event.get('message', '')
                         if progress < 20:
@@ -4924,7 +5015,8 @@ async def regenerate_chapter_stream(
                     'word_count': len(full_content),
                     'version_number': regen_task.version_number,
                     'auto_applied': regenerate_request.auto_apply,
-                    'diff_stats': diff_stats
+                    'diff_stats': diff_stats,
+                    'style_check': style_check,
                 })
                 
                 # 发送完成信号

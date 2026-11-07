@@ -254,6 +254,18 @@
     "pending": "Pending",
     "writing": "Writing"
   },
+  "styleCheck": {
+    "listSeparator": ", ",
+    "metrics": {
+      "avgSentenceChars": "Average sentence length",
+      "clicheDensity": "Cliche density",
+      "dialogueRatio": "Dialogue ratio",
+      "medianSentenceChars": "Median sentence length",
+      "paragraphCharsP50": "Median paragraph length",
+      "shortSentenceRatio": "Short-sentence ratio"
+    },
+    "warning": "Style consistency: {{n}} metric(s) deviate from the profile ({{metrics}})"
+  },
   "tag": {
     "analysisFailed": "Analysis failed",
     "analyzed": "Analyzed",

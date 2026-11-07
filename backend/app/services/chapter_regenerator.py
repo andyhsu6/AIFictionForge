@@ -11,8 +11,38 @@ from app.schemas.regeneration import ChapterRegenerateRequest, PreserveElementsC
 from app.services.style_anchors import append_project_style_anchors
 from app.logger import get_logger
 import difflib
+import inspect
 
 logger = get_logger(__name__)
+
+STYLE_CHECK_UNAVAILABLE = {"available": False}
+
+
+async def compute_style_check_safely(
+    db: AsyncSession,
+    project: Optional[Project],
+    text: str,
+) -> dict:
+    """生成后的文笔一致性自检（issue #254 P2）。
+
+    契约由 `app.services.style_consistency.build_style_check_for_project` 提供；
+    画像缺失、函数尚未落地或计算失败都降级为 ``{"available": False}``，
+    绝不影响生成成功。日志只记异常类型，不打印正文。
+    """
+    if db is None or project is None or not text:
+        return dict(STYLE_CHECK_UNAVAILABLE)
+    try:
+        from app.services.style_consistency import build_style_check_for_project
+    except ImportError:
+        return dict(STYLE_CHECK_UNAVAILABLE)
+    try:
+        result = build_style_check_for_project(db, project, text)
+        if inspect.isawaitable(result):
+            result = await result
+        return result if isinstance(result, dict) else dict(STYLE_CHECK_UNAVAILABLE)
+    except Exception as exc:  # noqa: BLE001 - 自检失败必须降级
+        logger.warning(f"🎨 文笔一致性自检失败（已忽略）: {type(exc).__name__}")
+        return dict(STYLE_CHECK_UNAVAILABLE)
 
 
 class ChapterRegenerator:
@@ -99,6 +129,7 @@ class ChapterRegenerator:
             # 4. 流式生成新内容，同时跟踪进度
             target_word_count = regenerate_request.target_word_count
             accumulated_length = 0
+            generated_parts: List[str] = []
             
             async for chunk in self.ai_service.generate_text_stream(
                 prompt=full_prompt,
@@ -107,6 +138,7 @@ class ChapterRegenerator:
             ):
                 # 发送内容块
                 yield {'type': 'chunk', 'content': chunk}
+                generated_parts.append(chunk)
                 
                 # 更新累积字数并计算进度（15%-95%）
                 accumulated_length += len(chunk)
@@ -114,8 +146,21 @@ class ChapterRegenerator:
                 generation_progress = min(15 + (accumulated_length / target_word_count) * 80, 95)
                 yield {'type': 'progress', 'progress': int(generation_progress), 'word_count': accumulated_length}
             
+            # issue #254 P2：生成后一致性自检（失败降级，不影响生成）
+            style_check = dict(STYLE_CHECK_UNAVAILABLE)
+            if db is not None and generated_parts:
+                project_for_check = await db.get(Project, chapter.project_id)
+                style_check = await compute_style_check_safely(
+                    db, project_for_check, "".join(generated_parts)
+                )
+            
             logger.info(f"✅ 章节重新生成完成，共生成 {accumulated_length} 字")
-            yield {'type': 'progress', 'progress': 100, 'message': '生成完成'}
+            yield {
+                'type': 'progress',
+                'progress': 100,
+                'message': '生成完成',
+                'style_check': style_check,
+            }
             
         except Exception as e:
             logger.error(f"❌ 重新生成失败: {str(e)}", exc_info=True)
