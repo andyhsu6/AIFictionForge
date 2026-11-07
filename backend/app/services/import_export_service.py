@@ -1328,7 +1328,8 @@ class ImportExportService:
                 validate_style_profile(raw_profile)
             except ValueError as exc:
                 logger.warning(
-                    f"导入画像结构校验失败，降级为仅提示词（项目 {project_id}）：{exc}"
+                    f"导入画像结构校验失败，降级为仅提示词（项目 {project_id}；"
+                    f"异常类型 {type(exc).__name__}）"
                 )
                 raw_profile = None
         profile_json = (

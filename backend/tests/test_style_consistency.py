@@ -237,3 +237,29 @@ def test_api_rejects_oversized_text():
         assert exc.value.status == 422
 
     _run(scenario)
+
+
+def test_compare_ignores_small_absolute_deviation():
+    """expected 很小时，小绝对差不生成噪声告警。"""
+    alerts = compare_with_profile(
+        {"short_sentence_ratio": 0.08},
+        {"metrics": {"short_sentence_ratio": 0.04}},
+    )
+    assert alerts == []
+
+
+def test_compare_flags_large_absolute_deviation():
+    alerts = compare_with_profile(
+        {"short_sentence_ratio": 0.60},
+        {"metrics": {"short_sentence_ratio": 0.10}},
+    )
+    assert len(alerts) == 1
+    assert alerts[0]["metric"] == "short_sentence_ratio"
+
+
+def test_check_reports_compared_metrics():
+    result = check_text_against_profile(
+        "短句。另一句。", {"metrics": {"avg_sentence_chars": 10}}
+    )
+    assert result["compared_metrics"] == 1
+    assert check_text_against_profile("", {"metrics": {}})["compared_metrics"] == 0
