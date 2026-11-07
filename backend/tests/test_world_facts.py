@@ -5,6 +5,7 @@ from app.services.world_facts import (
     build_world_facts,
     load_world_facts,
     merge_world_facts,
+    normalize_world_facts,
     render_world_facts,
     validate_world_facts_claims,
 )
@@ -180,6 +181,51 @@ def test_render_world_facts_groups_and_deduplicates():
     assert rendered["world_rules"] == "占位规则一；占位规则二"
     assert rendered["world_location"] == "占位城"
     assert "unknown_field" not in rendered
+
+
+def test_merge_normalizes_legacy_whole_field_facts():
+    """旧版整段 fact 与新原子 claim 合并时先归一化，渲染不重复同一句。"""
+    legacy = [
+        {
+            "field": "world_rules",
+            "text": "占位规则一。占位规则二。",
+            "evidence": [],
+            "source": "original",
+        }
+    ]
+    atomic = [
+        {
+            "field": "world_rules",
+            "text": "占位规则一。",
+            "evidence": [],
+            "source": "original",
+        }
+    ]
+    merged = merge_world_facts(legacy, atomic)
+    assert [fact["text"] for fact in merged] == ["占位规则一。", "占位规则二。"]
+    assert render_world_facts(merged)["world_rules"] == "占位规则一。占位规则二。"
+
+
+def test_split_treats_ellipsis_as_sentence_end():
+    facts = build_world_facts(
+        {"time_period": "占位规则一…占位规则二。"},
+        {"world_time_period": "占位规则一…占位规则二。"},
+    )
+    assert [fact["text"] for fact in facts] == ["占位规则一…", "占位规则二。"]
+
+
+def test_render_normalizes_legacy_whole_field_input():
+    rendered = render_world_facts(
+        [
+            {
+                "field": "world_rules",
+                "text": "占位规则一。占位规则二。",
+                "evidence": [],
+                "source": "original",
+            }
+        ]
+    )
+    assert rendered["world_rules"] == "占位规则一。占位规则二。"
 
 
 def test_load_world_facts_tolerates_legacy_and_dirty_values():

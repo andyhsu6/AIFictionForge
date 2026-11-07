@@ -34,7 +34,7 @@ FACT_TEXT_MAX_LEN = 400
 RENDER_SEPARATOR = "；"
 SENTENCE_ENDINGS = ("。", "！", "？", "；", "…", "!", "?", ";")
 # 按句末标点拆分（保留标点），用于把整段抽取文归一化为原子 claim
-_CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？；!?;])\s*")
+_CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？；!?;…])\s*")
 
 
 def _split_claim_text(text: str) -> list[str]:
@@ -50,7 +50,9 @@ def build_world_facts(
 
     每个字段按句末标点拆成原子 claim（issue #251）：导入 facts 与同步 claim
     形状一致后，才能用 facts 反向渲染文本而不产生重复。标点保留在 claim 文本里，
-    渲染时按原分隔符可无损还原；quote 落在句内时挂到该句，否则挂到整字段。
+    渲染时按原分隔符可无损还原；quote 落在句内时挂到该句，否则回退挂到整字段
+    （跨句 quote 的对应关系因此是弱保证）。中文标点场景无损；ASCII 标点 + 空格
+    的文本在拆分/重组后可能不逐字还原，属已知限制。
     """
     raw_evidence = world_data.get("evidence")
     evidence_map = raw_evidence if isinstance(raw_evidence, dict) else {}
@@ -82,6 +84,36 @@ def build_world_facts(
     return facts
 
 
+def normalize_world_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把历史整段 fact 归一化为原子 claim（issue #251）。
+
+    P1 早期的 world_facts 是「一个字段一条整段文本」，新写入的是句子级 claim。
+    合并/渲染前统一拆分，避免同一句既以整段又以原子形式存在而在渲染时重复。
+    没有 text 的脏条目原样保留，由调用方决定如何处理。
+    """
+    normalized: list[dict[str, Any]] = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        text = fact.get("text")
+        if not isinstance(text, str) or not text.strip():
+            normalized.append(fact)
+            continue
+        base_evidence = [
+            entry for entry in fact.get("evidence") or [] if isinstance(entry, dict)
+        ]
+        for sentence in _split_claim_text(text.strip()):
+            matched = [
+                entry
+                for entry in base_evidence
+                if isinstance(entry.get("quote"), str) and entry["quote"] in sentence
+            ]
+            normalized.append(
+                {**fact, "text": sentence, "evidence": matched or base_evidence}
+            )
+    return normalized
+
+
 def load_world_facts(raw: Optional[str]) -> list[dict[str, Any]]:
     """读取已存的事实数组；脏数据/旧格式一律视为空。"""
     if not raw:
@@ -99,6 +131,8 @@ def merge_world_facts(
     existing: list[dict[str, Any]], new: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """按 (field, text) 合并事实：同一条事实追加新证据，不整条丢弃。"""
+    existing = normalize_world_facts(existing)
+    new = normalize_world_facts(new)
     merged: list[dict[str, Any]] = []
     index: dict[tuple[Any, Any], int] = {}
     for item in existing:
@@ -195,7 +229,7 @@ def render_world_facts(
 ) -> dict[str, str]:
     """把事实按字段渲染成文本（用分隔符连接，保持事实顺序）。"""
     grouped: dict[str, list[str]] = {}
-    for fact in facts:
+    for fact in normalize_world_facts(facts):
         if not isinstance(fact, dict):
             continue
         field = fact.get("field")
