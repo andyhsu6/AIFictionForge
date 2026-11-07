@@ -1038,9 +1038,7 @@ class BookImportService:
                             prompt_content=style_profile["prompt_content"],
                             description=style_profile["description"],
                             replace_default=replace_default,
-                            allow_overwrite_edited=bool(
-                                getattr(payload, "overwrite_style_profile", False)
-                            ),
+                            allow_overwrite_edited=payload.overwrite_style_profile,
                         )
                         if style_id is None:
                             # 用户已手改画像（profile_edited），本次不覆盖
