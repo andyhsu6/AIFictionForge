@@ -695,6 +695,120 @@ def test_validate_plan_rejects_career_create_without_stages():
     assert "stages" in str(exc_info.value)
 
 
+def test_validate_plan_rejects_foreshadow_create_without_title_or_content():
+    """运行期报「创建伏笔需要 title 和 content」，提案期必须先拒。
+
+    真实失败形状：模型把内容写进 note，data 留空 `{}`，六步计划前两步 update
+    成功、第三步 create 才炸，用户看到的是「执行到一半失败」。
+    """
+    step = {
+        "id": "s7", "tool": "manage_foreshadow",
+        "arguments": {"action": "create", "data": {}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s7" in message
+    assert "title" in message
+    assert "content" in message
+
+
+def test_validate_plan_accepts_foreshadow_create_with_required_fields():
+    step = {
+        "id": "s8", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "create",
+            "data": {"title": "placeholder title", "content": "placeholder content"},
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"]["title"] == "placeholder title"
+
+
+def test_validate_plan_rejects_outline_create_without_top_level_fields():
+    """运行期直接读 arguments['title'] 等顶层字段，提案期必须先拒并指向顶层。"""
+    step = {
+        "id": "s9", "tool": "manage_outline",
+        "arguments": {"action": "create", "data": {"title": "placeholder title"}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_outline"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s9" in message
+    assert "顶层" in message
+
+
+def test_validate_plan_accepts_outline_create_with_top_level_fields():
+    step = {
+        "id": "s10", "tool": "manage_outline",
+        "arguments": {
+            "action": "create",
+            "title": "placeholder title",
+            "content": "placeholder content",
+            "order_index": 1,
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_outline"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["order_index"] == 1
+
+
+def test_validate_plan_rejects_chapter_create_without_data_title():
+    step = {
+        "id": "s11", "tool": "manage_chapter",
+        "arguments": {"action": "create", "data": {"chapter_number": 1}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_chapter"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s11" in message
+    assert "title" in message
+
+
+def test_validate_plan_rejects_chapter_update_content_without_content():
+    step = {
+        "id": "s12", "tool": "manage_chapter",
+        "arguments": {"action": "update_content", "chapter_number": 1, "data": {}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_chapter"},
+                      tool_schemas=_registry_schemas())
+    assert "content" in str(exc_info.value)
+
+
+def test_validate_plan_writing_style_create_requires_fields_or_preset():
+    """preset_id 是 name/prompt_content 的替代来源，不能误拒引用预设的步骤。"""
+    bad = {
+        "id": "s13", "tool": "manage_writing_style",
+        "arguments": {"action": "create", "data": {}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([bad]), allowed_tools={"manage_writing_style"},
+                      tool_schemas=_registry_schemas())
+    assert "preset_id" in str(exc_info.value)
+
+    preset_only = {
+        "id": "s14", "tool": "manage_writing_style",
+        "arguments": {"action": "create", "data": {"preset_id": "placeholder-preset"}},
+    }
+    validate_plan(_plan([preset_only]), allowed_tools={"manage_writing_style"},
+                  tool_schemas=_registry_schemas())
+
+    explicit = {
+        "id": "s15", "tool": "manage_writing_style",
+        "arguments": {
+            "action": "create",
+            "data": {"name": "placeholder name", "prompt_content": "placeholder prompt"},
+        },
+    }
+    validate_plan(_plan([explicit]), allowed_tools={"manage_writing_style"},
+                  tool_schemas=_registry_schemas())
+
+
 def test_validate_plan_accepts_relationship_create_and_rejects_unknown_key():
     """(i5) 关系 create 的 character_from_id/character_to_id 合法；data.foo 拒绝。"""
     step = {
