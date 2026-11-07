@@ -16,7 +16,9 @@
 
 ## Related issues
 
-<!-- e.g. closes #123, refs #45 -->
+<!-- Before marking this PR ready, replace `refs #N` with a closing keyword (`closes #123`) so the
+     issue auto-closes on merge. Draft PRs may use `refs #N`; keep `refs` only for related issues
+     that should stay open (e.g. a tracking/epic issue). -->
 
 ## Test plan
 
@@ -26,7 +28,7 @@
 
 ## Checklist
 
-- [ ] Branch name follows `<type>/<short-description>`; commit messages are conventional and reference the issue (`closes #N` / `refs #N`).
+- [ ] Branch name follows `<type>/<short-description>`; commit messages are conventional and reference the issue (`refs #N`). The closing keyword (`closes #N`) lives in this PR body, not only in commits.
 - [ ] `pytest` passes locally (`cd backend && .venv/bin/python -m pytest tests/ -v`) for backend changes.
 - [ ] i18n: new UI strings have been added to **both** `frontend/src/locales/zh/` and `frontend/src/locales/en/` locale files (no hard-coded strings in components).
 - [ ] No source-text or user data in the diff: no imported book/document original text, chapter excerpts, character names, or world-building proper nouns; no secrets or `.env` contents.

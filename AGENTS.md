@@ -10,16 +10,29 @@
 - **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
 - **协作语言规范（国际化）**：issue 与 PR 的**标题默认英文**（面向国际贡献者），正文可中英双语（英文为主，中文作补充说明）。示例标题：`[Bug] 524 timeout when generating characters in book import`、`fix: streaming JSON generation in call_with_json_retry`。
 
-## Issues 同步规范（全流程自动同步）
-- **需求（feature）**：需求明确后在 `andyhsu6/AIFictionForge` 创建 issue（`[需求]` 前缀，label `enhancement`），描述背景、期望功能与实现思路；计划确定后把计划要点同步到 issue 评论区；实施中每个 commit 引用 issue 编号（如 `fix: ... closes #21` 或 `feat(...): ... refs #21`）；验收确认后更新 issue 状态（验收结果/PR 链接）并关闭。
-- **Bug**：发现 bug 时先创建 issue（`[Bug]` 前缀，label `bug`）记录复现步骤、预期/实际行为与环境；修复提交时在 commit message 中引用 issue 编号（如 `fix: ... closes #9`），完成后关闭 issue。
-- **PR 必须关联 issue（硬约束，随合并自动关闭）**：
-  - PR **正文**必须包含 GitHub 关闭关键词并指向对应 issue：`closes #N`、`fixes #N` 或 `resolves #N`。关键词写在 PR 正文（而非仅 commit message），这样 issue 才会出现在 PR 的 Linked issues / 时间线，并在**合并时自动关闭**。
-  - 能由 PR 合并自动关闭的 issue，**禁止手动提前关闭**；只有确实无对应 PR（如纯文档/运维）时才手动关闭。
-  - 建 PR 后必须核对关联生效：`gh pr view <N> --repo andyhsu6/AIFictionForge --json closingIssuesReferences` 输出应包含目标 issue，且 issue 时间线出现 `cross-referenced`。
-  - 合并后必须核对 issue 已自动关闭：`gh issue view <N> --repo andyhsu6/AIFictionForge --json state,stateReason` 应为 `CLOSED` / `COMPLETED`；若未关闭，立即补关联并关闭，并在 issue 评论中留下 PR 链接与验收结果。
+## Issues / PR 同步规范（四同步点，其余不额外同步）
+
+生命周期固定为**四个同步点**；**commit 只引用编号（`refs #N`），不写 issue/PR 评论**；评审与验收结论只写 PR 评论或打 label，**不用 issue 状态表达阶段**。
+
+1. **计划定稿 → 建 issue 并落计划**
+   - 需求明确且计划定稿后，在 `andyhsu6/AIFictionForge` 建 issue（`[Feature]` 前缀，label `enhancement` + `status:planned`），写背景、期望功能、实现思路与**验收标准**；计划要点同步为 issue 评论（计划文档默认在 `docs/handoffs/` 不入库，issue 评论是计划在 GitHub 侧的唯一载体）。
+   - “计划定稿”判定：有可执行的任务拆分 + 可核对的验收标准；未定稿不得开 PR。
+   - **Bug**：发现即建 issue（`[Bug]` 前缀，label `bug`），记录复现步骤、预期/实际行为与环境。
+2. **开工 → Draft PR（条件触发）**
+   - 涉及**多会话/多天工作**或属于重大改动（核心架构、数据库 schema、鉴权/安全、跨模块接口、影响用户数据/体验）时：第一个非空 commit 后立即推分支并开 **Draft PR**（标题 `<type>: <摘要>`，正文 `refs #N`，label `status:in-progress`），作为并行 worktree/agent 会话的工作锚点。
+   - 单会话小改动不强制提前开 PR，实现完成后再开即可。
+   - 计划重大变更时同步更新 PR 描述，或关闭重开，避免过期描述误导。
+3. **实现完成 → PR 转 Ready**
+   - 自测/视觉验证通过后转 Ready；PR **正文**必须含关闭关键词并指向 issue：`closes #N` / `fixes #N` / `resolves #N`（写在正文而非仅 commit message，确保 Linked issues 与**合并自动关闭**），Test plan 填实际验证结果。
+   - 评审/验收结论（通过或需修改）写 PR 评论 + label（如 `status:verified`），不改 issue 状态。
+4. **合并 → issue 自动关闭（唯一关闭点）**
+   - 能由 PR 合并自动关闭的 issue，**禁止手动提前关闭**（会断时间线并使 `closes` 失效）；只有确实无对应 PR 的纯文档/运维改动才手动关闭，并在评论说明原因。
+   - 建 PR 后核对关联生效：`gh pr view <N> --repo andyhsu6/AIFictionForge --json closingIssuesReferences` 应含目标 issue，issue 时间线出现 `cross-referenced`。
+   - 合并后核对自动关闭：`gh issue view <N> --repo andyhsu6/AIFictionForge --json state,stateReason` 应为 `CLOSED` / `COMPLETED`；未生效立即补关联/关闭，并在 issue 评论留下 PR 链接与验收结果。
+
+- 阶段用 label 表达：`status:planned` → `status:in-progress` → `status:verified`；PR 状态只用 GitHub 原生 Draft/Ready/Closed/Merged 表达完成度。
 - 批量/历史同步：按功能主题合并建 issue，颗粒度到功能模块而非单个提交。
-- 使用仓库内的中文模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
+- 使用仓库内的 issue 模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
 
 ## 文档目录约定
 - **交付给人和 agent 的文档放 `docs/handoffs/`**（计划、需求、交接、方案）。该目录已在 `.gitignore` 里显式放行，所以能被 OpenCode 的 `@` 文件检索到；**放进 `.omo/` 的文档检索不到**（索引遵循 .gitignore），`.omo/` 只放原始证据与草稿（含书稿片段，必须保持忽略）。

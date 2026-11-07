@@ -86,7 +86,7 @@ cd backend && .venv/bin/python -m pytest tests/ -v
 使用 conventional commit 风格的提交信息，并引用对应 issue：
 
 ```
-fix: streaming JSON generation in call_with_json_retry closes #9
+fix: streaming JSON generation in call_with_json_retry refs #9
 feat(skill-chat): skill management page refs #21
 ```
 
@@ -96,9 +96,14 @@ feat(skill-chat): skill management page refs #21
 
 ### Issue 跟踪
 
-- Bug：使用 Bug report 模板；修复提交引用 issue（`closes #N`），验证通过后关闭。
-- 功能需求：使用 Feature request 模板；计划确定后把要点同步到 issue 评论区，提交时引用 issue，验收后关闭。
-- 批量/历史同步：按功能模块合并建 issue，而不是每个 commit 一个 issue。
+工作固定经过**四个同步点**，中间不额外同步（commit 只引用 issue，不写评论）：
+
+1. **计划定稿 → 建 issue 并落计划。** 用 Bug report / Feature request 模板建 issue，写背景、期望行为、实现思路与**验收标准**；给 issue 打 `status:planned` label，并把计划要点发为 issue 评论。计划文档本身留在 `docs/handoffs/`（不入库），issue 评论是 GitHub 侧的计划载体。
+2. **开工 → Draft PR（按需）。** 多会话/多天的工作或重大改动：第一个非空 commit 后推分支并开 **Draft PR**（正文 `refs #N`，label `status:in-progress`）。单会话小改动可以在实现完成后再开 PR。
+3. **实现完成 → PR 转 Ready。** 自测/视觉验证通过后转 Ready；**PR 正文**必须含关闭关键词（`closes #N` / `fixes #N` / `resolves #N`）以便合并时自动关闭 issue，Test plan 写实际验证结果。
+4. **合并 → issue 自动关闭。** 禁止手动提前关闭（会断时间线并使关键词失效）；只有确实无对应 PR 的纯文档/运维改动才手动关闭，并在评论说明原因。
+
+评审/验收结论写 PR 评论；阶段 label 为 issue 上的 `status:planned`、PR 上的 `status:in-progress` / `status:verified`，不用 issue 状态表达阶段。批量/历史同步：按功能模块合并建 issue，而不是每个 commit 一个 issue。
 
 ## 数据隐私硬约束（原文数据脱敏）
 
@@ -112,7 +117,7 @@ feat(skill-chat): skill management page refs #21
 - 保持 PR 聚焦：一个 PR 一个逻辑改动。
 - 标题格式：`<type>: <摘要>`（英文，如 `fix: streaming timeout in chapter generation`）。
 - 填写 PR 模板（摘要、改动、测试计划、检查清单）。
-- 关联相关 issue；说明改动如何测试。
+- 在 PR **正文**写 `closes #N` 关联 issue（合并自动关闭）；说明改动如何测试。
 - 确认 diff 中不含密钥、`.env` 内容或用户/原文数据。
 - 影响用户可见行为的改动请同步更新文档与 CHANGELOG。
 

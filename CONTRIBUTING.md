@@ -86,7 +86,7 @@ Branch names must describe the change: `<type>/<short-description>`, e.g. `fix/5
 Use conventional-commit style messages and reference the tracked issue:
 
 ```
-fix: streaming JSON generation in call_with_json_retry closes #9
+fix: streaming JSON generation in call_with_json_retry refs #9
 feat(skill-chat): skill management page refs #21
 ```
 
@@ -96,9 +96,14 @@ Any **major change** — core architecture, database schema, auth/security, cros
 
 ### Issue tracking
 
-- Bugs: use the Bug report template; the fix commit references the issue (`closes #N`) and the issue is closed once the fix is verified.
-- Features: use the Feature request template; plan highlights are posted to the issue comments once agreed, commits reference the issue, and the issue is closed after acceptance.
-- Batch/historical sync: group related work by functional module rather than one issue per commit.
+Work moves through **four fixed sync points**; do not add extra syncing in between (commits only reference the issue, they do not comment on it):
+
+1. **Plan agreed → open the issue.** Open the issue (Bug report / Feature request template) with background, expected behaviour, implementation approach and **acceptance criteria**; label the issue `status:planned` and post the plan highlights as an issue comment. The plan document itself stays in `docs/handoffs/` (not committed), so the issue comment is the canonical GitHub-side plan.
+2. **Start work → draft PR (when warranted).** For multi-session/multi-day work, or any major change, push the first real commit and open a **draft PR** (body `refs #N`, label `status:in-progress`). Single-session small changes may open the PR once implementation is done.
+3. **Implementation done → mark ready.** Once self-test/visual verification passes, mark the PR ready; the **PR body** must contain a closing keyword (`closes #N` / `fixes #N` / `resolves #N`) so the issue auto-closes on merge, and the Test plan must list the actual verification results.
+4. **Merge → issue closes automatically.** Manual early closing is forbidden (it breaks the timeline and defeats the keyword). Close manually only when no PR exists (pure docs/ops) and explain why in a comment.
+
+Review/acceptance outcomes go into PR comments; stage labels are `status:planned` on the issue, then `status:in-progress` / `status:verified` on the PR — never encoded in the issue state. Batch/historical sync: group work by functional module rather than one issue per commit.
 
 ## Data privacy hard rule (source-text desensitization)
 
@@ -112,7 +117,7 @@ The repository is public and user-imported books may be copyrighted. **Never pos
 - Keep PRs focused: one logical change per PR.
 - Title format: `<type>: <summary>` (English, e.g. `fix: streaming timeout in chapter generation`).
 - Fill in the PR template (summary, changes, test plan, checklist).
-- Link the related issue; describe how you tested the change.
+- Link the related issue with a closing keyword in the PR body (`closes #N`) so it auto-closes on merge; describe how you tested the change.
 - Make sure no secrets, `.env` contents, or user/source text data appear in the diff.
 - Update the docs/CHANGELOG when the change affects users.
 
