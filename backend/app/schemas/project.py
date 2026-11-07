@@ -40,6 +40,10 @@ class ProjectUpdate(BaseModel):
     chapter_count: Optional[int] = None
     narrative_perspective: Optional[str] = None
     character_count: Optional[int] = None
+    # issue #254 P1：项目级原文语感锚点选项
+    style_anchor_enabled: Optional[bool] = None
+    style_anchor_chars: Optional[int] = None
+    style_anchor_count: Optional[int] = None
     # current_words 由章节内容自动计算，不允许手动修改
 
 
@@ -57,6 +61,10 @@ class ProjectResponse(ProjectBase):
     chapter_count: Optional[int] = None
     narrative_perspective: Optional[str] = None
     character_count: Optional[int] = None
+    # issue #254 P1：项目级原文语感锚点选项
+    style_anchor_enabled: bool
+    style_anchor_chars: int
+    style_anchor_count: int
     cover_image_url: Optional[str] = None
     cover_prompt: Optional[str] = None
     cover_status: Optional[str] = None

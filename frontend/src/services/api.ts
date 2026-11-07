@@ -38,6 +38,8 @@ import type {
   WritingStyle,
   WritingStyleCreate,
   WritingStyleUpdate,
+  StyleProfileReextractRequest,
+  StyleProfileReextractResult,
   PresetStyle,
   WritingStyleListResponse,
   MCPPlugin,
@@ -939,6 +941,13 @@ export const writingStyleApi = {
   // 为项目初始化默认风格（如果没有任何风格）
   initializeDefaultStyles: (projectId: string) =>
     api.post<unknown, WritingStyleListResponse>(`/writing-styles/project/${projectId}/initialize`, {}),
+
+  // issue #254 P1：重新抽取本书文笔画像（dry_run=true 只返回 diff，不落库）
+  reextractProfile: (projectId: string, payload: StyleProfileReextractRequest = {}) =>
+    api.post<unknown, StyleProfileReextractResult>(
+      `/writing-styles/project/${projectId}/profile/reextract`,
+      payload,
+    ),
 };
 
 export const polishApi = {

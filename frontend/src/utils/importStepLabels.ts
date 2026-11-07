@@ -20,6 +20,7 @@ const STEP_LABEL_KEYS: Record<string, string> = {
   career_system: 'progress.stepLabel.career_system',
   characters: 'progress.stepLabel.characters',
   relationship_extraction: 'progress.stepLabel.relationship_extraction',
+  style_profile: 'progress.stepLabel.style_profile',
 };
 
 export function resolveStepLabel(

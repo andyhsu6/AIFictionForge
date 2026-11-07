@@ -118,6 +118,11 @@ class BookImportApplyRequest(BaseModel):
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline] = Field(default_factory=list)
     import_mode: ImportMode = Field(default="append", description="导入模式")
+    # issue #254：仅在 overwrite 且画像已被用户手改时需要显式置 true；
+    # 默认 false 保护用户编辑，不落库。
+    overwrite_style_profile: bool = Field(
+        default=False, description="覆盖用户已编辑的文笔画像（默认保护）"
+    )
 
 
 class BookImportApplyResponse(BaseModel):
@@ -135,3 +140,7 @@ class BookImportApplyResponse(BaseModel):
 class BookImportRetryRequest(BaseModel):
     """重试失败步骤请求"""
     steps: list[str] = Field(..., min_length=1, description="需要重试的步骤名列表，如 world_building / career_system / characters")
+    # issue #254：与 apply 相同语义，重试画像步骤时显式覆盖用户编辑。
+    overwrite_style_profile: bool = Field(
+        default=False, description="覆盖用户已编辑的文笔画像（默认保护）"
+    )

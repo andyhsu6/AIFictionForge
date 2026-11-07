@@ -45,6 +45,12 @@ from app.schemas.import_export import (
 )
 from app.services.import_export_service import ImportExportService
 from app.services.memory_service import memory_service
+from app.services.style_anchors import (
+    ANCHOR_MIN_CHARS,
+    MAX_ANCHOR_CHARS,
+    MIN_ANCHOR_COUNT,
+    MAX_ANCHOR_COUNT,
+)
 from app.services.character_profile_sync_service import (
     character_profile_sync_service,
     ProfileDiffCollector,
@@ -173,6 +179,20 @@ async def get_project(
         raise
 
 
+def _clamp_style_anchor_settings(update_data: dict) -> None:
+    """把项目级锚点预算/条数夹到契约允许区间（issue #254 P1）。"""
+    chars = update_data.get("style_anchor_chars")
+    if chars is not None:
+        update_data["style_anchor_chars"] = max(
+            ANCHOR_MIN_CHARS, min(int(chars), MAX_ANCHOR_CHARS)
+        )
+    count = update_data.get("style_anchor_count")
+    if count is not None:
+        update_data["style_anchor_count"] = max(
+            MIN_ANCHOR_COUNT, min(int(count), MAX_ANCHOR_COUNT)
+        )
+
+
 @router.put("/{project_id}", response_model=ProjectResponse, summary="更新项目")
 async def update_project(
     project_id: str,
@@ -204,6 +224,7 @@ async def update_project(
         
         update_data = project_update.model_dump(exclude_unset=True)
         logger.debug(f"更新字段: {list(update_data.keys())}")
+        _clamp_style_anchor_settings(update_data)
         for field, value in update_data.items():
             setattr(project, field, value)
         
@@ -1032,7 +1053,8 @@ async def export_project_data(
             include_writing_styles=options.include_writing_styles,
             include_careers=options.include_careers,
             include_memories=options.include_memories,
-            include_plot_analysis=options.include_plot_analysis
+            include_plot_analysis=options.include_plot_analysis,
+            include_style_profile=options.include_style_profile,
         )
         
         # 转换为JSON

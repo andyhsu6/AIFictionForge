@@ -87,6 +87,7 @@
       "career_system": "Career System Generation",
       "characters": "Characters & Organizations",
       "relationship_extraction": "Relationship Extraction",
+      "style_profile": "Writing-style profile",
       "world_building": "Worldview Generation"
     },
     "titleGenerating": "Generating and importing project content for you",

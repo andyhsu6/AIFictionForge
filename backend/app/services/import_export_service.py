@@ -39,6 +39,13 @@ from app.schemas.import_export import (
     ImportResult
 )
 from app.logger import get_logger
+from app.services.style_profile import (
+    PROFILE_EDITED_STYLE_TYPE,
+    PROFILE_STYLE_TYPE,
+    is_profile_preset_id,
+    profile_preset_id,
+    validate_style_profile,
+)
 
 logger = get_logger(__name__)
 
@@ -63,8 +70,10 @@ def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
 class ImportExportService:
     """导入导出服务类"""
     
-    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]  # 支持的版本列表
-    CURRENT_VERSION = "1.3.0"  # 当前导出版本（1.2.0 起携带世界设定同步凭证；1.3.0 起携带 world_facts，issue #242）
+    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"]  # 支持的版本列表
+    # 当前导出版本：1.2.0 起携带世界设定同步凭证；1.3.0 起携带 world_facts（#242）；
+    # 1.4.0 起可携带项目画像块（#254 P2，默认关闭）
+    CURRENT_VERSION = "1.4.0"
     
     @staticmethod
     async def export_project(
@@ -74,7 +83,8 @@ class ImportExportService:
         include_writing_styles: bool = True,
         include_careers: bool = True,
         include_memories: bool = False,
-        include_plot_analysis: bool = False
+        include_plot_analysis: bool = False,
+        include_style_profile: bool = False
     ) -> ProjectExportData:
         """
         导出项目完整数据
@@ -87,6 +97,7 @@ class ImportExportService:
             include_careers: 是否包含职业系统
             include_memories: 是否包含故事记忆
             include_plot_analysis: 是否包含剧情分析
+            include_style_profile: 是否包含项目文笔画像（issue #254 P2，默认关闭）
             
         Returns:
             ProjectExportData: 导出的项目数据
@@ -151,9 +162,13 @@ class ImportExportService:
         logger.info(f"导出组织成员数: {len(org_members)}")
         
         # 导出写作风格（可选）
+        # issue #254 P2：画像行默认不进导出包（P0 隔离）；include_style_profile=True
+        # 时才带本项目画像与结构化 profile 块。
         writing_styles = []
         if include_writing_styles:
-            writing_styles = await ImportExportService._export_writing_styles(project_id, db)
+            writing_styles = await ImportExportService._export_writing_styles(
+                project_id, db, include_style_profile=include_style_profile
+            )
             logger.info(f"导出写作风格数: {len(writing_styles)}")
         
         # 导出生成历史（可选）
@@ -184,12 +199,15 @@ class ImportExportService:
             logger.info(f"导出剧情分析数: {len(plot_analysis)}")
         
         # 导出项目默认风格
-        project_default_style = await ImportExportService._export_project_default_style(project_id, db)
+        project_default_style = await ImportExportService._export_project_default_style(
+            project_id, db, include_style_profile=include_style_profile
+        )
         if project_default_style:
             logger.info(f"导出项目默认风格: {project_default_style.style_name}")
         
         export_data = ProjectExportData(
-            version=ImportExportService.CURRENT_VERSION,
+            # 未携带画像块时保持 1.3.0（旧导入端仍可接受）；开启画像导出才升 1.4.0
+            version="1.4.0" if include_style_profile else "1.3.0",
             export_time=datetime.utcnow().isoformat(),
             project=project_data,
             chapters=chapters,
@@ -417,8 +435,12 @@ class ImportExportService:
         return exported
     
     @staticmethod
-    async def _export_writing_styles(project_id: str, db: AsyncSession) -> List[WritingStyleExportData]:
-        """导出写作风格（用户自定义风格）"""
+    async def _export_writing_styles(
+        project_id: str,
+        db: AsyncSession,
+        include_style_profile: bool = False,
+    ) -> List[WritingStyleExportData]:
+        """导出写作风格（用户自定义风格 + 可选的本项目画像）"""
         # 获取项目所属用户
         project_result = await db.execute(
             select(Project).where(Project.id == project_id)
@@ -435,18 +457,61 @@ class ImportExportService:
         )
         styles = result.scalars().all()
         
-        return [
-            WritingStyleExportData(
-                name=style.name,
-                style_type=style.style_type,
-                preset_id=style.preset_id,
-                description=style.description,
-                prompt_content=style.prompt_content,
-                order_index=style.order_index or 0
+        own_profile_preset_id = profile_preset_id(project_id)
+        exported: List[WritingStyleExportData] = []
+        for style in styles:
+            if is_profile_preset_id(style.preset_id):
+                # issue #254：画像属于项目而非用户级风格。默认（P0 隔离）一律不导出，
+                # 避免 A 项目的画像随导出包串入其他项目。
+                if not include_style_profile or style.preset_id != own_profile_preset_id:
+                    continue
+                exported.append(
+                    ImportExportService._build_profile_style_export_data(
+                        style, is_project_profile=True
+                    )
+                )
+                continue
+            exported.append(
+                WritingStyleExportData(
+                    name=style.name,
+                    style_type=style.style_type,
+                    preset_id=style.preset_id,
+                    description=style.description,
+                    prompt_content=style.prompt_content,
+                    order_index=style.order_index or 0
+                )
             )
-            for style in styles
-        ]
-    
+        return exported
+
+    @staticmethod
+    def _build_profile_style_export_data(
+        style: WritingStyle, *, is_project_profile: bool
+    ) -> WritingStyleExportData:
+        """把画像行转成带结构化 ``profile`` 块的导出项（锚点不导出）。"""
+        profile_data: Optional[Dict[str, Any]] = None
+        if style.profile_json:
+            try:
+                parsed = json.loads(style.profile_json)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                profile_data = parsed
+        return WritingStyleExportData(
+            name=style.name,
+            style_type=style.style_type,
+            preset_id=style.preset_id,
+            description=style.description,
+            prompt_content=style.prompt_content,
+            order_index=style.order_index or 0,
+            profile={
+                "profile_json": profile_data,
+                "profile_version": style.profile_version,
+                "prompt_content": style.prompt_content,
+                "description": style.description,
+                "is_project_profile": is_project_profile,
+            },
+        )
+
     @staticmethod
     async def _export_generation_history(project_id: str, db: AsyncSession) -> List[GenerationHistoryExportData]:
         """导出生成历史"""
@@ -636,7 +701,11 @@ class ImportExportService:
         return exported
     
     @staticmethod
-    async def _export_project_default_style(project_id: str, db: AsyncSession) -> Optional[ProjectDefaultStyleExportData]:
+    async def _export_project_default_style(
+        project_id: str,
+        db: AsyncSession,
+        include_style_profile: bool = False,
+    ) -> Optional[ProjectDefaultStyleExportData]:
         """导出项目默认风格"""
         result = await db.execute(
             select(ProjectDefaultStyle, WritingStyle)
@@ -647,6 +716,11 @@ class ImportExportService:
         
         if row:
             _, style = row
+            # 项目默认风格是画像时不导出（issue #254）：默认（P0 隔离）导出包不含
+            # 画像行，导入端按 name 回关联会找不到风格；画像本身也不应随包迁移。
+            # include_style_profile=True 时画像行随包导出，可正常写默认名称。
+            if is_profile_preset_id(style.preset_id) and not include_style_profile:
+                return None
             return ProjectDefaultStyleExportData(style_name=style.name)
         
         return None
@@ -1160,7 +1234,7 @@ class ImportExportService:
         styles_data: List[Dict],
         db: AsyncSession
     ) -> int:
-        """导入写作风格（用户自定义风格）"""
+        """导入写作风格（用户自定义风格；1.4.0 起可重建项目画像）"""
         # 获取项目所属用户
         project_result = await db.execute(
             select(Project).where(Project.id == project_id)
@@ -1171,6 +1245,17 @@ class ImportExportService:
         
         count = 0
         for style_data in styles_data:
+            if is_profile_preset_id(style_data.get("preset_id")):
+                # issue #254：画像行只在带 profile 块（1.4.0 显式导出）时重建为目标
+                # 项目画像；旧包/异常包没有块，继续跳过，避免 A 项目画像串入 B 项目。
+                profile_block = style_data.get("profile")
+                if not isinstance(profile_block, dict):
+                    continue
+                if await ImportExportService._import_project_profile_style(
+                    project_id, project, style_data, profile_block, db
+                ):
+                    count += 1
+                continue
             # 检查是否已存在同名风格（避免重复导入）
             existing = await db.execute(
                 select(WritingStyle).where(
@@ -1196,6 +1281,96 @@ class ImportExportService:
             count += 1
         
         return count
+
+    @staticmethod
+    async def _import_project_profile_style(
+        project_id: str,
+        project: Project,
+        style_data: Dict,
+        profile_block: Dict,
+        db: AsyncSession,
+    ) -> bool:
+        """把导出包里的画像重建为**目标项目**的画像行（issue #254 P2）。
+
+        - preset_id 一律改写为 ``profile:<目标 project_id>``，不沿用来源项目 id；
+        - 目标项目已有 ``profile_edited`` 画像时保留用户编辑，不覆盖；
+        - 返回是否写入/更新了一行。
+        """
+        preset_id = profile_preset_id(project_id)
+        rows = (
+            await db.execute(
+                select(WritingStyle).where(
+                    WritingStyle.user_id == project.user_id,
+                    WritingStyle.preset_id == preset_id,
+                )
+            )
+        ).scalars().all()
+        existing = rows[0] if rows else None
+
+        if existing is not None and existing.style_type == PROFILE_EDITED_STYLE_TYPE:
+            logger.info(f"项目 {project_id} 已有用户编辑的文笔画像，跳过导入覆盖")
+            return False
+
+        prompt_content = (
+            profile_block.get("prompt_content")
+            or style_data.get("prompt_content")
+            or ""
+        )
+        if not prompt_content:
+            logger.warning(f"导入项目画像失败: 缺少 prompt_content（项目 {project_id}）")
+            return False
+
+        description = profile_block.get("description") or style_data.get("description")
+        raw_profile = profile_block.get("profile_json")
+        if isinstance(raw_profile, dict):
+            try:
+                # 出口校验不等于入口安全：手工构造/被改包也要过同一套结构校验
+                validate_style_profile(raw_profile)
+            except ValueError as exc:
+                logger.warning(
+                    f"导入画像结构校验失败，降级为仅提示词（项目 {project_id}；"
+                    f"异常类型 {type(exc).__name__}）"
+                )
+                raw_profile = None
+        profile_json = (
+            json.dumps(raw_profile, ensure_ascii=False)
+            if isinstance(raw_profile, dict)
+            else None
+        )
+        profile_version = _coerce_non_negative_int(
+            profile_block.get("profile_version"), default=0
+        ) or None
+        # 保留导出包里的名称：项目默认风格按 name 回关联（见
+        # _import_project_default_style），改名会让 1.4.0 包的默认风格失配。
+        name = style_data.get("name") or (
+            f"文笔画像·{((project.title or '').strip() or '未命名项目')[:20]}"
+        )
+
+        if existing is not None:
+            existing.name = name
+            existing.description = description
+            existing.prompt_content = prompt_content
+            existing.style_type = PROFILE_STYLE_TYPE
+            if profile_json is not None:
+                existing.profile_json = profile_json
+                existing.profile_version = profile_version
+            return True
+
+        db.add(
+            WritingStyle(
+                user_id=project.user_id,
+                name=name,
+                style_type=PROFILE_STYLE_TYPE,
+                preset_id=preset_id,
+                description=description,
+                prompt_content=prompt_content,
+                profile_json=profile_json,
+                profile_version=profile_version,
+                order_index=_coerce_non_negative_int(style_data.get("order_index")),
+            )
+        )
+        return True
+
     
     @staticmethod
     async def _import_careers(

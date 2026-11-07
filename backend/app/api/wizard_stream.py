@@ -19,9 +19,8 @@ from app.services.relationship_service import (
     resolve_relationship_type_ids,
     sync_relationship_links,
 )
-from app.models.writing_style import WritingStyle
-from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
+from app.services.book_import_service import BookImportService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
@@ -260,26 +259,15 @@ async def world_building_generator(
         await db.commit()
         await db.refresh(project)
         
-        # 自动设置默认写作风格为第一个全局预设风格
+        # 自动设置默认写作风格（向导项目没有导入原文，不做文笔画像抽取）。
+        # 选择口径与 BookImportService._ensure_project_default_style 一致：取
+        # order_index 最小（NULL 排最后）的全局预设，而不是写死 order_index == 1。
+        # 用户后续可导入正文生成画像（issue #254）；此处不做任何 AI 调用。
         try:
-            result = await db.execute(
-                select(WritingStyle).where(
-                    WritingStyle.user_id.is_(None),
-                    WritingStyle.order_index == 1
-                ).limit(1)
+            await BookImportService()._ensure_project_default_style(
+                db=db, project_id=project.id
             )
-            first_style = result.scalar_one_or_none()
-            
-            if first_style:
-                default_style = ProjectDefaultStyle(
-                    project_id=project.id,
-                    style_id=first_style.id
-                )
-                db.add(default_style)
-                await db.commit()
-                logger.info(f"为项目 {project.id} 自动设置默认风格: {first_style.name}")
-            else:
-                logger.warning(f"未找到order_index=1的全局预设风格，项目 {project.id} 未设置默认风格")
+            await db.commit()
         except Exception as e:
             logger.warning(f"设置默认写作风格失败: {e}，不影响项目创建")
         
@@ -296,6 +284,7 @@ async def world_building_generator(
         # 发送世界观结果
         yield await tracker.result({
             "project_id": project.id,
+            "style_profile": "not_applicable",
             "time_period": world_data.get("time_period"),
             "location": world_data.get("location"),
             "atmosphere": world_data.get("atmosphere"),

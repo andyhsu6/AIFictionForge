@@ -34,6 +34,7 @@ from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
+from app.services.style_anchors import append_project_style_anchors
 from app.schemas.chapter import (
     ChapterCreate,
     ChapterUpdate,
@@ -1615,6 +1616,14 @@ async def generate_chapter_content_stream(
                         logger.warning(f"未找到风格 {style_id}")
                 else:
                     logger.info("未指定写作风格，使用原始提示词")
+
+                # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
+                style_content = await append_project_style_anchors(
+                    db_session,
+                    project=project,
+                    style_content=style_content,
+                    before_chapter_number=current_chapter.chapter_number,
+                )
                 
                 # 🚀 根据大纲模式选择独立的上下文构建器
                 if outline_mode == 'one-to-one':
@@ -2209,6 +2218,14 @@ async def _run_chapter_generation_bg(
         if style and (style.user_id is None or style.user_id == user_id):
             style_content = style.prompt_content or ""
 
+    # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
+    style_content = await append_project_style_anchors(
+        db,
+        project=project,
+        style_content=style_content,
+        before_chapter_number=current_chapter.chapter_number,
+    )
+
     # === 构建上下文 ===
     if outline_mode == 'one-to-one':
         context_builder = OneToOneContextBuilder(
@@ -2744,6 +2761,14 @@ async def _run_chapter_generation_bg(
         style = style_result.scalar_one_or_none()
         if style and (style.user_id is None or style.user_id == user_id):
             style_content = style.prompt_content or ""
+
+    # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
+    style_content = await append_project_style_anchors(
+        db,
+        project=project,
+        style_content=style_content,
+        before_chapter_number=current_chapter.chapter_number,
+    )
 
     # === 构建上下文 ===
     if outline_mode == 'one-to-one':
@@ -4295,6 +4320,14 @@ async def generate_single_chapter_for_batch(
         if style:
             if style.user_id is None or style.user_id == user_id:
                 style_content = style.prompt_content or ""
+
+    # issue #254 P1：批量生成路径注入本书原文语感锚点
+    style_content = await append_project_style_anchors(
+        db_session,
+        project=project,
+        style_content=style_content,
+        before_chapter_number=chapter.chapter_number,
+    )
     
     # 🚀 根据大纲模式选择独立的上下文构建器（批量生成）
     if outline_mode == 'one-to-one':

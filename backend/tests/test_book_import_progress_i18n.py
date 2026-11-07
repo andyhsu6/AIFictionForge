@@ -142,6 +142,9 @@ def test_apply_stream_notify_with_code_forwards_structured_channel(monkeypatch):
         "import.progress.charactersDone",
         "import.progress.extractingRelationships",
         "import.progress.relationshipsDone",
+        # issue #254：样本不足时跳过画像抽取（chapters=[]），不产生失败步骤
+        "import.progress.extractingStyleProfile",
+        "import.progress.styleProfileSkipped",
         "import.progress.savingDb",
         "import.progress.savedDb",
         "import.progress.doneWithFailures",

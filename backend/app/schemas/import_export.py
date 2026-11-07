@@ -11,6 +11,10 @@ class ExportOptions(BaseModel):
     include_careers: bool = Field(True, description="是否包含职业系统")
     include_memories: bool = Field(False, description="是否包含故事记忆（数据量可能较大）")
     include_plot_analysis: bool = Field(False, description="是否包含剧情分析")
+    # issue #254 P2：默认关闭，保持画像不随项目导出（隐私/防串项目）
+    include_style_profile: bool = Field(
+        False, description="是否包含项目文笔画像（结构化块，默认关闭）"
+    )
 
 
 class ChapterExportData(BaseModel):
@@ -109,6 +113,10 @@ class WritingStyleExportData(BaseModel):
     description: Optional[str] = None
     prompt_content: str
     order_index: int = 0
+    # issue #254 P2（1.4.0）：项目画像的结构化块，仅在导出端显式开启
+    # `include_style_profile` 时出现。内容为 profile_json 的解析结果 +
+    # profile_version + prompt_content/description/是否项目画像；锚点不导出。
+    profile: Optional[Dict[str, Any]] = None
 
 
 class GenerationHistoryExportData(BaseModel):
@@ -208,7 +216,7 @@ class ProjectDefaultStyleExportData(BaseModel):
 
 class ProjectExportData(BaseModel):
     """项目完整导出数据"""
-    version: str = "1.3.0"  # 升级版本号（1.2.0 携带世界设定同步凭证；1.3.0 携带 world_facts，issue #242）
+    version: str = "1.4.0"  # 1.2.0 携带世界设定同步凭证；1.3.0 携带 world_facts（#242）；1.4.0 可携带项目画像块（#254 P2）
     export_time: str
     project: Dict[str, Any]
     chapters: List[ChapterExportData] = []

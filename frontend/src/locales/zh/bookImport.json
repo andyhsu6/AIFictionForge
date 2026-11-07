@@ -79,6 +79,7 @@
       "career_system": "职业体系生成",
       "characters": "角色与组织生成",
       "relationship_extraction": "原文关系抽取",
+      "style_profile": "文笔画像抽取",
       "world_building": "世界观生成"
     },
     "titleGenerating": "正在为您生成并导入项目内容",

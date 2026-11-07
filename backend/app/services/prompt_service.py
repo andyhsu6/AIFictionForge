@@ -3036,6 +3036,54 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ❌ 使用 markdown 或代码块
 </constraints>"""
 
+    # 拆书导入专用：从分层抽样原文归纳"可量化的文笔画像"（只归纳不创作，禁止引文与专名）。
+    # 输出由 style_profile.validate_style_profile 校验、render_style_profile 确定性渲染。
+    BOOK_IMPORT_STYLE_PROFILE = """<system>
+你是资深的小说文笔分析师。你的任务是从样本原文中归纳可量化的文笔特征，只归纳、不创作。
+</system>
+
+<task>
+阅读下方样本，为这本书生成一份结构化文笔画像，供后续章节生成时模仿语感。
+</task>
+
+<rules>
+1. 只归纳样本中反复出现的特征：不评价好坏、不设计情节、不补全样本里没有出现过的写法。
+2. 严禁输出原文引文、角色名、书名、地名或任何专有名词；证据只允许写章号。
+3. do/dont 各 3-6 条，每条不超过 40 字，必须可观察可执行（含数字、比例或明确操作）；禁止只写「优美/生动/流畅/细腻/华丽」这类空泛形容词。
+4. rhetoric 0-8 条，每条 8 字以内，只写修辞手法的名称与用法。
+5. 比例字段用 0-1 的小数；句长与段落长度用字符数；不确定的数值按样本统计估计，不要填 0。
+6. 用 confidence（0-1）反映样本对全书的代表性。
+7. 整个 JSON 不超过 1500 字；不要输出 markdown、代码块或任何解释文字，只输出一个 JSON 对象。
+</rules>
+
+<input>
+【项目信息】
+书名：{title}
+类型：{genre}
+主题：{theme}
+叙事视角：{narrative_perspective}
+【样本范围】
+{sample_meta}
+【原文样本】
+{sampled_text}
+</input>
+
+<output>
+只输出下面的 JSON 对象，字段名与结构必须完全一致，不得增删字段：
+{{
+  "version": 1,
+  "confidence": 0.0,
+  "metrics": {{"avg_sentence_chars": 0, "median_sentence_chars": 0, "short_sentence_ratio": 0.0, "dialogue_ratio": 0.0, "paragraph_chars_p50": 0}},
+  "narrative": {{"pov": "视角与人称", "tense": "时态", "distance": "叙述距离（贴近人物/冷静旁观）"}},
+  "diction": {{"register": "语体（书面/口语/文白夹杂）", "concreteness": "具象程度", "idiom_density": "成语与套语密度"}},
+  "dialogue": {{"attribution": "说话人标注方式", "tag_density": "对话标签密度"}},
+  "rhetoric": ["修辞手法"],
+  "do": ["可量化的写作要求"],
+  "dont": ["可量化的禁止项"],
+  "evidence_chapters": [1]
+}}
+</output>"""
+
     @staticmethod
     def format_prompt(template: str, content_language: Optional[GenerationLanguage] = None, **kwargs) -> str:
         """
@@ -3358,6 +3406,15 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
                 "parameters": [
                     "title", "genre", "theme", "narrative_perspective",
                     "start_chapter", "end_chapter", "expected_count", "chapters_text"
+                ]
+            },
+            "BOOK_IMPORT_STYLE_PROFILE": {
+                "name": "拆书导入-文笔画像抽取",
+                "category": "拆书导入",
+                "description": "从分层抽样的原文样本归纳可量化的文笔画像（只归纳不创作，禁止引文与专名）",
+                "parameters": [
+                    "title", "genre", "theme", "narrative_perspective",
+                    "sampled_text", "sample_meta"
                 ]
             },
             "CHARACTERS_BATCH_GENERATION": {

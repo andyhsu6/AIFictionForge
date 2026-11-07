@@ -15,6 +15,10 @@ class WritingStyle(Base):
     preset_id = Column(String(50), comment="预设风格ID：natural/classical/modern等")
     description = Column(Text, comment="风格描述")
     prompt_content = Column(Text, nullable=False, comment="风格提示词内容")
+    # issue #254 P1：结构化画像（JSON）。机器画像写入；用户编辑后保留最近一次
+    # 机器结构，`source` 字段区分 model/local/user_edited。
+    profile_json = Column(Text, comment="结构化文笔画像(JSON)")
+    profile_version = Column(Integer, comment="画像结构版本")
     order_index = Column(Integer, default=0, comment="排序序号")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")

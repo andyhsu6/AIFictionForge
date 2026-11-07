@@ -177,6 +177,7 @@ export default interface Resources {
         "career_system": "职业体系生成",
         "characters": "角色与组织生成",
         "relationship_extraction": "原文关系抽取",
+        "style_profile": "文笔画像抽取",
         "world_building": "世界观生成"
       },
       "titleGenerating": "正在为您生成并导入项目内容",
@@ -1301,6 +1302,7 @@ export default interface Resources {
         "creatingProject": "正在创建项目...",
         "doneWithFailures": "⚠️ 导入完成，但有 {{failed_count}} 个生成步骤失败，可点击重试",
         "extractingRelationships": "🔗 正在从原文抽取人物关系...",
+        "extractingStyleProfile": "🖊️ 正在从原文抽取文笔画像...",
         "generatingCareers": "💼 正在生成职业体系...",
         "generatingCharacters": "👥 正在生成角色与组织...",
         "generatingWorld": "🌍 正在生成世界观...",
@@ -1319,11 +1321,18 @@ export default interface Resources {
         "retryRelationships": "🔄 正在重试原文关系抽取...",
         "retryRelationshipsDone": "✅ 原文关系抽取重试成功",
         "retryRelationshipsFailed": "⚠️ 原文关系抽取重试失败：{{error}}",
+        "retryStyleProfile": "🔄 正在重试文笔画像抽取...",
+        "retryStyleProfileDone": "✅ 文笔画像重试成功",
+        "retryStyleProfileFailed": "⚠️ 文笔画像重试失败：{{error}}",
         "retryWorld": "🔄 正在重试世界观生成...",
         "retryWorldDone": "✅ 世界观重试成功",
         "retryWorldFailed": "⚠️ 世界观重试失败：{{error}}",
         "savedDb": "数据保存完成",
         "savingDb": "正在保存到数据库...",
+        "styleProfileDone": "🖊️ 文笔画像抽取完成（置信度 {{confidence}}）",
+        "styleProfileEditedKept": "✋ 检测到用户已编辑画像，本次未覆盖",
+        "styleProfileFailed": "⚠️ 文笔画像抽取失败：{{error}}，将继续后续步骤",
+        "styleProfileSkipped": "🖊️ 原文样本不足，已跳过文笔画像抽取",
         "worldAiGenerating": "🌍 AI正在生成世界观...",
         "worldDone": "🌍 世界观生成完成",
         "worldFailed": "⚠️ 世界观生成失败：{{error}}，将继续后续步骤",
@@ -1610,6 +1619,7 @@ export default interface Resources {
       "polish_start_before_end": "起始位置必须小于结束位置",
       "preset_active_delete_blocked": "无法删除激活中的预设，请先激活其他预设",
       "preset_changed": "预设内容在激活校验期间已发生变化，请重新激活",
+      "profile_preset_reserved": "profile: 前缀为文笔画像保留标识，不能手动创建",
       "provider_not_configured": "未配置提供商 {{provider}}，无法使用该提供商发起请求",
       "qq_smtp_host": "QQ 邮箱 SMTP 主机必须为 smtp.qq.com",
       "relationship_type_name_empty": "关系类型名称不能为空",
@@ -4024,6 +4034,15 @@ export default interface Resources {
     }
   },
   "writingStyles": {
+    "anchor": {
+      "chars": "字符预算",
+      "count": "条数",
+      "enabled": "生成时注入原文语感锚点",
+      "save": "保存锚点设置",
+      "saveFailed": "锚点设置保存失败",
+      "saved": "锚点设置已保存",
+      "title": "原文语感锚点"
+    },
     "buttons": {
       "cancel": "取消",
       "create": "创建",
@@ -4092,6 +4111,31 @@ export default interface Resources {
         "requirements": "写作风格要求：\n1. 营造紧张压迫的氛围\n2. 多用短句加快节奏\n3. 善于设置悬念和伏笔\n4. 注重细节描写，为推理埋下线索"
       }
     },
+    "profile": {
+      "apply": "应用",
+      "applyFailed": "应用画像失败",
+      "applySuccess": "画像已更新",
+      "cancel": "取消",
+      "confidence": "置信度",
+      "degraded": "本次抽取使用本地统计降级结果，仅供参考",
+      "diffTitle": "重新抽取文笔画像",
+      "keptByUser": "检测到你已手动编辑过画像，未覆盖；如需覆盖请勾选“覆盖我的手动编辑”",
+      "metrics": {
+        "avgSentence": "平均句长（字）",
+        "dialogueRatio": "对话占比",
+        "paragraphMedian": "段落长度中位（字）",
+        "shortSentenceRatio": "短句占比"
+      },
+      "newPrompt": "重新抽取结果",
+      "oldPrompt": "当前内容",
+      "overwriteEdited": "覆盖我的手动编辑",
+      "reextract": "重新抽取",
+      "reextractFailed": "重新抽取失败",
+      "sample": "样本范围",
+      "setDefault": "同时设为默认风格",
+      "skipped": "原文样本不足，无法重新抽取画像"
+    },
+    "profileHint": "由拆书导入自动抽取的本书文笔特征，可编辑；编辑后不再自动覆盖",
     "tag": {
       "default": "默认"
     },
@@ -4109,7 +4153,9 @@ export default interface Resources {
     },
     "type": {
       "custom": "自定义",
-      "preset": "预设"
+      "preset": "预设",
+      "profile": "文笔画像",
+      "profileEdited": "文笔画像（已编辑）"
     }
   }
 }

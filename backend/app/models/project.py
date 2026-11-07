@@ -1,5 +1,5 @@
 """项目数据模型"""
-from sqlalchemy import Column, String, Text, DateTime, Integer, CheckConstraint
+from sqlalchemy import Column, String, Text, DateTime, Integer, Boolean, CheckConstraint
 from sqlalchemy.sql import func
 from app.database import Base
 import uuid
@@ -41,6 +41,20 @@ class Project(Base):
     chapter_count = Column(Integer, comment="章节数量")
     narrative_perspective = Column(String(50), comment="叙事视角：first_person/third_person/omniscient")
     character_count = Column(Integer, default=5, comment="角色数量")
+
+    # issue #254 P1：原文语感锚点注入选项（项目级默认，可关闭/调预算）
+    style_anchor_enabled = Column(
+        Boolean, nullable=False, default=True, server_default="1",
+        comment="生成时是否注入本书原文语感锚点",
+    )
+    style_anchor_chars = Column(
+        Integer, nullable=False, default=800, server_default="800",
+        comment="锚点总字符预算（上限 2000）",
+    )
+    style_anchor_count = Column(
+        Integer, nullable=False, default=3, server_default="3",
+        comment="锚点条数（2-4）",
+    )
 
     # 封面字段
     cover_image_url = Column(String(1000), comment="封面图片访问地址")

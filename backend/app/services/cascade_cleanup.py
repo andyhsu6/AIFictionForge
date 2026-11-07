@@ -27,6 +27,8 @@ from app.models.relationship import (
     RelationshipType,
     RelationshipTypeLink,
 )
+from app.models.writing_style import WritingStyle
+from app.services.style_profile import profile_preset_id
 
 
 def _dedupe_ids(values: Optional[Iterable[str]]) -> list[str]:
@@ -215,13 +217,15 @@ async def delete_project_children(
     - 删除 plot_analysis / story_memories / analysis_tasks / regeneration_tasks
       （按 project_id）；
     - `include_default_styles=True`（默认，项目删除）时一并删除
-      project_default_styles；覆盖导入传入 `False`，因为项目仍然存活，
-      其默认写作风格不是悬空行，必须保留；
+      project_default_styles 与该项目画像行（`preset_id == profile:<project_id>`，
+      issue #254；画像属于项目，不清理会留下用户级孤儿）；覆盖导入传入 `False`，
+      因为项目仍然存活，其默认写作风格与画像行都不是悬空行，必须保留（复用/更新同一行）；
     - `generation_history.chapter_id` 置空（该项目所有章节即将被删除）；
     - 删除项目下所有角色关系对应的类型关联行。
     """
     counts = {
         "project_default_styles": 0,
+        "style_profiles": 0,
         "plot_analysis": 0,
         "story_memories": 0,
         "analysis_tasks": 0,
@@ -236,6 +240,15 @@ async def delete_project_children(
         counts["project_default_styles"] = (
             await db.execute(
                 delete(ProjectDefaultStyle).where(ProjectDefaultStyle.project_id == project_id)
+            )
+        ).rowcount or 0
+        # 画像行属于项目（issue #254）：项目删除时一并清理；覆盖导入走 False 分支，
+        # 保留画像行供导入流程复用/更新
+        counts["style_profiles"] = (
+            await db.execute(
+                delete(WritingStyle).where(
+                    WritingStyle.preset_id == profile_preset_id(project_id)
+                )
             )
         ).rowcount or 0
     counts["plot_analysis"] = (
