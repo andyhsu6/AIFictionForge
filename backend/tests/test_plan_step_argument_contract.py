@@ -695,6 +695,38 @@ def test_validate_plan_rejects_career_create_without_stages():
     assert "stages" in str(exc_info.value)
 
 
+def test_validate_plan_rejects_foreshadow_create_without_title_or_content():
+    """运行期报「创建伏笔需要 title 和 content」，提案期必须先拒。
+
+    真实失败形状：模型把内容写进 note，data 留空 `{}`，六步计划前两步 update
+    成功、第三步 create 才炸，用户看到的是「执行到一半失败」。
+    """
+    step = {
+        "id": "s7", "tool": "manage_foreshadow",
+        "arguments": {"action": "create", "data": {}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "s7" in message
+    assert "title" in message
+    assert "content" in message
+
+
+def test_validate_plan_accepts_foreshadow_create_with_required_fields():
+    step = {
+        "id": "s8", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "create",
+            "data": {"title": "placeholder title", "content": "placeholder content"},
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["data"]["title"] == "placeholder title"
+
+
 def test_validate_plan_accepts_relationship_create_and_rejects_unknown_key():
     """(i5) 关系 create 的 character_from_id/character_to_id 合法；data.foo 拒绝。"""
     step = {

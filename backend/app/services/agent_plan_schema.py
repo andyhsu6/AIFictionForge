@@ -58,6 +58,10 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "end_position/user_instructions。"
     '示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"update",'
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
+    '新建条目示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"create",'
+    '"data":{"title":"<伏笔标题>","content":"<伏笔内容>"}}}。'
+    "note 只向用户说明这一步做什么，不会落库；"
+    "所有要写进数据库的字段必须放在 arguments.data 内，create 步骤缺少必填字段会在提案期被拒。"
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
     "优先 action=\"abandon\"（保留痕迹，原因放 data.reason），"
     "确需彻底移除才用 action=\"delete\"；foreshadow_id 必须是条目自身的 ID。"
@@ -190,6 +194,15 @@ _PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
         "create": {
             field: "创建职业需要 data.name、data.type（main 或 sub）和 data.stages（非空阶段列表）"
             for field in ("name", "type", "stages")
+        },
+    },
+    "manage_foreshadow": {
+        "create": {
+            field: (
+                "创建伏笔需要 data.title 和 data.content；"
+                "只写在 note 里不够，note 不会落库"
+            )
+            for field in ("title", "content")
         },
     },
 }
