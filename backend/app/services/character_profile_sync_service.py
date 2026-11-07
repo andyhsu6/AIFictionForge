@@ -1736,6 +1736,9 @@ class CharacterProfileSyncService:
                     "updated": False,
                     "fields_updated": 0,
                     "fields_preserved": 0,
+                    "fields_rejected": 0,
+                    "claims_added": 0,
+                    "claims_rejected": 0,
                     "skipped": [{"reason": "world_sync_failed", "error": str(exc)[:200]}],
                     "through_chapter": int(through_chapter or 0),
                 }
@@ -1817,14 +1820,12 @@ class CharacterProfileSyncService:
         }
 
         async def _apply(response: Any) -> bool:
-            facts_updated = False
             if isinstance(response, dict):
                 valid_claims, rejected = validate_world_facts_claims(
                     response.get("facts"), chapter_texts
                 )
-                if valid_claims or rejected:
-                    stats["claims_added"] += len(valid_claims)
-                    stats["claims_rejected"] += rejected
+                stats["claims_added"] += len(valid_claims)
+                stats["claims_rejected"] += rejected
                 if valid_claims:
                     project.world_facts = json.dumps(
                         merge_world_facts(
@@ -1832,12 +1833,12 @@ class CharacterProfileSyncService:
                         ),
                         ensure_ascii=False,
                     )
-                    facts_updated = True
             payload = response.get("world") if isinstance(response, dict) else None
             if not isinstance(payload, dict):
-                if not facts_updated:
-                    logger.warning("世界设定返回结构异常，跳过该批次")
-                return facts_updated
+                # facts 已在上方持久化；但世界字段没有写入，本批章节不能算"已同步"，
+                # 返回 False 让水位停在这里、下一轮补写（否则字段更新会永久丢失）。
+                logger.warning("世界设定返回结构异常，跳过该批次")
+                return False
             _apply_profile_values(
                 project,
                 payload,

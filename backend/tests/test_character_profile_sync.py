@@ -1046,3 +1046,66 @@ def test_render_profiles_omits_organization_personality():
     rendered = _render_profiles([org])
     assert "personality" not in rendered
     assert "background" in rendered
+
+
+async def test_world_facts_only_response_does_not_advance_watermark(db_session):
+    """world 结构缺失但 facts 合法：facts 落库、字段不写、水位不前进（下一轮补写）。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦由占位议会统治。")])
+    ai = FakeAIService(
+        {
+            "facts": [
+                {
+                    "field": "world_rules",
+                    "text": "占位议会统治占位城邦",
+                    "evidence": [{"chapter": 1, "quote": "占位城邦由占位议会统治"}],
+                }
+            ]
+        }
+    )
+
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    project = await _project(db_session)
+    assert project.world_profile_synced_through_chapter == 0
+    assert project.world_time_period is None
+    assert project.ai_world_profile_snapshot is None
+    assert stats["claims_added"] == 1
+    assert stats["claims_rejected"] == 0
+    assert json.loads(project.world_facts)[0]["text"] == "占位议会统治占位城邦"
+
+
+async def test_world_sync_merges_valid_claims_and_rejects_invalid(db_session):
+    """合法 claim 合并进 world_facts；引文对不上的 claim 计入 claims_rejected。"""
+    await _seed(db_session, chapters=[(1, "第1章占位正文。占位城邦由占位议会统治。")])
+    payload = _world_payload(
+        world_time_period="占位纪元第七年",
+        world_location="占位城邦",
+        world_atmosphere="占位氛围",
+        world_rules="占位议会统治占位城邦",
+    )
+    payload["facts"] = [
+        {
+            "field": "world_rules",
+            "text": "占位议会统治占位城邦",
+            "evidence": [{"chapter": 1, "quote": "占位城邦由占位议会统治"}],
+        },
+        {
+            "field": "world_rules",
+            "text": "占位自造事实",
+            "evidence": [{"chapter": 1, "quote": "占位黑森林"}],
+        },
+    ]
+    ai = FakeAIService(payload)
+
+    stats = await character_profile_sync_service.sync_world(
+        db=db_session, user_id=USER_ID, project_id=PROJECT_ID, through_chapter=1, ai_service=ai
+    )
+
+    project = await _project(db_session)
+    assert project.world_profile_synced_through_chapter == 1
+    assert stats["claims_added"] == 1
+    assert stats["claims_rejected"] == 1
+    facts = json.loads(project.world_facts)
+    assert [fact["text"] for fact in facts] == ["占位议会统治占位城邦"]

@@ -27,7 +27,6 @@ EVIDENCE_KEYS = {
     "world_rules": "rules",
 }
 
-NOT_MENTIONED = "原文未提及"
 QUOTE_MIN_LEN = 8
 QUOTE_MAX_LEN = 60
 FACT_TEXT_MAX_LEN = 400
@@ -115,6 +114,9 @@ def validate_world_facts_claims(
 
     事实必须带至少一条可回查证据：章节号在给定范围内，引文逐字出现在该章
     正文里。非法 claim 直接丢弃（不阻塞其余批次写入），由调用方统计。
+
+    引文长度 8-60 与同步提示词规则 5 联动：模型返回超长逐字引文会被判非法，
+    这是预期行为（防止整段复制），不是 bug。
     """
     if not isinstance(claims, list):
         return [], 0
