@@ -1036,6 +1036,41 @@ async def _write_final_state(
         )
 
 
+async def _preflight_steps(
+    handle: _PlanHandle, registry: ProjectAgentToolRegistry
+) -> "str | None":
+    """执行前干跑每一步的只读预览，任何一步失败就整份拒绝。
+
+    计划一旦开始执行就逐步写库：实测 25 步计划在第 8 步失败，前 7 步已经把项目
+    数据改掉了。这里把所有步骤先过一遍 `preview`（只读，不落库），把「执行到一半
+    才失败」变成「一行都没写就失败」。
+
+    不参与干跑的：只读工具（本来就不写库）、MCP 工具（没有本地预览实现）。
+    跨步依赖不会误报：计划已禁止引用前序步骤新产生的 ID。
+    """
+    for index, step in enumerate(handle.steps, start=1):
+        if handle.cancel_requested:
+            # 取消在预检期间到达：直接交给 _run_step_loop 按取消路径收尾，
+            # 不要在用户已经放弃之后继续跑完整份预览。
+            return None
+        name = str(step.get("tool") or "")
+        if not name:
+            handle.failed_at_step = index
+            return f"第 {index} 步预检未通过：缺少 tool"
+        try:
+            tool = registry.get(name)
+        except ValueError:
+            continue  # MCP 或未注册工具：没有本地预览，交给执行期
+        if not tool.requires_confirmation:
+            continue  # 只读工具不写库
+        try:
+            await registry.preview(name, step.get("arguments") or {})
+        except Exception as exc:  # noqa: BLE001 —— 预检失败即整份拒绝
+            handle.failed_at_step = index
+            return f"第 {index} 步预检未通过，尚未修改任何数据：{exc}"
+    return None
+
+
 async def _run_plan_steps(
     handle: _PlanHandle, factory: async_sessionmaker
 ) -> "tuple[str, str]":
@@ -1058,6 +1093,9 @@ async def _run_plan_steps(
         async with factory() as db:
             project = await verify_project_access(handle.project_id, handle.user_id, db)
             registry = ProjectAgentToolRegistry(project, db)
+            preflight = await _preflight_steps(handle, registry)
+            if preflight:
+                return "failed", _clip(preflight, 200)
             return await _run_step_loop(handle, factory, db, registry)
     except ApiError as exc:
         return "failed", _clip(f"项目权限校验失败：{exc}", 200)

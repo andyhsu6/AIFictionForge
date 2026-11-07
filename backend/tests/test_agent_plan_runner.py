@@ -378,6 +378,44 @@ async def test_second_step_failure_stops_plan(env, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_preflight_failure_writes_nothing(env, monkeypatch):
+    """执行前干跑：任何一步预览失败 ⇒ 一步都不执行，项目数据零改动。
+
+    真实背景：25 步计划在第 8 步才失败，前 7 步已经写进项目。预检把失败点
+    提前到「批准之后、第一次写入之前」。
+    """
+    executed: list[str] = []
+    real_execute = ProjectAgentToolRegistry.execute
+
+    async def spy_execute(self, name, arguments):
+        executed.append(name)
+        return await real_execute(self, name, arguments)
+
+    monkeypatch.setattr(ProjectAgentToolRegistry, "execute", spy_execute)
+
+    steps = [
+        plan_step(
+            1, tool="manage_foreshadow", action="create",
+            arguments={
+                "action": "create",
+                "data": {"title": "placeholder title", "content": "placeholder content"},
+            },
+        ),
+        plan_step(
+            2, tool="manage_foreshadow", action="update",
+            arguments={"action": "update", "data": {"target_resolve_chapter_number": 60}},
+        ),
+    ]
+    result = await start_plan(env, steps)
+
+    assert executed == []                                   # 一行都没写
+    assert result.plan.status == "failed"
+    assert result.plan.progress_details["failed_at_step"] == 2
+    assert result.plan.progress_details["steps_done"] == 0
+    assert "预检未通过" in (result.plan.status_message or "")
+
+
+@pytest.mark.anyio
 async def test_same_user_plans_run_one_at_a_time(env, monkeypatch):
     """per-user 信号量=1：同一用户同时只跑一个计划（架构计划 §3）。"""
     events: list[str] = []
@@ -440,9 +478,21 @@ def install_fake_launcher(monkeypatch, env, on_launch=None, *, registry_calls=No
             "before": {}, "after": {"status": "pending"}, "resources": ["tasks"],
         }
 
+    async def fake_preview(self, name, arguments):
+        """与 fake_execute 配对：预检同样走这个夹具，不碰真实项目数据。"""
+        return {
+            "label": f"launch {(arguments or {}).get('action') or name}",
+            "changes": {},
+            "resources": ["tasks"],
+        }
+
     monkeypatch.setattr(
         "app.services.project_agent_operational_tools.ProjectAgentOperationalTools.execute",
         fake_execute,
+    )
+    monkeypatch.setattr(
+        "app.services.project_agent_operational_tools.ProjectAgentOperationalTools.preview",
+        fake_preview,
     )
 
 
