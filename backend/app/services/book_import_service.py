@@ -685,6 +685,17 @@ class BookImportService:
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
             statistics["generated_entities"] = generated_entities
+            if generated_world == 0 and payload.import_mode != "append":
+                # 非流式路径没有 failed_steps 通道（SSE 路径会记失败步骤并允许重试），
+                # 至少显式告知调用方世界设定没有任何字段写入，避免"成功但空设定"
+                # 被当成正常结果（issue #242）。append 模式 0 条属正常（无需补写）。
+                warnings.append(
+                    BookImportWarning(
+                        code="import.warning.worldExtractionFailed",
+                        message="世界观抽取未写入任何字段，可稍后重试",
+                        level="warning",
+                    )
+                )
 
             skipped_report = _finalize_skipped_chapters(skipped)
             statistics["skipped_chapters"] = skipped_report

@@ -177,6 +177,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     # 按解析口径拆分（同 import.task.chapterStructures*）：Tail 为实际触发变体
     # （trim 前提即 tail 模式且选中数 <= 50），Full 仅为对称注册；kept 数值参数
     # 同时承担模板中的末章数与保留章数，zh 与拆分前原文案字节一致。
+    "import.warning.worldExtractionFailed": ("世界观抽取未写入任何字段，可稍后重试", 200),
     "import.warning.filteredChaptersFull": ("已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
     "import.warning.filteredChaptersTail": ("已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）", 200),
     "internal.agent_execution_failed": ("灵创创作助手执行失败：{{error}}", 200),

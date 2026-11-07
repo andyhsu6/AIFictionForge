@@ -1365,7 +1365,8 @@ export default interface Resources {
         "chapterTooShort": "章节「{{title}}」内容较短，建议检查切分结果",
         "duplicateTitles": "检测到重复章节标题「{{title}}」共 {{occurrences}} 次",
         "filteredChaptersFull": "已按解析配置仅保留整本 {{kept}} 章用于导入（原始识别 {{detected}} 章）",
-        "filteredChaptersTail": "已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）"
+        "filteredChaptersTail": "已按解析配置仅保留末{{kept}}章 {{kept}} 章用于导入（原始识别 {{detected}} 章）",
+        "worldExtractionFailed": "世界观抽取未写入任何字段，可稍后重试"
       }
     },
     "internal": {

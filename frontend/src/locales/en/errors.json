@@ -143,7 +143,8 @@
       "chapterTooShort": "Chapter \"{{title}}\" is quite short; check the chapter splitting result",
       "duplicateTitles": "Duplicate chapter title \"{{title}}\" detected {{occurrences}} times",
       "filteredChaptersFull": "Kept {{kept}} chapters (full book) for import per the parsing configuration ({{detected}} chapters originally detected)",
-      "filteredChaptersTail": "Kept only the last {{kept}} chapters for import per the parsing configuration ({{detected}} chapters originally detected)"
+      "filteredChaptersTail": "Kept only the last {{kept}} chapters for import per the parsing configuration ({{detected}} chapters originally detected)",
+      "worldExtractionFailed": "World extraction produced no fields; retry later"
     }
   },
   "internal": {
