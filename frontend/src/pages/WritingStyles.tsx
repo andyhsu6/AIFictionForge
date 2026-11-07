@@ -271,12 +271,16 @@ export default function WritingStyles() {
     if (!currentProject?.id) return;
     setReextractApplying(true);
     try {
-      await writingStyleApi.reextractProfile(currentProject.id, {
+      const result = await writingStyleApi.reextractProfile(currentProject.id, {
         dry_run: false,
         overwrite_edited: overwriteEdited,
         set_default: setDefault,
       });
-      message.success(t('profile.applySuccess'));
+      if (result.updated === false && result.kept_reason === 'user_edited') {
+        message.warning(t('profile.keptByUser'));
+      } else {
+        message.success(t('profile.applySuccess'));
+      }
       setReextractOpen(false);
       await loadStyles();
     } catch {
@@ -690,7 +694,11 @@ export default function WritingStyles() {
                   key="apply"
                   type="primary"
                   loading={reextractApplying}
-                  disabled={reextractLoading || !reextractResult}
+                  disabled={
+                    reextractLoading ||
+                    !reextractResult ||
+                    (reextractResult.kept_reason === 'user_edited' && !overwriteEdited)
+                  }
                   onClick={handleApplyReextract}
                 >
                   {t('profile.apply')}

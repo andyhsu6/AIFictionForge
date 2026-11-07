@@ -44,6 +44,7 @@ from app.services.style_profile import (
     PROFILE_STYLE_TYPE,
     is_profile_preset_id,
     profile_preset_id,
+    validate_style_profile,
 )
 
 logger = get_logger(__name__)
@@ -205,7 +206,8 @@ class ImportExportService:
             logger.info(f"导出项目默认风格: {project_default_style.style_name}")
         
         export_data = ProjectExportData(
-            version=ImportExportService.CURRENT_VERSION,
+            # 未携带画像块时保持 1.3.0（旧导入端仍可接受）；开启画像导出才升 1.4.0
+            version="1.4.0" if include_style_profile else "1.3.0",
             export_time=datetime.utcnow().isoformat(),
             project=project_data,
             chapters=chapters,
@@ -1320,6 +1322,15 @@ class ImportExportService:
 
         description = profile_block.get("description") or style_data.get("description")
         raw_profile = profile_block.get("profile_json")
+        if isinstance(raw_profile, dict):
+            try:
+                # 出口校验不等于入口安全：手工构造/被改包也要过同一套结构校验
+                validate_style_profile(raw_profile)
+            except ValueError as exc:
+                logger.warning(
+                    f"导入画像结构校验失败，降级为仅提示词（项目 {project_id}）：{exc}"
+                )
+                raw_profile = None
         profile_json = (
             json.dumps(raw_profile, ensure_ascii=False)
             if isinstance(raw_profile, dict)

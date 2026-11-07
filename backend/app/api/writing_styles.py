@@ -398,6 +398,15 @@ async def reextract_project_profile(
             parsed = None
         old_profile = parsed if isinstance(parsed, dict) else None
 
+    # 手改保护在预览阶段也要可见：前端据此提示并禁用"应用"
+    kept_reason = (
+        "user_edited"
+        if existing is not None
+        and existing.style_type == PROFILE_EDITED_STYLE_TYPE
+        and not payload.overwrite_edited
+        else None
+    )
+
     diff = {
         "skipped": False,
         "changed": old_prompt_content != new_prompt_content,
@@ -408,6 +417,7 @@ async def reextract_project_profile(
         "description": description,
         "confidence": confidence,
         "degraded": degraded,
+        "kept_reason": kept_reason,
     }
 
     if payload.dry_run:

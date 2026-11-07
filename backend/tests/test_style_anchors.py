@@ -8,6 +8,7 @@ import asyncio
 import os
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
@@ -15,6 +16,7 @@ from app.api.projects import update_project
 from app.database import Base
 from app.models.chapter import Chapter
 from app.models.project import Project
+from app.models.project_style_anchor import ProjectStyleAnchor
 from app.schemas.project import ProjectUpdate
 from app.services.style_anchors import (
     append_project_style_anchors,
@@ -223,5 +225,33 @@ def test_update_project_clamps_anchor_settings():
         project = await db.get(Project, "project-a")
         assert project.style_anchor_chars == 2000
         assert project.style_anchor_count == 4
+
+    _run(scenario)
+
+
+def test_create_anchors_with_empty_ranges_clears_previous_rows():
+    """重抽后样本区间为空时不能残留上一轮锚点（回归 MAJOR）。"""
+
+    async def scenario(db):
+        await seed_project(db, chapters=1)
+        created = await create_project_style_anchors(
+            db,
+            project_id="project-a",
+            ranges=[{"chapter": 1, "start": 0, "end": 160}],
+        )
+        assert created > 0
+
+        cleared = await create_project_style_anchors(
+            db, project_id="project-a", ranges=[]
+        )
+        assert cleared == 0
+        rows = (
+            await db.execute(
+                select(ProjectStyleAnchor).where(
+                    ProjectStyleAnchor.project_id == "project-a"
+                )
+            )
+        ).scalars().all()
+        assert rows == []
 
     _run(scenario)

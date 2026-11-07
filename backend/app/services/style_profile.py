@@ -64,7 +64,10 @@ VAGUE_ADJECTIVES = (
 )
 _QUANTIFIER_RE = re.compile(r"\d|[≤≥><=%]|每|不超|至少|至多|最多|最少|约|倍|控制在")
 # 操作动词：do/dont 条目必须可执行（有量化标记或操作动词，二者皆无则失败）
-_ACTION_VERB_RE = re.compile(r"保持|控制|使用|避免|删去|替换|限制|压缩|展开")
+_ACTION_VERB_RE = re.compile(
+    r"保持|控制|使用|避免|删去|替换|限制|压缩|展开|穿插|跟随|铺垫|收束|采用|优先|"
+    r"禁用|交替|省略|保留|围绕|聚焦|减少|增加|缩短|拉长|多用|少用|多写|少写|不要|不用"
+)
 
 # 原文复述检测：N 字滑窗（去空白/标点后比较），窗口越短越易误报
 SOURCE_OVERLAP_MIN_WINDOW = 24
@@ -304,7 +307,11 @@ def _check_no_quotes(value: Any, path: str = "root") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if key == "source":
-                # 来源标记是受控枚举，不属于模型自由文本
+                # 来源标记必须是受控枚举；任何层级的 source 都不允许承载自由文本
+                if item not in PROFILE_SOURCES:
+                    raise ValueError(
+                        f"{path}.source 必须是 {PROFILE_SOURCES} 之一"
+                    )
                 continue
             _check_no_quotes(item, f"{path}.{key}")
         return
@@ -352,7 +359,7 @@ def detect_source_overlap(
             return
         if isinstance(value, dict):
             for key, item in value.items():
-                if key == "source":
+                if key == "source" and item in PROFILE_SOURCES:
                     continue
                 _walk(item, f"{path}.{key}" if path else str(key))
             return

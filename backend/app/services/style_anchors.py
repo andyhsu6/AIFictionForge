@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from typing import Any, Optional
 
@@ -94,16 +93,12 @@ async def create_project_style_anchors(
     `build_style_sample().meta["ranges"]`。`chapter_contents` 可选：提供时按
     章号取正文，否则从 `Chapter` 表读取。
     """
-    if not ranges:
-        return 0
-
     chapters = (
         await db.execute(select(Chapter).where(Chapter.project_id == project_id))
     ).scalars().all()
     chapter_by_number = {chapter.chapter_number: chapter for chapter in chapters}
     if not chapter_by_number:
         return 0
-
     # 先清旧锚点再判断：重抽后样本区间可能为空，不能残留上一轮定位
     await db.execute(
         delete(ProjectStyleAnchor).where(ProjectStyleAnchor.project_id == project_id)

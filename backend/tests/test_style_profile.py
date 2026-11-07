@@ -330,3 +330,15 @@ def test_validate_source_whitelist():
     data = _profile()
     data["source"] = "local"
     validate_style_profile(data)
+
+
+def test_validate_rejects_nested_source_free_text():
+    """任意层级的 source 都必须是受控枚举，不能借它绕过引文/复述检测。"""
+    data = _profile()
+    data["diction"]["source"] = "“这是一段足够长的原文片段用来绕过检查”"
+    with pytest.raises(ValueError, match="source"):
+        validate_style_profile(data)
+
+    data = _profile()
+    data["diction"]["source"] = "model"
+    validate_style_profile(data)

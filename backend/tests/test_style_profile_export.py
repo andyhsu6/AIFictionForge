@@ -46,8 +46,12 @@ PROFILE_DATA = {
     "diction": {"register": "白话", "concreteness": "具体", "idiom_density": "低"},
     "dialogue": {"attribution": "动作提示", "tag_density": "每4-6句一次"},
     "rhetoric": ["比喻密度低"],
-    "do": ["平均句长 13–19 字"],
-    "dont": ["避免长句堆叠"],
+    "do": ["平均句长 13–19 字", "对话占比约 25%", "每段不超过 120 字"],
+    "dont": [
+        "避免连续 3 句以上超过 40 字",
+        "避免成语堆砌",
+        "避免全知视角插入评论",
+    ],
     "evidence_chapters": [1, 3],
 }
 
@@ -138,7 +142,8 @@ def test_export_default_excludes_project_profile():
         await _seed_source(db)
         exported = (await ImportExportService.export_project("project-a", db)).model_dump()
 
-        assert exported["version"] == ImportExportService.CURRENT_VERSION == "1.4.0"
+        # 未开启画像块时保持 1.3.0（旧导入端兼容）
+        assert exported["version"] == "1.3.0"
         assert _profile_styles(exported) == []
         # 自定义风格仍然导出（隔离只针对画像）
         assert [s["name"] for s in exported["writing_styles"]] == ["自定义风格"]
@@ -512,5 +517,40 @@ def test_backfill_no_candidates_exits_clean():
         assert report["scanned"] == 1
         assert report["candidates"] == 0
         assert report["written"] == 0
+
+    _run(scenario)
+
+
+def test_import_invalid_profile_block_degrades_to_prompt_content_only():
+    """手工构造/被改包的非法 profile 块不能原样落库，降级为只导入提示词。"""
+
+    async def scenario(db):
+        await _seed_source(db)
+        exported = (
+            await ImportExportService.export_project(
+                "project-a", db, include_style_profile=True
+            )
+        ).model_dump()
+        # 破坏画像结构（do 只剩 1 条，校验一定失败）
+        exported["writing_styles"][0]["profile"]["profile_json"] = {
+            "version": 1,
+            "confidence": 0.5,
+            "metrics": {},
+            "do": ["只有一条"],
+            "dont": [],
+        }
+
+        result = await ImportExportService.import_project(exported, db, "user-2")
+        assert result.success, result.message
+        rows = (
+            await db.execute(
+                select(WritingStyle).where(
+                    WritingStyle.preset_id == profile_preset_id(result.project_id)
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].prompt_content  # 提示词仍导入
+        assert rows[0].profile_json is None  # 非法结构被丢弃
 
     _run(scenario)

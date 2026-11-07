@@ -239,6 +239,16 @@ def test_edited_profile_kept_unless_overwrite(monkeypatch):
         assert row.prompt_content == "用户手改内容"
         assert row.style_type == "profile_edited"
 
+        # 预览阶段也要暴露手改保护，前端据此提示并禁用"应用"
+        preview = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(dry_run=True),
+        )
+        assert preview["kept_reason"] == "user_edited"
+        assert preview["old_prompt_content"] == "用户手改内容"
+
         overwritten = await reextract_project_profile(
             project.id,
             make_request(),

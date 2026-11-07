@@ -24,6 +24,8 @@ METRIC_KEYS = (
 
 # 默认相对偏差容差（25%）；超过即告警
 DEFAULT_TOLERANCE = 0.25
+# 绝对差下限：expected 很小时避免相对偏差放大成噪声
+DEFAULT_ABSOLUTE_TOLERANCE = 0.05
 
 # 短句判定上限（含）：与画像提示词口径一致
 SHORT_SENTENCE_MAX_CHARS = 15
@@ -119,11 +121,18 @@ def compare_with_profile(
     profile: dict[str, Any],
     *,
     tolerance: float = DEFAULT_TOLERANCE,
+    absolute_tolerance: float = DEFAULT_ABSOLUTE_TOLERANCE,
 ) -> list[dict[str, Any]]:
-    """比较指标与画像目标，返回超容差的告警列表（不抛）。"""
+    """比较指标与画像目标，返回超容差的告警列表（不抛）。
+
+    同时要求相对偏差与绝对差都超阈值：避免 expected 很小时（如 0.04）
+    一个微小波动就被放大成噪声告警。
+    """
     alerts: list[dict[str, Any]] = []
     for key, expected, actual, deviation in _metric_deviations(metrics, profile):
         if deviation <= tolerance:
+            continue
+        if abs(actual - expected) <= absolute_tolerance:
             continue
         alerts.append(
             {
@@ -145,14 +154,21 @@ def check_text_against_profile(
 ) -> dict[str, Any]:
     """一次性完成统计 + 比较。
 
-    返回 ``{"metrics", "alerts", "score", "ok"}``；``score`` 为
+    返回 ``{"metrics", "alerts", "score", "ok", "compared_metrics"}``；``score`` 为
     ``1 - 平均相对偏差``（夹在 0–1）。无可比较项（空文本/空画像）时
-    ``alerts=[]``、``score=1.0``、``ok=True``。
+    ``alerts=[]``、``score=1.0``、``ok=True``、``compared_metrics=0``——调用方
+    不应把该结果当作"文本与画像一致"的正向证据。
     """
     metrics = compute_text_metrics(text)
     raw = text if isinstance(text, str) else ""
     if not raw.strip():
-        return {"metrics": metrics, "alerts": [], "score": 1.0, "ok": True}
+        return {
+            "metrics": metrics,
+            "alerts": [],
+            "score": 1.0,
+            "ok": True,
+            "compared_metrics": 0,
+        }
 
     deviations = _metric_deviations(metrics, profile)
     alerts = compare_with_profile(metrics, profile, tolerance=tolerance)
@@ -168,4 +184,5 @@ def check_text_against_profile(
         "alerts": alerts,
         "score": round(score, 3),
         "ok": not alerts,
+        "compared_metrics": len(deviations),
     }

@@ -253,6 +253,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         "样本不足 {skipped_no_sample}，失败 {failed}".format(**report),
         flush=True,
     )
+    if args.project_id and report["scanned"] == 0:
+        print(
+            f"错误：未找到项目 {args.project_id}（或无权访问）",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 
