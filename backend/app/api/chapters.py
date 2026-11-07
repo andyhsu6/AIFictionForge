@@ -4180,11 +4180,11 @@ async def execute_batch_generation_in_order(
                             f"🎨 批量生成 - 第{chapter.chapter_number}章文笔一致性告警 "
                             f"{len(batch_style_check['alerts'])} 项"
                         )
-                    if batch_style_check:
-                        # 保留最近一章的自检结果供状态轮询展示（只读）
-                        task.style_check = batch_style_check
-
                     await db_session.refresh(task)
+                    if batch_style_check:
+                        # 必须在 refresh 之后赋值：refresh 会用 DB 值覆盖未提交的
+                        # in-memory 变更（issue #254 审核 BLOCKER）。
+                        task.style_check = batch_style_check
                     if task.status == 'cancelled':
                         logger.info(f"🛑 批量生成任务已被取消，跳过后续处理: {batch_id}")
                         return

@@ -314,3 +314,37 @@ def test_batch_anchor_settings_and_style_check_contract():
         style_check=task.style_check,
     )
     assert status.style_check["available"] is True
+
+
+def test_batch_style_check_persisted_after_refresh():
+    """批量 worker 的赋值必须在 refresh 之后，否则会被 DB 值抹掉（审核 BLOCKER）。"""
+    from app.models.batch_generation_task import BatchGenerationTask
+
+    async def scenario(db):
+        task = BatchGenerationTask(
+            id="batch-persist",
+            project_id="project-a",
+            user_id="user-1",
+            start_chapter_number=1,
+            chapter_count=2,
+            chapter_ids=["c1", "c2"],
+            status="running",
+            total_chapters=2,
+            completed_chapters=0,
+        )
+        db.add(task)
+        await db.commit()
+        task.status = "running"
+        await db.commit()
+
+        # 模拟 worker 顺序：refresh 之后赋值，再随进度 commit
+        await db.refresh(task)
+        task.style_check = {"available": True, "alerts": [], "score": 0.9}
+        task.completed_chapters += 1
+        await db.commit()
+
+        refreshed = await db.get(BatchGenerationTask, "batch-persist")
+        assert refreshed.style_check["available"] is True
+        assert refreshed.completed_chapters == 1
+
+    _run(scenario)
