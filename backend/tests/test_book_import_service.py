@@ -155,3 +155,59 @@ def test_get_active_task_ignores_other_users_and_terminal_states():
     svc._tasks["failed"] = _make_task("failed", status="failed")
 
     assert asyncio.run(svc.get_active_task(user_id="u1")) is None
+
+def _apply_with_generated_world(monkeypatch, generated_world: int, import_mode: str):
+    """跑一遍非流式 apply_import，把成功路径上的重活全部替换成桩。"""
+    import app.services.book_import_service as bis
+    from types import SimpleNamespace
+
+    svc = BookImportService()
+    task = _completed_task(f"t-world-warning-{import_mode}")
+    svc._tasks[task.task_id] = task
+    project = SimpleNamespace(id="proj-world-warning", current_words=0, character_count=0)
+
+    async def _prepare(*args, **kwargs):
+        return project
+
+    async def _outlines(*args, **kwargs):
+        return {}
+
+    async def _chapters(*args, **kwargs):
+        return (0, 0)
+
+    async def _generation(*args, **kwargs):
+        return (generated_world, 0, 0)
+
+    monkeypatch.setattr(svc, "_prepare_project", _prepare)
+    monkeypatch.setattr(svc, "_import_outlines", _outlines)
+    monkeypatch.setattr(svc, "_import_chapters", _chapters)
+    monkeypatch.setattr(svc, "_run_post_import_wizard_generation", _generation)
+    monkeypatch.setattr(bis, "_schedule_profile_sync", lambda *args, **kwargs: None)
+
+    payload = BookImportApplyRequest(
+        project_suggestion=ProjectSuggestion(title="占位导入项目"),
+        chapters=[],
+        import_mode=import_mode,
+    )
+    return asyncio.run(
+        svc.apply_import(
+            task_id=task.task_id,
+            user_id=task.user_id,
+            payload=payload,
+            db=AsyncMock(),
+        )
+    )
+
+
+def test_non_stream_import_warns_when_world_extraction_wrote_nothing(monkeypatch):
+    """create/overwrite：世界抽取 0 字段必须显式告警，不能表现为成功。"""
+    response = _apply_with_generated_world(monkeypatch, 0, "overwrite")
+    assert [warning.code for warning in response.warnings] == [
+        "import.warning.worldExtractionFailed"
+    ]
+
+
+def test_non_stream_append_zero_world_fields_does_not_warn(monkeypatch):
+    """append：0 条新字段属正常（已有设定无需补写），不应误报。"""
+    response = _apply_with_generated_world(monkeypatch, 0, "append")
+    assert response.warnings == []
