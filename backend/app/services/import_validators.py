@@ -324,8 +324,13 @@ def validate_world_building_extraction(data: Any, chapters: Any) -> None:
                     f"字段 {field} 出现空泛标签「{phrase}」：必须写原文中的具体专名，不要套类型模板"
                 )
 
-        # 只允许"整段就写未提及"的豁免；夹带在长文本里的未提及仍按正常字段校验，
-        # 否则自造内容只要带上这四个字就能绕过 evidence 与长度检查。
+        # 只允许"整段就写未提及"的豁免；夹带在段落里的未提及直接拒绝，
+        # 否则自造内容只要带上这四个字就能绕过 evidence 与长度检查（issue #251）。
+        if WORLD_EXTRACTION_NOT_MENTIONED in text and text != WORLD_EXTRACTION_NOT_MENTIONED:
+            raise ValueError(
+                f"字段 {field} 不得在段落中夹带「{WORLD_EXTRACTION_NOT_MENTIONED}」："
+                "要么整段写该标记，要么写具体设定"
+            )
         if text == WORLD_EXTRACTION_NOT_MENTIONED:
             continue
         if len(text) < WORLD_FIELD_MIN_LEN:

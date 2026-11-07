@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 # 世界设定四字段（与 projects 表列名一致）
@@ -31,12 +32,28 @@ QUOTE_MIN_LEN = 8
 QUOTE_MAX_LEN = 60
 FACT_TEXT_MAX_LEN = 400
 RENDER_SEPARATOR = "；"
+SENTENCE_ENDINGS = ("。", "！", "？", "；", "…", "!", "?", ";")
+# 按句末标点拆分（保留标点），用于把整段抽取文归一化为原子 claim
+_CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？；!?;…])\s*")
+
+
+def _split_claim_text(text: str) -> list[str]:
+    """按句末标点把整段文本拆成原子 claim；保留标点以便无损回渲染。"""
+    parts = [part.strip() for part in _CLAIM_SPLIT_RE.split(text) if part.strip()]
+    return parts or [text.strip()]
 
 
 def build_world_facts(
     world_data: dict[str, Any], ai_written: dict[str, str]
 ) -> list[dict[str, Any]]:
-    """把抽取结果整理为可溯源事实（只收 AI 真正写入的字段）。"""
+    """把抽取结果整理为可溯源事实（只收 AI 真正写入的字段）。
+
+    每个字段按句末标点拆成原子 claim（issue #251）：导入 facts 与同步 claim
+    形状一致后，才能用 facts 反向渲染文本而不产生重复。标点保留在 claim 文本里，
+    渲染时按原分隔符可无损还原；quote 落在句内时挂到该句，否则回退挂到整字段
+    （跨句 quote 的对应关系因此是弱保证）。中文标点场景无损；ASCII 标点 + 空格
+    的文本在拆分/重组后可能不逐字还原，属已知限制。
+    """
     raw_evidence = world_data.get("evidence")
     evidence_map = raw_evidence if isinstance(raw_evidence, dict) else {}
     facts: list[dict[str, Any]] = []
@@ -54,10 +71,47 @@ def build_world_facts(
                 quote = item.get("quote")
                 if isinstance(chapter, int) and isinstance(quote, str) and quote.strip():
                     evidence.append({"chapter": chapter, "quote": quote.strip()})
-        facts.append(
-            {"field": field, "text": text.strip(), "evidence": evidence, "source": "original"}
-        )
+        for sentence in _split_claim_text(text.strip()):
+            matched = [entry for entry in evidence if entry["quote"] in sentence]
+            facts.append(
+                {
+                    "field": field,
+                    "text": sentence,
+                    "evidence": matched or evidence,
+                    "source": "original",
+                }
+            )
     return facts
+
+
+def normalize_world_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把历史整段 fact 归一化为原子 claim（issue #251）。
+
+    P1 早期的 world_facts 是「一个字段一条整段文本」，新写入的是句子级 claim。
+    合并/渲染前统一拆分，避免同一句既以整段又以原子形式存在而在渲染时重复。
+    没有 text 的脏条目原样保留，由调用方决定如何处理。
+    """
+    normalized: list[dict[str, Any]] = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        text = fact.get("text")
+        if not isinstance(text, str) or not text.strip():
+            normalized.append(fact)
+            continue
+        base_evidence = [
+            entry for entry in fact.get("evidence") or [] if isinstance(entry, dict)
+        ]
+        for sentence in _split_claim_text(text.strip()):
+            matched = [
+                entry
+                for entry in base_evidence
+                if isinstance(entry.get("quote"), str) and entry["quote"] in sentence
+            ]
+            normalized.append(
+                {**fact, "text": sentence, "evidence": matched or base_evidence}
+            )
+    return normalized
 
 
 def load_world_facts(raw: Optional[str]) -> list[dict[str, Any]]:
@@ -77,6 +131,8 @@ def merge_world_facts(
     existing: list[dict[str, Any]], new: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """按 (field, text) 合并事实：同一条事实追加新证据，不整条丢弃。"""
+    existing = normalize_world_facts(existing)
+    new = normalize_world_facts(new)
     merged: list[dict[str, Any]] = []
     index: dict[tuple[Any, Any], int] = {}
     for item in existing:
@@ -173,7 +229,7 @@ def render_world_facts(
 ) -> dict[str, str]:
     """把事实按字段渲染成文本（用分隔符连接，保持事实顺序）。"""
     grouped: dict[str, list[str]] = {}
-    for fact in facts:
+    for fact in normalize_world_facts(facts):
         if not isinstance(fact, dict):
             continue
         field = fact.get("field")
@@ -184,5 +240,12 @@ def render_world_facts(
     for field, texts in grouped.items():
         seen: set[str] = set()
         unique = [text for text in texts if not (text in seen or seen.add(text))]
-        rendered[field] = RENDER_SEPARATOR.join(unique)
+        parts: list[str] = []
+        for text in unique:
+            # 上一句自带落句标点时视为完整句，直接拼接（导入文可无损还原）；
+            # 否则用分隔符连接，避免原子 claim 粘连成病句。
+            if parts and not parts[-1].endswith(SENTENCE_ENDINGS):
+                parts.append(RENDER_SEPARATOR)
+            parts.append(text)
+        rendered[field] = "".join(parts)
     return rendered

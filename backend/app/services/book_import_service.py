@@ -63,6 +63,7 @@ from app.services.world_facts import (
     build_world_facts,
     load_world_facts,
     merge_world_facts,
+    render_world_facts,
 )
 from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
@@ -2660,9 +2661,16 @@ class BookImportService:
                         build_world_facts(world_data, ai_written),
                     )
                     project.world_facts = json.dumps(merged_facts, ensure_ascii=False)
-                    # 注：append 的文本字段仍沿用"已有优先"保护；claim 级合并只作用于
-                    # facts（world_facts）。导入抽取的 fact 是整字段文本、同步 claim 是
-                    # 原子事实，两者形状不同，混用渲染会让文本重复或覆盖 prose。
+                    # issue #251：导入 facts 已归一化为原子 claim，可按 merge 后的 facts
+                    # 重新渲染 AI 写过的字段；用户手改（当前值 != 快照值）保持不动。
+                    if merge_existing:
+                        for field, text in render_world_facts(merged_facts).items():
+                            current = (getattr(project, field, None) or "").strip()
+                            if current and current != (snapshot.get(field) or ""):
+                                continue
+                            setattr(project, field, text)
+                            snapshot[field] = text
+                        project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
                 # 新建/覆盖导入：一条有效设定都没抽到属于失败，交给上层记失败步骤并重试；
                 # append/重试允许 0 条（已有设定无需补写）。
                 if updated == 0 and not merge_existing:
