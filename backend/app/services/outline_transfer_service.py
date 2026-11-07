@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chapter import Chapter
 from app.models.outline import Outline
 from app.models.project import Project
+from app.services.import_export_service import ImportExportService
 from app.schemas.outline_transfer import (
     OutlineExportDocument,
     OutlineImportDetail,
@@ -36,7 +37,9 @@ class OutlineTransferService:
     """提供大纲文件解析、预览以及原子导入。"""
 
     OUTLINE_FORMAT_VERSION = "1.0.0"
-    PROJECT_FORMAT_VERSIONS = {"1.0.0", "1.1.0"}
+    # 完整项目导出协议版本必须与 ImportExportService 保持一致：
+    # 两处各自硬编码会在协议升级时悄悄拒绝新导出的项目文件（issue #244）。
+    PROJECT_FORMAT_VERSIONS = set(ImportExportService.SUPPORTED_VERSIONS)
     MAX_ITEMS = 5000
 
     @classmethod

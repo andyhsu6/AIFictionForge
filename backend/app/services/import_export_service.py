@@ -46,9 +46,14 @@ logger = get_logger(__name__)
 def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
     """把导入 JSON 里的计数值安全转为非负整数。
 
-    脏数据回退默认值而不是抛错：单个可选字段的类型问题不应中断整次导入
-    （issue #244）。
+    只接受 int 与整数值的十进制字符串：bool（JSON true/false）、非整数浮点、
+    负数与脏数据一律回退默认值，避免 `True -> 1`、`3.9 -> 3` 这类静默变质，
+    也避免单个可选字段的问题中断整次导入（issue #244）。
     """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, float) and not value.is_integer():
+        return default
     try:
         return max(0, int(value))
     except (TypeError, ValueError):
@@ -750,6 +755,14 @@ class ImportExportService:
             world_snapshot = project_data.get("ai_world_profile_snapshot")
             if not isinstance(world_snapshot, str) or not world_snapshot.strip():
                 world_snapshot = None
+            else:
+                # 快照是 JSON 文本：不可解析的脏数据降级为 None（等价"无快照"），
+                # 否则同步侧 _loads_json 会把它静默当成空对象（issue #244）。
+                try:
+                    json.loads(world_snapshot)
+                except (TypeError, ValueError):
+                    warnings.append("世界设定同步快照无法解析，已忽略")
+                    world_snapshot = None
             new_project = Project(
                 user_id=user_id,  # 设置为当前用户ID
                 title=project_data.get("title"),

@@ -24,7 +24,11 @@ def _db_path() -> str:
     return f"/tmp/test_ie_world_sync_{uuid.uuid4().hex}.db"
 
 
-async def _seed_and_export(db_path: str) -> dict:
+async def _seed_and_export(
+    db_path: str,
+    snapshot: str | None = json.dumps({"world_rules": "占位规则"}, ensure_ascii=False),
+    watermark: int = 7,
+) -> dict:
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
         async with engine.begin() as conn:
@@ -40,10 +44,8 @@ async def _seed_and_export(db_path: str) -> dict:
                     world_location="占位城",
                     world_atmosphere="占位氛围",
                     world_rules="占位规则",
-                    ai_world_profile_snapshot=json.dumps(
-                        {"world_rules": "占位规则"}, ensure_ascii=False
-                    ),
-                    world_profile_synced_through_chapter=7,
+                    ai_world_profile_snapshot=snapshot,
+                    world_profile_synced_through_chapter=watermark,
                 )
             )
             await db.commit()
@@ -149,3 +151,58 @@ async def _run_dirty_watermark(src_path: str, dst_path: str) -> None:
     assert result.success, result.message
     assert restored is not None
     assert restored["world_profile_synced_through_chapter"] == 0
+
+def test_round_trip_preserves_null_snapshot_and_zero_watermark():
+    """1.2.0 导出自身也要原样往返 None / 0，而不是只在旧版兼容用例里出现。"""
+    src_path = _db_path()
+    dst_path = _db_path()
+    try:
+        asyncio.run(_run_null_zero_round_trip(src_path, dst_path))
+    finally:
+        for path in (src_path, dst_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _run_null_zero_round_trip(src_path: str, dst_path: str) -> None:
+    exported = await _seed_and_export(src_path, snapshot=None, watermark=0)
+    project_data = exported["project"]
+    assert project_data["ai_world_profile_snapshot"] is None
+    assert project_data["world_profile_synced_through_chapter"] == 0
+
+    result, restored = await _import_into_fresh_db(exported, dst_path)
+    assert result.success, result.message
+    assert restored is not None
+    assert restored["ai_world_profile_snapshot"] is None
+    assert restored["world_profile_synced_through_chapter"] == 0
+
+
+def test_negative_watermark_is_clamped_to_zero():
+    """负数水位不是合法进度：导入时收敛到 0，避免把章节水位推到负数。"""
+    src_path = _db_path()
+    dst_path = _db_path()
+    try:
+        asyncio.run(_run_negative_watermark(src_path, dst_path))
+    finally:
+        for path in (src_path, dst_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _run_negative_watermark(src_path: str, dst_path: str) -> None:
+    exported = await _seed_and_export(src_path)
+    exported["project"]["world_profile_synced_through_chapter"] = -3
+    result, restored = await _import_into_fresh_db(exported, dst_path)
+    assert result.success, result.message
+    assert restored is not None
+    assert restored["world_profile_synced_through_chapter"] == 0
+
+
+def test_outline_transfer_accepts_current_project_export_version():
+    """完整项目导出升级到 1.2.0 后，大纲提取导入不得再拒绝新文件。"""
+    from app.services.outline_transfer_service import OutlineTransferService
+
+    assert "1.2.0" in OutlineTransferService.PROJECT_FORMAT_VERSIONS
+    assert OutlineTransferService.PROJECT_FORMAT_VERSIONS == set(
+        ImportExportService.SUPPORTED_VERSIONS
+    )
