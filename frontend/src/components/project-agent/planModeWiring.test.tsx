@@ -1,8 +1,8 @@
-// Behavioural guard for the default-on plan mode: an agent turn must opt the
-// backend into plan mode, otherwise the model is never offered propose_plan and
-// the multi-step "give a task, approve once, server finishes" flow silently
-// degrades to the old inline behaviour. The panel drives the REAL chatStream, so
-// the assertion is on the actual HTTP request body, not on a source substring.
+// Behavioural guard for the plan-mode wiring: the panel must send the user's
+// choice to the backend, otherwise the model is never offered propose_plan even
+// when the switch is on — or is forced into a plan when it is off. The panel
+// drives the REAL chatStream, so the assertion is on the actual HTTP request
+// body, not on a source substring.
 import { App as AntdApp } from 'antd';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -44,11 +44,36 @@ const conversation = {
   execution_steps: [],
 };
 
+async function sendOneTurn(): Promise<Record<string, unknown>> {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+  } as unknown as Response);
+  vi.stubGlobal('fetch', fetchMock);
+
+  const view = render(
+    <MemoryRouter>
+      <AntdApp>
+        <ProjectAgentPanel projectId="proj-1" mobile={false} mobileOpen={false} onMobileClose={() => {}} />
+      </AntdApp>
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(view.getByRole('textbox'), { target: { value: 'plan a three-step task' } });
+  fireEvent.click(view.getByTestId('composer-send'));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  return JSON.parse(init.body as string) as Record<string, unknown>;
+}
+
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 
 beforeEach(async () => {
+  localStorage.clear();
   vi.mocked(projectAgentApi.listConversations).mockResolvedValue([conversation] as never);
   vi.mocked(projectAgentApi.getConversation).mockResolvedValue(conversation as never);
   await i18n.changeLanguage('zh');
@@ -61,29 +86,15 @@ afterEach(() => {
 });
 
 describe('agent turn plan mode wiring', () => {
-  it('carries plan_mode: true in the real chat-stream request body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
-    } as unknown as Response);
-    vi.stubGlobal('fetch', fetchMock);
-
-    const view = render(
-      <MemoryRouter>
-        <AntdApp>
-          <ProjectAgentPanel projectId="proj-1" mobile={false} mobileOpen={false} onMobileClose={() => {}} />
-        </AntdApp>
-      </MemoryRouter>,
-    );
-    await waitFor(() => expect(projectAgentApi.getConversation).toHaveBeenCalledTimes(1));
-
-    fireEvent.change(view.getByRole('textbox'), { target: { value: 'plan a three-step task' } });
-    fireEvent.click(view.getByTestId('composer-send'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    const body = JSON.parse(init.body as string);
-    expect(body.plan_mode).toBe(true);
+  it('defaults to plan_mode: false so an opinion request is not turned into a plan', async () => {
+    const body = await sendOneTurn();
+    expect(body.plan_mode).toBe(false);
     expect(body.message).toBe('plan a three-step task');
+  });
+
+  it('sends plan_mode: true when the user has switched it on', async () => {
+    localStorage.setItem('project-agent-plan-mode', 'true');
+    const body = await sendOneTurn();
+    expect(body.plan_mode).toBe(true);
   });
 });
