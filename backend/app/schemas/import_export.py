@@ -208,7 +208,7 @@ class ProjectDefaultStyleExportData(BaseModel):
 
 class ProjectExportData(BaseModel):
     """项目完整导出数据"""
-    version: str = "1.2.0"  # 升级版本号（1.2.0 起携带世界设定同步凭证，issue #244）
+    version: str = "1.3.0"  # 升级版本号（1.2.0 携带世界设定同步凭证；1.3.0 携带 world_facts，issue #242）
     export_time: str
     project: Dict[str, Any]
     chapters: List[ChapterExportData] = []

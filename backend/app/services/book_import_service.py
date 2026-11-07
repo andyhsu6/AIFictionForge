@@ -347,6 +347,65 @@ def _clean_extracted_world_values(world_data: dict[str, Any]) -> dict[str, str]:
     return cleaned
 
 
+_WORLD_EVIDENCE_KEYS = {
+    "world_time_period": "time_period",
+    "world_location": "location",
+    "world_atmosphere": "atmosphere",
+    "world_rules": "rules",
+}
+
+
+def _build_world_facts(
+    world_data: dict[str, Any], ai_written: dict[str, str]
+) -> list[dict[str, Any]]:
+    """把抽取结果整理为可溯源事实：field / text / evidence / source。"""
+    raw_evidence = world_data.get("evidence")
+    evidence_map = raw_evidence if isinstance(raw_evidence, dict) else {}
+    facts: list[dict[str, Any]] = []
+    for field, text in ai_written.items():
+        key = _WORLD_EVIDENCE_KEYS.get(field)
+        items = evidence_map.get(key) if key else None
+        evidence: list[dict[str, Any]] = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                chapter = item.get("chapter")
+                quote = item.get("quote")
+                if isinstance(chapter, int) and isinstance(quote, str) and quote.strip():
+                    evidence.append({"chapter": chapter, "quote": quote.strip()})
+        facts.append({"field": field, "text": text, "evidence": evidence, "source": "original"})
+    return facts
+
+
+def _load_world_facts(raw: Optional[str]) -> list[dict[str, Any]]:
+    """读取已存的事实数组；脏数据/旧格式一律视为空。"""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _merge_world_facts(
+    existing: list[dict[str, Any]], new: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """按 (field, text) 去重合并：保留既有事实与顺序，追加新事实。"""
+    merged = list(existing)
+    seen = {(item.get("field"), item.get("text")) for item in existing}
+    for fact in new:
+        key = (fact.get("field"), fact.get("text"))
+        if key in seen:
+            continue
+        merged.append(fact)
+        seen.add(key)
+    return merged
+
+
 def _render_existing_world(project: Any) -> str:
     """append 导入时把现有世界设定喂给模型；已存在的字段不会被覆盖。"""
     lines = []
@@ -1423,6 +1482,7 @@ class BookImportService:
             project.world_atmosphere = None
             project.world_rules = None
             project.ai_world_profile_snapshot = None
+            project.world_facts = None
 
         await self._ensure_project_default_style(db=db, project_id=project.id)
         return project
@@ -2637,6 +2697,14 @@ class BookImportService:
                 if ai_written:
                     snapshot.update(ai_written)
                     project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+                    # issue #242：把可溯源事实随写回持久化（append 时去重追加）
+                    project.world_facts = json.dumps(
+                        _merge_world_facts(
+                            _load_world_facts(project.world_facts),
+                            _build_world_facts(world_data, ai_written),
+                        ),
+                        ensure_ascii=False,
+                    )
                 # 新建/覆盖导入：一条有效设定都没抽到属于失败，交给上层记失败步骤并重试；
                 # append/重试允许 0 条（已有设定无需补写）。
                 if updated == 0 and not merge_existing:

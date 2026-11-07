@@ -48,6 +48,7 @@ jobs:
             backend/tests/test_profile_prompt_rules.py \
             backend/tests/test_profile_measurement_scripts.py \
             backend/tests/test_world_building_extraction.py \
+            backend/tests/test_world_facts.py \
             backend/tests/test_migration_schema_parity.py \
             backend/tests/test_docs_model_requirements.py \
             -q
