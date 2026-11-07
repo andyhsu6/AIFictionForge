@@ -29,12 +29,13 @@ DYNAMIC_DETAIL_CODE = "dynamic_detail"
 HTTP_ERROR_FALLBACK_CODE = "http_error"
 
 # 错误码 registry: code -> (默认中文 detail, 默认 HTTP status)
-# 全量码表（todo 11 CSV registry 落库，207 码 + 4 个 handler 专用码，共 211）。
+# 全量码表（todo 11 CSV registry 落库，208 码 + 4 个 handler 专用码，共 212）。
 # 默认 detail 即该 code 的 original_detail（静态站逐字、参数化站含 i18next 占位符
 # {{param}}，参数化站点 raise 时必须显式传原文案 detail 以保证旧客户端 byte-identity）。
 ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "ai.content_filtered": ("本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容", 400),
     "ai.output_truncated": ("模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容", 400),
+    "ai.timeout": ("模型网关响应超时，请重试；本次已跳过超时批次", 504),
     "auth.admin_required": ("需要管理员权限", 403),
     "auth.email_already_registered": ("该邮箱已注册", 400),
     "auth.email_not_registered": ("该邮箱尚未注册", 404),
@@ -63,6 +64,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "conflict.cover_exists": ("当前项目已存在封面，如需覆盖请传入 overwrite=true", 400),
     "conflict.cover_generating": ("封面正在生成中，请勿重复提交", 409),
     "conflict.plugin_name_exists": ("插件名已存在: {{plugin_name}}", 400),
+    "conflict.profile_plan_stale": ("差异预览已过期（章节已变化或超过 60 分钟），请重新预览", 409),
+    "conflict.profile_refresh_running": ("已有档案重算任务在进行中，请等待完成或先取消", 409),
     "conflict.relationship_type_duplicate": ("同项目已存在同名关系类型", 409),
     "conflict.relationship_type_in_use": ("该类型仍被关系使用，无法删除", 409),
     "conflict.username_exists": ("用户名已存在", 409),
@@ -221,6 +224,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "not_found.plugin": ("插件不存在", 404),
     "not_found.preset": ("预设不存在", 404),
     "not_found.preset_style": ("预设风格 '{{preset_id}}' 不存在", 400),
+    "not_found.profile_plan": ("找不到可用的差异预览，请重新预览", 404),
     "not_found.project": ("项目不存在", 404),
     "not_found.project_chapters": ("没有找到章节", 404),
     "not_found.project_or_forbidden": ("项目不存在或无权访问", 404),
@@ -248,6 +252,8 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "progress.outline_expand_done": ("《{{outline_title}}》展开完成（{{chapter_count}} 章）", 200),
     "progress.outline_expand_item_failed": ("❌ {{outline_title}} 展开失败: {{error}}", 200),
     "progress.outline_expand_skipped": ("《{{outline_title}}》已展开过，已跳过", 200),
+    "progress.profile_preview_ready": ("差异预览已生成，请确认后应用", 200),
+    "progress.profile_previewing": ("正在重算档案差异...", 200),
     "progress.retry": ("⚠️ {{reason}}... ({{retry_count}}/{{max_retries}})", 200),
     "progress.retry_ai_failed": ("AI返回为空", 200),
     "progress.retry_json_parse": ("JSON解析失败", 200),

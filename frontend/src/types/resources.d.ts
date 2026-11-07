@@ -1223,7 +1223,8 @@ export default interface Resources {
   "errors": {
     "ai": {
       "content_filtered": "本次生成被上游内容审核拦截，请更换模型通道或跳过该部分内容",
-      "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容"
+      "output_truncated": "模型输出因 token 预算耗尽被截断，请提高最大输出或拆分内容",
+      "timeout": "模型网关响应超时，请重试；本次已跳过超时批次"
     },
     "auth": {
       "admin_required": "需要管理员权限",
@@ -1255,6 +1256,8 @@ export default interface Resources {
       "cover_generating": "封面正在生成中，请勿重复提交",
       "error": "资源冲突",
       "plugin_name_exists": "插件名已存在: {{plugin_name}}",
+      "profile_plan_stale": "差异预览已过期（章节已变化或超过 60 分钟），请重新预览",
+      "profile_refresh_running": "已有档案重算任务在进行中，请等待完成或先取消",
       "relationship_type_duplicate": "同项目已存在同名关系类型",
       "relationship_type_in_use": "该类型仍被关系使用，无法删除",
       "username_exists": "用户名已存在"
@@ -1415,6 +1418,7 @@ export default interface Resources {
       "plugin": "插件不存在",
       "preset": "预设不存在",
       "preset_style": "预设风格 '{{preset_id}}' 不存在",
+      "profile_plan": "找不到可用的差异预览，请重新预览",
       "project": "项目不存在",
       "project_chapters": "没有找到章节",
       "project_or_forbidden": "项目不存在或无权访问",
@@ -1444,6 +1448,8 @@ export default interface Resources {
       "outline_expand_done": "《{{outline_title}}》展开完成（{{chapter_count}} 章）",
       "outline_expand_item_failed": "❌ {{outline_title}} 展开失败: {{error}}",
       "outline_expand_skipped": "《{{outline_title}}》已展开过，已跳过",
+      "profile_preview_ready": "差异预览已生成，请确认后应用",
+      "profile_previewing": "正在重算档案差异...",
       "retry": "⚠️ {{reason}}... ({{retry_count}}/{{max_retries}})",
       "retry_ai_failed": "AI返回为空",
       "retry_json_parse": "JSON解析失败",
@@ -1698,6 +1704,7 @@ export default interface Resources {
     "typeOutlineContinue": "大纲续写",
     "typeOutlineExpand": "大纲展开",
     "typeOutlineNew": "大纲生成",
+    "typeProfilePreview": "档案预览",
     "typeWizard": "向导创建"
   },
   "foreshadows": {
@@ -2667,6 +2674,101 @@ export default interface Resources {
     "titleContinue": "AI局部续写",
     "waitingGenerate": "等待生成...",
     "wordUnit": "字"
+  },
+  "profileRefresh": {
+    "actions": {
+      "add": "新增",
+      "change": "变更",
+      "preserved": "保留",
+      "rejected": "丢弃",
+      "same": "无变化"
+    },
+    "aiSuggestion": "AI 建议：{{suggestion}}（未写入）",
+    "applyChanges": "应用这些改动",
+    "applyResult": "已应用 {{applied}} 个实体 / 跳过 {{skipped}} 个：预览后已变更",
+    "applySelected": "应用选中的 {{count}} 项",
+    "cancel": "取消",
+    "close": "完成",
+    "createPreview": "生成差异预览",
+    "currentValue": "当前值",
+    "diffTitle": "档案差异预览",
+    "discardedSuggestion": "AI 建议（已丢弃）",
+    "emptyCandidates": "没有需要重算的章节",
+    "emptyDiff": "没有需要展示的档案差异。",
+    "emptyValue": "（空）",
+    "estimateFailed": "预估暂时不可用，请稍后重试。",
+    "estimateTitle": "重算档案 · 预估",
+    "expandValue": "点击展开或收起内容",
+    "factsMerged": "并合入 {{count}} 条档案事实",
+    "fields": {
+      "age": "年龄",
+      "appearance": "外貌",
+      "background": "背景",
+      "current_state": "当前状态",
+      "gender": "性别",
+      "location": "所在地",
+      "motto": "口号",
+      "organization_purpose": "组织宗旨",
+      "organization_type": "组织类型",
+      "personality": "性格",
+      "power_level": "势力等级",
+      "role_type": "角色定位"
+    },
+    "fieldsWritten": "写入 {{count}} 个字段",
+    "fromChapter": "从第 {{chapter}} 章起",
+    "incrementalEmptyHint": "增量模式下没有新章节时，这是正常结果。",
+    "loadingEstimate": "正在计算预估…",
+    "metrics": {
+      "batches": "批数",
+      "calls": "调用次数",
+      "candidates": "候选实体"
+    },
+    "mode": {
+      "full": "全量",
+      "incremental": "增量"
+    },
+    "newValue": "新值",
+    "notes": {
+      "calls": "预估为最小调用数，若命中内容审核会二分重试，实际可能更多。",
+      "full": "全量会重算所有含提及的章节，你的手工修改会被保留（将在差异里标为「保留」）。",
+      "scope": "本次不含世界设定与组织成员关系。"
+    },
+    "oldValue": "旧值",
+    "planMissing": "预览任务已完成，但没有返回差异计划。",
+    "previewProgress": "预览正在后台处理：{{status}}",
+    "reasons": {
+      "chapter_invalid": "章节无效",
+      "claim_invalid": "事实无效",
+      "field_invalid": "字段无效",
+      "inferred_not_allowed": "不允许推断",
+      "org_personality_dropped": "组织性格已丢弃",
+      "quote_invalid": "引文无效",
+      "quote_not_found": "引文未命中"
+    },
+    "rejectionReasons": "丢弃原因",
+    "rewritten": "整段重写（旧 {{old}} 字 → 新 {{new}} 字）",
+    "scopeNotice": "本次不含世界设定与组织成员关系",
+    "selectEntity": "选择 {{name}} 的全部字段",
+    "selectField": "选择 {{field}}",
+    "skipReasons": {
+      "ai.content_filtered": "内容审核拦截",
+      "ai.output_truncated": "输出被截断",
+      "ai.timeout": "模型网关超时"
+    },
+    "skippedBatches": "有 {{count}} 批未完成（第 {{chapters}} 章）：{{reasons}}。差异仅覆盖其余章节，可重新预览补齐。",
+    "summary": {
+      "add": "新增 {{count}}",
+      "change": "变更 {{count}}",
+      "preserved": "保留 {{count}}",
+      "rejected": "丢弃 {{count}}",
+      "same": "无变化 {{count}}"
+    },
+    "taskBatchProgress": "第 {{current}}/{{total}} 批",
+    "taskStatus": {
+      "pending": "等待中",
+      "running": "运行中"
+    },
+    "toolbarButton": "重算档案"
   },
   "projectAgentPanel": {
     "approveAll": "一键批准全部修改（{{count}} 项）",
