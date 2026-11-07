@@ -60,6 +60,13 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     '"foreshadow_id":"<伏笔ID>","data":{"content":"新的伏笔内容"}}}。'
     '新建条目示例：{"id":"s1","tool":"manage_foreshadow","arguments":{"action":"create",'
     '"data":{"title":"<伏笔标题>","content":"<伏笔内容>"}}}。'
+    '启动任务示例：{"id":"s1","tool":"start_project_task","arguments":'
+    '{"action":"generate_outlines","data":{"mode":"continue"}}}；'
+    '展开单条大纲示例：{"id":"s2","tool":"start_project_task","arguments":'
+    '{"action":"expand_outline","outline_id":"<大纲ID>","data":{"auto_create_chapters":true}}}。'
+    "每一步必须是 {id, tool, arguments} 三个平级字段组成的对象："
+    "id 与 tool 是必填字符串，工具参数只能放在 arguments 内（需要时再嵌一层 data），"
+    "不要把工具参数、action 或 data 提到 step 顶层，也不要省略 id 或 tool。"
     "note 只向用户说明这一步做什么，不会落库；"
     "所有要写进数据库的字段必须放在 arguments.data 内，create 步骤缺少必填字段会在提案期被拒。"
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
@@ -578,16 +585,18 @@ def _step_arguments_error(
     return None
 
 
-def _clean_text(value: Any, *, field: str, required: bool) -> str:
+def _clean_text(value: Any, *, field: str, required: bool, hint: str = "") -> str:
     if value is None:
         if required:
-            raise PlanValidationError(f"步骤缺少 {field}")
+            suffix = f"；{hint}" if hint else ""
+            raise PlanValidationError(f"步骤缺少 {field}{suffix}")
         return ""
     if not isinstance(value, str):
         raise PlanValidationError(f"{field} 必须是字符串")
     text = value.strip()
     if not text and required:
-        raise PlanValidationError(f"{field} 不能为空")
+        suffix = f"；{hint}" if hint else ""
+        raise PlanValidationError(f"步骤缺少 {field}{suffix}")
     return text
 
 
@@ -626,12 +635,28 @@ def validate_plan(
     for index, raw in enumerate(raw_steps, start=1):
         if not isinstance(raw, dict):
             raise PlanValidationError(f"第 {index} 步必须是 JSON 对象")
-        step_id = _clean_text(raw.get("id"), field=f"第 {index} 步的 id", required=True)
+        step_id = _clean_text(
+            raw.get("id"),
+            field=f"第 {index} 步的 id",
+            required=True,
+            hint=(
+                '每一步必须是 {"id":"s1","tool":"<工具名>","arguments":{...}} 这样的对象：'
+                "id 与 tool 必须与 arguments 平级，工具参数不要提到 step 顶层"
+            ),
+        )
         if step_id in seen:
             raise PlanValidationError(f"步骤 id 重复：{step_id}")
         seen.add(step_id)
 
-        tool = _clean_text(raw.get("tool"), field=f"步骤 {step_id} 的 tool", required=True)
+        tool = _clean_text(
+            raw.get("tool"),
+            field=f"步骤 {step_id} 的 tool",
+            required=True,
+            hint=(
+                '每一步必须是 {"id":"s1","tool":"<工具名>","arguments":{...}} 这样的对象：'
+                "tool 是必填的工具名，不要省略"
+            ),
+        )
         if tool in EXCLUDED_PLAN_TOOLS:
             raise PlanValidationError(f"工具 {tool} 不允许出现在计划中：它需要模型自备 JSON 正文")
         if tool not in allowed_tools:
