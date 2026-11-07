@@ -247,3 +247,86 @@ def test_unpunctuated_long_chapter_is_sampled_not_dropped():
     assert sample.text
     assert sample.meta["char_count"] >= SAMPLE_MIN_CHARS
     assert sample.meta["chapter_numbers"] == [1]
+
+
+# ---- P2：原文复述检测（n-gram 滑窗） ----
+
+_ORIGINAL_SENTENCE = "雨声变得密集起来像是有人在敲打铁皮屋顶这声音让整条巷子都安静"
+_SAMPLE_TEXT = _ORIGINAL_SENTENCE + "，随后又是一阵沉默。"
+
+
+def test_detect_source_overlap_finds_copied_fragment():
+    from app.services.style_profile import detect_source_overlap
+
+    data = _profile()
+    data["diction"]["register"] = _ORIGINAL_SENTENCE
+    assert detect_source_overlap(data, _SAMPLE_TEXT) == ["diction.register"]
+
+
+def test_detect_source_overlap_empty_sample_returns_empty():
+    from app.services.style_profile import detect_source_overlap
+
+    data = _profile()
+    data["diction"]["register"] = _ORIGINAL_SENTENCE
+    assert detect_source_overlap(data, "") == []
+    assert detect_source_overlap(data, "   \n") == []
+
+
+def test_validate_rejects_source_overlap_when_sample_given():
+    data = _profile()
+    # 27 字原文片段 + 操作动词，确保失败原因只能是复述检测
+    data["do"][0] = _ORIGINAL_SENTENCE[:27] + "，保持这个密度"
+    with pytest.raises(ValueError, match="疑似复述原文"):
+        validate_style_profile(data, sampled_text=_SAMPLE_TEXT)
+
+
+def test_validate_skips_overlap_check_without_sample():
+    """兼容旧调用：不传 sampled_text 时不跑复述检测。"""
+    data = _profile()
+    data["do"][0] = _ORIGINAL_SENTENCE[:27] + "，保持这个密度"
+    validate_style_profile(data)
+
+
+def test_local_stats_fallback_passes_overlap_check():
+    """本地兜底只含统计值，必须不命中复述检测。"""
+    text = "占位短句一。" + "占位句子略长一些内容略多但仍在常见范围内。" * 40
+    sample = build_style_sample([SimpleNamespace(chapter_number=1, title="t", content=text)])
+    validate_style_profile(local_stats_fallback(sample), sampled_text=sample.text)
+
+
+# ---- P2：空泛词覆盖 + 可执行约束 ----
+
+def test_validate_rejects_new_vague_word_without_quantifier():
+    from app.services.style_profile import VAGUE_ADJECTIVES
+
+    for word in ("漂亮", "好看", "高级", "有张力", "有画面感", "节奏感强", "文笔好", "真实", "立体", "鲜明"):
+        assert word in VAGUE_ADJECTIVES
+
+    data = _profile()
+    data["do"][0] = "语言漂亮"
+    with pytest.raises(ValueError, match="空泛形容词"):
+        validate_style_profile(data)
+
+
+def test_validate_accepts_quantified_item_with_vague_word():
+    data = _profile()
+    data["do"][0] = "平均句长控制在 12–18 字"
+    validate_style_profile(data)
+
+
+def test_validate_rejects_item_without_quantifier_or_action_verb():
+    data = _profile()
+    data["do"][2] = "白描手法为主"
+    with pytest.raises(ValueError, match="可执行约束"):
+        validate_style_profile(data)
+
+
+def test_validate_source_whitelist():
+    data = _profile()
+    data["source"] = "weird"
+    with pytest.raises(ValueError):
+        validate_style_profile(data)
+
+    data = _profile()
+    data["source"] = "local"
+    validate_style_profile(data)

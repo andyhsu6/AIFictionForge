@@ -6,7 +6,9 @@ from app.services.prompt_service import prompt_service, PromptService
 from app.services.language_resolver import resolve_user_generation_language
 from app.models.chapter import Chapter
 from app.models.memory import PlotAnalysis
+from app.models.project import Project
 from app.schemas.regeneration import ChapterRegenerateRequest, PreserveElementsConfig
+from app.services.style_anchors import append_project_style_anchors
 from app.logger import get_logger
 import difflib
 
@@ -47,6 +49,17 @@ class ChapterRegenerator:
         """
         try:
             logger.info(f"🔄 开始重新生成章节: 第{chapter.chapter_number}章")
+
+            # issue #254 P1：重生成路径注入本书原文语感锚点（局部重写不注入）
+            if db is not None and style_content:
+                project = await db.get(Project, chapter.project_id)
+                if project is not None:
+                    style_content = await append_project_style_anchors(
+                        db,
+                        project=project,
+                        style_content=style_content,
+                        before_chapter_number=chapter.chapter_number,
+                    )
             
             # 1. 构建修改指令
             yield {'type': 'progress', 'progress': 5, 'message': '正在构建修改指令...'}

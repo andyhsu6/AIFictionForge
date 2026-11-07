@@ -209,6 +209,10 @@ export interface Project {
   cover_status?: 'none' | 'generating' | 'ready' | 'failed';
   cover_error?: string;
   cover_updated_at?: string;
+  // issue #254 P1：本书原文语感锚点（项目级默认）
+  style_anchor_enabled?: boolean;
+  style_anchor_chars?: number;
+  style_anchor_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -242,6 +246,10 @@ export interface ProjectUpdate {
   chapter_count?: number;
   narrative_perspective?: string;
   character_count?: number;
+  // issue #254 P1：本书原文语感锚点
+  style_anchor_enabled?: boolean;
+  style_anchor_chars?: number;
+  style_anchor_count?: number;
   // current_words 由章节内容自动计算，不在此接口中
 }
 
@@ -740,6 +748,9 @@ export interface WritingStyle {
   prompt_content: string;
   is_default: boolean;
   order_index: number;
+  // issue #254 P1：结构化文笔画像（JSON 字符串，仅 profile / profile_edited 有值）
+  profile_json?: string | null;
+  profile_version?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -757,6 +768,28 @@ export interface WritingStyleUpdate {
   description?: string;
   prompt_content?: string;
   order_index?: number;
+}
+
+// issue #254 P1：重新抽取本书文笔画像（dry_run 预览 diff / 正式应用）
+export interface StyleProfileReextractRequest {
+  dry_run?: boolean;
+  overwrite_edited?: boolean;
+  set_default?: boolean;
+}
+
+export interface StyleProfileReextractResult {
+  skipped?: boolean;
+  changed?: boolean;
+  updated?: boolean;
+  style_id?: number | null;
+  kept_reason?: 'user_edited' | null;
+  old_prompt_content?: string | null;
+  new_prompt_content?: string;
+  old_profile?: Record<string, unknown> | null;
+  new_profile?: Record<string, unknown>;
+  description?: string;
+  confidence?: number | null;
+  degraded?: boolean;
 }
 
 export interface PresetStyle {

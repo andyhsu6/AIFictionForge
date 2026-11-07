@@ -324,7 +324,7 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, book_import,
-    project_covers, project_agent, tasks, skills
+    project_covers, project_agent, tasks, skills, style_consistency
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -345,6 +345,7 @@ app.include_router(chapters.router, prefix="/api")
 app.include_router(relationships.router, prefix="/api")
 app.include_router(organizations.router, prefix="/api")
 app.include_router(writing_styles.router, prefix="/api")
+app.include_router(style_consistency.router, prefix="/api")  # 文笔画像一致性自检（issue #254 P2）
 app.include_router(memories.router)  # 记忆管理API (已包含/api前缀)
 app.include_router(foreshadows.router)  # 伏笔管理API (已包含/api前缀)
 app.include_router(mcp_plugins.router, prefix="/api")  # MCP插件管理API

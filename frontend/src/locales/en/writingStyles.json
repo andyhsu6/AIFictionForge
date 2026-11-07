@@ -1,4 +1,13 @@
 {
+  "anchor": {
+    "chars": "Character budget",
+    "count": "Anchor count",
+    "enabled": "Inject source-text style anchors when generating",
+    "save": "Save anchor settings",
+    "saved": "Anchor settings saved",
+    "saveFailed": "Failed to save anchor settings",
+    "title": "Source-text style anchors"
+  },
   "buttons": {
     "cancel": "Cancel",
     "create": "Create",
@@ -66,6 +75,30 @@
       "name": "Tense Suspense",
       "requirements": "Writing style requirements:\n1. Build oppressive tension\n2. Short sentences, faster rhythm\n3. Set up suspense and foreshadowing\n4. Detail-oriented, planting clues"
     }
+  },
+  "profile": {
+    "apply": "Apply",
+    "applyFailed": "Failed to apply the profile",
+    "applySuccess": "Profile updated",
+    "cancel": "Cancel",
+    "confidence": "Confidence",
+    "degraded": "Extraction fell back to local statistics; treat it as a rough reference.",
+    "diffTitle": "Re-extract writing-style profile",
+    "keptByUser": "Your manual edits were detected, so nothing was overwritten. Check “Overwrite my manual edits” to force it.",
+    "metrics": {
+      "avgSentence": "Avg. sentence length (chars)",
+      "dialogueRatio": "Dialogue ratio",
+      "paragraphMedian": "Median paragraph length (chars)",
+      "shortSentenceRatio": "Short-sentence ratio"
+    },
+    "newPrompt": "New extraction",
+    "oldPrompt": "Current content",
+    "overwriteEdited": "Overwrite my manual edits",
+    "reextract": "Re-extract",
+    "reextractFailed": "Re-extraction failed",
+    "sample": "Sample range",
+    "setDefault": "Also set as default style",
+    "skipped": "Not enough source text to re-extract the profile"
   },
   "profileHint": "Writing-style features extracted automatically from this book on import. Editable; once edited, it is no longer overwritten automatically.",
   "tag": {

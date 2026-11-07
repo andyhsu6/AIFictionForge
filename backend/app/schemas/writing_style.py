@@ -1,6 +1,6 @@
 """写作风格 Schema"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Any, Dict, Optional
 from datetime import datetime
 
 
@@ -43,6 +43,8 @@ class WritingStyleResponse(BaseModel):
     preset_id: Optional[str] = None
     description: Optional[str] = None
     prompt_content: str
+    profile_json: Optional[str] = None
+    profile_version: Optional[int] = None
     is_default: bool
     order_index: int
     created_at: datetime
@@ -55,3 +57,30 @@ class WritingStyleListResponse(BaseModel):
     """写作风格列表响应"""
     total: int
     styles: list[WritingStyleResponse]
+
+
+class ProfileReextractRequest(BaseModel):
+    """重新抽取项目文笔画像（issue #254 P1）"""
+
+    dry_run: bool = Field(default=True, description="True 只返回 diff 预览，不写库")
+    overwrite_edited: bool = Field(default=False, description="是否覆盖用户已编辑的画像")
+    set_default: bool = Field(default=False, description="写库后是否将画像设为项目默认风格")
+
+
+class ProfileReextractResponse(BaseModel):
+    """重新抽取结果：dry_run 返回 diff 预览，写库返回更新结果"""
+
+    skipped: bool = Field(default=False, description="样本不足，未抽取也未写库")
+    changed: bool = Field(default=False, description="新画像与现有画像（prompt_content）是否不同")
+    old_prompt_content: Optional[str] = None
+    new_prompt_content: Optional[str] = None
+    old_profile: Optional[Dict[str, Any]] = None
+    new_profile: Optional[Dict[str, Any]] = None
+    description: Optional[str] = None
+    confidence: Optional[float] = None
+    degraded: bool = False
+    updated: bool = Field(default=False, description="是否已写库")
+    style_id: Optional[int] = None
+    kept_reason: Optional[str] = Field(
+        default=None, description="未写库原因：user_edited=用户已手改且未授权覆盖"
+    )

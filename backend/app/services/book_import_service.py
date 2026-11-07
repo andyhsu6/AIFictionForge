@@ -81,6 +81,7 @@ from app.services.style_profile import (
     render_style_profile,
     validate_style_profile,
 )
+from app.services.style_anchors import create_project_style_anchors
 from app.services.language_resolver import resolve_user_generation_language
 from app.services.txt_parser_service import txt_parser_service
 from app.services.relationship_service import (
@@ -1039,7 +1040,20 @@ class BookImportService:
                             description=style_profile["description"],
                             replace_default=replace_default,
                             allow_overwrite_edited=payload.overwrite_style_profile,
+                            profile_data=style_profile.get("profile_data"),
+                            profile_version=style_profile.get("profile_version"),
                         )
+                        if style_id is not None:
+                            # 锚点只存定位与哈希，生成时再从章节正文取片段
+                            await create_project_style_anchors(
+                                db,
+                                project_id=project.id,
+                                ranges=style_profile.get("ranges") or [],
+                                chapter_contents={
+                                    chapter.chapter_number: chapter.content or ""
+                                    for chapter in chapters_to_import
+                                },
+                            )
                         if style_id is None:
                             # 用户已手改画像（profile_edited），本次不覆盖
                             statistics["style_profile"] = "skipped"
@@ -1458,7 +1472,19 @@ class BookImportService:
                                 description=style_profile["description"],
                                 replace_default=replace_default,
                                 allow_overwrite_edited=allow_overwrite_edited,
+                                profile_data=style_profile.get("profile_data"),
+                                profile_version=style_profile.get("profile_version"),
                             )
+                            if style_id is not None:
+                                await create_project_style_anchors(
+                                    db,
+                                    project_id=project.id,
+                                    ranges=style_profile.get("ranges") or [],
+                                    chapter_contents={
+                                        chapter.chapter_number: chapter.content or ""
+                                        for chapter in chapters_for_retry
+                                    },
+                                )
                             retry_results["style_profile"] = 1 if style_id is not None else 0
                             if style_id is None:
                                 # 用户已手改画像：保留用户编辑，视为已处理（不再重复失败）
@@ -4318,7 +4344,9 @@ class BookImportService:
                 max_tokens=2000,
                 max_retries=1,
                 expected_type="object",
-                validator=validate_style_profile,
+                validator=lambda payload: validate_style_profile(
+                    payload, sampled_text=sample.text
+                ),
             )
         except Exception as exc:
             # 日志安全：只记录异常类型与章号，不打印提示词/原文
@@ -4346,6 +4374,9 @@ class BookImportService:
             "degraded": degraded,
             "confidence": data.get("confidence"),
             "sample_chars": sample_chars,
+            "profile_data": {**data, "source": "local" if degraded else "model"},
+            "profile_version": int(data.get("version") or 1),
+            "ranges": list(sample.meta.get("ranges") or []),
         }
 
     @staticmethod
@@ -4391,6 +4422,8 @@ class BookImportService:
         description: str,
         replace_default: bool,
         allow_overwrite_edited: bool = False,
+        profile_data: Optional[dict[str, Any]] = None,
+        profile_version: Optional[int] = None,
     ) -> Optional[int]:
         """按 ``preset_id=profile:<project_id>`` 写入/更新项目画像行，返回 style id。
 
@@ -4413,11 +4446,17 @@ class BookImportService:
             return None
 
         name = f"文笔画像·{((project.title or '').strip() or '未命名项目')[:20]}"
+        profile_json = (
+            json.dumps(profile_data, ensure_ascii=False) if profile_data is not None else None
+        )
         if row is not None:
             row.name = name
             row.description = description
             row.prompt_content = prompt_content
             row.style_type = PROFILE_STYLE_TYPE
+            if profile_json is not None:
+                row.profile_json = profile_json
+                row.profile_version = profile_version
             style_id = row.id
         else:
             row = WritingStyle(
@@ -4427,6 +4466,8 @@ class BookImportService:
                 preset_id=preset_id,
                 description=description,
                 prompt_content=prompt_content,
+                profile_json=profile_json,
+                profile_version=profile_version,
                 order_index=0,
             )
             db.add(row)

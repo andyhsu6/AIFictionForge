@@ -1,4 +1,6 @@
 """写作风格管理 API"""
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
@@ -6,17 +8,23 @@ from typing import List
 
 from ..core.errors import ApiError
 from ..database import get_db
+from ..models.chapter import Chapter
 from ..models.writing_style import WritingStyle
 from ..models.project import Project
 from ..models.project_default_style import ProjectDefaultStyle
+from ..schemas.book_import import BookImportChapter
 from ..schemas.writing_style import (
     WritingStyleCreate,
     WritingStyleUpdate,
     WritingStyleResponse,
     WritingStyleListResponse,
+    ProfileReextractRequest,
+    ProfileReextractResponse,
     SetDefaultStyleRequest
 )
 from ..logger import get_logger
+from ..services.book_import_service import BookImportService
+from ..services.style_anchors import create_project_style_anchors
 from ..services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     is_profile_preset_id,
@@ -62,6 +70,8 @@ async def get_preset_styles(db: AsyncSession = Depends(get_db)):
             "name": style.name,
             "description": style.description,
             "prompt_content": style.prompt_content,
+            "profile_json": style.profile_json,
+            "profile_version": style.profile_version,
             "style_type": style.style_type,
             "order_index": style.order_index
         }
@@ -205,6 +215,8 @@ async def get_user_styles(
             "preset_id": style.preset_id,
             "description": style.description,
             "prompt_content": style.prompt_content,
+            "profile_json": style.profile_json,
+            "profile_version": style.profile_version,
             "order_index": style.order_index,
             "created_at": style.created_at,
             "updated_at": style.updated_at,
@@ -284,6 +296,8 @@ async def get_project_styles(
             "preset_id": style.preset_id,
             "description": style.description,
             "prompt_content": style.prompt_content,
+            "profile_json": style.profile_json,
+            "profile_version": style.profile_version,
             "order_index": style.order_index,
             "created_at": style.created_at,
             "updated_at": style.updated_at,
@@ -292,6 +306,141 @@ async def get_project_styles(
         styles_with_default.append(style_dict)
     
     return {"styles": styles_with_default, "total": len(styles_with_default)}
+
+
+@router.post(
+    "/project/{project_id}/profile/reextract",
+    response_model=ProfileReextractResponse,
+)
+async def reextract_project_profile(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    payload: ProfileReextractRequest = ProfileReextractRequest(),
+):
+    """基于项目现有正文重新抽取文笔画像（issue #254 P1）。
+
+    - 只使用项目 ``Chapter`` 正文，不导入原文、不改动正文；
+    - ``dry_run=True``（默认）只返回 diff 预览，不写库；
+    - ``dry_run=False`` 写入 ``preset_id=profile:<project_id>`` 画像行并重建锚点；
+    - 画像已被用户手改（``profile_edited``）且未显式授权时保留用户编辑；
+    - 样本不足时直接返回 ``skipped=True``，不写库。
+    """
+    user_id = get_current_user_id(request)
+
+    # 校验项目归属（与 get_project_styles 同语义）
+    result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id
+        )
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise ApiError(code="not_found.project_or_forbidden")
+
+    # 读项目正文（按章号升序），构造拆书链路使用的章节结构
+    db_chapters = list(
+        (
+            await db.execute(
+                select(Chapter)
+                .where(Chapter.project_id == project_id)
+                .order_by(Chapter.chapter_number)
+            )
+        ).scalars().all()
+    )
+    chapters = [
+        BookImportChapter(
+            title=chapter.title or f"第{chapter.chapter_number}章",
+            content=chapter.content or "",
+            summary=chapter.summary,
+            chapter_number=chapter.chapter_number,
+        )
+        for chapter in db_chapters
+        if chapter.chapter_number and chapter.chapter_number >= 1
+    ]
+
+    # AI 服务/模板/语言解析都在方法内部按用户配置构建
+    service = BookImportService()
+    profile = await service._extract_style_profile(
+        db=db,
+        user_id=user_id,
+        project=project,
+        chapters=chapters,
+        content_language=None,
+        extract_mode="full",
+    )
+
+    if profile.get("skipped"):
+        return {"skipped": True}
+
+    new_prompt_content = profile["prompt_content"]
+    new_profile = profile.get("profile_data")
+    description = profile.get("description") or ""
+    confidence = profile.get("confidence")
+    degraded = bool(profile.get("degraded"))
+
+    # 现有画像行（如有）
+    existing = (
+        await db.execute(
+            select(WritingStyle).where(
+                WritingStyle.user_id == user_id,
+                WritingStyle.preset_id == profile_preset_id(project_id),
+            )
+        )
+    ).scalars().first()
+    old_prompt_content = existing.prompt_content if existing is not None else None
+    old_profile = None
+    if existing is not None and existing.profile_json:
+        try:
+            parsed = json.loads(existing.profile_json)
+        except (TypeError, ValueError):
+            parsed = None
+        old_profile = parsed if isinstance(parsed, dict) else None
+
+    diff = {
+        "skipped": False,
+        "changed": old_prompt_content != new_prompt_content,
+        "old_prompt_content": old_prompt_content,
+        "new_prompt_content": new_prompt_content,
+        "old_profile": old_profile,
+        "new_profile": new_profile,
+        "description": description,
+        "confidence": confidence,
+        "degraded": degraded,
+    }
+
+    if payload.dry_run:
+        return diff
+
+    style_id = await service._upsert_project_profile_style(
+        db=db,
+        project=project,
+        user_id=user_id,
+        prompt_content=new_prompt_content,
+        description=description,
+        replace_default=payload.set_default,
+        allow_overwrite_edited=payload.overwrite_edited,
+        profile_data=new_profile,
+        profile_version=profile.get("profile_version"),
+    )
+    if style_id is None:
+        # 用户已手改画像（profile_edited），本次不覆盖，也不产生任何写入
+        return {**diff, "updated": False, "style_id": None, "kept_reason": "user_edited"}
+
+    await create_project_style_anchors(
+        db,
+        project_id=project_id,
+        ranges=profile.get("ranges") or [],
+        chapter_contents={chapter.chapter_number: chapter.content or "" for chapter in db_chapters},
+    )
+    await db.commit()
+
+    logger.info(
+        f"项目 {project_id} 文笔画像已重新抽取（降级={degraded}，"
+        f"默认={payload.set_default}，样本 {len(chapters)} 章）"
+    )
+    return {**diff, "updated": True, "style_id": style_id, "kept_reason": None}
 
 
 @router.get("/{style_id}", response_model=WritingStyleResponse)
@@ -328,6 +477,8 @@ async def get_writing_style(
         "preset_id": style.preset_id,
         "description": style.description,
         "prompt_content": style.prompt_content,
+        "profile_json": style.profile_json,
+        "profile_version": style.profile_version,
         "order_index": style.order_index,
         "created_at": style.created_at,
         "updated_at": style.updated_at,
@@ -401,6 +552,8 @@ async def update_writing_style(
         "preset_id": style.preset_id,
         "description": style.description,
         "prompt_content": style.prompt_content,
+        "profile_json": style.profile_json,
+        "profile_version": style.profile_version,
         "order_index": style.order_index,
         "created_at": style.created_at,
         "updated_at": style.updated_at,

@@ -4034,6 +4034,15 @@ export default interface Resources {
     }
   },
   "writingStyles": {
+    "anchor": {
+      "chars": "字符预算",
+      "count": "条数",
+      "enabled": "生成时注入原文语感锚点",
+      "save": "保存锚点设置",
+      "saveFailed": "锚点设置保存失败",
+      "saved": "锚点设置已保存",
+      "title": "原文语感锚点"
+    },
     "buttons": {
       "cancel": "取消",
       "create": "创建",
@@ -4101,6 +4110,30 @@ export default interface Resources {
         "name": "紧张悬疑",
         "requirements": "写作风格要求：\n1. 营造紧张压迫的氛围\n2. 多用短句加快节奏\n3. 善于设置悬念和伏笔\n4. 注重细节描写，为推理埋下线索"
       }
+    },
+    "profile": {
+      "apply": "应用",
+      "applyFailed": "应用画像失败",
+      "applySuccess": "画像已更新",
+      "cancel": "取消",
+      "confidence": "置信度",
+      "degraded": "本次抽取使用本地统计降级结果，仅供参考",
+      "diffTitle": "重新抽取文笔画像",
+      "keptByUser": "检测到你已手动编辑过画像，未覆盖；如需覆盖请勾选“覆盖我的手动编辑”",
+      "metrics": {
+        "avgSentence": "平均句长（字）",
+        "dialogueRatio": "对话占比",
+        "paragraphMedian": "段落长度中位（字）",
+        "shortSentenceRatio": "短句占比"
+      },
+      "newPrompt": "重新抽取结果",
+      "oldPrompt": "当前内容",
+      "overwriteEdited": "覆盖我的手动编辑",
+      "reextract": "重新抽取",
+      "reextractFailed": "重新抽取失败",
+      "sample": "样本范围",
+      "setDefault": "同时设为默认风格",
+      "skipped": "原文样本不足，无法重新抽取画像"
     },
     "profileHint": "由拆书导入自动抽取的本书文笔特征，可编辑；编辑后不再自动覆盖",
     "tag": {

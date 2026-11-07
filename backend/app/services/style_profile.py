@@ -48,13 +48,35 @@ VAGUE_ADJECTIVES = (
     "简洁",
     "丰富",
     "有感染力",
+    # P2：词表外的高频空泛评价词（同样只在不带量化信息时判失败）
+    "漂亮",
+    "好看",
+    "高级",
+    "有张力",
+    "有画面感",
+    "节奏感强",
+    "语言功底好",
+    "文笔好",
+    "富有感染力",
+    "真实",
+    "立体",
+    "鲜明",
 )
 _QUANTIFIER_RE = re.compile(r"\d|[≤≥><=%]|每|不超|至少|至多|最多|最少|约|倍|控制在")
+# 操作动词：do/dont 条目必须可执行（有量化标记或操作动词，二者皆无则失败）
+_ACTION_VERB_RE = re.compile(r"保持|控制|使用|避免|删去|替换|限制|压缩|展开")
+
+# 原文复述检测：N 字滑窗（去空白/标点后比较），窗口越短越易误报
+SOURCE_OVERLAP_MIN_WINDOW = 24
+
+# 画像来源白名单（缺省允许；写入方只应使用这三个值）
+PROFILE_SOURCES = ("model", "local", "user_edited")
 
 _SENTENCE_END_CHARS = "。！？…!?；;"
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？…!?；;])")
 _DIALOGUE_RE = re.compile(r"“[^”]*”|「[^」]*」|\"[^\"]*\"")
 _QUOTE_RE = re.compile(r"“[^”]{21,}”|「[^」]{21,}」")
+_NON_WORD_RE = re.compile(r"[\s\W_]+")
 
 _UNDETERMINED = "未识别（以样本统计为准）"
 
@@ -266,6 +288,10 @@ def _check_do_dont(items: Any, name: str) -> list[str]:
             raise ValueError(f"{name} 的条目不得超过 {DO_DONT_ITEM_MAX_CHARS} 字：{text}")
         if any(word in text for word in VAGUE_ADJECTIVES) and not _QUANTIFIER_RE.search(text):
             raise ValueError(f"{name} 的条目不可观察（只有空泛形容词）：{text}")
+        if not (_QUANTIFIER_RE.search(text) or _ACTION_VERB_RE.search(text)):
+            raise ValueError(
+                f"{name} 的条目需要可执行约束（量化标记或操作动词）：{text}"
+            )
         cleaned.append(text)
     return cleaned
 
@@ -277,6 +303,9 @@ def _check_no_quotes(value: Any, path: str = "root") -> None:
         return
     if isinstance(value, dict):
         for key, item in value.items():
+            if key == "source":
+                # 来源标记是受控枚举，不属于模型自由文本
+                continue
             _check_no_quotes(item, f"{path}.{key}")
         return
     if isinstance(value, list):
@@ -284,10 +313,69 @@ def _check_no_quotes(value: Any, path: str = "root") -> None:
             _check_no_quotes(item, f"{path}[{index}]")
 
 
-def validate_style_profile(data: Any) -> None:
-    """校验模型输出的画像 JSON；不合法抛 ValueError（可重试）。"""
+def _normalize_for_overlap(text: str) -> str:
+    """去掉空白/标点/下划线，保留文字与数字，降低断句差异带来的漏检。"""
+    return _NON_WORD_RE.sub("", text or "")
+
+
+def _overlap_windows(text: str, window: int) -> set[str]:
+    normalized = _normalize_for_overlap(text)
+    if len(normalized) < window:
+        return set()
+    return {normalized[index : index + window] for index in range(len(normalized) - window + 1)}
+
+
+def detect_source_overlap(
+    data: Any,
+    sampled_text: str,
+    *,
+    min_window: int = SOURCE_OVERLAP_MIN_WINDOW,
+) -> list[str]:
+    """检测画像 JSON 中是否复述了样本原文（N 字连续片段命中）。
+
+    返回命中路径（如 ``["do[1]"]``），空列表表示未命中；空样本直接返回空列表。
+    只做连续片段比对，不含语义近似/改写检测（长句改写仍需人工抽检）。
+    """
+    if not isinstance(sampled_text, str) or not sampled_text.strip():
+        return []
+    window = max(1, int(min_window))
+    sample_windows = _overlap_windows(sampled_text, window)
+    if not sample_windows:
+        return []
+
+    hits: list[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            if _overlap_windows(value, window) & sample_windows:
+                hits.append(path or "root")
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "source":
+                    continue
+                _walk(item, f"{path}.{key}" if path else str(key))
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                _walk(item, f"{path}[{index}]")
+
+    _walk(data, "")
+    return hits
+
+
+def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> None:
+    """校验模型输出的画像 JSON；不合法抛 ValueError（可重试）。
+
+    ``sampled_text`` 可选：传入时额外做原文复述检测（N 字滑窗重叠）。不传则
+    行为与旧版一致（兼容既有调用/本地兜底产物）。
+    """
     if not isinstance(data, dict):
         raise ValueError("画像必须是 JSON 对象")
+
+    source = data.get("source")
+    if source is not None and source not in PROFILE_SOURCES:
+        raise ValueError(f"source 只能是 {'/'.join(PROFILE_SOURCES)}")
 
     version = data.get("version")
     if not isinstance(version, int) or isinstance(version, bool) or version != 1:
@@ -342,6 +430,11 @@ def validate_style_profile(data: Any) -> None:
             raise ValueError("evidence_chapters 只能包含整数章号")
 
     _check_no_quotes(data)
+
+    if sampled_text:
+        overlap_paths = detect_source_overlap(data, sampled_text)
+        if overlap_paths:
+            raise ValueError(f"疑似复述原文：{', '.join(overlap_paths)}")
 
     serialized = json.dumps(data, ensure_ascii=False)
     if len(serialized) > PROFILE_JSON_MAX_CHARS:

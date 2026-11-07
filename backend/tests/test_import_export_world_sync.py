@@ -106,7 +106,7 @@ def test_round_trip_preserves_world_sync_credentials():
 
 async def _run_round_trip(src_path: str, dst_path: str) -> None:
     exported = await _seed_and_export(src_path)
-    assert exported["version"] == ImportExportService.CURRENT_VERSION == "1.3.0"
+    assert exported["version"] == ImportExportService.CURRENT_VERSION == "1.4.0"
     project_data = exported["project"]
     assert project_data["ai_world_profile_snapshot"] == json.dumps(
         {"world_rules": "占位规则"}, ensure_ascii=False
