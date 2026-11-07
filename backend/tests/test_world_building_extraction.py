@@ -130,5 +130,5 @@ def test_embedded_not_mentioned_does_not_bypass_evidence():
         "占位议会规定所有外来者必须登记，原文未提及之外的情况不得编造，以上内容刻意写长以通过长度检查。"
     )
     payload["evidence"].pop("rules")
-    with pytest.raises(ValueError, match="缺少 evidence"):
+    with pytest.raises(ValueError, match="不得在段落中夹带"):
         validate_world_building_extraction(payload, _chapters())
