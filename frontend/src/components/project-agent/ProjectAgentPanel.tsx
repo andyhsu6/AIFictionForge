@@ -56,6 +56,10 @@ const { TextArea } = Input;
 const EXPANDED_KEY = 'project-agent-expanded';
 const WIDTH_KEY = 'project-agent-width';
 const AUTO_APPROVE_KEY = 'project-agent-auto-approve';
+// 计划模式：开启时复杂请求会先生成计划待确认；关闭后助手直接回答或单步执行。
+// 默认开启（与历史行为一致），但用户现在可以关掉——「说说你的看法」被塞施工单
+// 的根因之一就是这里曾经硬编码 true。
+const PLAN_MODE_KEY = 'project-agent-plan-mode';
 
 function AssistantLogo({ size }: { size: number }) {
   const { t } = useTranslation('projectAgentPanel');
@@ -200,6 +204,7 @@ export default function ProjectAgentPanel({
   const [decidingId, setDecidingId] = useState<string>();
   const [approvingAllMessageId, setApprovingAllMessageId] = useState<string>();
   const [autoApprove, setAutoApprove] = useState(() => localStorage.getItem(AUTO_APPROVE_KEY) === 'true');
+  const [planMode, setPlanMode] = useState(() => localStorage.getItem(PLAN_MODE_KEY) !== 'false');
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController>();
   const autoApprovalAttemptedRef = useRef<Set<string>>(new Set());
@@ -474,7 +479,7 @@ export default function ProjectAgentPanel({
         message: content,
         page_context: { route: location.pathname, page: location.pathname.split('/').pop() },
         auto_approve: autoApprove,
-        plan_mode: true,
+        plan_mode: planMode,
       }, {
         onConversation: data => {
           streamConversationId = data.conversation_id;
@@ -648,6 +653,12 @@ export default function ProjectAgentPanel({
     setAutoApprove(enabled);
     localStorage.setItem(AUTO_APPROVE_KEY, String(enabled));
     message.info(enabled ? t('autoApproveEnabled') : t('manualApproveEnabled'));
+  };
+
+  const togglePlanMode = (enabled: boolean) => {
+    setPlanMode(enabled);
+    localStorage.setItem(PLAN_MODE_KEY, String(enabled));
+    message.info(enabled ? t('planModeEnabled') : t('planModeDisabled'));
   };
 
   // 开启自动批准后，处理已经在历史对话中等待确认的修改。
@@ -1189,12 +1200,21 @@ export default function ProjectAgentPanel({
           disabled={sending}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-        <Space size={6}>
-          <SafetyCertificateOutlined style={{ color: autoApprove ? token.colorSuccess : token.colorTextSecondary }} />
-          <Text type="secondary" style={{ fontSize: 11 }}>
-            {autoApprove ? t('autoApprove') : t('manualApprove')}
-          </Text>
-          <Switch size="small" checked={autoApprove} onChange={toggleAutoApprove} />
+        <Space size={10}>
+          <Space size={6}>
+            <SafetyCertificateOutlined style={{ color: autoApprove ? token.colorSuccess : token.colorTextSecondary }} />
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {autoApprove ? t('autoApprove') : t('manualApprove')}
+            </Text>
+            <Switch size="small" checked={autoApprove} onChange={toggleAutoApprove} />
+          </Space>
+          <Space size={6}>
+            <ThunderboltOutlined style={{ color: planMode ? token.colorSuccess : token.colorTextSecondary }} />
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {t('planMode')}
+            </Text>
+            <Switch size="small" checked={planMode} onChange={togglePlanMode} />
+          </Space>
         </Space>
           <Space size={6}>
             {sending && (

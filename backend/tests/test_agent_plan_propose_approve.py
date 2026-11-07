@@ -601,6 +601,52 @@ async def test_closing_round_offers_only_propose_plan_and_requires_it(env):
     assert calls[3]["tool_choice"] == "required"
 
 
+@pytest.mark.anyio
+async def test_closing_round_accepts_substantive_answer_instead_of_forcing_plan(env):
+    """收口轮给出实质回答时直接收尾，不再逼模型交计划。
+
+    真实背景：用户问「说说你的看法」，模型先给了 714 字分析，却被收口机制
+    逼着在同一条消息里提交计划，最终用户看到的是施工单。
+    """
+    calls: list[dict] = []
+    long_answer = "这是对当前问题的分析。" * 30
+    events = await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            answer(long_answer),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+
+    # 实质回答 ⇒ 不再重问，总轮数停在收口轮
+    assert len(calls) == 4
+    final = [event for event in events if event.get("type") == "final_chunk"]
+    assert final, "应当以普通回答收尾"
+    assert long_answer in final[0]["content"]
+
+
+@pytest.mark.anyio
+async def test_closing_round_still_retries_a_bare_acknowledgement(env):
+    """极短回答不算「给用户看法」，仍按计划失败处理（保留原有重试语义）。"""
+    calls: list[dict] = []
+    await run_turn(
+        env,
+        [
+            tool_call("list_outlines", {}, call_id="c1"),
+            tool_call("list_outlines", {}, call_id="c2"),
+            tool_call("list_outlines", {}, call_id="c3"),
+            answer("收到。"),
+        ],
+        plan_mode=True,
+        calls=calls,
+    )
+    assert len(calls) > 4
+
+
 # --------------------------------------------------------------------------- #
 # 思考型模型不得收到强制 tool_choice（issue #77：真实运行被网关拒
 # "Thinking mode does not support this tool_choice" ⇒ 计划永远产不出来）

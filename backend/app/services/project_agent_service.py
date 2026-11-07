@@ -121,9 +121,12 @@ PLAN_APPROVAL_STEP_CONTENT = "已生成执行计划，等待你确认后开始�
 # 会被模型当成直接可执行任务，落到 start_project_task 的逐工具确认，计划卡永不出现。
 # 非规划回合（plan_mode=False）不得包含本段：prompt 必须与 PR-1 逐字节一致。
 PLAN_MODE_INSTRUCTION = (
-    "本回合是规划回合：用户的请求若需要多步完成（多个章节、批量操作、先分析再总结等），"
-    "必须先调用 propose_plan 提交完整的步骤清单并等待用户确认，不得直接执行这些步骤；"
+    "本回合是规划回合：用户的请求若明确要求执行、且需要多步完成（多个章节、批量操作、"
+    "先分析再总结等），必须先调用 propose_plan 提交完整的步骤清单并等待用户确认，"
+    "不得直接执行这些步骤；"
     "只有单步、只读或闲聊类请求才可以直接回答或调用工具。"
+    "用户在征询意见（例如「说说你的看法」「你觉得呢」「分析一下」「这样合理吗」）"
+    "且没有明确要求动手时，先直接给出分析和建议，不要提交计划；等用户确认要改再规划。"
 )
 
 
@@ -281,6 +284,9 @@ class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
     #: 进程内记录每个会话上次生成结论时的消息数（不持久化，重启后重新计数）。
     _summary_scheduled_counts: dict[str, int] = {}
+    #: 规划收口轮里，模型给出这个长度的回答就当作「用户在征询意见」并接受，
+    #: 不再强制重问计划。实测「说说你的看法」会被收口机制逼成施工单。
+    PLAN_ANSWER_MIN_CHARS = 200
     # 架构计划 §1 定案：产出校验失败最多重问 2 次（同一回合至多 3 次规划请求），
     # 耗尽后以可读文案收口 —— 规划回合绝不落到循环尾的裸 RuntimeError。
     PLAN_MAX_RETRIES = 2
@@ -711,11 +717,17 @@ class ProjectAgentService:
 
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
-                if plan_mode and not plan_produced and (closing or force_answer):
-                    # 形态 (a)：收口轮直接用讲道理代替计划。走最终回答路径就等于
-                    # 「规划回合静默失败」，必须计数重问，耗尽后以可读文案收口。
-                    # force_answer 轮的原文同样不得当普通回答返回（issue #96 P1）；
-                    # 它必然满足 closing，这里显式要求以钉住该语义。
+                content = (response.get("content") or "").strip()
+                # 规划收口轮里「用户只想听意见」与「模型交不出计划」的表现是一样的。
+                # 只要回答有实质内容就接受它：强制重问只会拿到更差的计划，而用户
+                # 明确说「说说你的看法」时不该被塞一份施工单。
+                plan_round_needs_retry = (
+                    plan_mode
+                    and not plan_produced
+                    and (closing or force_answer)
+                    and len(content) < self.PLAN_ANSWER_MIN_CHARS
+                )
+                if plan_round_needs_retry:
                     if plan_attempts == attempts_before_round:
                         plan_attempts += 1
                     plan_correction = plan_correction or "本轮没有提交任何计划"
@@ -743,7 +755,7 @@ class ProjectAgentService:
                         return
                     await self._save_assistant(
                         conversation,
-                        (response.get("content") or "").strip() or "（未提交计划）",
+                        content or "（未提交计划）",
                         prompt_tokens,
                         completion_tokens,
                         commit=False,
@@ -758,7 +770,6 @@ class ProjectAgentService:
                     status="completed",
                 )
                 yield {"type": "step_update", "data": self._step_data(thought)}
-                content = (response.get("content") or "").strip()
                 if not content:
                     content = "我暂时没有生成有效回复，请换一种说法后重试。"
                 assistant = await self._save_assistant(
