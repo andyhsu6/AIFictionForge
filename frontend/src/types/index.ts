@@ -1266,6 +1266,8 @@ export interface BookImportApplyPayload {
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
   import_mode?: 'append' | 'overwrite';
+  /** 仅覆盖模式下生效：显式覆盖用户已编辑的文笔画像（默认保护） */
+  overwrite_style_profile?: boolean;
 }
 
 export interface BookImportCreateTaskPayload {

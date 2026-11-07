@@ -278,6 +278,7 @@ async def retry_failed_steps_stream(
                 db=db,
                 progress_callback=_progress_callback,
                 ai_service=ai_service,
+                allow_overwrite_edited=payload.overwrite_style_profile,
             )
 
             await progress_queue.put(await SSEResponse.send_result(result))

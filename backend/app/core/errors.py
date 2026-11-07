@@ -141,6 +141,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "import.progress.styleProfileDone": ("🖊️ 文笔画像抽取完成（置信度 {{confidence}}）", 200),
     "import.progress.styleProfileEditedKept": ("✋ 检测到用户已编辑画像，本次未覆盖", 200),
     "import.progress.styleProfileFailed": ("⚠️ 文笔画像抽取失败：{{error}}，将继续后续步骤", 200),
+    "import.progress.styleProfileSkipped": ("🖊️ 原文样本不足，已跳过文笔画像抽取", 200),
     "import.progress.worldAiGenerating": ("🌍 AI正在生成世界观...", 200),
     "import.progress.worldDone": ("🌍 世界观生成完成", 200),
     "import.progress.worldFailed": ("⚠️ 世界观生成失败：{{error}}，将继续后续步骤", 200),
@@ -350,6 +351,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.book_import_extract_mode": ("extract_mode 仅支持 tail 或 full", 400),
     "validation.book_import_mode": ("import_mode 仅支持 append 或 overwrite", 400),
     "validation.book_import_new_project": ("当前仅支持新建项目导入，不支持指定 project_id", 400),
+    "validation.profile_preset_reserved": ("profile: 前缀为文笔画像保留标识，不能手动创建", 400),
     "validation.career_stage_out_of_range": ("阶段超出范围，该职业最大阶段为{{max_stage}}", 400),
     "validation.career_sub_type_mismatch": ("该职业不是副职业类型，无法添加为副职业", 400),
     # 共享码：仅剩 careers.py 一处使用，其余已拆分（todo15）

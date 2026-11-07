@@ -232,3 +232,18 @@ def test_local_stats_fallback_handles_empty_sample():
     validate_style_profile(data)
     assert data["metrics"]["dialogue_ratio"] == 0
     assert data["evidence_chapters"] == []
+
+
+def test_unpunctuated_long_chapter_is_sampled_not_dropped():
+    """无句末标点/换行的长章不能被整体丢弃（否则空样本会产出编造画像）。"""
+    from app.services.style_profile import SAMPLE_MIN_CHARS
+
+    chapter = SimpleNamespace(
+        chapter_number=1,
+        title="无标点章",
+        content="占位文字" * 2500,  # 10000 字，无标点无换行
+    )
+    sample = build_style_sample([chapter])
+    assert sample.text
+    assert sample.meta["char_count"] >= SAMPLE_MIN_CHARS
+    assert sample.meta["chapter_numbers"] == [1]

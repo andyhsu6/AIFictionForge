@@ -74,6 +74,7 @@ from app.services.profile_prompt_rules import PROSE_TRAIT_HINT
 from app.services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     PROFILE_STYLE_TYPE,
+    SAMPLE_MIN_CHARS,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
@@ -508,6 +509,9 @@ class _BookImportTask:
     error_params: Optional[dict] = None
     # 已成功落库标记：活动任务查询据此过滤，避免把已应用的导入当成可恢复任务
     applied: bool = False
+    # issue #254：进入文笔画像步骤前项目是否原本没有默认风格（覆盖导入判定用；
+    # _ensure_project_default_style 会先插入首预设，因此必须提前记录）。
+    default_style_was_missing: bool = True
     # issue #168：因上游内容审核被跳过的章节（任务态响应透出，刷新后不丢）
     skipped_chapters: list[dict[str, Any]] = field(default_factory=list)
 
@@ -1000,8 +1004,8 @@ class BookImportService:
                         extract_mode=task.extract_mode,
                     )
                     # 默认替换判定（issue #254 §5.2）：新建一律替换；overwrite 仅在
-                    # "当前默认是画像行"或"项目本无默认风格"时替换，用户手选的风格保留。
-                    replace_default = task.create_new_project
+                    # "原本无默认 / 当前默认是画像行"时替换，用户手选的风格保留。
+                    replace_default = task.create_new_project or task.default_style_was_missing
                     if not replace_default:
                         current_default_id = (
                             await db.execute(
@@ -1018,41 +1022,49 @@ class BookImportService:
                                 )
                             )
                         ).scalar_one_or_none()
-                        replace_default = (
-                            current_default_id is None or current_default_id == existing_profile_id
-                        )
+                        replace_default = current_default_id == existing_profile_id
 
-                    style_id = await self._upsert_project_profile_style(
-                        db=db,
-                        project=project,
-                        user_id=user_id,
-                        prompt_content=style_profile["prompt_content"],
-                        description=style_profile["description"],
-                        replace_default=replace_default,
-                    )
-                    if style_id is None:
-                        # 用户已手改画像（profile_edited），本次不覆盖
+                    if style_profile.get("skipped"):
                         statistics["style_profile"] = "skipped"
                         await _notify(
-                            "✋ 检测到用户已编辑画像，本次未覆盖", 97, "warning",
-                            code="import.progress.styleProfileEditedKept",
+                            "🖊️ 原文样本不足，已跳过文笔画像抽取", 97, "warning",
+                            code="import.progress.styleProfileSkipped",
                         )
                     else:
-                        # 模型失败但本地统计兜底成功：行已写入，标记降级便于诊断
-                        statistics["style_profile"] = (
-                            "degraded" if style_profile.get("degraded") else "created"
+                        style_id = await self._upsert_project_profile_style(
+                            db=db,
+                            project=project,
+                            user_id=user_id,
+                            prompt_content=style_profile["prompt_content"],
+                            description=style_profile["description"],
+                            replace_default=replace_default,
+                            allow_overwrite_edited=bool(
+                                getattr(payload, "overwrite_style_profile", False)
+                            ),
                         )
-                        confidence = style_profile.get("confidence")
-                        confidence_text = (
-                            f"{float(confidence):.2f}"
-                            if isinstance(confidence, (int, float))
-                            else "-"
-                        )
-                        await _notify(
-                            f"🖊️ 文笔画像抽取完成（置信度 {confidence_text}）", 97,
-                            code="import.progress.styleProfileDone",
-                            params={"confidence": confidence_text},
-                        )
+                        if style_id is None:
+                            # 用户已手改画像（profile_edited），本次不覆盖
+                            statistics["style_profile"] = "skipped"
+                            await _notify(
+                                "✋ 检测到用户已编辑画像，本次未覆盖", 97, "warning",
+                                code="import.progress.styleProfileEditedKept",
+                            )
+                        else:
+                            # 模型失败但本地统计兜底成功：行已写入，标记降级便于诊断
+                            statistics["style_profile"] = (
+                                "degraded" if style_profile.get("degraded") else "created"
+                            )
+                            confidence = style_profile.get("confidence")
+                            confidence_text = (
+                                f"{float(confidence):.2f}"
+                                if isinstance(confidence, (int, float))
+                                else "-"
+                            )
+                            await _notify(
+                                f"🖊️ 文笔画像抽取完成（置信度 {confidence_text}）", 97,
+                                code="import.progress.styleProfileDone",
+                                params={"confidence": confidence_text},
+                            )
                 except Exception as exc:
                     # 不打印原文：只记录异常类型（日志安全约束）
                     logger.warning(
@@ -1152,6 +1164,7 @@ class BookImportService:
         db: AsyncSession,
         progress_callback: Any = None,
         ai_service: Optional[AIService] = None,
+        allow_overwrite_edited: bool = False,
     ) -> dict:
         """
         仅重试之前导入时失败的AI生成步骤。
@@ -1382,8 +1395,7 @@ class BookImportService:
                             params={"error": str(exc)[:80]},
                         )
 
-                # issue #254：文笔画像重试。replace_default=False——重试不改用户默认，
-                # 若默认仍指向画像行，就地更新行内容即自然生效。
+                # issue #254：文笔画像重试；默认替换与显式覆盖语义同主流程。
                 elif step_name == "style_profile":
                     await _notify("🔄 正在重试文笔画像抽取...", step_start_pct, code="import.progress.retryStyleProfile")
                     try:
@@ -1410,44 +1422,54 @@ class BookImportService:
                             content_language=task.content_language,
                             extract_mode=task.extract_mode,
                         )
-                        # 重试也按主流程同一判定：新建项目必替换；overwrite 仅在
-                        # 默认为空或已指向画像行时替换，用户手选的风格保留（issue #254）。
-                        current_default_id = (
-                            await db.execute(
-                                select(ProjectDefaultStyle.style_id).where(
-                                    ProjectDefaultStyle.project_id == project.id
-                                )
-                            )
-                        ).scalar_one_or_none()
-                        existing_profile_id = (
-                            await db.execute(
-                                select(WritingStyle.id).where(
-                                    WritingStyle.user_id == user_id,
-                                    WritingStyle.preset_id == profile_preset_id(project.id),
-                                )
-                            )
-                        ).scalar_one_or_none()
-                        replace_default = task.create_new_project or (
-                            current_default_id is None
-                            or current_default_id == existing_profile_id
-                        )
-                        style_id = await self._upsert_project_profile_style(
-                            db=db,
-                            project=project,
-                            user_id=user_id,
-                            prompt_content=style_profile["prompt_content"],
-                            description=style_profile["description"],
-                            replace_default=replace_default,
-                        )
-                        retry_results["style_profile"] = 1 if style_id is not None else 0
-                        if style_id is None:
-                            # 用户已手改画像：视为保留用户编辑，不算覆盖成功
+                        if style_profile.get("skipped"):
+                            # 样本不足：不写画像，视为已处理（避免永远挂在失败列表）
+                            retry_results["style_profile"] = 0
                             await _notify(
-                                "✋ 检测到用户已编辑画像，本次未覆盖", step_end_pct, "warning",
-                                code="import.progress.styleProfileEditedKept",
+                                "🖊️ 原文样本不足，已跳过文笔画像抽取", step_end_pct, "warning",
+                                code="import.progress.styleProfileSkipped",
                             )
                         else:
-                            await _notify("✅ 文笔画像重试成功", step_end_pct, code="import.progress.retryStyleProfileDone")
+                            # 重试也按主流程同一判定：新建项目必替换；overwrite 仅在
+                            # 原本无默认或已指向画像行时替换，用户手选的风格保留。
+                            current_default_id = (
+                                await db.execute(
+                                    select(ProjectDefaultStyle.style_id).where(
+                                        ProjectDefaultStyle.project_id == project.id
+                                    )
+                                )
+                            ).scalar_one_or_none()
+                            existing_profile_id = (
+                                await db.execute(
+                                    select(WritingStyle.id).where(
+                                        WritingStyle.user_id == user_id,
+                                        WritingStyle.preset_id == profile_preset_id(project.id),
+                                    )
+                                )
+                            ).scalar_one_or_none()
+                            replace_default = (
+                                task.create_new_project
+                                or task.default_style_was_missing
+                                or current_default_id == existing_profile_id
+                            )
+                            style_id = await self._upsert_project_profile_style(
+                                db=db,
+                                project=project,
+                                user_id=user_id,
+                                prompt_content=style_profile["prompt_content"],
+                                description=style_profile["description"],
+                                replace_default=replace_default,
+                                allow_overwrite_edited=allow_overwrite_edited,
+                            )
+                            retry_results["style_profile"] = 1 if style_id is not None else 0
+                            if style_id is None:
+                                # 用户已手改画像：保留用户编辑，视为已处理（不再重复失败）
+                                await _notify(
+                                    "✋ 检测到用户已编辑画像，本次未覆盖", step_end_pct, "warning",
+                                    code="import.progress.styleProfileEditedKept",
+                                )
+                            else:
+                                await _notify("✅ 文笔画像重试成功", step_end_pct, code="import.progress.retryStyleProfileDone")
                     except Exception as exc:
                         logger.warning(
                             f"文笔画像重试失败 (第{retry_count}次，异常类型 {type(exc).__name__})"
@@ -1604,6 +1626,17 @@ class BookImportService:
             raise ApiError(code="validation.import_target_project_missing")
 
         project = await verify_project_access(task.project_id, user_id, db)
+
+        # issue #254：必须在 _ensure_project_default_style 之前记录原本是否有默认，
+        # 否则 ensure 插入首预设后无法区分「用户手选」与「自动兜底」。
+        existing_default = (
+            await db.execute(
+                select(ProjectDefaultStyle.style_id).where(
+                    ProjectDefaultStyle.project_id == project.id
+                )
+            )
+        ).scalar_one_or_none()
+        task.default_style_was_missing = existing_default is None
 
         # 覆盖模式清空相关数据
         if import_mode == "overwrite":
@@ -4250,12 +4283,26 @@ class BookImportService:
         书名或角色名。
         """
         sample = build_style_sample(chapters, mode=extract_mode)
-        ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
-        # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
-        generation_language = await resolve_user_generation_language(db, user_id, content_language)
+        sample_chars = int((sample.meta or {}).get("char_count") or 0)
+        if sample_chars < SAMPLE_MIN_CHARS:
+            # 样本不足时不写画像：避免本地统计的默认值顶掉项目默认风格（issue #254）。
+            return {
+                "skipped": True,
+                "sample_chars": sample_chars,
+                "degraded": False,
+                "confidence": None,
+            }
 
         degraded = False
+        generation_language = "zh"
         try:
+            # AI 服务构建/语言解析/模板获取同属"抽取链路"：任一失败都走本地统计
+            # 兜底（degraded），不产生失败步骤（计划 §5.5）。
+            ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
+            # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh
+            generation_language = await resolve_user_generation_language(
+                db, user_id, content_language
+            )
             template = await PromptService.get_template("BOOK_IMPORT_STYLE_PROFILE", user_id, db)
             prompt = PromptService.format_prompt(
                 template,
@@ -4290,6 +4337,7 @@ class BookImportService:
             degraded = True
 
         return {
+            "skipped": False,
             "prompt_content": render_style_profile(
                 data,
                 sample.meta,
@@ -4299,20 +4347,23 @@ class BookImportService:
             "description": self._describe_style_sample(sample, extract_mode),
             "degraded": degraded,
             "confidence": data.get("confidence"),
+            "sample_chars": sample_chars,
         }
 
     @staticmethod
     def _describe_style_sample(sample: Any, extract_mode: str) -> str:
         """画像行的 description：只写元信息（章号/字数/采样模式），不含原文（issue #254）。"""
         meta = getattr(sample, "meta", None) or {}
-        raw_numbers = meta.get("chapters") or meta.get("chapter_numbers") or []
+        raw_numbers = meta.get("chapter_numbers") or []
         if isinstance(raw_numbers, (int, float)):
             raw_numbers = [raw_numbers]
         numbers = sorted({
             int(n) for n in raw_numbers
             if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())
         })
-        char_count = meta.get("chars") or meta.get("char_count") or len(getattr(sample, "text", "") or "")
+        char_count = meta.get("char_count")
+        if not isinstance(char_count, int):
+            char_count = len(getattr(sample, "text", "") or "")
         mode_label = "tail 采样" if (meta.get("tail") or extract_mode == "tail") else "全章采样"
 
         if numbers:

@@ -83,7 +83,12 @@ async def create_writing_style(
     """
     # 获取当前用户ID
     user_id = get_current_user_id(request)
-    
+
+    # `profile:` 是项目文笔画像的保留前缀（issue #254），禁止用户手动创建，
+    # 否则会占用 upsert 槽位并破坏项目归属判定。
+    if is_profile_preset_id(style_data.preset_id):
+        raise ApiError(code="validation.profile_preset_reserved")
+
     # 如果基于预设创建，从数据库获取预设内容
     if style_data.preset_id:
         result = await db.execute(

@@ -28,6 +28,8 @@ SAMPLE_CHAR_BUDGET = 10000
 SAMPLE_PER_CHAPTER_BUDGET = 2000
 SAMPLE_MIN_CHAPTERS = 4
 SAMPLE_MAX_CHAPTERS = 6
+# 少于该字数视为样本不足：不生成画像（避免本地统计默认值顶掉项目默认风格）
+SAMPLE_MIN_CHARS = 200
 
 # 空泛形容词黑名单：命中且不含任何量化信息时判为不可观察要求
 VAGUE_ADJECTIVES = (
@@ -84,8 +86,12 @@ def _cut_positions(text: str) -> list[int]:
     return sorted(cuts)
 
 
-def _snap_to_cut(cuts: list[int], target: int, lo: int, hi: int) -> int:
-    """在 [lo, hi] 内取距 target 最近的边界；没有边界时退回 target 本身。"""
+def _snap_to_cut(cuts: list[int], target: int, lo: int, hi: int, max_distance: int = 0) -> int:
+    """在 [lo, hi] 内取距 target 最近的边界。
+
+    没有边界、或最近边界距离超过 max_distance 时退回 target：无句末标点/无换行
+    的长文本不能被整体丢弃，只能近似按预算硬切（max_distance=0 表示不限制）。
+    """
     best: Optional[int] = None
     best_distance: Optional[int] = None
     for cut in cuts:
@@ -95,6 +101,8 @@ def _snap_to_cut(cuts: list[int], target: int, lo: int, hi: int) -> int:
         if best_distance is None or distance < best_distance:
             best, best_distance = cut, distance
     if best is None:
+        return max(lo, min(target, hi))
+    if max_distance and best_distance is not None and best_distance > max_distance:
         return max(lo, min(target, hi))
     return best
 
@@ -107,10 +115,14 @@ def _chapter_windows(content: str, per_chapter_budget: int) -> list[tuple[int, i
 
     cuts = _cut_positions(content)
     window = max(1, per_chapter_budget // 3)
-    head_end = _snap_to_cut(cuts, window, 1, length)
-    middle_start = _snap_to_cut(cuts, length // 2 - window // 2, 0, length)
-    middle_end = _snap_to_cut(cuts, length // 2 + window // 2, middle_start + 1, length)
-    tail_start = _snap_to_cut(cuts, length - window, 0, length - 1)
+    head_end = _snap_to_cut(cuts, window, 1, length, max_distance=window)
+    middle_start = _snap_to_cut(
+        cuts, length // 2 - window // 2, 0, length, max_distance=window
+    )
+    middle_end = _snap_to_cut(
+        cuts, length // 2 + window // 2, middle_start + 1, length, max_distance=window
+    )
+    tail_start = _snap_to_cut(cuts, length - window, 0, length - 1, max_distance=window)
 
     merged: list[tuple[int, int]] = []
     for start, end in sorted([(0, head_end), (middle_start, middle_end), (tail_start, length)]):
@@ -120,6 +132,18 @@ def _chapter_windows(content: str, per_chapter_budget: int) -> list[tuple[int, i
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
+
+    total = sum(end - start for start, end in merged)
+    if total > per_chapter_budget:
+        limited: list[tuple[int, int]] = []
+        remaining = per_chapter_budget
+        for start, end in merged:
+            if remaining <= 0:
+                break
+            take = min(end - start, remaining)
+            limited.append((start, start + take))
+            remaining -= take
+        merged = limited
     return merged
 
 

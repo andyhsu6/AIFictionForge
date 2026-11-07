@@ -24,15 +24,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from app.api.writing_styles import (
+    create_writing_style,
     get_project_styles,
     get_user_styles,
     update_writing_style,
 )
+from app.core.errors import ApiError
 from app.database import Base
 from app.models.project import Project
 from app.models.project_default_style import ProjectDefaultStyle
 from app.models.writing_style import WritingStyle
-from app.schemas.writing_style import WritingStyleUpdate
+from app.schemas.writing_style import WritingStyleCreate, WritingStyleUpdate
 from app.services.book_import_service import BookImportService
 from app.services.cascade_cleanup import delete_project_children
 from app.services.import_export_service import ImportExportService
@@ -420,5 +422,51 @@ def test_sample_build_failure_propagates_for_failed_step(monkeypatch):
             )
         ).scalar_one()
         assert default.style_id == 1
+
+    _run(scenario)
+
+
+def test_insufficient_sample_skips_profile_without_touching_default():
+    """样本不足时不写画像、不改默认（避免本地统计默认值顶掉项目默认风格）。"""
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        svc = BookImportService()
+        profile = await svc._extract_style_profile(
+            db=db,
+            user_id=USER_ID,
+            project=project,
+            chapters=[SimpleNamespace(chapter_number=1, title="短章", content="太短")],
+            ai_service=fake_ai(VALID_PROFILE),
+        )
+
+        assert profile["skipped"] is True
+        assert await profile_rows(db) == []
+        default = (
+            await db.execute(
+                select(ProjectDefaultStyle).where(
+                    ProjectDefaultStyle.project_id == project.id
+                )
+            )
+        ).scalar_one()
+        assert default.style_id == 1
+
+    _run(scenario)
+
+
+def test_create_rejects_reserved_profile_prefix():
+    async def scenario(db):
+        await seed_project(db)
+        with pytest.raises(ApiError) as exc_info:
+            await create_writing_style(
+                WritingStyleCreate(
+                    name="伪装画像",
+                    preset_id=profile_preset_id("project-a"),
+                    prompt_content="x",
+                ),
+                make_request(),
+                db,
+            )
+        assert exc_info.value.code == "validation.profile_preset_reserved"
 
     _run(scenario)
