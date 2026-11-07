@@ -50,6 +50,7 @@ from app.services.ai_service import (
     create_user_ai_service_with_mcp,
 )
 from app.services.import_validators import (
+    WORLD_EXTRACTION_NOT_MENTIONED,
     looks_like_profile_narration,
     validate_career_system,
     validate_characters_batch,
@@ -323,6 +324,27 @@ def _load_world_snapshot(raw: Optional[str]) -> dict[str, str]:
     except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _clean_extracted_world_values(world_data: dict[str, Any]) -> dict[str, str]:
+    """把抽取结果映射为 world_* 字段值：丢弃空值与「原文未提及」占位。
+
+    占位不是设定：它不能被写库、不能进 AI 快照、也不能算"抽到了字段"，
+    否则四字段全未提及会被当成成功写回（issue #242）。
+    """
+    mapped = {
+        "world_time_period": world_data.get("time_period"),
+        "world_location": world_data.get("location"),
+        "world_atmosphere": world_data.get("atmosphere"),
+        "world_rules": world_data.get("rules"),
+    }
+    cleaned: dict[str, str] = {}
+    for field, raw in mapped.items():
+        value = str(raw or "").strip()
+        if not value or value == WORLD_EXTRACTION_NOT_MENTIONED:
+            continue
+        cleaned[field] = value
+    return cleaned
 
 
 def _render_existing_world(project: Any) -> str:
@@ -1090,7 +1112,15 @@ class BookImportService:
                             chapters=chapters_for_retry,
                             content_language=task.content_language,
                             extraction_mode=True,
-                            merge_existing=True,
+                            merge_existing=any(
+                                getattr(project, field, None)
+                                for field in (
+                                    "world_time_period",
+                                    "world_location",
+                                    "world_atmosphere",
+                                    "world_rules",
+                                )
+                            ),
                         )
                         retry_results["generated_world_building"] = result
                         await _notify("✅ 世界观重试成功", step_end_pct, code="import.progress.retryWorldDone")
@@ -1385,11 +1415,14 @@ class BookImportService:
             project.genre = suggestion.genre
             project.target_words = max(1000, int(suggestion.target_words or 100000))
             project.narrative_perspective = (suggestion.narrative_perspective or "第三人称")[:50]
-            # 覆盖导入：旧世界设定先清空，由导入末尾的抽取步骤按新正文重新写入
+            # 覆盖导入：旧世界设定先清空，由导入末尾的抽取步骤按新正文重新写入。
+            # 快照必须一起清空，否则残留的旧 AI 快照会把新抽取没覆盖的字段
+            # 继续当作"历史 AI 值"保护，旧书设定变成永久值（issue #242）。
             project.world_time_period = None
             project.world_location = None
             project.world_atmosphere = None
             project.world_rules = None
+            project.ai_world_profile_snapshot = None
 
         await self._ensure_project_default_style(db=db, project_id=project.id)
         return project
@@ -2585,12 +2618,7 @@ class BookImportService:
                 return 0
 
             await _notify("🌍 正在解析世界观数据...", 0.8, code="import.progress.worldParsing")
-            values = {
-                "world_time_period": str(world_data.get("time_period") or "").strip(),
-                "world_location": str(world_data.get("location") or "").strip(),
-                "world_atmosphere": str(world_data.get("atmosphere") or "").strip(),
-                "world_rules": str(world_data.get("rules") or "").strip(),
-            }
+            values = _clean_extracted_world_values(world_data)
 
             updated = 0
             if extraction_mode:

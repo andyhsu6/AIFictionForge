@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.book_import_service import _render_existing_world
+from app.services.book_import_service import (
+    _clean_extracted_world_values,
+    _render_existing_world,
+)
 from app.services.import_validators import (
     WORLD_EXTRACTION_NOT_MENTIONED,
     validate_world_building_extraction,
@@ -107,3 +110,25 @@ def test_render_existing_world_skips_empty_fields():
     assert "占位纪元第七年" in rendered
     assert "占位议会规定" in rendered
     assert "地理位置" not in rendered
+
+
+def test_not_mentioned_marker_is_not_persisted():
+    cleaned = _clean_extracted_world_values(
+        {
+            "time_period": "占位纪元第七年，占位议会统治占位城。",
+            "location": WORLD_EXTRACTION_NOT_MENTIONED,
+            "atmosphere": "",
+            "rules": None,
+        }
+    )
+    assert set(cleaned) == {"world_time_period"}
+
+
+def test_embedded_not_mentioned_does_not_bypass_evidence():
+    payload = _valid_payload()
+    payload["rules"] = (
+        "占位议会规定所有外来者必须登记，原文未提及之外的情况不得编造，以上内容刻意写长以通过长度检查。"
+    )
+    payload["evidence"].pop("rules")
+    with pytest.raises(ValueError, match="缺少 evidence"):
+        validate_world_building_extraction(payload, _chapters())
