@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncGenerator, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -460,10 +460,10 @@ class ProjectAgentService:
         默认 False ⇒ 发给模型的工具集与逐轮行为与 PR-1 逐字一致。
         """
         conversation = await self.get_or_create_conversation(conversation_id, message)
-        # 新会话的第一句话：顺手把「上一个会话」的结论补上。结论层是跨会话记忆
-        # 的稳定骨架，没它就只能靠注入对话尾部碰运气（见 §conversation summary）。
+        # 新会话的第一句话：先同步补上「上一个会话」的结论，再继续本轮回答。
+        # 同步而非异步调度 —— 异步会让这一轮读不到结论，用户被迫「等一会儿再问」。
         if not conversation_id:
-            await self._schedule_previous_conversation_summary(conversation.id)
+            await self._ensure_recent_conclusion(conversation.id)
         user_message = AgentMessage(
             conversation_id=conversation.id,
             role="user",
@@ -1615,38 +1615,55 @@ class ProjectAgentService:
     #: 本会话结论的重新生成间隔（新增消息数）。太小会频繁调用模型。
     SUMMARY_REFRESH_MESSAGES = 12
 
-    async def _schedule_previous_conversation_summary(self, current_id: str) -> None:
-        """新会话开场时，异步补上「上一个会话」的结论。
+    async def _ensure_recent_conclusion(self, conversation_id: str) -> None:
+        """最近一个其它会话缺结论时，**同步**补一次。
 
-        只在结论缺失或落后于会话最后消息时调度；摘要本身在独立 session 里跑，
-        失败只记日志，不阻塞本轮回答。
+        不能只靠异步调度：那样新会话首回合读不到结论，用户会被迫「等一会儿再问」
+        —— 那是把异步设计的缺陷转嫁给用户。同步只发生在真正缺数据的那一次，
+        之后的回合都直接命中缓存好的 summary。
+
+        失败静默：宁可这次没有结论，也不能让新会话的第一句话失败。
         """
         try:
             from app.services.agent_conversation_summary import (
-                schedule_conversation_summary,
+                SUMMARY_MIN_MESSAGES,
+                summarize_with,
             )
 
-            previous = (
+            candidates = (
                 await self.db.execute(
                     select(AgentConversation)
                     .where(
                         AgentConversation.project_id == self.project.id,
                         AgentConversation.user_id == self.user_id,
                         AgentConversation.status == "active",
-                        AgentConversation.id != current_id,
+                        AgentConversation.id != conversation_id,
                     )
                     .order_by(AgentConversation.last_message_at.desc())
-                    .limit(1)
+                    .limit(5)
                 )
-            ).scalar_one_or_none()
-            if previous is None:
+            ).scalars().all()
+            for candidate in candidates:
+                if (candidate.summary or "").strip():
+                    continue
+                count = (
+                    await self.db.execute(
+                        select(func.count())
+                        .select_from(AgentMessage)
+                        .where(
+                            AgentMessage.conversation_id == candidate.id,
+                            AgentMessage.role.in_(("user", "assistant")),
+                        )
+                    )
+                ).scalar_one()
+                # 空会话或只有一两句寒暄的会话没有结论可生成；继续往前找，
+                # 否则「最近一个会话是测试会话」会让真正的上一轮永远补不到。
+                if count < SUMMARY_MIN_MESSAGES:
+                    continue
+                await summarize_with(self.db, self.ai_service, candidate.id)
                 return
-            if previous.summary and previous.updated_at and previous.last_message_at:
-                if previous.updated_at >= previous.last_message_at:
-                    return
-            schedule_conversation_summary(previous.id, self.user_id)
-        except Exception:  # noqa: BLE001 —— 摘要调度失败不得影响对话
-            logger.warning("调度上一个会话摘要失败", exc_info=True)
+        except Exception:  # noqa: BLE001 —— 补生成失败不得影响对话
+            logger.warning("补生成上一会话结论失败", exc_info=True)
 
     async def _maybe_schedule_own_summary(self, conversation_id: str) -> None:
         """本会话聊得够久时补一次结论，覆盖「用户从不新开会话」的路径。

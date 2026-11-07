@@ -109,6 +109,48 @@ def _clean_summary(raw: str) -> str:
     return "\n".join(result)
 
 
+async def summarize_with(
+    session: AsyncSession,
+    ai_service,
+    conversation_id: str,
+) -> str:
+    """用调用方提供的 session 与 AIService 生成并写入结论。
+
+    供 `stream_chat` 在首回合同步兜底时复用：那里已经有请求态 session 与服务，
+    再新建一套只会多一次连接，也看不到同一事务视图。
+    """
+    conversation = (
+        await session.execute(
+            select(AgentConversation).where(AgentConversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    if conversation is None:
+        return ""
+
+    transcript = await _load_transcript(session, conversation_id)
+    if not transcript:
+        return ""
+
+    response = await ai_service.generate_text(
+        prompt=f"对话记录：\n{transcript}",
+        system_prompt=SUMMARY_PROMPT,
+        temperature=0.2,
+        max_tokens=600,
+        auto_mcp=False,
+        handle_tool_calls=False,
+    )
+    summary = _clean_summary((response or {}).get("content") or "")
+    if not summary:
+        return summary
+
+    conversation.summary = summary
+    await session.commit()
+    logger.info(
+        f"会话结论已生成: conversation={conversation_id[:8]} chars={len(summary)}"
+    )
+    return summary
+
+
 async def summarize_conversation(conversation_id: str, user_id: str) -> str:
     """生成并写入会话结论，返回写入的文本；失败返回空串。
 
@@ -124,43 +166,22 @@ async def summarize_conversation(conversation_id: str, user_id: str) -> str:
         engine = await get_engine(user_id)
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         async with factory() as session:
-            conversation = (
+            owned = (
                 await session.execute(
-                    select(AgentConversation).where(
+                    select(AgentConversation.id).where(
                         AgentConversation.id == conversation_id,
                         AgentConversation.user_id == user_id,
                     )
                 )
             ).scalar_one_or_none()
-            if conversation is None:
-                return ""
-
-            transcript = await _load_transcript(session, conversation_id)
-            if not transcript:
+            if owned is None:
                 return ""
 
             # 保留 db_session：`generate_text` 的模型门禁按 (user, provider, base_url,
             # model) 读结论缓存，db_session=None 会让实例被判为 unbound diagnostic
             # 而直通放行 —— 摘要路径反而绕开门禁。不要把这里改成 `service.db_session = None`。
             ai_service = await get_user_ai_service_from_db(user_id, session)
-            response = await ai_service.generate_text(
-                prompt=f"对话记录：\n{transcript}",
-                system_prompt=SUMMARY_PROMPT,
-                temperature=0.2,
-                max_tokens=600,
-                auto_mcp=False,
-                handle_tool_calls=False,
-            )
-            summary = _clean_summary((response or {}).get("content") or "")
-            if not summary:
-                return summary
-
-            conversation.summary = summary
-            await session.commit()
-            logger.info(
-                f"会话结论已生成: conversation={conversation_id[:8]} chars={len(summary)}"
-            )
-            return summary
+            return await summarize_with(session, ai_service, conversation_id)
     except Exception:  # noqa: BLE001 —— 摘要失败不得影响对话
         logger.warning(
             f"会话结论生成失败: conversation={conversation_id[:8]}", exc_info=True

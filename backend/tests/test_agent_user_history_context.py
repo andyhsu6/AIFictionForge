@@ -515,3 +515,63 @@ async def test_disabled_flag_prevents_injection_in_stream_chat(db_session, monke
     prompt = ai_service.system_prompts[0]
     assert "以下内容来自你在本项目其它对话中说过的原话" not in prompt
     assert "另一条会话里说过的完整风格约定" not in prompt
+
+
+class _SummaryAIService(AgentAIServiceStub):
+    """主流程正常回答，摘要调用返回一条合法结论。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            default_model="test-model",
+            api_provider="openai",
+            base_url="https://gw.example/v1",
+        )
+        self.summary_calls = 0
+
+    async def generate_text(self, **kwargs):
+        system_prompt = kwargs.get("system_prompt") or ""
+        if "整理「会话结论」" in system_prompt:
+            self.summary_calls += 1
+            return {
+                "content": "- 上一轮确认的结论条目",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        return {
+            "content": "好的。",
+            "tool_calls": [],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+
+@pytest.mark.anyio
+async def test_new_conversation_backfills_previous_summary_synchronously(db_session):
+    """新会话首回合必须同步补上上一会话结论，用户不需要「等一会儿再问」。"""
+    project = make_project()
+    db_session.add(project)
+    previous = add_conversation(db_session, project.id, "上一轮会话")
+    await db_session.flush()
+    add_user_message(db_session, previous.id, "上一轮的第一条完整内容", datetime(2026, 1, 1, 0, 0, 1))
+    add_assistant_message(db_session, previous.id, "上一轮的第二条完整内容", datetime(2026, 1, 1, 0, 0, 2))
+    add_user_message(db_session, previous.id, "上一轮的第三条完整内容", datetime(2026, 1, 1, 0, 0, 3))
+    add_assistant_message(db_session, previous.id, "上一轮的第四条完整内容", datetime(2026, 1, 1, 0, 0, 4))
+    await db_session.commit()
+
+    ai_service = _SummaryAIService()
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=ai_service,
+        project=project,
+        user_id="test",
+    )
+
+    async for _event in service.stream_chat(
+        conversation_id=None,
+        message="新会话的第一个问题",
+        page_context={},
+    ):
+        pass
+
+    refreshed = await db_session.get(AgentConversation, previous.id)
+    assert refreshed.summary == "- 上一轮确认的结论条目"
+    assert ai_service.summary_calls == 1
