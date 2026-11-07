@@ -205,10 +205,35 @@ _PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
             for field in ("title", "content")
         },
     },
+    "manage_chapter": {
+        "create": {
+            "title": (
+                "创建章节需要 data.title；章节号放 data.chapter_number 或顶层 chapter_number"
+            ),
+        },
+        "update_content": {
+            "content": "update_content 需要 data.content",
+        },
+    },
 }
 
 # 严格集合的「可用字段」提示上限：错误会进过程面板，不能无界堆字段名。
 _AVAILABLE_FIELDS_LIMIT = 24
+
+# 顶层参数必填（不经 data）。与 `_PLAN_REQUIRED_DATA_FIELDS` 分开维护：
+# `manage_outline.create` 运行期直接读 arguments["title"]/["content"]/["order_index"]，
+# 把这类检查塞进 data 那套会让「字段放错位置」的步骤漏过提案期、到执行期才炸。
+_PLAN_REQUIRED_ARG_FIELDS: dict[str, dict[str, dict[str, str]]] = {
+    "manage_outline": {
+        "create": {
+            field: (
+                "创建大纲需要顶层 title、content 和正整数 order_index；"
+                "这三个字段放在 arguments 顶层，不要包进 data"
+            )
+            for field in ("title", "content", "order_index")
+        },
+    },
+}
 
 # 批量 add_member 每一项的合法键：与运行期 _member_fields 的 _fields(..., MEMBER_FIELDS)
 # 同源（严格集合去掉批量的 members 键），避免提案期放过执行期必败的元素字段。
@@ -457,9 +482,20 @@ def _step_arguments_error(
     )
     properties = schema.get("properties")
     declared = set(properties) if isinstance(properties, dict) else set()
+    # 顶层必填用原始入参判断：运行期读的就是顶层，字段被塞进 data 也算错位置。
+    # 放在未知字段检查之前，提示才指向真正的问题（"缺顶层 title"而不是"不支持的字段 data"）。
+    required_args = _PLAN_REQUIRED_ARG_FIELDS.get(tool, {}).get(
+        str(effective.get("action") or "")
+    )
+    if required_args:
+        for field, hint in required_args.items():
+            if not raw_arguments.get(field):
+                return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
+
     unknown = sorted(set(effective) - declared - moved)
     if unknown:
         return f"步骤 {step_id} 的 {tool} 参数无效：不支持的字段 {', '.join(unknown)}"
+
     data = effective.get("data")
     # 别名归一（issue #160）：模型对组织角色写 type/purpose，运行期会归一成
     # organization_type/organization_purpose；提案期对副本同判，避免误拒。
@@ -475,6 +511,21 @@ def _step_arguments_error(
         for field, hint in required_data.items():
             if not normalized_data.get(field):
                 return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
+    if tool == "manage_writing_style" and str(effective.get("action") or "") == "create":
+        # preset_id 是 name/prompt_content 的替代来源（运行期从预设回填），
+        # 所以不能把这两个字段写进通用必填表，否则引用预设的合法步骤会被误拒。
+        payload = normalized_data if isinstance(normalized_data, dict) else {}
+        if not str(payload.get("preset_id") or "").strip():
+            missing = [
+                field
+                for field in ("name", "prompt_content")
+                if not str(payload.get(field) or "").strip()
+            ]
+            if missing:
+                return (
+                    f"步骤 {step_id} 的 {tool} 参数无效：创建写作风格需要 data.name 和 "
+                    "data.prompt_content，或用 data.preset_id 引用预设"
+                )
     if tool == "manage_organization" and str(effective.get("action") or "") == "add_member":
         # 角色选择器有顶层回退（真实失败形状：顶层 member_id 装角色 ID、data 整块缺失），
         # 无法塞进 _PLAN_REQUIRED_DATA_FIELDS 的「data 内单字段」模型，单独判（issue #160）。
