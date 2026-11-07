@@ -57,8 +57,7 @@ const EXPANDED_KEY = 'project-agent-expanded';
 const WIDTH_KEY = 'project-agent-width';
 const AUTO_APPROVE_KEY = 'project-agent-auto-approve';
 // 计划模式：开启时复杂请求会先生成计划待确认；关闭后助手直接回答或单步执行。
-// 默认开启（与历史行为一致），但用户现在可以关掉——「说说你的看法」被塞施工单
-// 的根因之一就是这里曾经硬编码 true。
+// 默认关闭——创作场景里用户多数时候是在讨论，不该被塞施工单。
 const PLAN_MODE_KEY = 'project-agent-plan-mode';
 
 function AssistantLogo({ size }: { size: number }) {
@@ -204,7 +203,7 @@ export default function ProjectAgentPanel({
   const [decidingId, setDecidingId] = useState<string>();
   const [approvingAllMessageId, setApprovingAllMessageId] = useState<string>();
   const [autoApprove, setAutoApprove] = useState(() => localStorage.getItem(AUTO_APPROVE_KEY) === 'true');
-  const [planMode, setPlanMode] = useState(() => localStorage.getItem(PLAN_MODE_KEY) !== 'false');
+  const [planMode, setPlanMode] = useState(() => localStorage.getItem(PLAN_MODE_KEY) === 'true');
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController>();
   const autoApprovalAttemptedRef = useRef<Set<string>>(new Set());
