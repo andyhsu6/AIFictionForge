@@ -237,6 +237,29 @@ async def _run_dirty_facts(src_path: str, dst_path: str) -> None:
     assert restored["world_facts"] is None
 
 
+def test_world_facts_accepts_already_parsed_list_on_import():
+    """手工编辑/第三方产出的 world_facts 可能已是数组：导入直接采纳。"""
+    src_path = _db_path()
+    dst_path = _db_path()
+    try:
+        asyncio.run(_run_parsed_facts(src_path, dst_path))
+    finally:
+        for path in (src_path, dst_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _run_parsed_facts(src_path: str, dst_path: str) -> None:
+    exported = await _seed_and_export(src_path)
+    parsed = json.loads(exported["project"]["world_facts"])
+    exported["project"]["world_facts"] = parsed
+
+    result, restored = await _import_into_fresh_db(exported, dst_path)
+    assert result.success, result.message
+    assert restored is not None
+    assert json.loads(restored["world_facts"]) == parsed
+
+
 def test_outline_transfer_accepts_current_project_export_version():
     """完整项目导出升级后，大纲提取导入不得再拒绝新文件。"""
     from app.services.outline_transfer_service import OutlineTransferService

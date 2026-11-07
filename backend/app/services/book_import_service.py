@@ -394,15 +394,35 @@ def _load_world_facts(raw: Optional[str]) -> list[dict[str, Any]]:
 def _merge_world_facts(
     existing: list[dict[str, Any]], new: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """按 (field, text) 去重合并：保留既有事实与顺序，追加新事实。"""
-    merged = list(existing)
-    seen = {(item.get("field"), item.get("text")) for item in existing}
-    for fact in new:
-        key = (fact.get("field"), fact.get("text"))
-        if key in seen:
-            continue
+    """按 (field, text) 合并事实：同一条事实追加新证据，不整条丢弃。
+
+    只按 (field, text) 去重会截断证据链：append 导入再次抽到相同措辞、但
+    带上了更靠后章节的引文时，旧证据没有的理由被整条丢弃。这里对同一条
+    事实按 (chapter, quote) 去重追加，事实顺序与旧证据保持不变。
+    """
+    merged: list[dict[str, Any]] = []
+    index: dict[tuple[Any, Any], int] = {}
+    for item in existing:
+        fact = dict(item)
+        fact["evidence"] = [dict(entry) for entry in item.get("evidence") or [] if isinstance(entry, dict)]
+        index[(fact.get("field"), fact.get("text"))] = len(merged)
         merged.append(fact)
-        seen.add(key)
+    for item in new:
+        fact = dict(item)
+        fact["evidence"] = [dict(entry) for entry in item.get("evidence") or [] if isinstance(entry, dict)]
+        key = (fact.get("field"), fact.get("text"))
+        if key in index:
+            target = merged[index[key]]
+            seen = {(entry.get("chapter"), entry.get("quote")) for entry in target["evidence"]}
+            for entry in fact["evidence"]:
+                entry_key = (entry.get("chapter"), entry.get("quote"))
+                if entry_key in seen:
+                    continue
+                target["evidence"].append(entry)
+                seen.add(entry_key)
+            continue
+        index[key] = len(merged)
+        merged.append(fact)
     return merged
 
 
@@ -2714,7 +2734,9 @@ class BookImportService:
                     if value:
                         setattr(project, field, value)
                         updated = 1
-                # issue #175：把刚生成的世界设定登记为「AI 写入」，后续同步才允许演进
+                # issue #175：把刚生成的世界设定登记为「AI 写入」，后续同步才允许演进。
+                # 注：创作式（非拆书抽取）路径不产 world_facts——它没有原文证据；
+                # issue #242 的 facts 范围只覆盖拆书抽取路径，这里不是遗漏。
                 world_snapshot = _profile_snapshot_json(**values)
                 if world_snapshot:
                     project.ai_world_profile_snapshot = world_snapshot

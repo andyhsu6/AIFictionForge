@@ -769,18 +769,23 @@ class ImportExportService:
                 if not isinstance(parsed_snapshot, dict):
                     warnings.append("世界设定同步快照不是合法对象，已忽略")
                     world_snapshot = None
-            # issue #242：world_facts 契约是 JSON 数组；脏数据降级为 None 并告警。
-            world_facts_value = project_data.get("world_facts")
-            if isinstance(world_facts_value, str) and world_facts_value.strip():
+            # issue #242：world_facts 契约是 JSON 数组；手工编辑/第三方产出可能已是
+            # 解析后的数组，两种形态都接受；其它脏数据降级为 None 并告警。
+            raw_facts = project_data.get("world_facts")
+            world_facts_value = None
+            if isinstance(raw_facts, list):
+                world_facts_value = json.dumps(raw_facts, ensure_ascii=False)
+            elif isinstance(raw_facts, str) and raw_facts.strip():
                 try:
-                    parsed_facts = json.loads(world_facts_value)
+                    parsed_facts = json.loads(raw_facts)
                 except (TypeError, ValueError):
                     parsed_facts = None
-                if not isinstance(parsed_facts, list):
+                if isinstance(parsed_facts, list):
+                    world_facts_value = raw_facts.strip()
+                else:
                     warnings.append("世界设定事实无法解析，已忽略")
-                    world_facts_value = None
-            else:
-                world_facts_value = None
+            elif raw_facts is not None:
+                warnings.append("世界设定事实无法解析，已忽略")
             new_project = Project(
                 user_id=user_id,  # 设置为当前用户ID
                 title=project_data.get("title"),

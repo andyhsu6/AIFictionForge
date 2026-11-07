@@ -52,6 +52,50 @@ def test_merge_world_facts_dedupes_by_field_and_text():
     assert [fact["text"] for fact in merged] == ["旧规则", "新规则"]
 
 
+def test_merge_world_facts_appends_new_evidence_for_same_fact():
+    first = [
+        {
+            "field": "world_rules",
+            "text": "占位规则",
+            "evidence": [{"chapter": 1, "quote": "占位原文一"}],
+            "source": "original",
+        }
+    ]
+    second = [
+        {
+            "field": "world_rules",
+            "text": "占位规则",
+            "evidence": [
+                {"chapter": 1, "quote": "占位原文一"},
+                {"chapter": 6, "quote": "占位原文六"},
+            ],
+            "source": "original",
+        }
+    ]
+    merged = _merge_world_facts(first, second)
+    assert len(merged) == 1
+    assert merged[0]["evidence"] == [
+        {"chapter": 1, "quote": "占位原文一"},
+        {"chapter": 6, "quote": "占位原文六"},
+    ]
+
+
+def test_build_world_facts_filters_invalid_evidence_entries():
+    data = {
+        "time_period": "占位纪元第七年",
+        "evidence": {
+            "time_period": [
+                {"chapter": "1", "quote": "章节号不是整数"},
+                {"chapter": 1, "quote": "占位战争结束为元年"},
+                "junk",
+                {"chapter": 2, "quote": ""},
+            ]
+        },
+    }
+    facts = _build_world_facts(data, {"world_time_period": "占位纪元第七年"})
+    assert facts[0]["evidence"] == [{"chapter": 1, "quote": "占位战争结束为元年"}]
+
+
 def test_load_world_facts_tolerates_legacy_and_dirty_values():
     assert _load_world_facts(None) == []
     assert _load_world_facts("") == []
