@@ -158,3 +158,57 @@ def test_error_code_registered_bilingually():
         path = Path(__file__).resolve().parents[2] / "frontend/src/locales" / locale_ns / "errors.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert "agent_plan_interrupted" in payload.get("progress", {}), f"{locale_ns} 缺 {CODE}"
+
+
+@pytest.mark.anyio
+async def test_running_agent_turn_steps_are_failed_on_restart(session_factory):
+    """issue #257：重启后遗留的创作助手 running 步骤必须判失败，否则界面永远转圈。
+
+    plan runner 的步骤（user_message_id 为空）不归这里管，必须保持原状。
+    """
+    from app.models.project_agent import AgentExecutionStep, AgentToolCall
+
+    turn_step = AgentExecutionStep(
+        conversation_id="conv-1",
+        user_message_id="um-1",
+        sequence=2,
+        step_type="thought",
+        category="analysis",
+        title="分析第 3 步",
+        content="正在判断是否需要读取项目数据……",
+        status="running",
+    )
+    plan_step = AgentExecutionStep(
+        conversation_id="conv-1",
+        user_message_id=None,
+        sequence=0,
+        step_type="tool",
+        category="project",
+        title="plan step",
+        content="running plan step",
+        status="running",
+    )
+    tool_call = AgentToolCall(
+        conversation_id="conv-1",
+        user_id="u-test",
+        project_id="p-test",
+        tool_name="reg_read",
+        arguments={},
+        risk_level=0,
+        requires_confirmation=False,
+        status="executing",
+    )
+    async with session_factory() as session:
+        session.add_all([turn_step, plan_step, tool_call])
+        await session.commit()
+
+    await _sweep_interrupted_tasks(engine=session_factory.kw["bind"])
+
+    async with session_factory() as session:
+        saved_turn = await session.get(AgentExecutionStep, turn_step.id)
+        saved_plan = await session.get(AgentExecutionStep, plan_step.id)
+        saved_call = await session.get(AgentToolCall, tool_call.id)
+    assert saved_turn.status == "failed"
+    assert "服务重启" in (saved_turn.content or "")
+    assert saved_plan.status == "running", "plan runner 的步骤不在启动期清扫范围内"
+    assert saved_call.status == "failed"

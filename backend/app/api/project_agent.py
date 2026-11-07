@@ -10,7 +10,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE, sse_code_for_exception
+from app.config import settings
 from app.database import get_db
+from app.logger import get_logger
 from app.api.common import verify_project_access
 from app.api.settings import get_user_ai_service
 from app.models.project_agent import (
@@ -50,10 +52,15 @@ from app.services.agent_plan_schema import (
     validate_plan,
 )
 from app.services.ai_service import AIService
+from app.services import agent_turn_registry
 from app.services.project_agent_service import (
+    AgentTurnCancelled,
+    AgentTurnTimeout,
     ProjectAgentService,
     build_mcp_tool_preview,
     execute_mcp_tool_call,
+    finalize_interrupted_turn_detached,
+    reconcile_stale_turns,
     resolve_provider_tool_call_id,
     save_tool_response,
 )
@@ -64,6 +71,7 @@ from app.utils.sse_response import SSEResponse
 
 
 router = APIRouter(prefix="/projects/{project_id}/agent", tags=["灵创创作助手"])
+logger = get_logger(__name__)
 
 
 def _user_id(request: Request) -> str:
@@ -215,6 +223,18 @@ async def get_conversation_detail(
     conversation = await _get_conversation(
         db, conversation_id=conversation_id, project_id=project_id, user_id=user_id
     )
+    # issue #257：打开会话时自愈上一进程/上一次失败回合残留的 running 步骤，
+    # 否则界面永远转圈且无处可点。只有本进程没有在跑的回合时才会动手。
+    repaired = await reconcile_stale_turns(
+        db, conversation_id=conversation.id, min_age_seconds=2.0
+    )
+    if repaired:
+        conversation = await _get_conversation(
+            db,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            user_id=user_id,
+        )
     messages = (
         await db.execute(
             select(AgentMessage)
@@ -283,6 +303,55 @@ async def chat_stream(
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
+        async def _finalize(
+            reason: str,
+            *,
+            cancelled: bool,
+            content: str | None = None,
+        ) -> None:
+            """收尾跑在异常/取消分支里，必须活下来（issue #257）。
+
+            浏览器断开时 Starlette 的取消作用域会让直接 `await` 立刻再抛
+            `CancelledError`，收尾就丢了 ⇒ 步骤永远 running。shield 到独立 task：
+            当前作用域等不到就让它后台跑完，不阻塞取消传播。
+            """
+            # 收尾一律优先用独立会话：路由的异常/取消分支里，客户端可能同时断开，
+            # 请求作用域的 AsyncSession 会被 FastAPI 关闭或并发使用，收尾会随之中断。
+            # 先释放请求会话的写事务，否则独立会话在 SQLite 单写者下会等锁自锁。
+            await service.release_turn_transaction()
+            if service.active_conversation_id and service.active_user_message_id:
+                finalize_coro = finalize_interrupted_turn_detached(
+                    user_id=user_id,
+                    conversation_id=service.active_conversation_id,
+                    user_message_id=service.active_user_message_id,
+                    reason=reason,
+                    cancelled=cancelled,
+                    content=content,
+                )
+            else:
+                finalize_coro = service.finalize_interrupted_turn(
+                    reason, cancelled=cancelled, content=content
+                )
+            task = asyncio.ensure_future(finalize_coro)
+
+            def _on_done(finished: "asyncio.Future") -> None:
+                # 收尾落盘后才置「已结算」：取消接口等的是 DB 真写完，不是
+                # 生成器退出（两者之间隔着一次 rollback+commit）。
+                service.mark_turn_settled()
+                try:
+                    finished.exception()
+                except BaseException:  # noqa: BLE001
+                    pass
+
+            task.add_done_callback(_on_done)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # 作用域已被取消：收尾 task 在后台继续跑，完成时由 _on_done 结算。
+                pass
+            except Exception:  # noqa: BLE001 —— 收尾本身已兜底，这里只保险
+                logger.warning("创作助手收尾任务失败", exc_info=True)
+
         try:
             async for event in service.stream_chat(
                 conversation_id=payload.conversation_id,
@@ -294,14 +363,25 @@ async def chat_stream(
                 yield SSEResponse.format_sse(event)
             yield await SSEResponse.send_done()
         except (asyncio.CancelledError, GeneratorExit):
-            await service.finalize_interrupted_turn("连接已中断", cancelled=True)
+            await _finalize("连接已中断", cancelled=True)
             raise
+        except AgentTurnCancelled:
+            content = "本次执行已由用户停止。"
+            await _finalize("用户停止", cancelled=True, content=content)
+            yield SSEResponse.format_sse({"type": "cancelled", "content": content})
+            yield await SSEResponse.send_done()
+        except AgentTurnTimeout:
+            minutes = max(1, int(round(settings.agent_turn_timeout_seconds / 60)))
+            content = f"本次执行已超过 {minutes} 分钟上限，已自动停止。请缩小问题范围后重试。"
+            await _finalize("单回合超时", cancelled=True, content=content)
+            yield SSEResponse.format_sse({"type": "cancelled", "content": content})
+            yield await SSEResponse.send_done()
         except ValueError as exc:
-            await service.finalize_interrupted_turn(str(exc), cancelled=False)
+            await _finalize(str(exc), cancelled=False)
             yield await SSEResponse.send_error(str(exc), 400)
             yield await SSEResponse.send_done()
         except Exception as exc:
-            await service.finalize_interrupted_turn(str(exc), cancelled=False)
+            await _finalize(str(exc), cancelled=False)
             # 泛型收尾不得吞掉实发模型守卫的码（评审第 2 项）：`generate_text_stream` 是
             # 异步生成器，守卫在首次 `__anext__` 才抛，正好落进本 `except Exception`。
             # 写死 internal.agent_execution_failed 会让不合格模型的用户只看到一句通用失败、
@@ -316,12 +396,64 @@ async def chat_stream(
                 raw=raw,
             )
             yield await SSEResponse.send_done()
+        finally:
+            # 无论正常结束、异常还是生成器关闭，必须注销登记：取消接口与
+            # 卡死自愈都靠它判断「还有没有回合在跑」。
+            service.close_turn()
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/conversations/{conversation_id}/cancel", summary="停止创作助手当前回合")
+async def cancel_conversation_turn(
+    project_id: str,
+    conversation_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """服务端取消出口（issue #257）。
+
+    前端停止按钮会同时 abort 本地流并调本接口：只 abort 做不到可靠停止——浏览器
+    断开不一定传到 ASGI（代理/后台标签页），且回合已崩在半路时连接早断了。
+    本接口置取消标记后短暂等待收尾（最长 5s），再把「没有运行中回合」的残留
+    running 步骤一并自愈，保证接口返回时界面已能看到停止后的状态。
+    """
+    user_id = _user_id(request)
+    await verify_project_access(project_id, user_id, db)
+    await _get_conversation(
+        db, conversation_id=conversation_id, project_id=project_id, user_id=user_id
+    )
+
+    handle = agent_turn_registry.request_cancel(conversation_id)
+    settled = False
+    if handle is not None:
+        try:
+            await asyncio.wait_for(handle.finished_event.wait(), timeout=5.0)
+            settled = True
+        except asyncio.TimeoutError:
+            # 模型调用正在被取消：收尾稍后由回合自己的 finally 完成，不阻塞接口。
+            settled = False
+
+    repaired = await reconcile_stale_turns(
+        db, conversation_id=conversation_id, min_age_seconds=2.0
+    )
+    if handle is not None:
+        message = "已请求停止本次执行"
+    elif repaired:
+        message = f"已清理 {repaired} 条中断的残留步骤"
+    else:
+        message = "当前没有正在执行的回合"
+    return {
+        "conversation_id": conversation_id,
+        "cancelled": handle is not None,
+        "settled": settled,
+        "repaired_steps": repaired,
+        "message": message,
+    }
 
 
 async def _claim_tool_call(

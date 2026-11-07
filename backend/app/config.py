@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     agent_plan_summary_max_chars: int = 8000               # 聚合 tool 消息/收尾文案上限
     agent_plan_running_guardrail_enabled: bool = True      # §7 护栏总开关（回滚用）
     agent_plan_round_budget: int = 5                       # 规划回合工具轮数上限（消费方 = PR-2a 的 service，不走 runner `_limit`；issue #96: 3→5）
+    # 单回合（用户发一句话到出结果）墙钟上限，单位秒；超时由取消链路收口成
+    # 「已超过上限，已自动停止」而不是无限转圈。<=0 表示不设预算（回滚开关）。issue #257
+    agent_turn_timeout_seconds: float = 300.0
 
     # --- 助手 prompt 预算（PR-0c，架构计划 §5）-----------------------------
     # 唯一换算式：clamp(实测窗口 tokens * agent_chars_per_token

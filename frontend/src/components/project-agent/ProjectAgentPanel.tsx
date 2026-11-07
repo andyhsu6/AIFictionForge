@@ -38,7 +38,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useLocation } from 'react-router-dom';
 
-import { projectAgentApi } from '../../services/api';
+import { projectAgentApi, type AgentTurnCancelResult } from '../../services/api';
 import { eventBus, EventNames } from '../../store/eventBus';
 import type {
   AgentConversation,
@@ -277,6 +277,15 @@ export default function ProjectAgentPanel({
   const pendingSettleConversationRef = useRef<string | null>(null);
   const activeConversationIdRef = useRef<string | undefined>(undefined);
   const resultConversationIdRef = useRef<string | undefined>(undefined);
+  // 本轮 SSE 已归属的会话：停止按钮要拿它打服务端取消接口（state 可能还没回填）。
+  const turnConversationIdRef = useRef<string | undefined>(undefined);
+  // 取消接口的在途 Promise：abort 后必须等它（服务端收尾落盘）再 reload，
+  // 否则会读到还在 running 的旧行，界面又转圈。
+  const stopPromiseRef = useRef<Promise<AgentTurnCancelResult | undefined> | null>(null);
+  // 防重复点停止：等待收尾期间按钮还在，重复调用没有必要。
+  const stoppingRef = useRef(false);
+  // 停止后的延迟复查定时器：卸载时清掉，别让它在测试/路由切换后打到旧闭包。
+  const resyncTimersRef = useRef<number[]>([]);
 
   useEffect(() => {
     sendingRef.current = sending;
@@ -392,7 +401,16 @@ export default function ProjectAgentPanel({
     resultConversationIdRef.current = undefined;
     activeConversationIdRef.current = undefined;
     void loadConversations(true);
-    return () => abortRef.current?.abort();
+    return () => {
+      resyncTimersRef.current.forEach(timer => window.clearTimeout(timer));
+      resyncTimersRef.current = [];
+      // 离开面板/切项目：在跑的回合要真正停掉（仅 abort 停不干净，见 #257）。
+      const conversationId = turnConversationIdRef.current;
+      if (conversationId) {
+        void projectAgentApi.cancelTurn(projectId, conversationId).catch(() => undefined);
+      }
+      abortRef.current?.abort();
+    };
   }, [loadConversations, projectId]);
 
   useEffect(() => {
@@ -470,6 +488,7 @@ export default function ProjectAgentPanel({
     setStreamingMessageId(assistantId);
     let streamConversationId = activeConversationId;
     let streamAssistantId = assistantId;
+    turnConversationIdRef.current = activeConversationId;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -482,6 +501,7 @@ export default function ProjectAgentPanel({
       }, {
         onConversation: data => {
           streamConversationId = data.conversation_id;
+          turnConversationIdRef.current = data.conversation_id;
           setActiveConversationId(data.conversation_id);
         },
         onStepStart: step => setExecutionSteps(items => [
@@ -539,9 +559,31 @@ export default function ProjectAgentPanel({
           // 顺带让 Task 4 的 defer 队列有一个明确目标。
           if (data?.conversation_id) {
             streamConversationId = data.conversation_id;
+            turnConversationIdRef.current = data.conversation_id;
             setActiveConversationId(data.conversation_id);
           }
           if (data?.conversation_id) resultConversationIdRef.current = data.conversation_id;
+        },
+        // 服务端收口成「已停止」（取消接口被其它端调用 / 单回合超时）：
+        // 本端那次 fetch 可能还连着，所以由服务端事件把占位消息补上终止文案。
+        onCancelled: content => {
+          setExecutionSteps(items => items.map(step => (
+            (step.assistant_message_id === assistantId
+              || step.assistant_message_id === streamAssistantId)
+            && step.status === 'running'
+              ? {
+                  ...step,
+                  status: 'cancelled',
+                  content: t('executionStoppedByUser'),
+                  updated_at: new Date().toISOString(),
+                }
+              : step
+          )));
+          setMessages(items => items.map(item => (
+            (item.id === streamAssistantId || item.id === assistantId) && !item.content
+              ? { ...item, content }
+              : item
+          )));
         },
         onError: error => message.error(error),
       }, controller.signal);
@@ -584,6 +626,33 @@ export default function ProjectAgentPanel({
       }
       if (streamConversationId) {
         try {
+          // 停止按钮触发的取消：等取消接口确认服务端已收尾（最长 8s），再读持久化
+          // 状态；只等 100ms 会与后台 finalize 赛跑，读到 running 旧行。
+          if (aborted && stopPromiseRef.current) {
+            const pendingStop = stopPromiseRef.current;
+            stopPromiseRef.current = null;
+            const raced = await Promise.race([
+              pendingStop,
+              new Promise<null>(resolve => window.setTimeout(() => resolve(null), 8000)),
+            ]);
+            // 接口可能在「已请求停止但收尾还没落盘」(settled=false)、超时或请求失败时
+            // 返回：此刻 reload 仍会读到 running 旧行，且之后没有任何刷新触发器 ⇒ 必须
+            // 补一次延迟复查，否则转圈会一直留到用户手动操作（issue #257 的原始症状）。
+            const needsResync = !raced || (raced.cancelled === true && raced.settled !== true);
+            const resyncTarget = streamConversationId;
+            if (needsResync && resyncTarget) {
+              // 收尾可能排队等 SQLite 写锁：两次延迟复查覆盖 30s 量级的写锁等待里
+              // 最常见的那一段；之后再没有 running 行就自然停在已停止状态。
+              [1500, 4000].forEach(delay => {
+                const timer = window.setTimeout(() => {
+                  void reloadConversation(resyncTarget).catch(error => {
+                    console.error('停止后复查会话失败:', error);
+                  });
+                }, delay);
+                resyncTimersRef.current.push(timer);
+              });
+            }
+          }
           // 等待服务端完成中断收尾，再以持久化消息和步骤替换本地占位内容。
           await new Promise(resolve => window.setTimeout(resolve, 100));
           await loadConversations();
@@ -596,9 +665,29 @@ export default function ProjectAgentPanel({
       setSending(false);
       sendingRef.current = false;
       abortRef.current = undefined;
+      turnConversationIdRef.current = undefined;
+      stopPromiseRef.current = null;
+      stoppingRef.current = false;
       setStreamingMessageId(undefined);
     }
   }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, planMode, projectId, reloadConversation, t]);
+
+  const stopTurn = useCallback(() => {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    // 双保险（issue #257）：先打服务端取消接口，再掐本地流。只 abort 时后端可能
+    // 收不到断开信号（代理/后台标签页/回合已崩在半路），token 会继续烧。
+    const conversationId = turnConversationIdRef.current;
+    if (conversationId) {
+      stopPromiseRef.current = projectAgentApi
+        .cancelTurn(projectId, conversationId)
+        .catch(error => {
+          console.error('停止灵创创作助手回合失败:', error);
+          return undefined;
+        });
+    }
+    abortRef.current?.abort();
+  }, [projectId]);
 
   const decideTool = async (toolCall: AgentToolCall, confirm: boolean) => {
     setDecidingId(toolCall.id);
@@ -1217,7 +1306,7 @@ export default function ProjectAgentPanel({
         </Space>
           <Space size={6}>
             {sending && (
-              <Button size="small" icon={<StopOutlined />} onClick={() => abortRef.current?.abort()}>{t('stop')}</Button>
+              <Button size="small" icon={<StopOutlined />} onClick={stopTurn}>{t('stop')}</Button>
             )}
             <Button
               data-testid="composer-send"
