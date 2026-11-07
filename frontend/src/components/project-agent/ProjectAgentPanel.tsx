@@ -598,7 +598,7 @@ export default function ProjectAgentPanel({
       abortRef.current = undefined;
       setStreamingMessageId(undefined);
     }
-  }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, projectId, reloadConversation, t]);
+  }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, planMode, projectId, reloadConversation, t]);
 
   const decideTool = async (toolCall: AgentToolCall, confirm: boolean) => {
     setDecidingId(toolCall.id);
