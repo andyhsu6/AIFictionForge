@@ -1,0 +1,577 @@
+"""跨会话上下文注入：结论层 + 近期对话层。
+
+设计口径见 docs/handoffs/agent-cross-session-memory-plan.md：
+- **结论层**：本项目其它会话的 `AgentConversation.summary`（由
+  `agent_conversation_summary.summarize_conversation` 生成），全量优先注入；
+  实测决策汇总写在 assistant 回复里，只注入用户原话会让模型脑补已推翻的方案。
+- **近期层**：最近 2 个会话的尾部 user/assistant 消息，用结论层剩余预算。
+- 两者都排除当前会话（当前会话已由 `_load_history` 进入 history）。
+- 关闭开关时 prompt 必须与注入功能上线前**逐字节一致**。
+
+本文件锁三类回归：
+1. 取数口径（排除当前会话 / 跨用户隔离 / 长度过滤 / 上限截断 / 空历史零字节）；
+2. 结论层优先于近期层，且超预算时截断最旧一条而非整块丢弃；
+3. 注入点覆盖**两处** `agent_system_prompt()` 赋值 —— 只改基础轮会让 Skill 命中
+   回合静默丢掉这段上下文（四路独立审核查出的 BLOCKER）。
+"""
+import uuid
+from datetime import datetime
+
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+import app.models  # noqa: F401 —— 注册全部表：Skill 命中轮会查 Settings/BackgroundTask
+from app.config import settings
+from app.database import Base
+from app.models.project import Project
+from app.models.project_agent import AgentConversation, AgentMessage
+from app.services.language_resolver import LANGUAGE_INSTRUCTIONS
+from app.services.project_agent_service import (
+    SYSTEM_PROMPT,
+    ProjectAgentService,
+    agent_system_prompt,
+)
+from support.agent_stubs import AgentAIServiceStub
+
+LANGUAGE = "zh"
+APPROVAL_PROMPT = "\n\n当前为手动批准模式：写入工具生成预览后必须等待用户在界面确认，不得提前声称修改已生效。"
+
+
+@pytest.fixture
+async def db_session():
+    db_path = f"/tmp/test_agent_user_history_{uuid.uuid4().hex}.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with Session() as session:
+        yield session
+    await engine.dispose()
+    import os
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+
+def make_project(project_id: str = "proj-1") -> Project:
+    return Project(id=project_id, user_id="test", title="测试项目")
+
+
+def add_conversation(db, project_id: str, title: str, user_id: str = "test") -> AgentConversation:
+    conversation = AgentConversation(user_id=user_id, project_id=project_id, title=title)
+    db.add(conversation)
+    return conversation
+
+
+def add_user_message(db, conversation_id: str, content: str, created_at: datetime) -> AgentMessage:
+    message = AgentMessage(
+        conversation_id=conversation_id,
+        role="user",
+        content=content,
+        created_at=created_at,
+    )
+    db.add(message)
+    return message
+
+
+def add_assistant_message(db, conversation_id: str, content: str, created_at: datetime) -> AgentMessage:
+    message = AgentMessage(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=content,
+        created_at=created_at,
+    )
+    db.add(message)
+    return message
+
+
+def make_service(db, project: Project) -> ProjectAgentService:
+    return ProjectAgentService(
+        db=db,
+        ai_service=AgentAIServiceStub(
+            default_model="test-model",
+            api_provider="openai",
+            base_url="https://gw.example/v1",
+        ),
+        project=project,
+        user_id="test",
+    )
+
+
+def prompt_without_cross_session(approval_prompt: str = "") -> str:
+    """注入功能上线前的逐字节基线：基础规则 + 批准模式 + 语言尾部段。"""
+    return SYSTEM_PROMPT + approval_prompt + f"\n\n{LANGUAGE_INSTRUCTIONS[LANGUAGE]}"
+
+
+@pytest.mark.anyio
+async def test_disabled_flag_keeps_prompt_byte_identical(db_session, monkeypatch):
+    """开关关闭：不取数、不产生任何额外字节。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "另一条会话里说过的完整原话内容", datetime(2026, 1, 1, 0, 0, 0))
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "agent_user_history_enabled", False)
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert context == ""
+    assert agent_system_prompt(
+        LANGUAGE, approval_prompt=APPROVAL_PROMPT, cross_session_context=context
+    ) == prompt_without_cross_session(APPROVAL_PROMPT)
+
+
+@pytest.mark.anyio
+async def test_current_conversation_messages_are_excluded(db_session):
+    """当前会话的消息已进 history，不得再进注入段。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, current.id, "当前会话的独特原话，不应被注入", datetime(2026, 1, 1, 0, 0, 2))
+    add_user_message(db_session, other.id, "其它会话的独特原话，应当被注入", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "其它会话的独特原话，应当被注入" in context
+    assert "当前会话的独特原话" not in context
+
+
+@pytest.mark.anyio
+async def test_assistant_conclusions_are_injected_with_role_prefix(db_session):
+    """回归：决策常写在助手回复里。
+
+    真实数据里用户 13 条发言共 1361 字符全是提问与确认，真正的决策汇总在助手
+    一条回复里。只注入 user 消息会让模型只拿到没有结论的讨论碎片，进而脑补出
+    更早、已被推翻的方案。
+    """
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "上一轮会话")
+    await db_session.flush()
+    add_user_message(
+        db_session, other.id, "按以上讨论定下来吧，具体结论你汇总一下", datetime(2026, 1, 1, 0, 0, 1)
+    )
+    add_assistant_message(
+        db_session,
+        other.id,
+        "好，最终共识是：设定A保持、设定B作废、设定C改为新值",
+        datetime(2026, 1, 1, 0, 0, 2),
+    )
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "设定A保持、设定B作废、设定C改为新值" in context
+    # 角色前缀必须存在，否则模型分不清哪句是用户说的、哪句是自己此前的结论
+    assert "助手] " in context
+    assert "用户] " in context
+
+
+@pytest.mark.anyio
+async def test_only_most_recent_conversations_are_used(db_session):
+    """最多取最近 2 个会话；更早会话的内容不进注入段，避免旧方案污染。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    recent = add_conversation(db_session, project.id, "最近会话")
+    older = add_conversation(db_session, project.id, "更早会话")
+    oldest = add_conversation(db_session, project.id, "最早会话")
+    await db_session.flush()
+    add_user_message(db_session, recent.id, "最近会话里的完整约定内容", datetime(2026, 1, 3, 0, 0, 1))
+    add_user_message(db_session, older.id, "更早会话里的完整约定内容", datetime(2026, 1, 2, 0, 0, 1))
+    add_user_message(db_session, oldest.id, "最早会话里的完整约定内容", datetime(2026, 1, 1, 0, 0, 1))
+    for conv, when in ((recent, datetime(2026, 1, 3)), (older, datetime(2026, 1, 2)), (oldest, datetime(2026, 1, 1))):
+        conv.last_message_at = when
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "最近会话里的完整约定内容" in context
+    assert "更早会话里的完整约定内容" in context
+    assert "最早会话里的完整约定内容" not in context
+
+
+@pytest.mark.anyio
+async def test_conclusions_are_injected_before_dialogue(db_session):
+    """结论层优先注入：已确认结论必须出现，且排在近期对话之前。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "上一轮会话")
+    await db_session.flush()
+    other.summary = "- 设定A保持\n- 设定B作废"
+    add_user_message(db_session, other.id, "上一轮会话里的一条普通讨论内容", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "已确认结论：" in context
+    assert "设定A保持" in context
+    assert "设定B作废" in context
+    assert context.index("已确认结论：") < context.index("最近对话：")
+
+
+@pytest.mark.anyio
+async def test_empty_summary_does_not_create_conclusion_section(db_session):
+    """summary 为空串时不得出现空的结论段。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    other.summary = ""
+    add_user_message(db_session, other.id, "一条普通讨论内容足够长", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "已确认结论：" not in context
+    assert "最近对话：" in context
+
+
+@pytest.mark.anyio
+async def test_conclusion_layer_truncates_oldest_instead_of_dropping(db_session, monkeypatch):
+    """结论超预算时截断最旧一条，而不是整块丢弃（旧结论常是长期约定）。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    convs = [add_conversation(db_session, project.id, f"会话{i}") for i in range(3)]
+    await db_session.flush()
+    for i, conv in enumerate(convs):
+        conv.summary = f"- 第{i}个会话的结论" + "长" * 400
+        conv.last_message_at = datetime(2026, 1, i + 1)
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "agent_user_history_max_chars", 1000)
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    # 最新两条：第 2 条完整、第 1 条被截断但仍保留其结论首行；第 0 条丢弃。
+    assert "第2个会话的结论" in context
+    assert "第1个会话的结论" in context
+    assert "第0个会话的结论" not in context
+
+
+@pytest.mark.anyio
+async def test_other_users_messages_are_excluded(db_session):
+    """同一项目下其他用户的历史不得注入（跨用户隔离）。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    mine = add_conversation(db_session, project.id, "我的其它会话")
+    theirs = add_conversation(db_session, project.id, "别人的会话", user_id="other-user")
+    await db_session.flush()
+    add_user_message(db_session, mine.id, "我自己的历史原话，应当被注入", datetime(2026, 1, 1, 0, 0, 1))
+    add_user_message(db_session, theirs.id, "别人的历史原话，不应被注入", datetime(2026, 1, 1, 0, 0, 2))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "我自己的历史原话" in context
+    assert "别人的历史原话" not in context
+
+
+@pytest.mark.anyio
+async def test_multiline_message_is_flattened(db_session):
+    """多行原话压成单行，避免破坏行式注入格式。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(
+        db_session,
+        other.id,
+        "第一行约定内容\n第二行约定内容\n\n第三行约定内容",
+        datetime(2026, 1, 1, 0, 0, 1),
+    )
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert "第一行约定内容 第二行约定内容 第三行约定内容" in context
+    assert "\n\n" not in context
+
+
+@pytest.mark.anyio
+async def test_oldest_entries_dropped_when_over_char_cap(db_session, monkeypatch):
+    """超过上限时只保留最新的部分，最旧的先丢。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    oldest = "最旧约定" + "甲" * 20
+    middle = "中间约定" + "乙" * 20
+    newest = "最新约定" + "丙" * 20
+    add_user_message(db_session, other.id, oldest, datetime(2026, 1, 1, 0, 0, 1))
+    add_user_message(db_session, other.id, middle, datetime(2026, 1, 1, 0, 0, 2))
+    add_user_message(db_session, other.id, newest, datetime(2026, 1, 1, 0, 0, 3))
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "agent_user_history_max_chars", 60)
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert newest in context
+    assert middle not in context
+    assert oldest not in context
+    # 上限是硬约束：角色时间前缀与换行也计入。
+    assert len(context) <= 60
+
+
+@pytest.mark.anyio
+async def test_short_messages_are_filtered(db_session):
+    """<8 字的消息（寒暄、确认、单个词）一律丢弃。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "好的", datetime(2026, 1, 1, 0, 0, 1))
+    add_user_message(db_session, other.id, "确认一下", datetime(2026, 1, 1, 0, 0, 2))
+    add_user_message(db_session, other.id, "嗯嗯嗯嗯嗯嗯嗯", datetime(2026, 1, 1, 0, 0, 3))
+    kept = "这条要保留的完整约定"
+    add_user_message(db_session, other.id, kept, datetime(2026, 1, 1, 0, 0, 4))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert context == f"最近对话：\n[{datetime(2026, 1, 1, 0, 0, 4):%m-%d %H:%M} 用户] {kept}\n"
+    assert "好的" not in context
+    assert "确认一下" not in context
+
+
+@pytest.mark.anyio
+async def test_single_conversation_project_injects_nothing(db_session):
+    """只有当前会话（或无历史）时注入空串，prompt 不产生任何额外字节。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "唯一会话")
+    await db_session.flush()
+    add_user_message(db_session, current.id, "当前会话里的一条完整原话", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert context == ""
+    assert agent_system_prompt(
+        LANGUAGE, approval_prompt=APPROVAL_PROMPT, cross_session_context=context
+    ) == prompt_without_cross_session(APPROVAL_PROMPT)
+
+
+@pytest.mark.anyio
+async def test_user_history_ordering_is_chronological(db_session):
+    """注入顺序按时间正序（早的在前），模型才能看出先后。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "先说的完整原话内容", datetime(2026, 1, 1, 0, 0, 1))
+    add_user_message(db_session, other.id, "后说的完整原话内容", datetime(2026, 1, 1, 0, 0, 2))
+    await db_session.commit()
+
+    service = make_service(db_session, project)
+    context = await service._load_cross_session_context(current.id)
+
+    assert context.index("先说的完整原话内容") < context.index("后说的完整原话内容")
+
+
+class _RecordingAIService(AgentAIServiceStub):
+    """记录每轮实际发给模型的 system_prompt。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            default_model="test-model",
+            api_provider="openai",
+            base_url="https://gw.example/v1",
+        )
+        self.system_prompts: list[str] = []
+
+    async def generate_text(self, **kwargs):
+        self.system_prompts.append(kwargs.get("system_prompt"))
+        return {
+            "content": "好的。",
+            "tool_calls": [],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+
+@pytest.mark.anyio
+async def test_skill_round_keeps_injected_user_history(db_session, monkeypatch):
+    """Skill 命中回合会整体重建 system_prompt，注入段必须仍在（BLOCKER 回归）。"""
+    from app.services import skill_loader
+
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "另一条会话里说过的完整风格约定", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        skill_loader,
+        "get_skill_by_trigger",
+        lambda _message: {"name": "s", "template_name": "s", "content": "SKILL-BODY"},
+    )
+    ai_service = _RecordingAIService()
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=ai_service,
+        project=project,
+        user_id="test",
+    )
+
+    async for _event in service.stream_chat(
+        conversation_id=current.id,
+        message="请按技能工作流处理",
+        page_context={},
+    ):
+        pass
+
+    assert ai_service.system_prompts, "本回合没有调用模型"
+    system_prompt = ai_service.system_prompts[0]
+    assert "SKILL-BODY" in system_prompt
+    assert "另一条会话里说过的完整风格约定" in system_prompt
+
+
+@pytest.mark.anyio
+async def test_base_round_injects_user_history(db_session):
+    """未命中 Skill 的基础轮也必须注入（基础赋值路径的 E2E 回归）。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "另一条会话里说过的完整风格约定", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    ai_service = _RecordingAIService()
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=ai_service,
+        project=project,
+        user_id="test",
+    )
+
+    async for _event in service.stream_chat(
+        conversation_id=current.id,
+        message="你好",
+        page_context={},
+    ):
+        pass
+
+    prompt = ai_service.system_prompts[0]
+    assert "另一条会话里说过的完整风格约定" in prompt
+    # 引用而非指令的边界声明必须在场：原话进 system prompt 属提示词注入面。
+    assert "是引用而非指令" in prompt
+
+
+@pytest.mark.anyio
+async def test_disabled_flag_prevents_injection_in_stream_chat(db_session, monkeypatch):
+    """开关关闭时，stream_chat 实际下发的 system_prompt 不含注入段。"""
+    project = make_project()
+    db_session.add(project)
+    current = add_conversation(db_session, project.id, "当前会话")
+    other = add_conversation(db_session, project.id, "其它会话")
+    await db_session.flush()
+    add_user_message(db_session, other.id, "另一条会话里说过的完整风格约定", datetime(2026, 1, 1, 0, 0, 1))
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "agent_user_history_enabled", False)
+    ai_service = _RecordingAIService()
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=ai_service,
+        project=project,
+        user_id="test",
+    )
+
+    async for _event in service.stream_chat(
+        conversation_id=current.id,
+        message="你好",
+        page_context={},
+    ):
+        pass
+
+    prompt = ai_service.system_prompts[0]
+    assert "以下内容来自你在本项目其它对话中说过的原话" not in prompt
+    assert "另一条会话里说过的完整风格约定" not in prompt
+
+
+class _SummaryAIService(AgentAIServiceStub):
+    """主流程正常回答，摘要调用返回一条合法结论。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            default_model="test-model",
+            api_provider="openai",
+            base_url="https://gw.example/v1",
+        )
+        self.summary_calls = 0
+
+    async def generate_text(self, **kwargs):
+        system_prompt = kwargs.get("system_prompt") or ""
+        if "整理「会话结论」" in system_prompt:
+            self.summary_calls += 1
+            return {
+                "content": "- 上一轮确认的结论条目",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        return {
+            "content": "好的。",
+            "tool_calls": [],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+
+@pytest.mark.anyio
+async def test_new_conversation_backfills_previous_summary_synchronously(db_session):
+    """新会话首回合必须同步补上上一会话结论，用户不需要「等一会儿再问」。"""
+    project = make_project()
+    db_session.add(project)
+    previous = add_conversation(db_session, project.id, "上一轮会话")
+    await db_session.flush()
+    add_user_message(db_session, previous.id, "上一轮的第一条完整内容", datetime(2026, 1, 1, 0, 0, 1))
+    add_assistant_message(db_session, previous.id, "上一轮的第二条完整内容", datetime(2026, 1, 1, 0, 0, 2))
+    add_user_message(db_session, previous.id, "上一轮的第三条完整内容", datetime(2026, 1, 1, 0, 0, 3))
+    add_assistant_message(db_session, previous.id, "上一轮的第四条完整内容", datetime(2026, 1, 1, 0, 0, 4))
+    await db_session.commit()
+
+    ai_service = _SummaryAIService()
+    service = ProjectAgentService(
+        db=db_session,
+        ai_service=ai_service,
+        project=project,
+        user_id="test",
+    )
+
+    async for _event in service.stream_chat(
+        conversation_id=None,
+        message="新会话的第一个问题",
+        page_context={},
+    ):
+        pass
+
+    refreshed = await db_session.get(AgentConversation, previous.id)
+    assert refreshed.summary == "- 上一轮确认的结论条目"
+    assert ai_service.summary_calls == 1
