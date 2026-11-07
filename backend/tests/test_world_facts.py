@@ -1,10 +1,12 @@
 """issue #242 P1：世界设定事实（world_facts）的构建、合并与读取。"""
 import json
 
-from app.services.book_import_service import (
-    _build_world_facts,
-    _load_world_facts,
-    _merge_world_facts,
+from app.services.world_facts import (
+    build_world_facts,
+    load_world_facts,
+    merge_world_facts,
+    render_world_facts,
+    validate_world_facts_claims,
 )
 
 
@@ -24,7 +26,7 @@ def _world_data():
 
 
 def test_build_world_facts_keeps_valid_evidence_only():
-    facts = _build_world_facts(
+    facts = build_world_facts(
         _world_data(),
         {
             "world_time_period": "占位纪元第七年",
@@ -48,7 +50,7 @@ def test_merge_world_facts_dedupes_by_field_and_text():
         {"field": "world_rules", "text": "旧规则", "evidence": [], "source": "original"},
         {"field": "world_rules", "text": "新规则", "evidence": [], "source": "original"},
     ]
-    merged = _merge_world_facts(first, second)
+    merged = merge_world_facts(first, second)
     assert [fact["text"] for fact in merged] == ["旧规则", "新规则"]
 
 
@@ -72,7 +74,7 @@ def test_merge_world_facts_appends_new_evidence_for_same_fact():
             "source": "original",
         }
     ]
-    merged = _merge_world_facts(first, second)
+    merged = merge_world_facts(first, second)
     assert len(merged) == 1
     assert merged[0]["evidence"] == [
         {"chapter": 1, "quote": "占位原文一"},
@@ -92,14 +94,70 @@ def test_build_world_facts_filters_invalid_evidence_entries():
             ]
         },
     }
-    facts = _build_world_facts(data, {"world_time_period": "占位纪元第七年"})
+    facts = build_world_facts(data, {"world_time_period": "占位纪元第七年"})
     assert facts[0]["evidence"] == [{"chapter": 1, "quote": "占位战争结束为元年"}]
 
 
+def test_validate_claims_keeps_only_verbatim_evidence():
+    chapters = {1: "占位城由占位议会统治。占位战争结束为元年。"}
+    claims = [
+        {
+            "field": "world_rules",
+            "text": "占位议会统治占位城",
+            "evidence": [{"chapter": 1, "quote": "占位城由占位议会统治"}],
+        },
+        {
+            "field": "world_rules",
+            "text": "自造事实",
+            "evidence": [{"chapter": 1, "quote": "占位城外有黑森林"}],
+        },
+        {
+            "field": "world_rules",
+            "text": "无证据事实",
+            "evidence": [],
+        },
+        {
+            "field": "unknown_field",
+            "text": "字段不合法",
+            "evidence": [{"chapter": 1, "quote": "占位城由占位议会统治"}],
+        },
+        {
+            "field": "world_rules",
+            "text": "章号越界",
+            "evidence": [{"chapter": 99, "quote": "占位城由占位议会统治"}],
+        },
+    ]
+    valid, rejected = validate_world_facts_claims(claims, chapters)
+    assert rejected == 4
+    assert len(valid) == 1
+    assert valid[0]["text"] == "占位议会统治占位城"
+    assert valid[0]["evidence"] == [{"chapter": 1, "quote": "占位城由占位议会统治"}]
+    assert valid[0]["source"] == "original"
+
+
+def test_validate_claims_tolerates_non_list_input():
+    assert validate_world_facts_claims(None, {}) == ([], 0)
+    assert validate_world_facts_claims({"facts": []}, {}) == ([], 0)
+
+
+def test_render_world_facts_groups_and_deduplicates():
+    facts = [
+        {"field": "world_rules", "text": "占位规则一", "evidence": [], "source": "original"},
+        {"field": "world_rules", "text": "占位规则一", "evidence": [], "source": "original"},
+        {"field": "world_rules", "text": "占位规则二", "evidence": [], "source": "original"},
+        {"field": "world_location", "text": "占位城", "evidence": [], "source": "original"},
+        {"field": "unknown_field", "text": "忽略", "evidence": [], "source": "original"},
+    ]
+    rendered = render_world_facts(facts)
+    assert rendered["world_rules"] == "占位规则一；占位规则二"
+    assert rendered["world_location"] == "占位城"
+    assert "unknown_field" not in rendered
+
+
 def test_load_world_facts_tolerates_legacy_and_dirty_values():
-    assert _load_world_facts(None) == []
-    assert _load_world_facts("") == []
-    assert _load_world_facts("not-json") == []
-    assert _load_world_facts(json.dumps({"a": 1})) == []
-    loaded = _load_world_facts(json.dumps([{"field": "world_rules"}, "junk"]))
+    assert load_world_facts(None) == []
+    assert load_world_facts("") == []
+    assert load_world_facts("not-json") == []
+    assert load_world_facts(json.dumps({"a": 1})) == []
+    loaded = load_world_facts(json.dumps([{"field": "world_rules"}, "junk"]))
     assert loaded == [{"field": "world_rules"}]

@@ -47,6 +47,11 @@ from app.services.profile_prompt_rules import (
     FACTS_FIELD_BOUNDARIES,
     PROSE_FIELD_BOUNDARIES,
 )
+from app.services.world_facts import (
+    load_world_facts,
+    merge_world_facts,
+    validate_world_facts_claims,
+)
 from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
     filter_org_profile_values,
@@ -194,7 +199,14 @@ _WORLD_PROMPT_TEMPLATE = """请根据下列章节正文，归纳并更新这本�
     "world_location": "具体地理：地名、区域、城邦、势力所在，必要时点出空间结构",
     "world_atmosphere": "基调：这本书特有的氛围与张力来源，结合具体场景与冲突",
     "world_rules": "规则约束：力量体系/技术/制度/禁忌等硬性规则，写清代价与限制"
-  }}
+  }},
+  "facts": [
+    {{
+      "field": "world_rules",
+      "text": "一条原子事实（一个事实一句，写具体专名）",
+      "evidence": [{{"chapter": 1, "quote": "从该章正文逐字复制的引文"}}]
+    }}
+  ]
 }}
 
 规则：
@@ -202,7 +214,11 @@ _WORLD_PROMPT_TEMPLATE = """请根据下列章节正文，归纳并更新这本�
 2. 严禁类型标签式空话（如「古代架空时代」「一个充满冒险的世界」「氛围紧张」），
    宁可写正文里出现的具体名词。
 3. 如果正文提供了比现有设定更具体的信息，就把它合并进来；不要退回到更笼统的表述。
-4. 正文没有涉及的方面，保留现有设定里已有的内容，不要清空。"""
+4. 正文没有涉及的方面，保留现有设定里已有的内容，不要清空。
+5. facts 只写正文有依据的事实：field 取 world_time_period/world_location/world_atmosphere/world_rules，
+   text 一条只表达一个事实，evidence 的 chapter 必须是【章节正文】里出现的章号，
+   quote 必须从该章正文逐字复制（8-60 字，不得改写、拼接、补字或加省略号）。
+6. 正文找不到逐字依据的事实不要输出；没有新事实时 facts 输出空数组。"""
 
 
 @dataclass(frozen=True)
@@ -1666,6 +1682,8 @@ class CharacterProfileSyncService:
             "fields_updated": 0,
             "fields_preserved": 0,
             "fields_rejected": 0,
+            "claims_added": 0,
+            "claims_rejected": 0,
             "skipped": [],
             "through_chapter": 0,
         }
@@ -1791,12 +1809,35 @@ class CharacterProfileSyncService:
 
         # 章节 id → 该章所有切片是否都成功（issue #193）
         covered: Dict[str, bool] = {}
+        # 章节号 → 正文：facts 的引文必须能在对应章节逐字回查（issue #242 P1）
+        chapter_texts = {
+            chapter.chapter_number: chapter.content
+            for chapter in chapters
+            if chapter.content
+        }
 
         async def _apply(response: Any) -> bool:
+            facts_updated = False
+            if isinstance(response, dict):
+                valid_claims, rejected = validate_world_facts_claims(
+                    response.get("facts"), chapter_texts
+                )
+                if valid_claims or rejected:
+                    stats["claims_added"] += len(valid_claims)
+                    stats["claims_rejected"] += rejected
+                if valid_claims:
+                    project.world_facts = json.dumps(
+                        merge_world_facts(
+                            load_world_facts(project.world_facts), valid_claims
+                        ),
+                        ensure_ascii=False,
+                    )
+                    facts_updated = True
             payload = response.get("world") if isinstance(response, dict) else None
             if not isinstance(payload, dict):
-                logger.warning("世界设定返回结构异常，跳过该批次")
-                return False
+                if not facts_updated:
+                    logger.warning("世界设定返回结构异常，跳过该批次")
+                return facts_updated
             _apply_profile_values(
                 project,
                 payload,

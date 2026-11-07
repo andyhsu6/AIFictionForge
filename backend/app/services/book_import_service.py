@@ -59,6 +59,12 @@ from app.services.import_validators import (
     validate_world_building_extraction,
 )
 from app.services.prompt_service import PromptService
+from app.services.world_facts import (
+    build_world_facts,
+    load_world_facts,
+    merge_world_facts,
+    render_world_facts,
+)
 from app.services.profile_facts import (
     PROFILE_FACTS_PROMPT_ENABLED,
     resolve_profile_fields,
@@ -345,85 +351,6 @@ def _clean_extracted_world_values(world_data: dict[str, Any]) -> dict[str, str]:
             continue
         cleaned[field] = value
     return cleaned
-
-
-_WORLD_EVIDENCE_KEYS = {
-    "world_time_period": "time_period",
-    "world_location": "location",
-    "world_atmosphere": "atmosphere",
-    "world_rules": "rules",
-}
-
-
-def _build_world_facts(
-    world_data: dict[str, Any], ai_written: dict[str, str]
-) -> list[dict[str, Any]]:
-    """把抽取结果整理为可溯源事实：field / text / evidence / source。"""
-    raw_evidence = world_data.get("evidence")
-    evidence_map = raw_evidence if isinstance(raw_evidence, dict) else {}
-    facts: list[dict[str, Any]] = []
-    for field, text in ai_written.items():
-        key = _WORLD_EVIDENCE_KEYS.get(field)
-        items = evidence_map.get(key) if key else None
-        evidence: list[dict[str, Any]] = []
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                chapter = item.get("chapter")
-                quote = item.get("quote")
-                if isinstance(chapter, int) and isinstance(quote, str) and quote.strip():
-                    evidence.append({"chapter": chapter, "quote": quote.strip()})
-        facts.append({"field": field, "text": text, "evidence": evidence, "source": "original"})
-    return facts
-
-
-def _load_world_facts(raw: Optional[str]) -> list[dict[str, Any]]:
-    """读取已存的事实数组；脏数据/旧格式一律视为空。"""
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
-
-
-def _merge_world_facts(
-    existing: list[dict[str, Any]], new: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """按 (field, text) 合并事实：同一条事实追加新证据，不整条丢弃。
-
-    只按 (field, text) 去重会截断证据链：append 导入再次抽到相同措辞、但
-    带上了更靠后章节的引文时，旧证据没有的理由被整条丢弃。这里对同一条
-    事实按 (chapter, quote) 去重追加，事实顺序与旧证据保持不变。
-    """
-    merged: list[dict[str, Any]] = []
-    index: dict[tuple[Any, Any], int] = {}
-    for item in existing:
-        fact = dict(item)
-        fact["evidence"] = [dict(entry) for entry in item.get("evidence") or [] if isinstance(entry, dict)]
-        index[(fact.get("field"), fact.get("text"))] = len(merged)
-        merged.append(fact)
-    for item in new:
-        fact = dict(item)
-        fact["evidence"] = [dict(entry) for entry in item.get("evidence") or [] if isinstance(entry, dict)]
-        key = (fact.get("field"), fact.get("text"))
-        if key in index:
-            target = merged[index[key]]
-            seen = {(entry.get("chapter"), entry.get("quote")) for entry in target["evidence"]}
-            for entry in fact["evidence"]:
-                entry_key = (entry.get("chapter"), entry.get("quote"))
-                if entry_key in seen:
-                    continue
-                target["evidence"].append(entry)
-                seen.add(entry_key)
-            continue
-        index[key] = len(merged)
-        merged.append(fact)
-    return merged
 
 
 def _render_existing_world(project: Any) -> str:
@@ -2717,14 +2644,22 @@ class BookImportService:
                 if ai_written:
                     snapshot.update(ai_written)
                     project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
-                    # issue #242：把可溯源事实随写回持久化（append 时去重追加）
-                    project.world_facts = json.dumps(
-                        _merge_world_facts(
-                            _load_world_facts(project.world_facts),
-                            _build_world_facts(world_data, ai_written),
-                        ),
-                        ensure_ascii=False,
+                    # issue #242 P1：事实按 (field, text) 合并（同事实追加证据）
+                    merged_facts = merge_world_facts(
+                        load_world_facts(project.world_facts),
+                        build_world_facts(world_data, ai_written),
                     )
+                    project.world_facts = json.dumps(merged_facts, ensure_ascii=False)
+                    if merge_existing:
+                        # claim 级合并：AI 写入过的字段用合并后的事实重新渲染，
+                        # 用户手改字段（当前值 != 快照值）保持不动（issue #243/#242）。
+                        for field, text in render_world_facts(merged_facts).items():
+                            current = (getattr(project, field, None) or "").strip()
+                            if current and current != (snapshot.get(field) or ""):
+                                continue
+                            setattr(project, field, text)
+                            snapshot[field] = text
+                        project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
                 # 新建/覆盖导入：一条有效设定都没抽到属于失败，交给上层记失败步骤并重试；
                 # append/重试允许 0 条（已有设定无需补写）。
                 if updated == 0 and not merge_existing:
