@@ -260,3 +260,108 @@ def validate_relationships(data: Any) -> None:
                 raise ValueError(
                     f"字段 relationships[{idx}].intimacy_level 必须为 {lo}-{hi} 整数，实际为 {intimacy}"
                 )
+
+
+# ---------- 拆书导入：世界设定抽取（issue #242 P0） ----------
+
+# 原文没有交代某方面时模型必须使用该标记，而不是用类型惯例补全。
+WORLD_EXTRACTION_NOT_MENTIONED = "原文未提及"
+# 字段正文里出现这些空泛标签即视为"没做抽取，只套了类型模板"。
+GENERIC_WORLD_PHRASES = (
+    "一个充满",
+    "架空时代",
+    "以现实逻辑为基础",
+    "充满冒险",
+    "氛围紧张",
+    "人物驱动",
+)
+# 引文长度口径（与 WORLD_BUILDING_EXTRACTION 模板一致，放宽上限避免误伤）。
+WORLD_QUOTE_MIN_LEN = 8
+WORLD_QUOTE_MAX_LEN = 60
+# 非"未提及"字段的最短正文长度：低于该值通常是类型标签而不是设定。
+WORLD_FIELD_MIN_LEN = 20
+
+
+def _chapter_content_map(chapters: Any) -> dict[int, str]:
+    """把导入章节列表映射为 章节号 -> 正文（忽略无正文条目）。"""
+    mapping: dict[int, str] = {}
+    for chapter in chapters or []:
+        number = getattr(chapter, "chapter_number", None)
+        content = getattr(chapter, "content", "") or ""
+        if isinstance(number, int) and content:
+            mapping[number] = content
+    return mapping
+
+
+def validate_world_building_extraction(data: Any, chapters: Any) -> None:
+    """拆书导入的世界设定抽取校验：四字段非空 + 逐字引文可回查 + 无类型空话。
+
+    校验失败抛 ValueError（错误信息指明字段），供 call_with_json_retry 注入重试提示。
+    chapters 为本次导入章节（需有 chapter_number/content），用于逐字回查引文；
+    引文必须能在对应章节正文里逐字找到，防止模型自造"证据"。
+    """
+    if not isinstance(data, dict):
+        raise ValueError("字段 world_data 必须是对象（JSON object），实际为 " + type(data).__name__)
+
+    contents = _chapter_content_map(chapters)
+    evidence = data.get("evidence")
+    if evidence is None:
+        evidence = {}
+    if not isinstance(evidence, dict):
+        raise ValueError("字段 evidence 必须是对象（章节号+引文），实际为 " + type(evidence).__name__)
+
+    for field in WORLD_BUILDING_FIELDS:
+        value = data.get(field)
+        if not _is_nonempty_str(value):
+            raise ValueError(
+                f"字段 {field} 必须是非空字符串，实际为 {value!r}（类型 {type(value).__name__}）"
+            )
+        text = value.strip()
+
+        for phrase in GENERIC_WORLD_PHRASES:
+            if phrase in text:
+                raise ValueError(
+                    f"字段 {field} 出现空泛标签「{phrase}」：必须写原文中的具体专名，不要套类型模板"
+                )
+
+        # 只允许"整段就写未提及"的豁免；夹带在长文本里的未提及仍按正常字段校验，
+        # 否则自造内容只要带上这四个字就能绕过 evidence 与长度检查。
+        if text == WORLD_EXTRACTION_NOT_MENTIONED:
+            continue
+        if len(text) < WORLD_FIELD_MIN_LEN:
+            raise ValueError(
+                f"字段 {field} 过短（{len(text)} 字，下限 {WORLD_FIELD_MIN_LEN}）："
+                f"请写具体设定，或写「{WORLD_EXTRACTION_NOT_MENTIONED}」"
+            )
+
+        items = evidence.get(field)
+        if not isinstance(items, list) or not items:
+            raise ValueError(
+                f"字段 {field} 缺少 evidence：每个非「{WORLD_EXTRACTION_NOT_MENTIONED}」字段"
+                "必须至少给出一条 {chapter, quote}"
+            )
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"字段 {field} 的 evidence[{index}] 必须是对象（chapter/quote）")
+            chapter_number = item.get("chapter")
+            quote = item.get("quote")
+            if not isinstance(chapter_number, int):
+                raise ValueError(f"字段 {field} 的 evidence[{index}].chapter 必须是章节号整数")
+            if not _is_nonempty_str(quote):
+                raise ValueError(f"字段 {field} 的 evidence[{index}].quote 必须是非空字符串")
+            quote_text = quote.strip()
+            if len(quote_text) < WORLD_QUOTE_MIN_LEN or len(quote_text) > WORLD_QUOTE_MAX_LEN:
+                raise ValueError(
+                    f"字段 {field} 的 evidence[{index}].quote 长度必须在 "
+                    f"{WORLD_QUOTE_MIN_LEN}-{WORLD_QUOTE_MAX_LEN} 字之间（实际 {len(quote_text)}）"
+                )
+            chapter_text = contents.get(chapter_number)
+            if chapter_text is None:
+                raise ValueError(
+                    f"字段 {field} 的 evidence[{index}].chapter={chapter_number} 不在本次导入章节范围内"
+                )
+            if quote_text not in chapter_text:
+                raise ValueError(
+                    f"字段 {field} 的 evidence[{index}].quote 无法在第 {chapter_number} 章正文中逐字找到："
+                    "必须逐字复制原文，不得改写、拼接或补字"
+                )

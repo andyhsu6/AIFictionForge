@@ -50,11 +50,13 @@ from app.services.ai_service import (
     create_user_ai_service_with_mcp,
 )
 from app.services.import_validators import (
+    WORLD_EXTRACTION_NOT_MENTIONED,
     looks_like_profile_narration,
     validate_career_system,
     validate_characters_batch,
     validate_relationships,
     validate_world_building,
+    validate_world_building_extraction,
 )
 from app.services.prompt_service import PromptService
 from app.services.profile_facts import (
@@ -303,6 +305,58 @@ def _profile_snapshot_json(**values: Any) -> Optional[str]:
     if not snapshot:
         return None
     return json.dumps(snapshot, ensure_ascii=False)
+
+
+_WORLD_FIELD_LABELS = (
+    ("world_time_period", "时间背景"),
+    ("world_location", "地理位置"),
+    ("world_atmosphere", "氛围基调"),
+    ("world_rules", "世界规则"),
+)
+
+
+def _load_world_snapshot(raw: Optional[str]) -> dict[str, str]:
+    """读取 AI 写入快照；容忍旧数据/脏数据，只接受 dict。"""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _clean_extracted_world_values(world_data: dict[str, Any]) -> dict[str, str]:
+    """把抽取结果映射为 world_* 字段值：丢弃空值与「原文未提及」占位。
+
+    占位不是设定：它不能被写库、不能进 AI 快照、也不能算"抽到了字段"，
+    否则四字段全未提及会被当成成功写回（issue #242）。
+    """
+    mapped = {
+        "world_time_period": world_data.get("time_period"),
+        "world_location": world_data.get("location"),
+        "world_atmosphere": world_data.get("atmosphere"),
+        "world_rules": world_data.get("rules"),
+    }
+    cleaned: dict[str, str] = {}
+    for field, raw in mapped.items():
+        value = str(raw or "").strip()
+        if not value or value == WORLD_EXTRACTION_NOT_MENTIONED:
+            continue
+        cleaned[field] = value
+    return cleaned
+
+
+def _render_existing_world(project: Any) -> str:
+    """append 导入时把现有世界设定喂给模型；已存在的字段不会被覆盖。"""
+    lines = []
+    for field, label in _WORLD_FIELD_LABELS:
+        value = (getattr(project, field, None) or "").strip()
+        if value:
+            lines.append(f"- {label}：{value}")
+    if not lines:
+        return ""
+    return "【现有世界设定】（已存在的字段必须保留，不要改写）\n" + "\n".join(lines) + "\n"
 
 
 def _schedule_profile_sync(user_id: str, project_id: str) -> None:
@@ -621,6 +675,7 @@ class BookImportService:
                 chapters=chapters_to_import,
                 content_language=task.content_language,
                 skipped_chapters=skipped,
+                merge_existing_world=(payload.import_mode == "append"),
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -777,6 +832,8 @@ class BookImportService:
                     raise_on_error=True,
                     chapters=chapters_to_import,
                     content_language=task.content_language,
+                    extraction_mode=True,
+                    merge_existing=(payload.import_mode == "append"),
                 )
                 statistics["generated_world_building"] = generated_world
                 await _notify("🌍 世界观生成完成", 40, code="import.progress.worldDone")
@@ -1054,6 +1111,16 @@ class BookImportService:
                             raise_on_error=True,
                             chapters=chapters_for_retry,
                             content_language=task.content_language,
+                            extraction_mode=True,
+                            merge_existing=any(
+                                getattr(project, field, None)
+                                for field in (
+                                    "world_time_period",
+                                    "world_location",
+                                    "world_atmosphere",
+                                    "world_rules",
+                                )
+                            ),
                         )
                         retry_results["generated_world_building"] = result
                         await _notify("✅ 世界观重试成功", step_end_pct, code="import.progress.retryWorldDone")
@@ -1311,11 +1378,9 @@ class BookImportService:
         chapters: list[BookImportChapter],
         import_mode: str,
     ) -> Project:
-        world_time_period, world_location, world_atmosphere, world_rules = self._derive_world_settings(
-            suggestion=suggestion,
-            chapters=chapters,
-        )
-
+        # issue #242：不再用关键词规则预填世界设定。规则值既不可信，又会因为没有
+        # AI 快照而被世界设定同步当"历史值"永久保护，导致 AI 后续也修不回来。
+        # 这里留空，统一交给导入末尾的抽取步骤写入；抽取失败会记为失败步骤。
         if task.create_new_project:
             project = Project(
                 user_id=user_id,
@@ -1330,10 +1395,6 @@ class BookImportService:
                 current_words=0,
                 target_words=max(1000, int(suggestion.target_words or 100000)),
                 narrative_perspective=(suggestion.narrative_perspective or "第三人称")[:50],
-                world_time_period=world_time_period,
-                world_location=world_location,
-                world_atmosphere=world_atmosphere,
-                world_rules=world_rules,
             )
             db.add(project)
             await db.flush()
@@ -1354,10 +1415,14 @@ class BookImportService:
             project.genre = suggestion.genre
             project.target_words = max(1000, int(suggestion.target_words or 100000))
             project.narrative_perspective = (suggestion.narrative_perspective or "第三人称")[:50]
-            project.world_time_period = world_time_period
-            project.world_location = world_location
-            project.world_atmosphere = world_atmosphere
-            project.world_rules = world_rules
+            # 覆盖导入：旧世界设定先清空，由导入末尾的抽取步骤按新正文重新写入。
+            # 快照必须一起清空，否则残留的旧 AI 快照会把新抽取没覆盖的字段
+            # 继续当作"历史 AI 值"保护，旧书设定变成永久值（issue #242）。
+            project.world_time_period = None
+            project.world_location = None
+            project.world_atmosphere = None
+            project.world_rules = None
+            project.ai_world_profile_snapshot = None
 
         await self._ensure_project_default_style(db=db, project_id=project.id)
         return project
@@ -1585,93 +1650,6 @@ class BookImportService:
         参数（chapters/kept），由各语言模板自行措辞。
         """
         return extract_mode == "full" or selected_total > 50
-
-    def _derive_world_settings(
-        self,
-        *,
-        suggestion: ProjectSuggestion,
-        chapters: list[BookImportChapter],
-    ) -> tuple[str, str, str, str]:
-        """根据拆书内容推断基础世界设定，确保新建项目有可用初始值。"""
-        sample_parts: list[str] = [
-            suggestion.title or "",
-            suggestion.theme or "",
-            suggestion.genre or "",
-            suggestion.description or "",
-        ]
-        for chapter in chapters[:3]:
-            if chapter.content:
-                sample_parts.append(chapter.content[:1200])
-
-        sample_text = "\n".join(sample_parts)
-        genre = suggestion.genre or ""
-        theme = suggestion.theme or ""
-
-        time_period = self._detect_time_period(sample_text, genre)
-        location = self._detect_location(sample_text, genre)
-        atmosphere = self._detect_atmosphere(sample_text, genre, theme)
-        rules = self._detect_world_rules(sample_text, genre)
-
-        return time_period, location, atmosphere, rules
-
-    def _detect_time_period(self, text: str, genre: str) -> str:
-        if any(k in text for k in ("民国", "军阀", "北洋", "租界")):
-            return "近代民国时期"
-        if any(k in text for k in ("星际", "宇宙", "机甲", "赛博", "未来", "人工智能")):
-            return "未来科技时代"
-        if any(k in text for k in ("古代", "王朝", "皇帝", "后宫", "朝堂", "将军", "宗门", "修仙", "江湖", "武林")):
-            return "古代架空时代"
-        if any(k in text for k in ("校园", "大学", "高中", "公司", "都市", "地铁")):
-            return "现代都市"
-
-        if any(k in genre for k in ("科幻", "星际")):
-            return "未来科技时代"
-        if any(k in genre for k in ("仙侠", "玄幻", "武侠", "历史", "古言")):
-            return "古代架空时代"
-        return "现代都市（可在世界设定页调整）"
-
-    def _detect_location(self, text: str, genre: str) -> str:
-        if any(k in text for k in ("星际", "宇宙", "舰队", "空间站", "机甲")):
-            return "多星系宇宙与舰队文明"
-        if any(k in text for k in ("宗门", "仙门", "秘境", "灵脉", "江湖", "武林")):
-            return "宗门林立的江湖/仙侠世界"
-        if any(k in text for k in ("王朝", "都城", "皇宫", "边关", "朝堂")):
-            return "王朝都城与边疆并存的古代世界"
-        if any(k in text for k in ("校园", "大学", "高中")):
-            return "校园与城市生活场景"
-        if any(k in text for k in ("都市", "城市", "街区", "公司", "医院")):
-            return "现代城市社会"
-
-        if "悬疑" in genre:
-            return "现代城市与封闭场景并行"
-        return "以人物活动区域为核心的现实场景"
-
-    def _detect_atmosphere(self, text: str, genre: str, theme: str) -> str:
-        if any(k in text for k in ("悬疑", "谜", "诡", "凶案", "惊悚", "追查")):
-            return "紧张悬疑、危机渐进"
-        if any(k in text for k in ("热血", "战斗", "对决", "复仇", "战争")):
-            return "高压对抗、节奏强烈"
-        if any(k in text for k in ("治愈", "日常", "温馨", "轻松", "搞笑")):
-            return "日常细腻、轻松温暖"
-        if any(k in text for k in ("权谋", "宫斗", "朝堂", "家族斗争")):
-            return "权谋博弈、暗流涌动"
-
-        if "言情" in genre:
-            return "情感拉扯、细腻克制"
-        if theme:
-            return f"{theme}导向、人物驱动"
-        return "人物驱动、冲突递进"
-
-    def _detect_world_rules(self, text: str, genre: str) -> str:
-        if any(k in text for k in ("修仙", "玄幻", "灵气", "境界", "宗门", "飞升")) or any(k in genre for k in ("仙侠", "玄幻")):
-            return "存在修炼体系与等级秩序，资源与传承决定势力格局。"
-        if any(k in text for k in ("星际", "机甲", "赛博", "人工智能", "基因")) or any(k in genre for k in ("科幻", "星际")):
-            return "科技规则主导社会运行，组织制度与技术能力决定角色行动边界。"
-        if any(k in text for k in ("江湖", "门派", "武林", "侠客")) or "武侠" in genre:
-            return "江湖门派秩序与恩怨规则并行，强者与名望影响话语权。"
-        if any(k in text for k in ("王朝", "皇权", "朝堂", "礼法")) or any(k in genre for k in ("历史", "古言")):
-            return "以礼法与权力秩序为基础，家国与阶层关系深刻影响人物命运。"
-        return "以现实逻辑为基础，结合剧情推进逐步补充特殊设定。"
 
     def _strip_chapter_prefix(self, title: str) -> str:
         """移除章节标题前缀“第X章/节/回/卷”，保留真实标题。"""
@@ -2508,6 +2486,7 @@ class BookImportService:
         model_name: Optional[str] = None,
         content_language: Optional[str] = None,
         skipped_chapters: Optional[list[dict[str, Any]]] = None,
+        merge_existing_world: bool = False,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -2523,6 +2502,8 @@ class BookImportService:
             chapters=chapters,
             model_name=model_name,
             content_language=content_language,
+            extraction_mode=True,
+            merge_existing=merge_existing_world,
         )
 
         generated_careers = await self._generate_career_system_from_project(
@@ -2563,11 +2544,18 @@ class BookImportService:
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
         content_language: Optional[str] = None,
+        extraction_mode: bool = False,
+        merge_existing: bool = False,
     ) -> int:
         """根据反向生成的项目基础信息，优先生成并写入世界观。
 
         拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
         让世界观基于真实正文生成（预算来自实发模型实测/声明的上下文窗口）。
+
+        extraction_mode=True 时改用 WORLD_BUILDING_EXTRACTION 模板：只归纳原文、
+        每个字段附章节号+逐字引文（validator 回查原文），不再走创作式提示词。
+        merge_existing=True 时（append 导入/失败重试）已有字段优先，只补空字段，
+        避免覆盖用户手改或更早章节建立的设定（issue #242/#243）。
         """
 
         async def _notify(
@@ -2586,7 +2574,8 @@ class BookImportService:
             ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
 
             await _notify("🌍 正在准备世界观提示词...", 0.2, code="import.progress.worldPreparingPrompt")
-            template = await PromptService.get_template("WORLD_BUILDING", user_id, db)
+            template_key = "WORLD_BUILDING_EXTRACTION" if extraction_mode else "WORLD_BUILDING"
+            template = await PromptService.get_template(template_key, user_id, db)
             full_book_context = ""
             if chapters:
                 if not model_name:
@@ -2595,6 +2584,9 @@ class BookImportService:
                     chapters,
                     budget_chars=await ai_service.resolve_full_book_budget_chars(model_name),
                 )
+            existing_world = (
+                _render_existing_world(project) if (extraction_mode and merge_existing) else ""
+            )
             # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
             generation_language = await resolve_user_generation_language(db, user_id, content_language)
             prompt = PromptService.format_prompt(
@@ -2604,48 +2596,60 @@ class BookImportService:
                 theme=project.theme or "未设定",
                 description=project.description or "暂无简介",
                 full_book_context=full_book_context,
+                existing_world=existing_world,
                 content_language=generation_language,
             )
 
             await _notify("🌍 AI正在生成世界观...", 0.3, code="import.progress.worldAiGenerating")
+            call_kwargs: dict[str, Any] = {}
+            validator = validate_world_building
+            if extraction_mode:
+                validator = lambda data: validate_world_building_extraction(data, chapters or [])
+                # 抽取要稳定复述原文：低温度，并给足输出预算（四字段 + 证据）。
+                call_kwargs = {"temperature": 0.2, "max_tokens": 8000}
             world_data = await ai_service.call_with_json_retry(
                 prompt=prompt,
                 max_retries=3,
                 expected_type="object",
-                validator=validate_world_building,
+                validator=validator,
+                **call_kwargs,
             )
             if not isinstance(world_data, dict):
                 return 0
 
             await _notify("🌍 正在解析世界观数据...", 0.8, code="import.progress.worldParsing")
-            time_period = str(world_data.get("time_period") or "").strip()
-            location = str(world_data.get("location") or "").strip()
-            atmosphere = str(world_data.get("atmosphere") or "").strip()
-            rules = str(world_data.get("rules") or "").strip()
+            values = _clean_extracted_world_values(world_data)
 
             updated = 0
-            if time_period:
-                project.world_time_period = time_period
-                updated = 1
-            if location:
-                project.world_location = location
-                updated = 1
-            if atmosphere:
-                project.world_atmosphere = atmosphere
-                updated = 1
-            if rules:
-                project.world_rules = rules
-                updated = 1
-
-            # issue #175：把刚生成的世界设定登记为「AI 写入」，后续同步才允许演进
-            world_snapshot = _profile_snapshot_json(
-                world_time_period=time_period,
-                world_location=location,
-                world_atmosphere=atmosphere,
-                world_rules=rules,
-            )
-            if world_snapshot:
-                project.ai_world_profile_snapshot = world_snapshot
+            if extraction_mode:
+                # append/重试：已有值优先，只补空字段；只把 AI 真正写入的字段登记快照。
+                ai_written: dict[str, str] = {}
+                snapshot = _load_world_snapshot(project.ai_world_profile_snapshot)
+                for field, value in values.items():
+                    if not value:
+                        continue
+                    current = (getattr(project, field, None) or "").strip()
+                    if merge_existing and current:
+                        continue
+                    setattr(project, field, value)
+                    ai_written[field] = value
+                    updated = 1
+                if ai_written:
+                    snapshot.update(ai_written)
+                    project.ai_world_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+                # 新建/覆盖导入：一条有效设定都没抽到属于失败，交给上层记失败步骤并重试；
+                # append/重试允许 0 条（已有设定无需补写）。
+                if updated == 0 and not merge_existing:
+                    raise ValueError("世界观抽取未产生任何有效字段（全部为原文未提及或空值）")
+            else:
+                for field, value in values.items():
+                    if value:
+                        setattr(project, field, value)
+                        updated = 1
+                # issue #175：把刚生成的世界设定登记为「AI 写入」，后续同步才允许演进
+                world_snapshot = _profile_snapshot_json(**values)
+                if world_snapshot:
+                    project.ai_world_profile_snapshot = world_snapshot
 
             await _notify("🌍 世界观写入完成", 1.0, code="import.progress.worldWritten")
             return updated

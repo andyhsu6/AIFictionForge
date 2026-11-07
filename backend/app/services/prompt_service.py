@@ -212,6 +212,52 @@ class PromptService:
 ❌ 输出markdown或代码块标记
 </constraints>"""
 
+
+    # 拆书导入专用：从原文抽取世界设定（只归纳、不创作），每条附章节号+逐字引文。
+    # 与 WORLD_BUILDING（新建向导/重建用）分离：后者是创作导向，且被向导链路共享。
+    WORLD_BUILDING_EXTRACTION = """<system>
+你是严谨的小说设定整理员。你的任务是归纳原文**已经交代**的世界设定，不是设计或补全世界观。
+</system>
+
+<task>
+根据下方已导入的章节原文，归纳这本书的世界设定，并为每个字段附上原文依据。
+</task>
+
+<rules>
+1. 只写原文中出现的信息。原文没有交代的方面，字段正文写「原文未提及」，不要用类型惯例、常识或想象补全。
+2. 每个字段的 evidence 必须给出：章节号（对应原文摘录里的【第N章】）+ 从该章正文逐字复制的引文（至少 8 个字、至多 60 个字，不得改写、拼接、补字或加省略号）。正文里找不到依据就不要写该条。
+3. 字段正文必须包含原文里的具体专名（地名、势力名、规则名、事件名），禁止「一个充满……」「架空时代」「以现实逻辑为基础」这类空泛标签。
+4. 每个字段 80-200 字；宁可写得少，也不要编造。
+5. 不要输出 markdown、代码块或解释文字，只输出 JSON。
+</rules>
+
+<input>
+【项目信息】
+书名：{title}
+类型：{genre}
+主题：{theme}
+简介：{description}
+{existing_world}
+【原文摘录】
+{full_book_context}
+</input>
+
+<output>
+只输出下面的 JSON 对象：
+{{
+  "time_period": "时间背景与时代状态（含原文专名）",
+  "location": "空间与地理（含原文专名）",
+  "atmosphere": "氛围与基调（含原文场景）",
+  "rules": "世界规则、力量体系或社会约束（含原文专名）",
+  "evidence": {{
+    "time_period": [{{"chapter": 1, "quote": "原文逐字引文"}}],
+    "location": [{{"chapter": 1, "quote": "原文逐字引文"}}],
+    "atmosphere": [{{"chapter": 2, "quote": "原文逐字引文"}}],
+    "rules": [{{"chapter": 3, "quote": "原文逐字引文"}}]
+  }}
+}}
+</output>"""
+
     # 批量角色生成提示词 V2（RTCO框架）
     CHARACTERS_BATCH_GENERATION = """<system>
 你是专业的角色设定师，擅长为{genre}类型的小说创建立体丰满的角色。
@@ -3286,6 +3332,12 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
                 "category": "世界构建",
                 "description": "用于生成小说世界观设定，包括时间背景、地理位置、氛围基调和世界规则",
                 "parameters": ["title", "theme", "genre", "description", "full_book_context"]
+            },
+            "WORLD_BUILDING_EXTRACTION": {
+                "name": "拆书导入-世界设定抽取",
+                "category": "拆书导入",
+                "description": "从已导入章节原文中抽取世界设定（只归纳不创作），每个字段必须附章节号与逐字引文",
+                "parameters": ["title", "genre", "theme", "description", "full_book_context", "existing_world"]
             },
             "BOOK_IMPORT_REVERSE_PROJECT_SUGGESTION": {
                 "name": "拆书导入-反向项目提炼",
