@@ -67,6 +67,10 @@ PROPOSE_PLAN_TOOL_DESCRIPTION = (
     "每一步必须是 {id, tool, arguments} 三个平级字段组成的对象："
     "id 与 tool 是必填字符串，工具参数只能放在 arguments 内（需要时再嵌一层 data），"
     "不要把工具参数、action 或 data 提到 step 顶层，也不要省略 id 或 tool。"
+    "同一批要新建的条目必须在 create 步骤一次写全所有字段（包括后续才会用到的"
+    "target_resolve_chapter_number 等）；不要先 create 再 update 同一批条目 —— "
+    "计划内不能引用前序步骤新产生的 ID，update 只用于修改**已存在的**条目，"
+    "且必须在 arguments 顶层给出 foreshadow_id 或 title 定位。"
     "note 只向用户说明这一步做什么，不会落库；"
     "所有要写进数据库的字段必须放在 arguments.data 内，create 步骤缺少必填字段会在提案期被拒。"
     "退役重复/孤儿/失效的台账条目同样用 manage_foreshadow 写成步骤："
@@ -223,6 +227,10 @@ _PLAN_REQUIRED_DATA_FIELDS: dict[str, dict[str, dict[str, str]]] = {
         },
     },
 }
+
+#: 需要定位既有伏笔的动作：运行期 `find_foreshadow` 只读**顶层** foreshadow_id/title。
+_FORESHADOW_LOCATE_ACTIONS = frozenset({"update", "delete", "plant", "resolve", "abandon"})
+_FORESHADOW_LOCATE_FIELDS = ("foreshadow_id", "title")
 
 # 严格集合的「可用字段」提示上限：错误会进过程面板，不能无界堆字段名。
 _AVAILABLE_FIELDS_LIMIT = 24
@@ -498,6 +506,21 @@ def _step_arguments_error(
         for field, hint in required_args.items():
             if not raw_arguments.get(field):
                 return f"步骤 {step_id} 的 {tool} 参数无效：{hint}"
+
+    # 定位类动作：运行期只读顶层 foreshadow_id/title，缺了必然执行期失败。
+    # 同时点明「不要 create 完再 update」——计划内无法引用前序步骤新产生的 ID。
+    if tool == "manage_foreshadow" and str(
+        effective.get("action") or action or ""
+    ) in _FORESHADOW_LOCATE_ACTIONS:
+        if not any(
+            str(raw_arguments.get(field) or "").strip()
+            for field in _FORESHADOW_LOCATE_FIELDS
+        ):
+            return (
+                f"步骤 {step_id} 的 {tool} 参数无效：{action} 需要顶层 foreshadow_id 或 title "
+                "定位目标。若目标是本计划中刚创建的条目，请把字段并入那一步 create，"
+                "不要拆成 create + update —— 计划内不能引用前序步骤新产生的 ID。"
+            )
 
     unknown = sorted(set(effective) - declared - moved)
     if unknown:
