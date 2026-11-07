@@ -34,6 +34,8 @@ class Project(Base):
         comment="世界设定已同步到的章节号"
     )
     ai_world_profile_snapshot = Column(Text, comment="上一次 AI 写入的世界设定快照(JSON)")
+    # issue #242：世界设定的可溯源事实（JSON claims：field/text/evidence/source）
+    world_facts = Column(Text, comment="世界设定事实(JSON claims，含证据与来源)")
     
     # 项目配置
     chapter_count = Column(Integer, comment="章节数量")

@@ -28,6 +28,17 @@ async def _seed_and_export(
     db_path: str,
     snapshot: str | None = json.dumps({"world_rules": "占位规则"}, ensure_ascii=False),
     watermark: int = 7,
+    facts: str | None = json.dumps(
+        [
+            {
+                "field": "world_rules",
+                "text": "占位规则",
+                "evidence": [{"chapter": 1, "quote": "占位规则原文"}],
+                "source": "original",
+            }
+        ],
+        ensure_ascii=False,
+    ),
 ) -> dict:
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
@@ -45,6 +56,7 @@ async def _seed_and_export(
                     world_atmosphere="占位氛围",
                     world_rules="占位规则",
                     ai_world_profile_snapshot=snapshot,
+                    world_facts=facts,
                     world_profile_synced_through_chapter=watermark,
                 )
             )
@@ -73,6 +85,7 @@ async def _import_into_fresh_db(data: dict, db_path: str):
             restored = {
                 "ai_world_profile_snapshot": project.ai_world_profile_snapshot,
                 "world_profile_synced_through_chapter": project.world_profile_synced_through_chapter,
+                "world_facts": project.world_facts,
             }
         return result, restored
     finally:
@@ -93,7 +106,7 @@ def test_round_trip_preserves_world_sync_credentials():
 
 async def _run_round_trip(src_path: str, dst_path: str) -> None:
     exported = await _seed_and_export(src_path)
-    assert exported["version"] == ImportExportService.CURRENT_VERSION == "1.2.0"
+    assert exported["version"] == ImportExportService.CURRENT_VERSION == "1.3.0"
     project_data = exported["project"]
     assert project_data["ai_world_profile_snapshot"] == json.dumps(
         {"world_rules": "占位规则"}, ensure_ascii=False
@@ -105,6 +118,7 @@ async def _run_round_trip(src_path: str, dst_path: str) -> None:
     assert restored is not None
     assert restored["ai_world_profile_snapshot"] == project_data["ai_world_profile_snapshot"]
     assert restored["world_profile_synced_through_chapter"] == 7
+    assert restored["world_facts"] == project_data["world_facts"]
 
 
 def test_legacy_export_without_credentials_keeps_defaults():
@@ -124,12 +138,14 @@ async def _run_legacy_import(src_path: str, dst_path: str) -> None:
     exported["version"] = "1.1.0"
     exported["project"].pop("ai_world_profile_snapshot", None)
     exported["project"].pop("world_profile_synced_through_chapter", None)
+    exported["project"].pop("world_facts", None)
 
     result, restored = await _import_into_fresh_db(exported, dst_path)
     assert result.success, result.message
     assert restored is not None
     assert restored["ai_world_profile_snapshot"] is None
     assert restored["world_profile_synced_through_chapter"] == 0
+    assert restored["world_facts"] is None
 
 
 def test_dirty_watermark_falls_back_to_zero():
@@ -153,7 +169,7 @@ async def _run_dirty_watermark(src_path: str, dst_path: str) -> None:
     assert restored["world_profile_synced_through_chapter"] == 0
 
 def test_round_trip_preserves_null_snapshot_and_zero_watermark():
-    """1.2.0 导出自身也要原样往返 None / 0，而不是只在旧版兼容用例里出现。"""
+    """1.3.0 导出自身也要原样往返 None / 0，而不是只在旧版兼容用例里出现。"""
     src_path = _db_path()
     dst_path = _db_path()
     try:
@@ -165,16 +181,18 @@ def test_round_trip_preserves_null_snapshot_and_zero_watermark():
 
 
 async def _run_null_zero_round_trip(src_path: str, dst_path: str) -> None:
-    exported = await _seed_and_export(src_path, snapshot=None, watermark=0)
+    exported = await _seed_and_export(src_path, snapshot=None, watermark=0, facts=None)
     project_data = exported["project"]
     assert project_data["ai_world_profile_snapshot"] is None
     assert project_data["world_profile_synced_through_chapter"] == 0
+    assert project_data["world_facts"] is None
 
     result, restored = await _import_into_fresh_db(exported, dst_path)
     assert result.success, result.message
     assert restored is not None
     assert restored["ai_world_profile_snapshot"] is None
     assert restored["world_profile_synced_through_chapter"] == 0
+    assert restored["world_facts"] is None
 
 
 def test_negative_watermark_is_clamped_to_zero():
@@ -198,11 +216,55 @@ async def _run_negative_watermark(src_path: str, dst_path: str) -> None:
     assert restored["world_profile_synced_through_chapter"] == 0
 
 
+def test_dirty_world_facts_are_dropped():
+    """world_facts 不是合法 JSON 数组时降级为 None，并让导入继续成功。"""
+    src_path = _db_path()
+    dst_path = _db_path()
+    try:
+        asyncio.run(_run_dirty_facts(src_path, dst_path))
+    finally:
+        for path in (src_path, dst_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _run_dirty_facts(src_path: str, dst_path: str) -> None:
+    exported = await _seed_and_export(src_path)
+    exported["project"]["world_facts"] = "not-json"
+    result, restored = await _import_into_fresh_db(exported, dst_path)
+    assert result.success, result.message
+    assert restored is not None
+    assert restored["world_facts"] is None
+
+
+def test_world_facts_accepts_already_parsed_list_on_import():
+    """手工编辑/第三方产出的 world_facts 可能已是数组：导入直接采纳。"""
+    src_path = _db_path()
+    dst_path = _db_path()
+    try:
+        asyncio.run(_run_parsed_facts(src_path, dst_path))
+    finally:
+        for path in (src_path, dst_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _run_parsed_facts(src_path: str, dst_path: str) -> None:
+    exported = await _seed_and_export(src_path)
+    parsed = json.loads(exported["project"]["world_facts"])
+    exported["project"]["world_facts"] = parsed
+
+    result, restored = await _import_into_fresh_db(exported, dst_path)
+    assert result.success, result.message
+    assert restored is not None
+    assert json.loads(restored["world_facts"]) == parsed
+
+
 def test_outline_transfer_accepts_current_project_export_version():
-    """完整项目导出升级到 1.2.0 后，大纲提取导入不得再拒绝新文件。"""
+    """完整项目导出升级后，大纲提取导入不得再拒绝新文件。"""
     from app.services.outline_transfer_service import OutlineTransferService
 
-    assert "1.2.0" in OutlineTransferService.PROJECT_FORMAT_VERSIONS
+    assert ImportExportService.CURRENT_VERSION in OutlineTransferService.PROJECT_FORMAT_VERSIONS
     assert OutlineTransferService.PROJECT_FORMAT_VERSIONS == set(
         ImportExportService.SUPPORTED_VERSIONS
     )

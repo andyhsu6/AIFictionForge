@@ -63,8 +63,8 @@ def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
 class ImportExportService:
     """导入导出服务类"""
     
-    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0", "1.2.0"]  # 支持的版本列表
-    CURRENT_VERSION = "1.2.0"  # 当前导出版本（1.2.0 起携带世界设定同步凭证，issue #244）
+    SUPPORTED_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]  # 支持的版本列表
+    CURRENT_VERSION = "1.3.0"  # 当前导出版本（1.2.0 起携带世界设定同步凭证；1.3.0 起携带 world_facts，issue #242）
     
     @staticmethod
     async def export_project(
@@ -116,6 +116,8 @@ class ImportExportService:
             # 否则导入后 snapshot 为空、水位为 0，自动同步会把现有值当历史值永久保护。
             "ai_world_profile_snapshot": project.ai_world_profile_snapshot,
             "world_profile_synced_through_chapter": int(project.world_profile_synced_through_chapter or 0),
+            # issue #242：世界设定事实随项目导出/导入往返
+            "world_facts": project.world_facts,
             "chapter_count": project.chapter_count,
             "narrative_perspective": project.narrative_perspective,
             "character_count": project.character_count,
@@ -767,6 +769,23 @@ class ImportExportService:
                 if not isinstance(parsed_snapshot, dict):
                     warnings.append("世界设定同步快照不是合法对象，已忽略")
                     world_snapshot = None
+            # issue #242：world_facts 契约是 JSON 数组；手工编辑/第三方产出可能已是
+            # 解析后的数组，两种形态都接受；其它脏数据降级为 None 并告警。
+            raw_facts = project_data.get("world_facts")
+            world_facts_value = None
+            if isinstance(raw_facts, list):
+                world_facts_value = json.dumps(raw_facts, ensure_ascii=False)
+            elif isinstance(raw_facts, str) and raw_facts.strip():
+                try:
+                    parsed_facts = json.loads(raw_facts)
+                except (TypeError, ValueError):
+                    parsed_facts = None
+                if isinstance(parsed_facts, list):
+                    world_facts_value = raw_facts.strip()
+                else:
+                    warnings.append("世界设定事实无法解析，已忽略")
+            elif raw_facts is not None:
+                warnings.append("世界设定事实无法解析，已忽略")
             new_project = Project(
                 user_id=user_id,  # 设置为当前用户ID
                 title=project_data.get("title"),
@@ -780,6 +799,7 @@ class ImportExportService:
                 world_atmosphere=project_data.get("world_atmosphere"),
                 world_rules=project_data.get("world_rules"),
                 ai_world_profile_snapshot=world_snapshot,
+                world_facts=world_facts_value,
                 world_profile_synced_through_chapter=_coerce_non_negative_int(
                     project_data.get("world_profile_synced_through_chapter")
                 ),
