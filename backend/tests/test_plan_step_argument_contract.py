@@ -809,6 +809,34 @@ def test_validate_plan_writing_style_create_requires_fields_or_preset():
                   tool_schemas=_registry_schemas())
 
 
+def test_start_project_task_data_schema_documents_actions():
+    """宽松 data 会让模型编字段；schema 必须把高频 action 的字段写出来。"""
+    data_schema = _registry_schemas()["start_project_task"]["properties"]["data"]
+    description = data_schema.get("description") or ""
+    assert "generate_outlines" in description
+    assert "expand_outline" in description
+    assert "outline_id" in description
+
+
+def test_propose_plan_description_states_step_shape():
+    """模型重试时会丢掉 id/tool；描述必须把三元组结构写成硬规则。"""
+    assert "start_project_task" in PROPOSE_PLAN_TOOL_DESCRIPTION
+    assert "generate_outlines" in PROPOSE_PLAN_TOOL_DESCRIPTION
+    assert "{id, tool, arguments}" in PROPOSE_PLAN_TOOL_DESCRIPTION
+
+
+def test_validate_plan_missing_id_error_shows_step_shape():
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(
+            _plan([{"tool": "manage_foreshadow", "arguments": {"action": "create"}}]),
+            allowed_tools={"manage_foreshadow"},
+            tool_schemas=_registry_schemas(),
+        )
+    message = str(exc_info.value)
+    assert "id" in message
+    assert "arguments" in message
+
+
 def test_validate_plan_accepts_relationship_create_and_rejects_unknown_key():
     """(i5) 关系 create 的 character_from_id/character_to_id 合法；data.foo 拒绝。"""
     step = {

@@ -53,6 +53,23 @@ def _chapter_schema(properties: dict[str, Any]) -> dict[str, Any]:
 ID = {"type": "string", "minLength": 1, "pattern": r".*\S.*"}
 DATA = {"type": "object", "additionalProperties": True}
 
+# `start_project_task` 的 data 单独声明：宽松对象会让模型靠猜字段名，实测出现过
+# `start_chapter` / `end_chapter` / `instructions` 这类根本不存在的字段。
+TASK_DATA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "description": (
+        "任务参数，按 action 区分："
+        "generate_outlines 用 mode（auto / new / continue，默认 auto）；"
+        "expand_outline 与 batch_expand_outlines 用 auto_create_chapters（默认 true），"
+        "目标大纲写在顶层 outline_id，不要写进 data；"
+        "partial_regenerate_chapter 需要 selected_text / start_position / "
+        "end_position / user_instructions；"
+        "generate_chapter / batch_generate_chapters 的字段见对应请求模型。"
+        "不存在的字段（如 start_chapter、end_chapter、instructions）会在提案期被拒绝。"
+    ),
+}
+
 
 OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -228,7 +245,7 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
             "outline_id": ID,
             "chapter_id": ID,
             "chapter_number": {"type": "integer", "minimum": 1},
-            "data": DATA,
+            "data": TASK_DATA,
         }, ["action"]),
         # 顶层必须是 2：OPERATIONAL_WRITE_TOOL_NAMES 依赖 spec["risk_level"] 真值。
         # action 级降级见 action_risk。
