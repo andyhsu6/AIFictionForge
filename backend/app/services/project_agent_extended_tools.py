@@ -53,6 +53,15 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
 ID = {"type": "string", "minLength": 1, "pattern": r".*\S.*"}
 DATA = {"type": "object", "additionalProperties": True}
 
+
+def _data_schema(description: str) -> dict[str, Any]:
+    """写工具的 data 声明：必须给出可读字段说明。
+
+    裸 `{"type": "object"}` 会诱导模型编字段名——实测出现过 `start_chapter` /
+    `end_chapter` / `instructions` 这类根本不存在的键，代价是两次模型往返后失败。
+    """
+    return {"type": "object", "additionalProperties": True, "description": description}
+
 # 伏笔「写库字段」（issue #223）：create/update 真正落进 Foreshadow 模型的 21 个字段。
 # 与 ProjectAgentExtendedTools.FORESHADOW_FIELDS / STRICT_DATA_FIELDS 同源。
 _FORESHADOW_WRITE_FIELD_SCHEMAS: dict[str, Any] = {
@@ -190,14 +199,22 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "manage_character",
         "description": "创建或删除角色/旧版组织记录；执行前必须确认。更新请使用 update_character。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "delete"]}, "character_id": ID, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "delete"]}, "character_id": ID, "data": _data_schema(
+            "角色字段：name（必填）、age、gender、role_type、personality、background、"
+            "appearance、current_state、status、traits；组织实体设 is_organization=true，"
+            "并可给 organization_type / organization_purpose。"
+        )}, ["action"]),
         "risk_level": 2,
         "resources": ("characters", "organizations", "relationships", "careers"),
     },
     {
         "name": "manage_chapter",
         "description": "创建、删除章节，或更新章节正文/展开规划；执行前必须确认。元数据更新请使用 update_chapter。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "delete", "update_content", "update_plan"]}, "chapter_id": ID, "chapter_number": {"type": "integer", "minimum": 1}, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "delete", "update_content", "update_plan"]}, "chapter_id": ID, "chapter_number": {"type": "integer", "minimum": 1}, "data": _data_schema(
+            "章节字段：create 需要 title 与 chapter_number（也可放顶层 chapter_number），"
+            "可同时给 content / summary / status / outline_id；update_content 需要 content；"
+            "update_plan 用 expansion_plan。"
+        )}, ["action"]),
         "risk_level": 2,
         "resources": ("chapters", "projects"),
     },
@@ -211,7 +228,11 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "manage_organization",
         "description": "创建、更新、删除结构化组织，或管理组织成员；执行前必须确认。add_member 可单条（data.character_id + data.position）或批量（data.members 数组，每项必须给 position）；同一家组织的多名成员应一步批量提交，不要拆成多步。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "add_member", "update_member", "remove_member"]}, "organization_id": ID, "member_id": ID, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "add_member", "update_member", "remove_member"]}, "organization_id": ID, "member_id": ID, "data": _data_schema(
+            "组织详情字段：create 需要 character_id（指向已存在的组织角色），"
+            "可给 parent_org_id / level / power_level / location / motto / color；"
+            "add_member 用 character_id + position（单条）或 members 数组（批量，每项含 position）。"
+        )}, ["action"]),
         "risk_level": 2,
         "resources": ("organizations", "characters"),
     },
@@ -236,7 +257,11 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "manage_career",
         "description": "创建、更新、删除职业，或设置角色职业和阶段；执行前必须确认。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "set_main", "add_sub", "update_stage", "remove_sub"]}, "career_id": ID, "character_id": ID, "data": DATA}, ["action"]),
+        "parameters": _schema({"action": {"type": "string", "enum": ["create", "update", "delete", "set_main", "add_sub", "update_stage", "remove_sub"]}, "career_id": ID, "character_id": ID, "data": _data_schema(
+            "职业字段：create 需要 name、type（main 或 sub）和 stages（非空阶段列表），"
+            "可给 description / category / max_stage / requirements / special_abilities / "
+            "worldview_rules / attribute_bonuses；set_main/add_sub 用 character_id 定位角色。"
+        )}, ["action"]),
         "risk_level": 2,
         "resources": ("careers", "characters"),
     },

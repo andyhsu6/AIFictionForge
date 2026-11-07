@@ -152,7 +152,14 @@ OPERATIONAL_TOOL_SPECS: list[dict[str, Any]] = [
         "parameters": _schema({
             "action": {"type": "string", "enum": ["create", "update", "delete", "set_default", "clear_default"]},
             "style_id": {"type": "integer", "minimum": 1},
-            "data": DATA,
+            "data": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": (
+                    "写作风格字段：name、description、prompt_content；"
+                    "也可以只给 preset_id 引用已有预设，由服务端回填其余字段。"
+                ),
+            },
         }, ["action"]),
         "risk_level": 2,
         "resources": ("writing_styles", "projects"),
