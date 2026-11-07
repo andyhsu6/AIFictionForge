@@ -26,6 +26,10 @@ class BatchGenerationTask(Base):
     total_chapters = Column(Integer, default=0, comment="总章节数")
     completed_chapters = Column(Integer, default=0, comment="已完成章节数")
     failed_chapters = Column(JSON, default=list, comment="失败的章节信息列表")
+    # issue #254 P2：最近一章的文笔一致性自检结果（只读展示）
+    style_check = Column(JSON, nullable=True, comment="最近一章的文笔一致性自检结果")
+    # issue #254 P1：本批次锚点覆盖设置（请求级 > 项目级）
+    anchor_settings = Column(JSON, nullable=True, comment="本批次锚点覆盖设置")
     current_chapter_id = Column(String(36), comment="当前正在生成的章节ID")
     current_chapter_number = Column(Integer, comment="当前正在生成的章节序号")
     current_retry_count = Column(Integer, default=0, comment="当前章节重试次数")

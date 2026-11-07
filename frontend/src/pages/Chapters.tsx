@@ -6,7 +6,7 @@ import { eventBus, EventNames } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
 import { projectApi, writingStyleApi, chapterApi } from '../services/api';
-import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
+import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData, StyleCheckResult } from '../types';
 import type { ContentLanguage } from '../utils/languageSync';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import ChapterAnalysis from '../components/ChapterAnalysis';
@@ -843,6 +843,26 @@ export default function Chapters() {
     }
   };
 
+  // issue #254 P2：文笔画像一致性提示（非阻断，仅一条 warning 摘要）
+  const showStyleCheckWarning = (styleCheck?: StyleCheckResult | null) => {
+    if (!styleCheck?.available || !styleCheck.alerts?.length) return;
+
+    const metricLabels: Record<string, string> = {
+      avg_sentence_chars: t('styleCheck.metrics.avgSentenceChars'),
+      median_sentence_chars: t('styleCheck.metrics.medianSentenceChars'),
+      short_sentence_ratio: t('styleCheck.metrics.shortSentenceRatio'),
+      dialogue_ratio: t('styleCheck.metrics.dialogueRatio'),
+      paragraph_chars_p50: t('styleCheck.metrics.paragraphCharsP50'),
+      cliche_density: t('styleCheck.metrics.clicheDensity'),
+    };
+    const metrics = styleCheck.alerts
+      .slice(0, 3)
+      .map(alert => metricLabels[alert.metric] ?? alert.metric)
+      .join(t('styleCheck.listSeparator'));
+
+    message.warning(t('styleCheck.warning', { n: styleCheck.alerts.length, metrics }));
+  };
+
   const handleGenerate = async () => {
     if (!editingId) return;
 
@@ -878,6 +898,7 @@ export default function Chapters() {
       );
 
       message.success(t('toast.aiCreateSuccess'));
+      showStyleCheckWarning(result?.style_check);
 
       // 如果返回了分析任务ID，启动轮询
       if (result?.analysis_task_id) {
@@ -1073,8 +1094,9 @@ export default function Chapters() {
           const latestChapters = await refreshGeneratedChapter();
           await loadAnalysisTasks(latestChapters);
         },
-        async () => {
+        async (completedStatus) => {
           message.success(t('toast.taskDoneBackground'));
+          showStyleCheckWarning(completedStatus.task_result?.style_check as StyleCheckResult | undefined);
           const latestChapters = await refreshGeneratedChapter();
           await loadAnalysisTasks(latestChapters);
         },
@@ -1343,6 +1365,8 @@ export default function Chapters() {
 
           if (status.status === 'completed') {
             message.success(t('toast.batchDone', { n: status.completed }));
+            // issue #254 P2：批量整体文笔一致性提示（若后端在状态中返回）
+            showStyleCheckWarning(status.style_check as StyleCheckResult | undefined);
             // 🔔 触发浏览器通知
             showBrowserNotification(
               t('notification.batchDoneTitle'),

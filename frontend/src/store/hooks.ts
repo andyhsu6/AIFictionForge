@@ -21,7 +21,8 @@ import type {
   ChapterCreate,
   ChapterUpdate,
   GenerateOutlineRequest,
-  GenerateCharacterRequest
+  GenerateCharacterRequest,
+  StyleCheckResult
 } from '../types';
 
 /**
@@ -329,6 +330,7 @@ export function useChapterSync() {
       let buffer = '';
       let fullContent = '';
       let analysisTaskId: string | undefined;
+      let styleCheck: StyleCheckResult | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -378,6 +380,10 @@ export function useChapterSync() {
                 if (message.data?.analysis_task_id) {
                   analysisTaskId = message.data.analysis_task_id;
                 }
+                // issue #254 P2：文笔画像一致性自检结果（可选字段）
+                if (message.data?.style_check) {
+                  styleCheck = message.data.style_check;
+                }
                 if (onProgressUpdate) {
                   onProgressUpdate('生成完成', 100);
                 }
@@ -403,7 +409,8 @@ export function useChapterSync() {
 
       return {
         content: fullContent,
-        analysis_task_id: analysisTaskId
+        analysis_task_id: analysisTaskId,
+        style_check: styleCheck
       };
     } catch (error) {
       console.error('AI流式生成章节内容失败:', error);

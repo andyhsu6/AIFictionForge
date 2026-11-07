@@ -125,6 +125,20 @@ class ChapterGenerateRequest(BaseModel):
     narrative_perspective: Optional[str] = Field(None, description="临时人称视角：first_person/third_person/omniscient，不提供则使用项目默认")
     skill_key: Optional[str] = Field(None, description="Skill 标识，指定后以该 Skill 的工作流指导创作")
     content_language: ContentLanguage
+    # issue #254 P1：本次生成锚点覆盖（不传则沿用项目设置）
+    style_anchor_enabled: Optional[bool] = Field(None, description="本次生成是否注入本书原文语感锚点，不传沿用项目设置")
+    style_anchor_chars: Optional[int] = Field(
+        None,
+        description="本次生成锚点字符预算（150-2000），不传沿用项目设置",
+        ge=150,
+        le=2000,
+    )
+    style_anchor_count: Optional[int] = Field(
+        None,
+        description="本次生成锚点片段数量（2-4），不传沿用项目设置",
+        ge=2,
+        le=4,
+    )
 
 
 class BatchGenerateRequest(BaseModel):
@@ -132,6 +146,10 @@ class BatchGenerateRequest(BaseModel):
     start_chapter_number: int = Field(..., description="起始章节序号")
     count: int = Field(..., description="生成章节数量", ge=1, le=20)
     style_id: Optional[int] = Field(None, description="写作风格ID")
+    # issue #254 P1：本批次锚点覆盖（不传沿用项目设置）
+    style_anchor_enabled: Optional[bool] = Field(None, description="是否注入原文语感锚点")
+    style_anchor_chars: Optional[int] = Field(None, description="锚点字符预算", ge=150, le=2000)
+    style_anchor_count: Optional[int] = Field(None, description="锚点条数", ge=2, le=4)
     target_word_count: Optional[int] = Field(
         3000,
         description="目标字数，默认3000字",
@@ -166,6 +184,8 @@ class BatchGenerateStatusResponse(BaseModel):
     current_retry_count: Optional[int] = None
     max_retries: Optional[int] = None
     failed_chapters: list[dict] = []
+    # issue #254 P2：最近一章的文笔一致性自检（只读展示）
+    style_check: Optional[dict] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None

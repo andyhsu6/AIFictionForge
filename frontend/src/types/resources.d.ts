@@ -870,6 +870,18 @@ export default interface Resources {
       "pending": "待处理",
       "writing": "创作中"
     },
+    "styleCheck": {
+      "listSeparator": "、",
+      "metrics": {
+        "avgSentenceChars": "平均句长",
+        "clicheDensity": "套话密度",
+        "dialogueRatio": "对话占比",
+        "medianSentenceChars": "句长中位",
+        "paragraphCharsP50": "段落长度中位",
+        "shortSentenceRatio": "短句占比"
+      },
+      "warning": "文笔一致性提示：{{n}} 项指标偏离画像（{{metrics}}）"
+    },
     "tag": {
       "analysisFailed": "分析失败",
       "analyzed": "已分析",
@@ -4119,6 +4131,7 @@ export default interface Resources {
       "confidence": "置信度",
       "degraded": "本次抽取使用本地统计降级结果，仅供参考",
       "diffTitle": "重新抽取文笔画像",
+      "generatedAt": "生成时间",
       "keptByUser": "检测到你已手动编辑过画像，未覆盖；如需覆盖请勾选“覆盖我的手动编辑”",
       "metrics": {
         "avgSentence": "平均句长（字）",
