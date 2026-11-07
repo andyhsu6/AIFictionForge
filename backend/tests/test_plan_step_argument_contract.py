@@ -837,6 +837,39 @@ def test_validate_plan_missing_id_error_shows_step_shape():
     assert "arguments" in message
 
 
+def test_validate_plan_rejects_foreshadow_update_without_locator():
+    """真实失败：create 5 条后想 update 它们，update 步骤没有任何定位字段。"""
+    step = {
+        "id": "u1", "tool": "manage_foreshadow",
+        "arguments": {"action": "update", "data": {"target_resolve_chapter_number": 60}},
+    }
+    with pytest.raises(PlanValidationError) as exc_info:
+        validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                      tool_schemas=_registry_schemas())
+    message = str(exc_info.value)
+    assert "u1" in message
+    assert "foreshadow_id" in message
+    assert "并入" in message
+
+
+def test_validate_plan_accepts_foreshadow_update_with_locator():
+    step = {
+        "id": "u2", "tool": "manage_foreshadow",
+        "arguments": {
+            "action": "update",
+            "foreshadow_id": FORESHADOW_ID,
+            "data": {"target_resolve_chapter_number": 60},
+        },
+    }
+    plan = validate_plan(_plan([step]), allowed_tools={"manage_foreshadow"},
+                         tool_schemas=_registry_schemas())
+    assert plan["steps"][0]["arguments"]["foreshadow_id"] == FORESHADOW_ID
+
+
+def test_propose_plan_description_forbids_create_then_update():
+    assert "不要先 create 再 update" in PROPOSE_PLAN_TOOL_DESCRIPTION
+
+
 def test_validate_plan_accepts_relationship_create_and_rejects_unknown_key():
     """(i5) 关系 create 的 character_from_id/character_to_id 合法；data.foo 拒绝。"""
     step = {
