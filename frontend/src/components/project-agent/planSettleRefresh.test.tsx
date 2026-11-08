@@ -26,6 +26,7 @@ vi.mock('../../services/api', async (importOriginal) => {
       rejectToolCall: vi.fn(),
       approvePlan: vi.fn(),
       cancelPlan: vi.fn(),
+      cancelTurn: vi.fn(() => Promise.resolve({ conversation_id: 'conv-1', cancelled: false, settled: true, repaired_steps: 0, message: 'ok' })),
       chatStream: vi.fn(() => new Promise<void>(() => {})),
     },
   };

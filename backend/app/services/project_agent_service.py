@@ -1,11 +1,15 @@
 """灵创创作助手会话编排、工具循环和持久化。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from datetime import timedelta
 from typing import Any, AsyncGenerator, Optional
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.core.errors import ApiError
@@ -53,9 +57,35 @@ from app.services.language_resolver import (
 from app.services.project_agent_risk import resolve_tool_risk
 from app.services.project_agent_tools import ProjectAgentToolRegistry
 from app.services.project_agent_selectors import normalize_tool_arguments
+from app.services import agent_turn_registry
 
 
 logger = get_logger(__name__)
+
+
+class AgentTurnCancelled(Exception):
+    """本回合被显式取消（服务端取消接口/同会话新回合接管）。
+
+    受控出口而不是故障：调用方应把回合收尾成「已由用户停止」，不回错误码。
+    """
+
+
+class AgentTurnTimeout(Exception):
+    """本回合超过单回合墙钟上限（`agent_turn_timeout_seconds`）。"""
+
+
+def _is_db_locked_error(exc: BaseException) -> bool:
+    """SQLite 写锁竞争的判定（`database is locked` / `database table is locked`）。"""
+    text = str(exc).lower()
+    return "database is locked" in text or "database table is locked" in text
+
+
+def _consume_task_exception(task: "asyncio.Future") -> None:
+    """后台被取消的任务也取一次异常，避免事件循环打 unhandled 警告。"""
+    try:
+        task.exception()
+    except BaseException:  # noqa: BLE001 —— 取消/退出都属于预期
+        pass
 
 
 SYSTEM_PROMPT = """你是 AIFictionForge 的“灵创创作助手”，帮助用户查看和修改当前小说项目。
@@ -282,6 +312,9 @@ async def resolve_provider_tool_call_id(
 
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
+    #: 一轮模型调用至少需要这么多剩余预算才值得发起；不足即按单回合超时收口，
+    #: 而不是发一个注定被截断的请求（单位与 config 的秒一致）。
+    MIN_ROUND_SECONDS = 10.0
     #: 进程内记录每个会话上次生成结论时的消息数（不持久化，重启后重新计数）。
     _summary_scheduled_counts: dict[str, int] = {}
     #: 规划收口轮里，模型给出这个长度的回答就当作「用户在征询意见」并接受，
@@ -336,6 +369,18 @@ class ProjectAgentService:
         self.mcp_tools: list[dict[str, Any]] = []
         self._active_conversation: AgentConversation | None = None
         self._active_user_message: AgentMessage | None = None
+        # 主键在回合开始时就抄下来：收尾时若 session 已因写失败进入 PendingRollback，
+        # 访问已过期 ORM 对象的属性会再次触发 IO 并二次抛出（issue #257 的实际形态）。
+        self._active_conversation_id: str | None = None
+        self._active_user_message_id: str | None = None
+        # 服务端取消登记（进程内，见 agent_turn_registry）与单回合截止时间。
+        self._turn_handle: agent_turn_registry.AgentTurnHandle | None = None
+        # 最近一个回合的句柄：close_turn 清掉 _turn_handle 后，路由收尾仍要拿它
+        # 置「已结算」（取消接口据此等待 DB 落盘后再返回）。
+        self._last_turn_handle: agent_turn_registry.AgentTurnHandle | None = None
+        self._turn_deadline: float | None = None
+        #: 本回合是否以异常/取消退出（决定 close_turn 是否把会话标成「收尾中」）。
+        self._needs_finalize = False
 
     async def get_or_create_conversation(
         self,
@@ -459,6 +504,136 @@ class ProjectAgentService:
         auto_approve: bool = False,
         plan_mode: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """公开入口：登记运行回合 + 单回合墙钟预算，再交给实现发事件流。
+
+        登记与预算放在 wrapper：新会话的 conversation_id 在实现内部才产生，wrapper
+        拿不到；但 wrapper 的 finally 能保证无论正常结束、抛异常还是生成器被取消，
+        都会注销登记——取消接口靠它判断「还有没有回合在跑」，打开会话时的卡死自愈
+        也靠它区分「真在跑」与「脏 running 行」。
+        """
+        timeout = self._turn_timeout_seconds()
+        self._turn_deadline = time.monotonic() + timeout if timeout > 0 else None
+        self._needs_finalize = False
+        try:
+            async for event in self._stream_chat_impl(
+                conversation_id=conversation_id,
+                message=message,
+                page_context=page_context,
+                auto_approve=auto_approve,
+                plan_mode=plan_mode,
+            ):
+                yield event
+        except BaseException:
+            # 异常/取消退出 ⇒ 路由一定会收尾（终态消息 + running 步骤判定）。
+            # 在 close_turn 之前记下来，让 registry 把会话标成「收尾中」，避免
+            # 收尾落盘前的卡死自愈把这段竞态窗误判成脏数据。
+            self._needs_finalize = True
+            raise
+        finally:
+            self.close_turn()
+
+    def close_turn(self) -> None:
+        """注销本回合登记（幂等，可从路由的 finally 或 wrapper 调用）。"""
+        handle = self._turn_handle
+        self._turn_handle = None
+        self._turn_deadline = None
+        if handle is not None:
+            self._last_turn_handle = handle
+            agent_turn_registry.finish_turn(
+                handle, settling=self._needs_finalize
+            )
+
+    def mark_turn_settled(self) -> None:
+        """收尾写完之后才叫醒取消接口的等待者（由路由的 finalize 完成后调用）。"""
+        agent_turn_registry.mark_settled(self._last_turn_handle)
+
+    @property
+    def active_conversation_id(self) -> str | None:
+        return self._active_conversation_id
+
+    @property
+    def active_user_message_id(self) -> str | None:
+        return self._active_user_message_id
+
+    def _turn_timeout_seconds(self) -> float:
+        value = getattr(settings, "agent_turn_timeout_seconds", 0.0)
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _remaining_turn_seconds(self) -> float | None:
+        if self._turn_deadline is None:
+            return None
+        return self._turn_deadline - time.monotonic()
+
+    def _raise_if_turn_cancelled(self) -> None:
+        handle = self._turn_handle
+        if handle is not None and handle.cancelled:
+            raise AgentTurnCancelled()
+
+    def _check_turn_guards(self) -> None:
+        """轮次边界/工具派发前检查取消与预算：两条都按受控出口抛。"""
+        self._raise_if_turn_cancelled()
+        remaining = self._remaining_turn_seconds()
+        if remaining is not None and remaining <= 0:
+            raise AgentTurnTimeout()
+
+    async def _await_turn_cancellable(self, coro):
+        """等待一个可能很长的 await（模型调用/MCP 工具），取消到达即中断它。
+
+        取消不是等它自然返回：模型调用单次可跑几十秒到几分钟，只有取消在飞的
+        那个 await 才叫「真的止损 token」。
+        """
+        handle = self._turn_handle
+        if handle is None:
+            return await coro
+        task = asyncio.ensure_future(coro)
+        waiter = asyncio.ensure_future(handle.cancel_event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {task, waiter}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if task in done:
+                return task.result()
+            raise AgentTurnCancelled()
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+            if not task.done():
+                task.cancel()
+                # 不 await：当前协程可能已被 timeout/cancel 打断，await 会立刻再抛；
+                # 用回调消费异常，避免 "Task exception was never retrieved"。
+                task.add_done_callback(_consume_task_exception)
+
+    async def _call_round_guarded(self, **kwargs):
+        """带取消与剩余预算的模型调用；剩余预算不足一个最短有效轮就直接超时收口。"""
+        remaining = self._remaining_turn_seconds()
+        if remaining is None:
+            return await self._await_turn_cancellable(self._call_round(**kwargs))
+        if remaining <= self.MIN_ROUND_SECONDS:
+            raise AgentTurnTimeout()
+        timeout_scope = asyncio.timeout(remaining)
+        try:
+            async with timeout_scope:
+                return await self._await_turn_cancellable(self._call_round(**kwargs))
+        except TimeoutError as exc:
+            # 只有「我们自己的预算到期」才改判成回合超时；下游自己抛的
+            # TimeoutError（任何 asyncio.wait_for 系调用）必须原样上抛，
+            # 不能被伪装成「已超过 N 分钟上限」并终止整回合。
+            if getattr(timeout_scope, "expired", lambda: False)():
+                raise AgentTurnTimeout() from exc
+            raise
+
+    async def _stream_chat_impl(
+        self,
+        *,
+        conversation_id: str | None,
+        message: str,
+        page_context: dict[str, Any],
+        auto_approve: bool = False,
+        plan_mode: bool = False,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """工具决策循环：工具结果持久化为 role=tool 消息，每轮重载 history，跨轮复用。
 
         `plan_mode=True` 时本回合是规划回合：普通轮额外提供终止型工具
@@ -478,6 +653,12 @@ class ProjectAgentService:
         self.db.add(user_message)
         conversation.last_message_at = _naive_utc_now()
         await self.db.commit()
+
+        # 主键先抄下来（收尾可能在 session 已坏的情况下执行，不能再碰 ORM 属性），
+        # 再登记本回合：取消接口从这一刻起就能找到它。
+        self._active_conversation_id = conversation.id
+        self._active_user_message_id = user_message.id
+        self._turn_handle = agent_turn_registry.begin_turn(conversation.id)
 
         yield {
             "type": "conversation",
@@ -612,6 +793,9 @@ class ProjectAgentService:
         plan_extra = self.PLAN_MAX_RETRIES if plan_mode else 0
         max_rounds = self.MAX_TOOL_ROUNDS + plan_extra
         for round_index in range(max_rounds + 1):
+            # 轮次边界是取消/超时的第一检查点：上一轮的工具调用可能刚跑完，
+            # 此时再发下一轮模型请求纯属浪费 token。
+            self._check_turn_guards()
             force_answer = round_index >= max_rounds
             # issue #108：一轮最多记一次计划尝试。收口轮里成串的违规调用（实测模型一次
             # 发 5 个读工具）不得一次烧光 PLAN_MAX_RETRIES —— 预算是按"轮"给的，不是
@@ -704,7 +888,7 @@ class ProjectAgentService:
             # 并发写都会在 busy_timeout(30s) 后抛 "database is locked"（issue #222）。
             # 长 IO 前必须先落盘释放写锁。
             await self.db.commit()
-            response = await self._call_round(
+            response = await self._call_round_guarded(
                 prompt=prompt,
                 system_prompt=active_system_prompt,
                 force_answer=force_answer,
@@ -809,6 +993,9 @@ class ProjectAgentService:
 
             proposed: list[AgentToolCall] = []
             for raw_call in tool_calls:
+                # 一批并行工具调用可能连着跑很久（MCP 每个可到 60s），每个调用前
+                # 都过一次取消/预算闸，别让"最后一步"继续烧。
+                self._check_turn_guards()
                 try:
                     name, arguments = self._parse_tool_call(raw_call)
                     try:
@@ -1057,8 +1244,10 @@ class ProjectAgentService:
                     # 无上限），带着写事务等它同样会把全库写锁攥住。
                     await self.db.commit()
                     try:
-                        mcp_result = await execute_mcp_tool_call(
-                            self.user_id, name, arguments, record.id
+                        mcp_result = await self._await_turn_cancellable(
+                            execute_mcp_tool_call(
+                                self.user_id, name, arguments, record.id
+                            )
                         )
                         succeeded = bool(mcp_result.get("success"))
                         record.status = "executed" if succeeded else "failed"
@@ -1095,6 +1284,11 @@ class ProjectAgentService:
                         )
                         if succeeded and record.requires_confirmation:
                             await self.db.commit()
+                    except AgentTurnCancelled:
+                        # 取消不是工具失败：标记记录后向上抛，由路由统一收口成「已停止」。
+                        record.status = "cancelled"
+                        record.error_message = "本次执行已由用户停止。"
+                        raise
                     except Exception as exc:
                         record.status = "failed"
                         record.error_message = str(exc)
@@ -1554,55 +1748,108 @@ class ProjectAgentService:
             },
         }
 
-    async def finalize_interrupted_turn(self, reason: str, *, cancelled: bool) -> None:
-        """把已提交的部分调用记录绑定到一条可见的终止消息。"""
-        conversation = self._active_conversation
-        user_message = self._active_user_message
-        if conversation is None or user_message is None:
+    async def _safe_rollback(self) -> None:
+        """回滚且不抛出：收尾路径本身已经处在一个失败/取消的分支里。"""
+        try:
             await self.db.rollback()
-            return
+        except Exception:  # noqa: BLE001 —— 连接级失败也别再把收尾炸掉
+            logger.warning("创作助手收尾 rollback 失败", exc_info=True)
 
-        # rollback 会使 ORM 对象过期，先保存主键并在回滚后重新加载会话。
-        conversation_id = conversation.id
-        user_message_id = user_message.id
-        await self.db.rollback()
-        conversation = (await self.db.execute(
-            select(AgentConversation).where(AgentConversation.id == conversation_id)
-        )).scalar_one_or_none()
-        if conversation is None:
-            return
-        steps = list((await self.db.execute(
-            select(AgentExecutionStep).where(
-                AgentExecutionStep.conversation_id == conversation_id,
-                AgentExecutionStep.user_message_id == user_message_id,
-            ).order_by(AgentExecutionStep.sequence)
-        )).scalars().all())
-        if any(step.assistant_message_id for step in steps):
+    async def release_turn_transaction(self) -> None:
+        """收尾前释放请求会话可能持有的写事务，且不抛出。
+
+        收尾现在走独立 DB 会话：若请求会话仍握着一个未提交的写事务（SQLite 单写者），
+        独立会话会一直等到 busy_timeout(30s) 才能写，等于自锁。这里先 rollback 释放。
+        取消作用域里这次 rollback 可能被立刻打断，吞掉即可（请求会话随后由 FastAPI 关闭）。
+        """
+        try:
+            await self.db.rollback()
+        except BaseException:  # noqa: BLE001 —— 含 CancelledError：不做补偿，交给上层
+            pass
+
+    async def finalize_interrupted_turn(
+        self,
+        reason: str,
+        *,
+        cancelled: bool,
+        content: str | None = None,
+    ) -> None:
+        """把已提交的部分调用记录绑定到一条可见的终止消息。
+
+        issue #257：本方法**绝不能向上抛**。它跑在路由的异常分支里；旧实现在
+        `rollback()` 之前先读已过期 ORM 对象的 `.id`，写失败后 session 进入
+        PendingRollbackError，收尾二次崩溃 ⇒ running 步骤永久残留、前端拿不到
+        终止事件。现在主键在回合开始时就抄好，整段再包一层宽 except 兜底。
+
+        `database is locked` 允许整段重试一次：收尾是「rollback → 全量重读 →
+        写终态」的幂等流程，重试安全；这是 #257 现场直接命中的失败点。
+        """
+        conversation_id = self._active_conversation_id
+        user_message_id = self._active_user_message_id
+        if conversation_id is None and self._active_conversation is not None:
+            try:
+                conversation_id = self._active_conversation.id
+            except Exception:  # noqa: BLE001 —— 过期属性加载失败时只能放弃定位
+                conversation_id = None
+        if user_message_id is None and self._active_user_message is not None:
+            try:
+                user_message_id = self._active_user_message.id
+            except Exception:  # noqa: BLE001
+                user_message_id = None
+        if conversation_id is None or user_message_id is None:
+            await self._safe_rollback()
             return
 
         final_status = "cancelled" if cancelled else "failed"
-        final_content = "本次执行已由用户停止。" if cancelled else f"本次执行因请求失败而中止：{reason}"
-        for step in steps:
-            if step.status == "running":
-                step.status = final_status
-                step.content = final_content
-                step.updated_at = _naive_utc_now()
-
-        assistant = await self._save_assistant(
-            conversation, final_content, 0, 0, commit=False
+        final_content = content or (
+            "本次执行已由用户停止。"
+            if cancelled
+            else f"本次执行因请求失败而中止：{reason}"
         )
-        tool_call_ids = [step.tool_call_id for step in steps if step.tool_call_id]
-        tool_records: list[AgentToolCall] = []
-        if tool_call_ids:
-            tool_records = list((await self.db.execute(
-                select(AgentToolCall).where(AgentToolCall.id.in_(tool_call_ids))
-            )).scalars().all())
-        for record in tool_records:
-            if record.status in {"proposed", "executing"}:
-                record.status = final_status
-                record.error_message = final_content
-        await self._attach_steps(steps, tool_records, assistant, commit=False)
-        await self.db.commit()
+        for attempt in range(2):
+            try:
+                await self._apply_interrupted_turn(
+                    conversation_id=conversation_id,
+                    user_message_id=user_message_id,
+                    final_status=final_status,
+                    final_content=final_content,
+                )
+                return
+            except OperationalError as exc:
+                if attempt == 0 and _is_db_locked_error(exc):
+                    logger.warning(
+                        "创作助手收尾遇到 database is locked，回滚后重试一次: conversation=%s",
+                        conversation_id,
+                    )
+                    await self._safe_rollback()
+                    continue
+                logger.exception(
+                    "创作助手回合收尾失败（已忽略）: conversation=%s", conversation_id
+                )
+                await self._safe_rollback()
+                return
+            except Exception:  # noqa: BLE001 —— 收尾失败只能记日志，不能再抛给路由
+                logger.exception(
+                    "创作助手回合收尾失败（已忽略）: conversation=%s", conversation_id
+                )
+                await self._safe_rollback()
+                return
+
+    async def _apply_interrupted_turn(
+        self,
+        *,
+        conversation_id: str,
+        user_message_id: str,
+        final_status: str,
+        final_content: str,
+    ) -> None:
+        await _apply_interrupted_turn(
+            self.db,
+            conversation_id=conversation_id,
+            user_message_id=user_message_id,
+            final_status=final_status,
+            final_content=final_content,
+        )
 
     async def _load_history(self, conversation_id: str) -> list[AgentMessage]:
         result = await self.db.execute(
@@ -2279,3 +2526,235 @@ class ProjectAgentService:
             "error_message": record.error_message,
             "created_at": record.created_at.isoformat() if record.created_at else None,
         }
+
+
+#: 卡死回合自愈时写给用户的可见说明（也用于启动期清扫的步骤文案）。
+STALE_TURN_MESSAGE = "本次执行已中断（服务重启或连接异常），请重新发起。"
+
+
+async def reconcile_stale_turns(
+    db: AsyncSession,
+    *,
+    conversation_id: str,
+    min_age_seconds: float = 0.0,
+    _attempt: int = 0,
+) -> int:
+    """把会话里不属于任何运行中回合的 `running` 步骤收尾（issue #257 自愈）。
+
+    只在进程内登记表里没有该会话的回合时执行：服务重启后登记表为空，遗留的
+    `running` 行正是上一进程崩溃/中断的现场。plan runner 的步骤 `user_message_id`
+    为空，不在此列（它们有启动期自己的收尾）。
+
+    `min_age_seconds`：只看「已经这么久没更新」的 running 行。路由侧传 2s，
+    避开「连接断开时收尾被 shield 到后台 task、登记已注销但 DB 收尾还没写完」
+    的窗口——否则会把正在收尾的行误判成卡死，多写一条「服务重启/连接异常」
+    的终止消息。
+
+    返回被修复的步骤数（供取消接口/打开会话的路由与测试断言）。
+    """
+    if agent_turn_registry.is_active(conversation_id):
+        return 0
+    # 「已停止、但 finalize 还在等锁落盘」同样不能动手：此刻的 running 行不是脏数据，
+    # 是收尾正在进行（取消接口/前端刚 abort 的典型窗口）。
+    if agent_turn_registry.is_settling(conversation_id):
+        return 0
+    stale_cutoff = _naive_utc_now() - timedelta(seconds=max(0.0, min_age_seconds))
+    stale_steps = [
+        step for step in (await db.execute(
+            select(AgentExecutionStep).where(
+                AgentExecutionStep.conversation_id == conversation_id,
+                AgentExecutionStep.status == "running",
+                AgentExecutionStep.user_message_id.isnot(None),
+            ).order_by(AgentExecutionStep.sequence)
+        )).scalars().all()
+        if step.updated_at is None or step.updated_at <= stale_cutoff
+    ]
+    if not stale_steps:
+        return 0
+    conversation = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conversation_id)
+    )).scalar_one_or_none()
+    if conversation is None:
+        return 0
+
+    by_user_message: dict[str, list[AgentExecutionStep]] = {}
+    for step in stale_steps:
+        by_user_message.setdefault(str(step.user_message_id), []).append(step)
+
+    repaired = 0
+    for user_message_id, group in by_user_message.items():
+        turn_steps = list((await db.execute(
+            select(AgentExecutionStep).where(
+                AgentExecutionStep.conversation_id == conversation_id,
+                AgentExecutionStep.user_message_id == user_message_id,
+            ).order_by(AgentExecutionStep.sequence)
+        )).scalars().all())
+        bound = [step for step in turn_steps if step.assistant_message_id]
+        assistant_id: str | None = None
+        if not bound:
+            assistant = AgentMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=STALE_TURN_MESSAGE,
+            )
+            db.add(assistant)
+            await db.flush()
+            assistant_id = assistant.id
+        else:
+            assistant_id = bound[-1].assistant_message_id
+
+        tool_call_ids = [step.tool_call_id for step in group if step.tool_call_id]
+        for step in group:
+            step.status = "failed"
+            step.content = STALE_TURN_MESSAGE
+            step.updated_at = _naive_utc_now()
+            if assistant_id is not None:
+                step.assistant_message_id = assistant_id
+            repaired += 1
+        if tool_call_ids:
+            records = list((await db.execute(
+                select(AgentToolCall).where(AgentToolCall.id.in_(tool_call_ids))
+            )).scalars().all())
+            for record in records:
+                if record.status in {"proposed", "executing"}:
+                    record.status = "failed"
+                    record.error_message = STALE_TURN_MESSAGE
+                    if assistant_id is not None and record.message_id is None:
+                        record.message_id = assistant_id
+
+    try:
+        await db.commit()
+    except OperationalError as exc:
+        if _attempt == 0 and _is_db_locked_error(exc):
+            logger.warning(
+                "创作助手卡死自愈遇到 database is locked，回滚后重试一次: conversation=%s",
+                conversation_id,
+            )
+            await db.rollback()
+            return await reconcile_stale_turns(
+                db,
+                conversation_id=conversation_id,
+                min_age_seconds=min_age_seconds,
+                _attempt=1,
+            )
+        # 自愈是 GET 路径的副作用：失败只能放弃本次修复，绝不能把读接口打成 500。
+        logger.warning(
+            "创作助手卡死自愈失败（已忽略）: conversation=%s", conversation_id,
+            exc_info=True,
+        )
+        await db.rollback()
+        return 0
+    logger.info(
+        "创作助手卡死回合自愈: conversation=%s repaired_steps=%s",
+        conversation_id,
+        repaired,
+    )
+    return repaired
+
+async def _apply_interrupted_turn(
+    db: AsyncSession,
+    *,
+    conversation_id: str,
+    user_message_id: str,
+    final_status: str,
+    final_content: str,
+) -> None:
+    """rollback → 全量重读 → 写终态（幂等）。调用方负责重试与兜底。
+
+    独立成模块函数是为了让「连接断开」路径能用**新的 DB 会话**收尾：请求被取消
+    后 FastAPI 会关闭请求会话，收尾任务若继续用它就会失败（issue #257 的次级风险）。
+    """
+    await db.rollback()
+    conversation = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conversation_id)
+    )).scalar_one_or_none()
+    if conversation is None:
+        return
+    steps = list((await db.execute(
+        select(AgentExecutionStep).where(
+            AgentExecutionStep.conversation_id == conversation_id,
+            AgentExecutionStep.user_message_id == user_message_id,
+        ).order_by(AgentExecutionStep.sequence)
+    )).scalars().all())
+    if any(step.assistant_message_id for step in steps):
+        return
+
+    for step in steps:
+        if step.status == "running":
+            step.status = final_status
+            step.content = final_content
+            step.updated_at = _naive_utc_now()
+
+    assistant = AgentMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=final_content,
+    )
+    db.add(assistant)
+    conversation.last_message_at = _naive_utc_now()
+    await db.flush()
+
+    tool_call_ids = [step.tool_call_id for step in steps if step.tool_call_id]
+    tool_records: list[AgentToolCall] = []
+    if tool_call_ids:
+        tool_records = list((await db.execute(
+            select(AgentToolCall).where(AgentToolCall.id.in_(tool_call_ids))
+        )).scalars().all())
+    for step in steps:
+        step.assistant_message_id = assistant.id
+    for record in tool_records:
+        if record.status in {"proposed", "executing"}:
+            record.status = final_status
+            record.error_message = final_content
+        if record.message_id is None:
+            record.message_id = assistant.id
+    await db.commit()
+
+
+async def finalize_interrupted_turn_detached(
+    *,
+    user_id: str,
+    conversation_id: str | None,
+    user_message_id: str | None,
+    reason: str,
+    cancelled: bool,
+    content: str | None = None,
+) -> None:
+    """用独立 DB 会话收尾连接断开/取消的回合（不再受请求会话生命周期影响）。"""
+    if conversation_id is None or user_message_id is None:
+        return
+    final_status = "cancelled" if cancelled else "failed"
+    final_content = content or (
+        "本次执行已由用户停止。"
+        if cancelled
+        else f"本次执行因请求失败而中止：{reason}"
+    )
+    from app.database import get_engine
+
+    engine = await get_engine(user_id)
+    session_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    for attempt in range(2):
+        try:
+            async with session_factory() as session:
+                await _apply_interrupted_turn(
+                    session,
+                    conversation_id=conversation_id,
+                    user_message_id=user_message_id,
+                    final_status=final_status,
+                    final_content=final_content,
+                )
+            return
+        except OperationalError as exc:
+            if attempt == 0 and _is_db_locked_error(exc):
+                continue
+            logger.exception(
+                "创作助手脱离会话收尾失败（已忽略）: conversation=%s", conversation_id
+            )
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "创作助手脱离会话收尾失败（已忽略）: conversation=%s", conversation_id
+            )
+            return

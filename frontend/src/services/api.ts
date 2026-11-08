@@ -1305,6 +1305,14 @@ export const foreshadowApi = {
     ),
 };
 
+export interface AgentTurnCancelResult {
+  conversation_id: string;
+  cancelled: boolean;
+  settled: boolean;
+  repaired_steps: number;
+  message: string;
+}
+
 export interface ProjectAgentStreamCallbacks {
   onConversation?: (data: { conversation_id: string; title: string }) => void;
   onChunk?: (content: string) => void;
@@ -1328,6 +1336,8 @@ export interface ProjectAgentStreamCallbacks {
   onFinalChunk?: (content: string) => void;
   onFinalDone?: (data: { message_id: string }) => void;
   onResult?: (data: { conversation_id: string; message_id: string; status: string }) => void;
+  // 服务端把回合收口成「已停止」（取消接口/单回合超时）：content 是可直接展示的说明。
+  onCancelled?: (content: string) => void;
   onError?: (error: string) => void;
 }
 
@@ -1345,6 +1355,13 @@ export const projectAgentApi = {
 
   deleteConversation: (projectId: string, conversationId: string) =>
     api.delete(`/projects/${projectId}/agent/conversations/${conversationId}`),
+
+  // 服务端取消出口（issue #257）：只靠 abort 本地流停不干净——浏览器断开的信号
+  // 不一定传到后端，且回合崩在半路时连接早断了。停止按钮必须同时打这个接口。
+  cancelTurn: (projectId: string, conversationId: string) =>
+    api.post<unknown, AgentTurnCancelResult>(
+      `/projects/${projectId}/agent/conversations/${conversationId}/cancel`
+    ),
 
   confirmToolCall: (projectId: string, toolCallId: string) =>
     api.post<unknown, AgentToolDecision>(
@@ -1430,6 +1447,7 @@ export const projectAgentApi = {
         else if (event.type === 'final_start') callbacks.onFinalStart?.(event.data);
         else if (event.type === 'final_chunk') callbacks.onFinalChunk?.(event.content || '');
         else if (event.type === 'final_done') callbacks.onFinalDone?.(event.data);
+        else if (event.type === 'cancelled') callbacks.onCancelled?.(event.content || '');
         else if (event.type === 'result') callbacks.onResult?.(event.data);
         else if (event.type === 'error') {
           const mapped = mapSSEError(event);

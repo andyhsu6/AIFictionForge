@@ -100,7 +100,11 @@ async def _sweep_interrupted_tasks(engine=None) -> int:
     from app.models.analysis_task import AnalysisTask
     from app.models.background_task import BackgroundTask
     from app.models.batch_generation_task import BatchGenerationTask
-    from app.models.project_agent import _naive_utc_now
+    from app.models.project_agent import (
+        AgentExecutionStep,
+        AgentToolCall,
+        _naive_utc_now,
+    )
     from sqlalchemy import select as sql_select
     from sqlalchemy import text
     from sqlalchemy import update as sql_update
@@ -199,6 +203,34 @@ async def _sweep_interrupted_tasks(engine=None) -> int:
                 error_message="服务重启，章节分析任务已中断",
                 progress=0,
                 completed_at=interrupted_at,
+            )
+        )
+        # issue #257：上一进程遗留的创作助手回合。只清扫有 user_message 的步骤
+        # （plan runner 的步骤 user_message_id 为空，走上面的计划收尾），否则界面
+        # 打开会话时会在一条永远 running 的步骤上无限转圈。
+        stale_turn_steps = await conn.execute(
+            sql_update(AgentExecutionStep)
+            .where(
+                AgentExecutionStep.status == "running",
+                AgentExecutionStep.user_message_id.isnot(None),
+            )
+            .values(
+                status="failed",
+                content="本次执行已中断（服务重启），请重新发起。",
+                updated_at=interrupted_at,
+            )
+        )
+        if stale_turn_steps.rowcount:
+            logger.info(
+                f"启动期中断创作助手步骤: {stale_turn_steps.rowcount} 条 running 步骤已标记为 failed"
+            )
+        await conn.execute(
+            sql_update(AgentToolCall)
+            .where(AgentToolCall.status == "executing")
+            .values(
+                status="failed",
+                error_message="服务重启，工具调用已中断",
+                executed_at=interrupted_at,
             )
         )
     return len(plan_rows)
