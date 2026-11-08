@@ -192,7 +192,11 @@ _KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
     "gemini-1.5": 8192,
     "gemini-2": 65536,
     "qwen": 8192,
-    "glm": 8192,
+    # 2026-11-08 实测 commandcode + z-ai/glm-5.3-flash 接受 max_tokens=200000（三次均 200）。
+    # 键收窄到 "glm-5.3"：登记表按子串匹配，写 "glm" 会把 glm4-9b-chat 这类别的
+    # 网关模型一并抬到 200000；glm-4.6 等未登记版本回落到 `_DEFAULT_MAX_OUTPUT_TOKENS`
+    # （与收窄前的旧行为一致）。
+    "glm-5.3": 200000,
     "minimax": 16384,
 }
 
@@ -222,6 +226,96 @@ def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = Non
         if key in name and limit > 0:
             return limit
     return _DEFAULT_MAX_OUTPUT_TOKENS
+
+
+# ========== 章节输出预算（单一来源） ==========
+# 为什么存在：调用点曾各自 `max(2000, min(target*3, 16000))` 硬算 max_tokens 并**显式**
+# 传入，而 `resolve_effective_max_tokens` 对显式值原样放行 —— 思考型模型的升级、
+# 网关实测上限、上下文剩余全部被这处本地计算废掉（2026-11-08 批量第 58 章：
+# 6000 字目标、181068 字符输入、思考型 glm，预算被钉在 16000，推理吃掉全部
+# 37678 字符后正文 0 字、finish_reason=length）。
+#
+# 预算下限：低于它没有任何一章能写完，再小只会制造空正文。
+_OUTPUT_BUDGET_MIN_TOKENS = 1024
+# 上下文余量：留给模板收尾/工具结果拼装等不可预见的追加。
+_OUTPUT_BUDGET_CONTEXT_MARGIN = 2048
+# 预算额外余量：正文 + 推理之外给 finish 停顿留一点空间。
+_OUTPUT_BUDGET_SLACK = 2048
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    """把任意输入尽力转成 int；不可转返回 None（预算计算必须对脏输入健壮）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_output_budget(
+    *,
+    target_chars: int,
+    model: Optional[str],
+    base_url: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    context_window: Optional[int] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    """按任务目标 + 模型能力 + 上下文剩余规划 max_tokens。
+
+    返回 ``(max_tokens, breakdown)``；breakdown 的键用于日志归因：
+
+    - ``content``：正文预算 = max(1024, target_chars)（中文约 1 字符 ≈ 1 token，
+      口径同 `_FULL_BOOK_BUDGET_RATIO` 附近注释）；
+    - ``reserve``：思考型模型的推理预留 = max(content, 8192)，非思考型为 0 ——
+      推理与正文**共享**输出预算，实测 glm 的 reasoning 可达 content 的 6 倍，
+      所以预留不能小于 content；**这只是首轮保底**：实测推理开销随任务难度变化而非
+      随输入线性变化（同一模型：简单续写 21632 字符输入仅 88 reasoning_tokens；
+      失败章 181068 字符输入 37678 字符推理），故更长的推理靠调用点按 API 回报的
+      真实用量升级预算，而不是在这里按比例猜；
+    - ``cap``：`detect_max_output_tokens`（网关实测上限优先，登记表只是提示）；
+    - ``context_room``：``context_window - input_tokens - 2048``。<= 0 表示
+      **输入已超窗**（含 2048 余量），此时预算被压到下限 `max(1024, …)`，日志里看到
+      负数即可判定「这段 prompt 塞不进窗口」，而不是当成「无此约束」放行。
+    - ``requested``：content + reserve + 2048，即未受上限约束前的期望值。
+
+    `input_tokens` / `context_window` 是**预留参数**：当前生产调用点（SSE / 后台 /
+    批量 / 续写）都只传 `target_chars + model + base_url`，两参数暂无调用方，
+    `context_room` 因此恒为 None；接上窗口探测后才生效，本函数不代替调用方猜窗口。
+
+    结果 = max(1024, min(requested, cap, context_room))。
+    """
+    content = _coerce_int(target_chars)
+    if content is None or content < _OUTPUT_BUDGET_MIN_TOKENS:
+        content = _OUTPUT_BUDGET_MIN_TOKENS
+
+    reserve = 0
+    if is_thinking_model(model, base_url):
+        reserve = max(content, 8192)
+
+    cap = detect_max_output_tokens(model, base_url)
+    requested = content + reserve + _OUTPUT_BUDGET_SLACK
+
+    context_room: Optional[int] = None
+    window = _coerce_int(context_window)
+    used = _coerce_int(input_tokens)
+    if window is not None and used is not None and window > 0 and used > 0:
+        # 剩余 <= 0 也要保留：它是「输入已超窗」的信号，不是「无约束」。
+        context_room = window - used - _OUTPUT_BUDGET_CONTEXT_MARGIN
+
+    limits = [requested, cap]
+    if context_room is not None:
+        limits.append(context_room)
+    max_tokens = max(_OUTPUT_BUDGET_MIN_TOKENS, min(limits))
+
+    breakdown: Dict[str, Any] = {
+        "content": content,
+        "reserve": reserve,
+        "cap": cap,
+        "context_room": context_room,
+        "requested": requested,
+    }
+    return max_tokens, breakdown
 
 
 # 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
@@ -948,8 +1042,10 @@ class AIService:
             mcp_max_rounds: 最大工具调用轮数（None使用默认值3）
             response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）
             finish_sink: 可选出参字典。生成结束（成功或被关闭/异常）后写入
-                ``finish_sink["finish_reason"]``。仅影响出参，不改变 yield 契约
-                （仍然只 yield 文本块），供调用方拿到真实结束原因。
+                ``finish_sink["finish_reason"]`` 与 ``finish_sink["usage"]``
+                （`TokenUsage`，用于区分「正文少」是内容短还是推理吃掉了预算）。
+                仅影响出参，不改变 yield 契约（仍然只 yield 文本块），
+                供调用方拿到真实结束原因。
             
         Yields:
             生成的文本块（str），永远不会是 dict
@@ -1040,6 +1136,7 @@ class AIService:
             # 统一在 finally 写回出参，避免「被拦截」的失败只能从 metrics 日志里猜。
             if finish_sink is not None:
                 finish_sink["finish_reason"] = finish_reason
+                finish_sink["usage"] = latest_usage
 
     async def generate_text_stream_full(
         self,
