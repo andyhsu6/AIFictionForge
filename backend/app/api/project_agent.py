@@ -221,7 +221,7 @@ async def rename_conversation(
     conversation = await _get_conversation(
         db, conversation_id=conversation_id, project_id=project_id, user_id=user_id
     )
-    conversation.title = payload.title
+    conversation.title = " ".join(payload.title.split())
     conversation.title_user_edited = True
     await db.commit()
     await db.refresh(conversation)

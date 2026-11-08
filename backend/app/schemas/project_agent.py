@@ -1,8 +1,8 @@
 """灵创创作助手 API 模型。"""
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class AgentConversationCreate(BaseModel):
@@ -12,15 +12,11 @@ class AgentConversationCreate(BaseModel):
 class AgentConversationUpdate(BaseModel):
     """用户重命名会话（issue #262）。"""
 
-    title: str = Field(..., max_length=200)
-
-    @field_validator("title")
-    @classmethod
-    def _normalize_title(cls, value: str) -> str:
-        normalized = " ".join(value.split())
-        if not normalized:
-            raise ValueError("标题不能为空")
-        return normalized
+    # strip_whitespace + min_length=1：空白标题走标准 422 校验错误，
+    # 不用自定义 validator（其 ValueError 在错误序列化器里不可 JSON 化）。
+    title: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+    ]
 
 
 class AgentConversationResponse(BaseModel):

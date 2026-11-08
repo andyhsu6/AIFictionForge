@@ -39,8 +39,8 @@ def test_clean_generated_title_strips_wrappers_and_caps():
     assert clean_generated_title(None) == ""
 
 
-def test_rename_payload_normalises_whitespace():
-    assert AgentConversationUpdate(title="  两个   词  ").title == "两个 词"
+def test_rename_payload_strips_edges_and_rejects_blank():
+    assert AgentConversationUpdate(title="  两个   词  ").title == "两个   词"
     with pytest.raises(ValidationError):
         AgentConversationUpdate(title="   ")
 
@@ -117,3 +117,88 @@ async def test_empty_model_output_keeps_rule_title(tmp_path):
     finally:
         await session.close()
         await engine.dispose()
+
+def test_rename_conversation_endpoint_updates_title_and_flag(tmp_path):
+    """PATCH 重命名：空白归一化、title_user_edited=true、权限校验走项目归属。"""
+    import asyncio
+
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.api.project_agent import router as agent_router
+    from app.core.errors import register_exception_handlers
+    from app.database import Base, get_db
+    from app.models.project import Project
+    from app.models.project_agent import AgentConversation
+
+    db_path = tmp_path / "rename.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    async def _seed():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as session:
+            session.add(Project(id="p-rename", user_id="u-rename", title="占位项目"))
+            session.add(
+                AgentConversation(
+                    id="c-rename",
+                    user_id="u-rename",
+                    project_id="p-rename",
+                    title="占位旧标题",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_seed())
+
+    async def _override_db():
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(agent_router, prefix="/api")
+    app.dependency_overrides[get_db] = _override_db
+
+    @app.middleware("http")
+    async def _fake_auth(request: Request, call_next):
+        request.state.user_id = "u-rename"
+        return await call_next(request)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.patch(
+            "/api/projects/p-rename/agent/conversations/c-rename",
+            json={"title": "  两个   词  "},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["title"] == "两个 词"
+
+        async def _fetch():
+            factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+            async with factory() as session:
+                return (
+                    await session.execute(
+                        select(AgentConversation).where(
+                            AgentConversation.id == "c-rename"
+                        )
+                    )
+                ).scalar_one()
+
+        conversation = asyncio.run(_fetch())
+        assert conversation.title == "两个 词"
+        assert conversation.title_user_edited is True
+
+        blank = client.patch(
+            "/api/projects/p-rename/agent/conversations/c-rename",
+            json={"title": "   "},
+        )
+        assert blank.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        asyncio.run(engine.dispose())
