@@ -401,6 +401,8 @@ export default function WritingStyles() {
           } else {
             message.success(t('volumes.fullProfileCreated'));
           }
+        } else if (result.full_profile_skipped) {
+          message.warning(t('volumes.fullProfileSkipped'));
         } else if (result.full_profile_error) {
           message.warning(t('volumes.fullProfileFailed'));
         }

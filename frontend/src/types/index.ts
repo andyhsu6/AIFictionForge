@@ -838,6 +838,8 @@ export interface VolumeProfileGenerateResult {
   full_profile_created?: boolean;
   /** 全书画像补生成失败（分卷画像仍照常生成） */
   full_profile_error?: boolean;
+  /** 全书样本不足，未补生成全书画像 */
+  full_profile_skipped?: boolean;
   /** 全书画像使用本地统计降级结果（未设为默认） */
   full_profile_degraded?: boolean;
   /** 全书画像已生成，但保留用户手动选择的默认风格 */

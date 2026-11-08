@@ -931,3 +931,37 @@ def test_volume_auto_full_profile_degraded_does_not_steal_default(monkeypatch):
         assert await default_style_id(db) is None
 
     _run(scenario)
+
+
+def test_volume_auto_full_profile_upsert_failure_keeps_volumes(monkeypatch):
+    """全书画像写库失败（savepoint 内）不影响分卷画像落库。"""
+    monkeypatch.setattr(
+        BookImportService,
+        "_extract_style_profile",
+        _fake_extract_with_ranges([{"chapter": 1, "start": 0, "end": 200}]),
+    )
+
+    async def boom(self, **kwargs):
+        raise RuntimeError("upsert failed")
+
+    monkeypatch.setattr(BookImportService, "_upsert_project_profile_style", boom)
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is False
+        assert result["full_profile_error"] is True
+        # 分卷仍成功提交
+        assert len(await volume_rows(db)) == 1
+        assert await full_profile_rows(db) == []
+
+    _run(scenario)

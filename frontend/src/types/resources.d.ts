@@ -4221,6 +4221,7 @@ export default interface Resources {
       "fullProfileDefaultKept": "已生成全书画像，保留你当前手动选择的默认风格",
       "fullProfileDegraded": "全书画像使用了本地统计降级结果，未设为默认",
       "fullProfileFailed": "全书画像补生成失败，可在页面顶部手动生成",
+      "fullProfileSkipped": "全书样本不足，未能生成全书画像",
       "manualRanges": "卷区间",
       "overwriteEdited": "覆盖已手动编辑的卷",
       "perN": "每 N 章自动分卷",

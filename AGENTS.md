@@ -73,7 +73,7 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
 - **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
-- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse execute`（内核仍是 Playwright JS，驱动本机真实 Brave 的**后台标签组**，无 headless 模式，`page.bringToFront()` 被禁用）：
+- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse`（内核仍是 Playwright JS，驱动本机真实 Brave 的**后台标签组**，无 headless 模式，`page.bringToFront()` 被禁用）：agent 会话内优先用 MCP 工具 `browse.execute`（Code Mode 下为 `tools.browse.execute`，配套 `session_new`/`session_delete`/`status`），shell 场景用等价的 `browse execute` CLI；
   - 截图落盘根：默认只允许 `/tmp` 与 opencode 临时目录；要直接写 `.omo/evidence/` 需设 `OPENCODE_BROWSER_FILE_ROOTS=<checkout>/.omo/evidence`，否则先写 `/tmp` 再 `cp`。
   - 验收一律用 `--rm` 一次性 session；**不要** `session_adopt` 用户已登录的标签页，避免把真实账号与真实数据带进验收。
   - 仅在 browse 不可用（扩展未配对 / relay 不通）时，才回退 `.omo/pw-tools/node_modules` 的 playwright-core 并指向本机 Brave。

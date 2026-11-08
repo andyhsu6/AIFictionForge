@@ -595,6 +595,7 @@ async def generate_project_profile_volumes(
     ).scalar_one_or_none()
     full_profile_created = False
     full_profile_error = False
+    full_profile_skipped = False
     full_profile_degraded = False
     full_profile_default_kept = False
     if not payload.dry_run and not full_profile_exists:
@@ -611,7 +612,7 @@ async def generate_project_profile_volumes(
                 logger.warning(
                     f"项目 {project_id} 全书画像样本不足，未补生成（不影响分卷画像）"
                 )
-                full_profile_error = True
+                full_profile_skipped = True
             else:
                 full_profile_degraded = bool(full_profile.get("degraded"))
                 # 降级画像（本地统计）不抢默认；用户手选的默认也不抢。
@@ -731,6 +732,7 @@ async def generate_project_profile_volumes(
         "anchors_reused": True,
         "full_profile_created": full_profile_created,
         "full_profile_error": full_profile_error,
+        "full_profile_skipped": full_profile_skipped,
         "full_profile_degraded": full_profile_degraded,
         "full_profile_default_kept": full_profile_default_kept,
         "needs_full_profile": bool(payload.dry_run and not full_profile_exists),
