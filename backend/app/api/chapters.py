@@ -255,8 +255,13 @@ def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
 
 
 def _extract_chapter_numbers(message: str) -> set[int]:
-    """从错误文案里提取「第 N 章」的章号（用于识别批量前置阻塞根因）。"""
-    return {int(number) for number in re.findall(r"第\s*(\d+)\s*章", message or "")}
+    """从错误文案里提取「第 N 章」的章号（兼容「第 57, 58 章」合写）。"""
+    numbers: set[int] = set()
+    for group in re.findall(r"第\s*([\d,，\s]+?)\s*章", message or ""):
+        for part in re.split(r"[,，\s]+", group):
+            if part.isdigit():
+                numbers.add(int(part))
+    return numbers
 
 
 def _is_budget_retry_exhausted(
@@ -3826,7 +3831,9 @@ async def batch_generate_chapters_in_order(
     1. 严格按章节序号顺序生成（不可跳过）
     2. 自动检测起始章节是否可生成
     3. 可选同步分析（影响耗时和质量）
-    4. 单章失败不中断整批（失败明细进 failed_chapters，结束汇总）
+    4. 单章失败不中断整批（失败明细进 failed_chapters，结束汇总）；
+       但如果后续章节的阻塞根因是「本批已失败的章节」（前置内容或前置分析），
+       则记一条级联记录后结束整批，不再逐章退避重试
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -4217,6 +4224,36 @@ async def execute_batch_generation_in_order(
                         raise Exception(f"前置条件不满足: {error_msg}")
                     analysis_ready, analysis_msg = await check_previous_analysis_ready(db_session, chapter)
                     if not analysis_ready:
+                        # 与前置内容阻塞同构：根因章已在本批失败时不再逐章退避
+                        missing_numbers = _extract_chapter_numbers(analysis_msg)
+                        failed_numbers = {
+                            int(item.get("chapter_number"))
+                            for item in (task.failed_chapters or [])
+                            if isinstance(item.get("chapter_number"), int)
+                        }
+                        blocking = sorted(missing_numbers & failed_numbers)
+                        if blocking:
+                            async with write_lock:
+                                task.failed_chapters = list(task.failed_chapters or []) + [
+                                    {
+                                        "chapter_id": chapter_id,
+                                        "chapter_number": chapter.chapter_number,
+                                        "title": chapter.title,
+                                        "error": (
+                                            f"前置章节第{blocking[0]}章失败，"
+                                            "后续章节批量跳过"
+                                        ),
+                                        "retry_count": 0,
+                                    }
+                                ]
+                                task.current_retry_count = 0
+                                await db_session.commit()
+                            logger.error(
+                                f"🛑 第{chapter.chapter_number}章前置章节"
+                                f"（第{blocking[0]}章）未完成，结束本批（不再逐章重试）"
+                            )
+                            cascade_stop = True
+                            break
                         raise Exception(analysis_msg)
                     
                     # 生成章节内容（复用现有流式生成逻辑的核心部分），传递model参数
@@ -4312,7 +4349,8 @@ async def execute_batch_generation_in_order(
                                 await db_session.commit()
 
                             # 单章分析失败不再中断整批（批量任务按章独立结算），
-                            # 失败明细进 failed_chapters，最终汇总时统一报告。
+                            # 失败明细进 failed_chapters，最终汇总时统一报告；
+                            # 若后续章被该失败章阻塞，外层会级联快停。
                             break
 
                         logger.info(f"✅ 章节分析成功: 第{chapter.chapter_number}章")
@@ -4379,7 +4417,8 @@ async def execute_batch_generation_in_order(
             if cascade_stop:
                 break
         
-        # 全部完成（单章失败不中断整批，但最终状态必须如实反映失败章节）
+        # 全部完成（单章失败不中断整批；被失败根因阻塞时级联快停；
+        # 最终状态必须如实反映失败章节）
         async with write_lock:
             await db_session.refresh(task)
             if task.status == 'cancelled':

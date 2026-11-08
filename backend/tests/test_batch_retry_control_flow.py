@@ -212,3 +212,82 @@ async def test_batch_cascade_stops_after_root_failure(monkeypatch):
     assert [f["chapter_number"] for f in (task.failed_chapters or [])] == [58, 59]
     assert "后续章节批量跳过" in (task.failed_chapters or [])[-1]["error"]
     assert task.status == "failed"
+
+
+@pytest.mark.anyio
+async def test_batch_cascade_stops_on_analysis_block(monkeypatch):
+    """前置分析未完成且根因章在本批失败时，同样级联快停（不退避）。"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        session.add(Project(id="p-analysis", user_id="u-analysis", title="stub-project"))
+        for number in (58, 59, 60):
+            session.add(
+                Chapter(
+                    id=f"a-{number}",
+                    project_id="p-analysis",
+                    chapter_number=number,
+                    title=f"stub-{number}",
+                )
+            )
+        session.add(
+            BatchGenerationTask(
+                id="b-analysis",
+                project_id="p-analysis",
+                user_id="u-analysis",
+                start_chapter_number=58,
+                chapter_count=3,
+                chapter_ids=["a-58", "a-59", "a-60"],
+                total_chapters=3,
+                target_word_count=6000,
+                max_retries=3,
+                enable_analysis=False,
+                status="pending",
+            )
+        )
+        await session.commit()
+
+    generator = _CountingGenerator(
+        chapters_api.NonRetryableChapterGenerationError("空正文")
+    )
+    sleep_calls = {"count": 0}
+
+    async def _prerequisites(db, chapter):
+        return True, "", []
+
+    async def _analysis_ready(db, chapter):
+        if chapter.chapter_number == 58:
+            return True, ""
+        return False, "上一章（第 58 章）的章节分析尚未完成"
+
+    async def _counting_sleep(*args, **kwargs):
+        sleep_calls["count"] += 1
+
+    async def _fake_get_engine(user_id: str):
+        return engine
+
+    monkeypatch.setattr(app.database, "get_engine", _fake_get_engine)
+    monkeypatch.setattr(chapters_api, "generate_single_chapter_for_batch", generator)
+    monkeypatch.setattr(chapters_api, "check_prerequisites", _prerequisites)
+    monkeypatch.setattr(chapters_api, "check_previous_analysis_ready", _analysis_ready)
+    monkeypatch.setattr(asyncio, "sleep", _counting_sleep)
+
+    try:
+        await chapters_api.execute_batch_generation_in_order(
+            batch_id="b-analysis",
+            user_id="u-analysis",
+            ai_service=object(),
+            enable_mcp=False,
+        )
+        async with session_factory() as session:
+            task = await session.get(BatchGenerationTask, "b-analysis")
+    finally:
+        await engine.dispose()
+
+    assert generator.calls == 1
+    assert sleep_calls["count"] == 0
+    assert [f["chapter_number"] for f in (task.failed_chapters or [])] == [58, 59]
+    assert task.status == "failed"
