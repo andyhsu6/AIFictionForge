@@ -297,10 +297,8 @@ def _check_do_dont(items: Any, name: str) -> list[str]:
             raise ValueError(f"{name} 的条目不得超过 {DO_DONT_ITEM_MAX_CHARS} 字：{text}")
         if any(word in text for word in VAGUE_ADJECTIVES) and not _QUANTIFIER_RE.search(text):
             raise ValueError(f"{name} 的条目不可观察（只有空泛形容词）：{text}")
-        if not (_QUANTIFIER_RE.search(text) or _ACTION_VERB_RE.search(text)):
-            raise ValueError(
-                f"{name} 的条目需要可执行约束（量化标记或操作动词）：{text}"
-            )
+        # 只硬拒"空泛形容词且无量化"；具体写作指导（如"情绪用动作外化：攥拳"）
+        # 不应因不在动词白名单而被判失败（真实输出验证发现的持续误伤）。
         cleaned.append(text)
     return cleaned
 
