@@ -117,6 +117,21 @@ export default function WritingStyles() {
   const [volumeBusy, setVolumeBusy] = useState<'preview' | 'create' | null>(null);
   const [overwriteEditedVolumes, setOverwriteEditedVolumes] = useState(false);
 
+  // 项目是否已有全书画像（preset_id=profile:<project_id>）：没有时生成章节不会应用画像
+  const hasFullProfile = useMemo(
+    () =>
+      Boolean(
+        currentProject?.id &&
+          styles.some(
+            (style) =>
+              isProfileType(style.style_type) &&
+              style.preset_id === `profile:${currentProject.id}`,
+          ),
+      ),
+    [styles, currentProject?.id],
+  );
+  const [fullProfileGenerating, setFullProfileGenerating] = useState(false);
+
   const { token } = theme.useToken();
 
   const isMobile = window.innerWidth <= 768;
@@ -378,6 +393,9 @@ export default function WritingStyles() {
         message.success(t('volumes.previewDone', { n: result.total }));
       } else {
         message.success(t('volumes.created', { n: result.total }));
+        if (result.full_profile_created) {
+          message.success(t('volumes.fullProfileCreated'));
+        }
         await loadVolumes();
         await loadStyles();
       }
@@ -385,6 +403,29 @@ export default function WritingStyles() {
       message.error(t('volumes.createFailed'));
     } finally {
       setVolumeBusy(null);
+    }
+  };
+
+  // 没有全书画像时的入口：直接用全部章节抽取一份并设为默认
+  const handleGenerateFullProfile = async () => {
+    if (!currentProject?.id) return;
+    setFullProfileGenerating(true);
+    try {
+      const result = await writingStyleApi.reextractProfile(currentProject.id, {
+        dry_run: false,
+        set_default: true,
+        overwrite_edited: false,
+      });
+      if (result.skipped) {
+        message.warning(t('profile.skipped'));
+        return;
+      }
+      message.success(t('profile.generateFullSuccess'));
+      await loadStyles();
+    } catch {
+      message.error(t('profile.generateFullFailed'));
+    } finally {
+      setFullProfileGenerating(false);
     }
   };
 
@@ -490,6 +531,28 @@ export default function WritingStyles() {
             </Space>
           </Space>
         </Card>
+      )}
+
+      {currentProject && !hasFullProfile && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: isMobile ? 12 : 16 }}
+          message={t('profile.missingTitle')}
+          description={
+            <Space direction="vertical" size={8}>
+              <Text style={{ fontSize: 12 }}>{t('profile.missingDesc')}</Text>
+              <Button
+                size="small"
+                type="primary"
+                loading={fullProfileGenerating}
+                onClick={handleGenerateFullProfile}
+              >
+                {t('profile.generateFull')}
+              </Button>
+            </Space>
+          }
+        />
       )}
 
       <div style={{ flex: 1, overflowY: 'auto' }}>

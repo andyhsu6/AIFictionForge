@@ -834,6 +834,12 @@ export interface VolumeProfileGenerateResult {
   total: number;
   dry_run: boolean;
   anchors_reused: boolean;
+  /** 本次是否补生成了全书画像并设为项目默认 */
+  full_profile_created?: boolean;
+  /** 全书画像补生成失败（分卷画像仍照常生成） */
+  full_profile_error?: boolean;
+  /** dry_run 预览：项目当前还没有全书画像 */
+  needs_full_profile?: boolean;
 }
 
 // issue #254 P2：生成后文笔画像一致性自检（后端可选返回，缺省不影响生成流程）

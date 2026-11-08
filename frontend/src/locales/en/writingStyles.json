@@ -85,6 +85,9 @@
     "degraded": "Extraction fell back to local statistics; treat it as a rough reference.",
     "diffTitle": "Re-extract writing-style profile",
     "generatedAt": "Generated at",
+    "generateFull": "Generate book-wide profile",
+    "generateFullFailed": "Failed to generate the book-wide profile",
+    "generateFullSuccess": "Book-wide profile generated and set as default",
     "keptByUser": "Your manual edits were detected, so nothing was overwritten. Check “Overwrite my manual edits” to force it.",
     "metrics": {
       "avgSentence": "Avg. sentence length (chars)",
@@ -92,6 +95,8 @@
       "paragraphMedian": "Median paragraph length (chars)",
       "shortSentenceRatio": "Short-sentence ratio"
     },
+    "missingDesc": "Chapter generation will not apply any style profile until a book-wide profile is created.",
+    "missingTitle": "No book-wide style profile yet",
     "newPrompt": "New extraction",
     "oldPrompt": "Current content",
     "overwriteEdited": "Overwrite my manual edits",
@@ -142,6 +147,7 @@
     "endChapter": "End chapter",
     "forceDelete": "Force delete",
     "forceDeleteHint": "This volume profile was edited manually; force delete is required",
+    "fullProfileCreated": "A book-wide profile was generated automatically and set as default",
     "manualRanges": "Volume ranges",
     "overwriteEdited": "Overwrite manually edited volumes",
     "perN": "Auto-split every N chapters",

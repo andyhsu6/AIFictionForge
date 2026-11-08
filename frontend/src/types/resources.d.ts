@@ -4154,6 +4154,9 @@ export default interface Resources {
       "confidence": "置信度",
       "degraded": "本次抽取使用本地统计降级结果，仅供参考",
       "diffTitle": "重新抽取文笔画像",
+      "generateFull": "生成全书画像",
+      "generateFullFailed": "生成全书画像失败",
+      "generateFullSuccess": "已生成全书文笔画像并设为默认",
       "generatedAt": "生成时间",
       "keptByUser": "检测到你已手动编辑过画像，未覆盖；如需覆盖请勾选“覆盖我的手动编辑”",
       "metrics": {
@@ -4162,6 +4165,8 @@ export default interface Resources {
         "paragraphMedian": "段落长度中位（字）",
         "shortSentenceRatio": "短句占比"
       },
+      "missingDesc": "还没有全书文笔画像，生成章节时不会应用任何画像。",
+      "missingTitle": "还没有全书文笔画像",
       "newPrompt": "重新抽取结果",
       "oldPrompt": "当前内容",
       "overwriteEdited": "覆盖我的手动编辑",
@@ -4212,6 +4217,7 @@ export default interface Resources {
       "endChapter": "结束章",
       "forceDelete": "强制删除",
       "forceDeleteHint": "该卷画像已被手动编辑，需强制删除",
+      "fullProfileCreated": "已自动生成全书文笔画像并设为默认",
       "manualRanges": "卷区间",
       "overwriteEdited": "覆盖已手动编辑的卷",
       "perN": "每 N 章自动分卷",
