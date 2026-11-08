@@ -1,5 +1,7 @@
 """issue #262：会话标题模型生成 + 用户重命名保护。"""
 import pytest
+from types import SimpleNamespace
+
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -39,8 +41,8 @@ def test_clean_generated_title_strips_wrappers_and_caps():
     assert clean_generated_title(None) == ""
 
 
-def test_rename_payload_strips_edges_and_rejects_blank():
-    assert AgentConversationUpdate(title="  两个   词  ").title == "两个   词"
+def test_rename_payload_collapses_whitespace_and_rejects_blank():
+    assert AgentConversationUpdate(title="  两个   词  ").title == "两个 词"
     with pytest.raises(ValidationError):
         AgentConversationUpdate(title="   ")
 
@@ -117,6 +119,82 @@ async def test_empty_model_output_keeps_rule_title(tmp_path):
     finally:
         await session.close()
         await engine.dispose()
+
+@pytest.mark.anyio
+async def test_concurrent_rename_wins_over_generated_title(tmp_path):
+    """生成期间用户重命名：条件 UPDATE 不得覆盖用户标题。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    engine, session = await _session(tmp_path)
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        conversation = AgentConversation(
+            user_id="u1", project_id="p1", title="占位规则标题"
+        )
+        session.add(conversation)
+        await session.commit()
+
+        class RacingAI:
+            async def generate_text(self, **kwargs):
+                async with factory() as other:
+                    row = await other.get(AgentConversation, conversation.id)
+                    row.title = "用户手改标题"
+                    row.title_user_edited = True
+                    await other.commit()
+                return {"content": "模型标题"}
+
+        title = await generate_title_with(
+            session, RacingAI(), conversation.id, first_message="占位问题"
+        )
+
+        assert title == ""
+        await session.refresh(conversation)
+        assert conversation.title == "用户手改标题"
+        assert conversation.title_user_edited is True
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_schedule_title_skips_when_assistant_messages_exist(tmp_path, monkeypatch):
+    """非首轮（已有 assistant 消息）不调度标题生成。"""
+    from app.models.project_agent import AgentMessage
+    from app.services import agent_conversation_title as title_module
+    from app.services.project_agent_service import ProjectAgentService
+
+    engine, session = await _session(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        title_module,
+        "schedule_conversation_title",
+        lambda conversation_id, user_id, **kwargs: calls.append(conversation_id),
+    )
+    try:
+        conversation = AgentConversation(
+            user_id="u1", project_id="p1", title="占位规则标题"
+        )
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            AgentMessage(
+                conversation_id=conversation.id, role="assistant", content="占位回答"
+            )
+        )
+        await session.commit()
+
+        service = ProjectAgentService(
+            db=session,
+            ai_service=object(),
+            project=SimpleNamespace(id="p1"),
+            user_id="u1",
+        )
+        await service._maybe_schedule_title(conversation, "占位新消息")
+        assert calls == []
+    finally:
+        await session.close()
+        await engine.dispose()
+
 
 def test_rename_conversation_endpoint_updates_title_and_flag(tmp_path):
     """PATCH 重命名：空白归一化、title_user_edited=true、权限校验走项目归属。"""

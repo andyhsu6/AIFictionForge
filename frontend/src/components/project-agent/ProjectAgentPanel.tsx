@@ -211,6 +211,11 @@ export default function ProjectAgentPanel({
   const [planMode, setPlanMode] = useState(() => localStorage.getItem(PLAN_MODE_KEY) === 'true');
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController>();
+
+  // issue #262：卸载时清掉延迟刷新定时器，避免向已卸载/已切项目视图回写列表。
+  useEffect(() => () => {
+    if (titleRefreshTimerRef.current) window.clearTimeout(titleRefreshTimerRef.current);
+  }, []);
   const autoApprovalAttemptedRef = useRef<Set<string>>(new Set());
 
   const notifyLayout = useCallback((nextExpanded: boolean, nextWidth = panelWidth) => {
@@ -277,6 +282,7 @@ export default function ProjectAgentPanel({
   // 分工：业务数据刷新由 ProjectDetail.tsx 的 SETTLED 监听负责；
   // 本面板只刷会话（messages / tool_calls / execution_steps），两侧互不重叠。
   const sendingRef = useRef(false);
+  const titleRefreshTimerRef = useRef<number>();
   const reloadInFlightRef = useRef(false);
   const reloadQueuedRef = useRef(false);
   const pendingSettleConversationRef = useRef<string | null>(null);
@@ -638,7 +644,10 @@ export default function ProjectAgentPanel({
       abortRef.current = undefined;
       setStreamingMessageId(undefined);
       // issue #262：模型标题在首轮后异步生成，延迟拉一次列表让标题尽快出现。
-      window.setTimeout(() => { void loadConversations(); }, 1500);
+      if (titleRefreshTimerRef.current) window.clearTimeout(titleRefreshTimerRef.current);
+      titleRefreshTimerRef.current = window.setTimeout(() => {
+        void loadConversations();
+      }, 1500);
     }
   }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, planMode, projectId, reloadConversation, t]);
 
@@ -1099,7 +1108,7 @@ export default function ProjectAgentPanel({
           confirmLoading={renaming}
           okText={t('renameSave')}
           cancelText={t('renameCancel')}
-          destroyOnClose
+          destroyOnHidden
         >
           <Input
             value={renameValue}

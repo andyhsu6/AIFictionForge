@@ -193,11 +193,11 @@ async def create_conversation(
 ):
     user_id = _user_id(request)
     await verify_project_access(project_id, user_id, db)
-    has_explicit_title = bool(payload.title and payload.title.strip())
+    has_explicit_title = bool(payload.title)
     conversation = AgentConversation(
         user_id=user_id,
         project_id=project_id,
-        title=(payload.title or "新对话").strip()[:200] or "新对话",
+        title=payload.title or "新对话",
         # 显式命名的会话不允许自动标题覆盖（issue #262）。
         title_user_edited=has_explicit_title,
     )
@@ -221,7 +221,7 @@ async def rename_conversation(
     conversation = await _get_conversation(
         db, conversation_id=conversation_id, project_id=project_id, user_id=user_id
     )
-    conversation.title = " ".join(payload.title.split())
+    conversation.title = payload.title
     conversation.title_user_edited = True
     await db.commit()
     await db.refresh(conversation)

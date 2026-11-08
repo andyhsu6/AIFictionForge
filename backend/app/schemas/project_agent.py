@@ -2,21 +2,34 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+
+
+def _collapse_whitespace(value: str) -> str:
+    """标题输入统一口径：内部空白折叠 + 去首尾（issue #262）。
+
+    用 BeforeValidator 而不是自定义 field_validator：后者抛出的 ValueError
+    会让 422 错误序列化失败；折叠后空白标题变空串，交给标准 min_length 报错。
+    """
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
+#: 创建/重命名共用的标题约束（折叠空白、非空、<=200）。
+ConversationTitle = Annotated[
+    str,
+    BeforeValidator(_collapse_whitespace),
+    StringConstraints(min_length=1, max_length=200),
+]
 
 
 class AgentConversationCreate(BaseModel):
-    title: Optional[str] = Field(None, max_length=200)
+    title: Optional[ConversationTitle] = None
 
 
 class AgentConversationUpdate(BaseModel):
     """用户重命名会话（issue #262）。"""
 
-    # strip_whitespace + min_length=1：空白标题走标准 422 校验错误，
-    # 不用自定义 validator（其 ValueError 在错误序列化器里不可 JSON 化）。
-    title: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
-    ]
+    title: ConversationTitle
 
 
 class AgentConversationResponse(BaseModel):

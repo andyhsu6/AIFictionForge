@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.logger import get_logger
@@ -94,12 +94,19 @@ async def generate_title_with(
     if not title:
         return ""
 
-    # 生成期间用户可能已经重命名：刷新后再判一次，用户输入优先。
-    await session.refresh(conversation)
-    if conversation.title_user_edited:
-        return ""
-    conversation.title = title
+    # 生成期间用户可能已经重命名：用条件 UPDATE 原子写入，避免 refresh 与
+    # commit 之间的丢失更新窗口（issue #262 复审）。
+    result = await session.execute(
+        update(AgentConversation)
+        .where(
+            AgentConversation.id == conversation_id,
+            AgentConversation.title_user_edited.is_(False),
+        )
+        .values(title=title)
+    )
     await session.commit()
+    if not result.rowcount:
+        return ""
     logger.info(
         f"会话标题已生成: conversation={conversation_id[:8]} chars={len(title)}"
     )
