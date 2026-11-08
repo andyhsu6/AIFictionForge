@@ -834,10 +834,14 @@ export interface VolumeProfileGenerateResult {
   total: number;
   dry_run: boolean;
   anchors_reused: boolean;
-  /** 本次是否补生成了全书画像并设为项目默认 */
+  /** 本次是否补生成了全书画像 */
   full_profile_created?: boolean;
   /** 全书画像补生成失败（分卷画像仍照常生成） */
   full_profile_error?: boolean;
+  /** 全书画像使用本地统计降级结果（未设为默认） */
+  full_profile_degraded?: boolean;
+  /** 全书画像已生成，但保留用户手动选择的默认风格 */
+  full_profile_default_kept?: boolean;
   /** dry_run 预览：项目当前还没有全书画像 */
   needs_full_profile?: boolean;
 }

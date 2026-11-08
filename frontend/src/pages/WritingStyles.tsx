@@ -394,7 +394,15 @@ export default function WritingStyles() {
       } else {
         message.success(t('volumes.created', { n: result.total }));
         if (result.full_profile_created) {
-          message.success(t('volumes.fullProfileCreated'));
+          if (result.full_profile_degraded) {
+            message.warning(t('volumes.fullProfileDegraded'));
+          } else if (result.full_profile_default_kept) {
+            message.info(t('volumes.fullProfileDefaultKept'));
+          } else {
+            message.success(t('volumes.fullProfileCreated'));
+          }
+        } else if (result.full_profile_error) {
+          message.warning(t('volumes.fullProfileFailed'));
         }
         await loadVolumes();
         await loadStyles();

@@ -583,10 +583,20 @@ async def generate_project_profile_volumes(
 
     service = BookImportService()
 
-    # 只生成分卷画像时项目仍可能没有全书画像：这里用全部章节补一份并设为默认，
+    # 只生成分卷画像时项目仍可能没有全书画像：这里用全部章节补一份，
     # 否则生成章节时画像与锚点都不生效。失败不阻断分卷生成。
+    # 默认替换遵循 §5.2：只在"原本无默认"时设置；用户手选的默认保留。
+    current_default_id = (
+        await db.execute(
+            select(ProjectDefaultStyle.style_id).where(
+                ProjectDefaultStyle.project_id == project_id
+            )
+        )
+    ).scalar_one_or_none()
     full_profile_created = False
     full_profile_error = False
+    full_profile_degraded = False
+    full_profile_default_kept = False
     if not payload.dry_run and not full_profile_exists:
         try:
             full_profile = await service._extract_style_profile(
@@ -603,6 +613,12 @@ async def generate_project_profile_volumes(
                 )
                 full_profile_error = True
             else:
+                full_profile_degraded = bool(full_profile.get("degraded"))
+                # 降级画像（本地统计）不抢默认；用户手选的默认也不抢。
+                replace_default = current_default_id is None and not full_profile_degraded
+                full_profile_default_kept = (
+                    current_default_id is not None and not full_profile_degraded
+                )
                 # savepoint 隔离：这一步失败不回滚已生成的分卷画像，
                 # 也不会把外层事务置为失败状态。
                 async with db.begin_nested():
@@ -612,7 +628,7 @@ async def generate_project_profile_volumes(
                         user_id=user_id,
                         prompt_content=full_profile["prompt_content"],
                         description=full_profile.get("description") or "",
-                        replace_default=True,
+                        replace_default=replace_default,
                         profile_data=full_profile.get("profile_data"),
                         profile_version=full_profile.get("profile_version"),
                     )
@@ -715,6 +731,8 @@ async def generate_project_profile_volumes(
         "anchors_reused": True,
         "full_profile_created": full_profile_created,
         "full_profile_error": full_profile_error,
+        "full_profile_degraded": full_profile_degraded,
+        "full_profile_default_kept": full_profile_default_kept,
         "needs_full_profile": bool(payload.dry_run and not full_profile_exists),
     }
 

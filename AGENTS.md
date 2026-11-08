@@ -73,18 +73,21 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
 - **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
-- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`）；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制；浏览器自动化用 playwright(-core) 以 `executablePath` 指向本机 Brave（headless 截图/验收均如此）
+- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse execute`（内核仍是 Playwright JS，驱动本机真实 Brave 的**后台标签组**，无 headless 模式，`page.bringToFront()` 被禁用）：
+  - 截图落盘根：默认只允许 `/tmp` 与 opencode 临时目录；要直接写 `.omo/evidence/` 需设 `OPENCODE_BROWSER_FILE_ROOTS=<checkout>/.omo/evidence`，否则先写 `/tmp` 再 `cp`。
+  - 验收一律用 `--rm` 一次性 session；**不要** `session_adopt` 用户已登录的标签页，避免把真实账号与真实数据带进验收。
+  - 仅在 browse 不可用（扩展未配对 / relay 不通）时，才回退 `.omo/pw-tools/node_modules` 的 playwright-core 并指向本机 Brave。
 
 ## 功能完成验证（硬约束）
 
 - **任何功能/修复在宣称完成或开 PR 前，必须实际运行验证**：至少覆盖相关单测 + 一条真实端到端路径（API 或 UI）。只改代码、只跑单测、只做静态断言都不算验证。
-- **UI 改动必须做浏览器端到端验证**：启动本 checkout 服务（先跑 `aistoryforge.sh verify`），用 playwright-core + 本机 Brave headless **实际操作关键按钮**并断言结果（不只是截首屏），截图与断言输出存 `.omo/evidence/`。
+- **UI 改动必须做浏览器端到端验证**：启动本 checkout 服务（先跑 `aistoryforge.sh verify`），用 `browse execute` **实际操作关键控件**并断言 URL/DOM 结果（不只是截首屏），截图与断言输出存 `.omo/evidence/`。
 - **不得用用户真实数据做验证**：需要书稿数据的验证一律新建临时项目/临时库，验证后删除；确需使用用户数据时必须先获得明确同意，并说明改动范围与回滚方式。
 - **PR 必须附验证证据**：命令、实际输出、截图路径；未验证的功能不得标 Ready，也不得用"测试通过"代替端到端结果。
 - **验证暴露的问题必须修复后重新验证**（含真实数据触发的校验误伤、降级、界面缺失），不能只记录。
 
 ## 视觉验证约定
-- **UI 改动/验收指引必须先做视觉渲染验证**（playwright-core + 本机 Brave headless 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
+- **UI 改动/验收指引必须先做视觉渲染验证**（`browse execute` 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
 - **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
 
 ## 服务与测试身份约定（硬约束）

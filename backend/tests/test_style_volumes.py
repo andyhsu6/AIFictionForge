@@ -853,3 +853,81 @@ def test_volume_write_survives_full_profile_failure(monkeypatch):
         assert all(item.style_id for item in result["volumes"])
 
     _run(scenario)
+
+
+def test_volume_auto_full_profile_keeps_user_selected_default(monkeypatch):
+    """用户手选了默认风格时，分卷自动补全不抢默认（§5.2 同语义）。"""
+    monkeypatch.setattr(
+        BookImportService,
+        "_extract_style_profile",
+        _fake_extract_with_ranges([{"chapter": 1, "start": 0, "end": 200}]),
+    )
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+        preset = (
+            await db.execute(
+                select(WritingStyle).where(WritingStyle.user_id.is_(None))
+            )
+        ).scalars().first()
+        db.add(ProjectDefaultStyle(project_id=PROJECT_ID, style_id=preset.id))
+        await db.commit()
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is True
+        assert result["full_profile_default_kept"] is True
+        assert result["full_profile_degraded"] is False
+        assert len(await full_profile_rows(db)) == 1
+        # 用户手选的默认保留
+        assert await default_style_id(db) == preset.id
+
+    _run(scenario)
+
+
+def test_volume_auto_full_profile_degraded_does_not_steal_default(monkeypatch):
+    """降级（本地统计）的全书画像不抢默认。"""
+
+    async def degraded_extract(self, **kwargs):
+        numbers = [chapter.chapter_number for chapter in kwargs["chapters"]]
+        return {
+            "skipped": False,
+            "prompt_content": "降级画像内容",
+            "description": "占位降级描述",
+            "degraded": True,
+            "confidence": 0.3,
+            "sample_chars": len(numbers) * 100,
+            "profile_data": {"version": 1, "confidence": 0.3, "source": "local"},
+            "profile_version": 1,
+            "ranges": [{"chapter": 1, "start": 0, "end": 200}],
+        }
+
+    monkeypatch.setattr(BookImportService, "_extract_style_profile", degraded_extract)
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is True
+        assert result["full_profile_degraded"] is True
+        assert result["full_profile_default_kept"] is False
+        assert len(await full_profile_rows(db)) == 1
+        # 降级画像落库，但不设为默认
+        assert await default_style_id(db) is None
+
+    _run(scenario)
