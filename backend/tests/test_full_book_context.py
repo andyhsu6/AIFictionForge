@@ -72,7 +72,7 @@ def test_full_book_context_middle_chapters_become_summary_chain():
     # 首尾小章 + 中间 3 章较大，超预算 → 中间走摘要链
     chapters = [
         _Row(1, "第一章", "甲" * 200, summary="开篇"),
-        _Row(2, "第二章", "乙" * 2000, summary="第二章摘要", expansion_plan='{"plot_summary":"第二章情节点","key_events":["事件B1","事件B2"]}'),
+        _Row(2, "第二章", "乙" * 2000, summary="", expansion_plan='{"plot_summary":"第二章情节点","key_events":["事件B1","事件B2"]}'),
         _Row(3, "第三章", "丙" * 2000, summary="第三章摘要"),
         _Row(4, "第四章", "丁" * 2000, summary="第四章摘要"),
         _Row(5, "第五章", "戊" * 200, summary="结尾"),
@@ -84,7 +84,7 @@ def test_full_book_context_middle_chapters_become_summary_chain():
     assert "甲" * 200 in text and "戊" * 200 in text
     # 中间章节以摘要链呈现（不再丢信息）
     assert "【中间章节摘要链】" in text
-    assert "第二章情节点" in text  # expansion_plan 优先于 summary
+    assert "第二章情节点" in text  # summary 为空时回退 legacy plot_summary
     assert "关键事件：事件B1；事件B2" in text
     assert "第三章摘要" in text and "第四章摘要" in text
     assert "乙" * 2000 not in text  # 中间章全文不注入

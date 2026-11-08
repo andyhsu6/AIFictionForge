@@ -5,6 +5,7 @@ TASK_TYPE_RESOURCES: dict[str, tuple[str, ...]] = {
     "outline_continue": ("outlines", "chapters", "projects"),
     "outline_expand": ("outlines", "chapters"),
     "outline_batch_expand": ("outlines", "chapters"),
+    "outline_metadata": ("outlines",),
     "chapter_generate": ("chapters", "projects", "characters", "analysis", "foreshadows"),
     "chapter_batch": ("chapters", "projects", "characters", "analysis", "foreshadows"),
     "chapter_regenerate": ("chapters", "projects"),

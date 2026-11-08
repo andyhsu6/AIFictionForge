@@ -64,6 +64,7 @@ from app.services.ai_service import (
 )
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
+from app.services.outline_plan_adapter import to_storage_plan
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import (
@@ -5155,12 +5156,21 @@ async def update_chapter_expansion_plan(
                 existing_plan = json.loads(chapter.expansion_plan)
                 # 合并更新
                 existing_plan.update(plan_data)
-                chapter.expansion_plan = json.dumps(existing_plan, ensure_ascii=False)
+                chapter.expansion_plan = json.dumps(
+                    to_storage_plan(existing_plan),
+                    ensure_ascii=False,
+                )
             except json.JSONDecodeError:
                 logger.warning(f"章节 {chapter_id} 的expansion_plan格式错误,将覆盖")
-                chapter.expansion_plan = json.dumps(plan_data, ensure_ascii=False)
+                chapter.expansion_plan = json.dumps(
+                    to_storage_plan(plan_data),
+                    ensure_ascii=False,
+                )
         else:
-            chapter.expansion_plan = json.dumps(plan_data, ensure_ascii=False)
+            chapter.expansion_plan = json.dumps(
+                to_storage_plan(plan_data),
+                ensure_ascii=False,
+            )
     
     await db.commit()
     await db.refresh(chapter)
