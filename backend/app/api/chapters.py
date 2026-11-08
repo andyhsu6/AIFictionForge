@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 import json
 import asyncio
 import hashlib
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timedelta
 from asyncio import Queue, Lock
@@ -253,6 +254,11 @@ def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
     return task_max_retries
 
 
+def _extract_chapter_numbers(message: str) -> set[int]:
+    """从错误文案里提取「第 N 章」的章号（用于识别批量前置阻塞根因）。"""
+    return {int(number) for number in re.findall(r"第\s*(\d+)\s*章", message or "")}
+
+
 def _is_budget_retry_exhausted(
     *,
     upgraded_budget: Optional[int],
@@ -282,7 +288,7 @@ def _is_non_retryable_truncation(
 
     此时：算不出更大预算（到 cap）→ 外层 0 次；仍是空正文 → 外层 0 次
     （首跳已按实测 reasoning 抬过，再整段重放预算阶梯只会多烧调用）。
-    有正文的截断 → 可外层重试 1 次。
+    有正文且算得出更大预算 → 可外层重试 1 次。
     """
     return upgraded_budget is None or content_is_empty
 
@@ -4145,6 +4151,7 @@ async def execute_batch_generation_in_order(
             chapter_success = False
             chapter = None
             last_error = None
+            cascade_stop = False
             
             while retry_count <= task.max_retries and not chapter_success:
                 try:
@@ -4176,6 +4183,37 @@ async def execute_batch_generation_in_order(
                     # 检查前置条件（每次都检查，确保顺序性）
                     can_generate, error_msg, _ = await check_prerequisites(db_session, chapter)
                     if not can_generate:
+                        # 顺序依赖下，根因章在本批已失败时余章不可能成功：
+                        # 不再逐章烧满退避重试，记一条级联记录后结束整批。
+                        missing_numbers = _extract_chapter_numbers(error_msg)
+                        failed_numbers = {
+                            int(item.get("chapter_number"))
+                            for item in (task.failed_chapters or [])
+                            if isinstance(item.get("chapter_number"), int)
+                        }
+                        blocking = sorted(missing_numbers & failed_numbers)
+                        if blocking:
+                            async with write_lock:
+                                task.failed_chapters = list(task.failed_chapters or []) + [
+                                    {
+                                        "chapter_id": chapter_id,
+                                        "chapter_number": chapter.chapter_number,
+                                        "title": chapter.title,
+                                        "error": (
+                                            f"前置章节第{blocking[0]}章失败，"
+                                            "后续章节批量跳过"
+                                        ),
+                                        "retry_count": 0,
+                                    }
+                                ]
+                                task.current_retry_count = 0
+                                await db_session.commit()
+                            logger.error(
+                                f"🛑 第{chapter.chapter_number}章前置章节"
+                                f"（第{blocking[0]}章）已失败，结束本批（不再逐章重试）"
+                            )
+                            cascade_stop = True
+                            break
                         raise Exception(f"前置条件不满足: {error_msg}")
                     analysis_ready, analysis_msg = await check_previous_analysis_ready(db_session, chapter)
                     if not analysis_ready:
@@ -4336,6 +4374,10 @@ async def execute_batch_generation_in_order(
                         # （两者都仍成立）→ 该章被反复重试、failed_chapters 重复记账，
                         # allowance=0 的 NonRetryable 也就形同虚设。
                         break
+
+            # 前置章节已失败导致本批无法继续：结束整批，不再逐章重试
+            if cascade_stop:
+                break
         
         # 全部完成（单章失败不中断整批，但最终状态必须如实反映失败章节）
         async with write_lock:
