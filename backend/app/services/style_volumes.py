@@ -59,7 +59,11 @@ def _volume_meta(row: WritingStyle) -> Optional[dict[str, Any]]:
     start = volume.get("start_chapter")
     end = volume.get("end_chapter")
     index = volume.get("index")
-    if not all(isinstance(value, int) for value in (start, end, index)):
+    # bool 是 int 子类，必须显式排除
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool)
+        for value in (start, end, index)
+    ):
         return None
     return {"index": index, "start_chapter": start, "end_chapter": end, "parsed": parsed}
 

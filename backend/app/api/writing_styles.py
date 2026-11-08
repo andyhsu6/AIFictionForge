@@ -900,6 +900,13 @@ async def set_default_style(
     # 验证风格是否属于该用户（自定义风格）或是全局预设风格
     if style.user_id is not None and style.user_id != user_id:
         raise ApiError(code="forbidden.other_user_style", detail="无权操作其他用户的风格")
+
+    # issue #254：卷画像只服务于其章节区间，禁止设为项目默认（否则任意章节都会
+    # 套用某一卷的内容，绕过 resolve_volume_for_chapter 的区间匹配）。
+    from app.services.style_volumes import parse_volume_preset_id
+
+    if parse_volume_preset_id(style.preset_id) is not None:
+        raise ApiError(code="validation.volume_profile_cannot_be_default")
     
     # 使用 UPSERT 逻辑：先删除该项目的旧默认风格记录，再插入新的
     await db.execute(

@@ -1649,6 +1649,7 @@ export default interface Resources {
       "user_delete_blocked": "无法删除该用户（用户不存在或为管理员）",
       "verification_code_format": "请输入6位数字验证码",
       "verification_code_scene": "不支持的验证码场景",
+      "volume_profile_cannot_be_default": "分卷画像只作用于其章节区间，不能设为项目默认风格",
       "wizard_fields_missing": "{{fields}} 是必需的参数"
     }
   },
@@ -4222,6 +4223,7 @@ export default interface Resources {
       "startChapter": "起始章",
       "success": "已生成",
       "title": "分卷画像",
+      "tooMany": "分卷数量超过 {{n}} 个，请增大每卷章节数",
       "total": "共 {{n}} 卷",
       "updatedAt": "更新时间",
       "userEdited": "已手动编辑，已跳过",

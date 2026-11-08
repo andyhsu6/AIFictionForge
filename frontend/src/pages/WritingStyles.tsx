@@ -822,7 +822,11 @@ export default function WritingStyles() {
                 <Button
                   size="small"
                   loading={volumeBusy === 'preview'}
-                  disabled={volumeRanges.length === 0 || volumeBusy !== null}
+                  disabled={
+                    volumeRanges.length === 0 ||
+                    volumeRanges.length > 999 ||
+                    volumeBusy !== null
+                  }
                   onClick={() => handleVolumesSubmit(true)}
                 >
                   {t('volumes.preview')}
@@ -831,12 +835,22 @@ export default function WritingStyles() {
                   size="small"
                   type="primary"
                   loading={volumeBusy === 'create'}
-                  disabled={volumeRanges.length === 0 || volumeBusy !== null}
+                  disabled={
+                    volumeRanges.length === 0 ||
+                    volumeRanges.length > 999 ||
+                    volumeBusy !== null
+                  }
                   onClick={() => handleVolumesSubmit(false)}
                 >
                   {hasVolumePreview ? t('volumes.confirm') : t('volumes.create')}
                 </Button>
               </Space>
+
+              {volumeRanges.length > 999 && (
+                <Text type="danger" style={{ fontSize: 12 }}>
+                  {t('volumes.tooMany', { n: 999 })}
+                </Text>
+              )}
 
               {volumeResult && (
                 <div

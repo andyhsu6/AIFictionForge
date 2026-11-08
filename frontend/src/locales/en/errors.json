@@ -414,6 +414,7 @@
     "user_delete_blocked": "Cannot delete this user (user does not exist or is an admin)",
     "verification_code_format": "Please enter a 6-digit verification code",
     "verification_code_scene": "Unsupported verification code scene",
+    "volume_profile_cannot_be_default": "Volume profiles apply only to their chapter range and cannot be set as the project default",
     "wizard_fields_missing": "{{fields}} is required"
   }
 }

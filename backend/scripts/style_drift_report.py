@@ -50,6 +50,7 @@ from app.models.chapter import Chapter  # noqa: E402
 from app.models.project import Project  # noqa: E402
 from app.models.writing_style import WritingStyle  # noqa: E402
 from app.services.style_consistency import (  # noqa: E402
+    DEFAULT_ABSOLUTE_TOLERANCE,
     DEFAULT_TOLERANCE,
     OPTIONAL_METRIC_KEYS,
     _SENTENCE_SPLIT_RE,
@@ -186,7 +187,11 @@ def build_project_report(
 
     warnings: list[dict[str, Any]] = []
     for key, block in metrics.items():
-        if block["rel_dev"] > DEFAULT_TOLERANCE:
+        # 与核心一致性检查同口径：相对偏差和绝对差都必须超阈值
+        if (
+            block["rel_dev"] > DEFAULT_TOLERANCE
+            and block["abs_diff"] > DEFAULT_ABSOLUTE_TOLERANCE
+        ):
             warnings.append(
                 {
                     "kind": "metric",

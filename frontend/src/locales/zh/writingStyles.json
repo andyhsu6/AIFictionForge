@@ -153,6 +153,7 @@
     "startChapter": "起始章",
     "success": "已生成",
     "title": "分卷画像",
+    "tooMany": "分卷数量超过 {{n}} 个，请增大每卷章节数",
     "total": "共 {{n}} 卷",
     "updatedAt": "更新时间",
     "userEdited": "已手动编辑，已跳过",

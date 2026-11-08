@@ -153,6 +153,7 @@
     "startChapter": "Start chapter",
     "success": "Generated",
     "title": "Volume profiles",
+    "tooMany": "Too many volumes (max {{n}}); increase chapters per volume",
     "total": "{{n}} volumes",
     "updatedAt": "Updated at",
     "userEdited": "Skipped: edited manually",
