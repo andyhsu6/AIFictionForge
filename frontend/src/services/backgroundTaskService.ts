@@ -327,6 +327,41 @@ export async function generateOutlineBackground(
   };
 }
 
+export async function generateOutlineMetadataBackground(
+  data: unknown,
+  onProgress?: TaskProgressCallback,
+  onComplete?: TaskCompleteCallback,
+  onError?: TaskErrorCallback
+): Promise<() => void> {
+  const progress = onProgress || (() => {});
+  const complete = onComplete || (() => {});
+  const error = onError || (() => {});
+  const response = await fetch('/api/outlines/complete-metadata-background', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const envelope = await envelopeFromFailedResponse(response);
+    error(
+      envelope.code || envelope.detail
+        ? mapErrorPayload({ ...envelope, status: response.status })
+        : i18n.t('task.createFailed', { ns: 'errors' }),
+      {} as TaskStatus
+    );
+    return () => {};
+  }
+
+  const { task_id } = await response.json();
+  const cancelPolling = pollTaskUntilComplete(task_id, progress, complete, error);
+
+  return () => {
+    cancelPolling();
+    cancelTask(task_id).catch(() => {});
+  };
+}
+
 /**
  * 请求后台生成章节内容并轮询进度
  * 关闭浏览器不影响生成，生成完成后内容自动保存到数据库

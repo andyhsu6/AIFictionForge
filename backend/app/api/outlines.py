@@ -887,8 +887,9 @@ def _normalize_outline_data(outline_data: list, expected_count: int, start_index
         normalized_chapter["scenes"] = [str(scene).strip() for scene in scenes if str(scene).strip()]
         normalized_chapter["characters"] = _normalize_character_entries(chapter_data.get("characters", []))
         normalized_chapter["key_points"] = [str(point).strip() for point in key_points if str(point).strip()]
-        normalized_chapter["emotion"] = str(chapter_data.get("emotion") or chapter_data.get("emotional_tone") or "未设定").strip()
-        normalized_chapter["goal"] = str(chapter_data.get("goal") or chapter_data.get("narrative_goal") or "未设定").strip()
+        # 缺省写空串（保持键存在）：占位值会污染缺失字段判定（outline_metadata_service）
+        normalized_chapter["emotion"] = str(chapter_data.get("emotion") or chapter_data.get("emotional_tone") or "").strip()
+        normalized_chapter["goal"] = str(chapter_data.get("goal") or chapter_data.get("narrative_goal") or "").strip()
         normalized.append(normalized_chapter)
 
     return normalized
@@ -1902,6 +1903,129 @@ async def generate_outline_task(
         "status": "pending",
         "message": "任务已创建，请通过 GET /api/tasks/{task_id} 查询进度"
     }
+
+
+@router.post("/complete-metadata-background", summary="后台批量补全大纲结构化元数据")
+async def complete_outline_metadata_background(
+    data: Dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user_ai_service: AIService = Depends(get_user_ai_service)
+):
+    """批量补全大纲 structure 中缺失的 scenes/characters/key_points/emotion/goal。
+
+    只补缺失字段，已有非空值不覆盖；返回 task_id，前端通过 GET /api/tasks/{task_id} 轮询进度。
+    """
+    from app.services.background_task_service import background_task_service
+
+    user_id = getattr(request.state, 'user_id', None)
+    project = await verify_project_access(data.get("project_id"), user_id, db)
+
+    outline_ids = data.get("outline_ids")
+    if outline_ids is not None:
+        if not isinstance(outline_ids, list):
+            detail = "outline_ids 必须为大纲 ID 数组"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
+        # 显式给数组（含空数组/纯空白项）是有语义的：空列表不能静默退化成「全部」
+        outline_ids = [
+            item.strip() for item in outline_ids
+            if isinstance(item, str) and item.strip()
+        ]
+        if not outline_ids:
+            detail = "outline_ids 不能为空数组"
+            raise ApiError(code=DYNAMIC_DETAIL_CODE, detail=detail, status=400, raw=detail)
+
+    task_input = {
+        "project_id": project.id,
+        "outline_ids": outline_ids,
+        "provider": data.get("provider"),
+        # 与 /generate 一致：空模型归一化为默认模型，task_input 记录实际执行模型
+        "model": _resolve_outline_generation_model(data, user_ai_service),
+        "content_language": data.get("content_language"),
+    }
+
+    task = await background_task_service.create_task(
+        user_id=user_id,
+        project_id=project.id,
+        task_type="outline_metadata",
+        task_input=task_input,
+        db=db
+    )
+
+    await background_task_service.spawn_background_task(
+        task.id, user_id, _run_outline_metadata_background, task_input
+    )
+
+    return {
+        "task_id": task.id,
+        "task_type": "outline_metadata",
+        "status": "pending",
+        "message": "大纲元数据补全任务已创建，请通过后台任务面板查看进度"
+    }
+
+
+async def _run_outline_metadata_background(
+    task_id: str,
+    user_id: str,
+    data: Dict[str, Any]
+):
+    """后台执行批量补全大纲结构化元数据。"""
+    from app.database import get_engine
+    from app.api.settings import get_user_ai_service_from_db
+    from app.services.background_task_service import TaskProgressTracker
+    from app.services.outline_metadata_service import fill_missing_metadata
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession as BgAsyncSession
+
+    engine = await get_engine(user_id)
+    AsyncSessionLocal = async_sessionmaker(engine, class_=BgAsyncSession, expire_on_commit=False)
+
+    async with AsyncSessionLocal() as bg_db:
+        tracker = TaskProgressTracker(task_id, user_id, "大纲元数据")
+        try:
+            await tracker.start("开始补全大纲结构化元数据...")
+            await tracker.loading("加载项目信息...", 0.3)
+
+            bg_ai_service = await get_user_ai_service_from_db(user_id, bg_db)
+
+            async def _progress(message: str, current: int, total: int):
+                await tracker.generating(
+                    current_chars=current,
+                    estimated_total=max(total, 1),
+                    message=message,
+                )
+
+            summary = await fill_missing_metadata(
+                bg_db,
+                data.get("project_id"),
+                data.get("outline_ids"),
+                bg_ai_service,
+                provider=data.get("provider"),
+                model=data.get("model"),
+                content_language=data.get("content_language"),
+                progress=_progress,
+            )
+
+            message = (
+                f"大纲元数据补全完成：共 {summary['total']} 条，"
+                f"补全 {summary['filled']} 条，跳过 {summary['skipped']} 条，"
+                f"失败 {summary['failed']} 条"
+            )
+            await tracker.set_result({
+                "message": message,
+                "total": summary["total"],
+                "filled": summary["filled"],
+                "skipped": summary["skipped"],
+                "failed": summary["failed"],
+            })
+            await tracker.complete(message)
+        except Exception as e:
+            logger.error(f"后台大纲元数据补全失败: {str(e)}", exc_info=True)
+            try:
+                if bg_db.in_transaction():
+                    await bg_db.rollback()
+            except Exception:
+                pass
+            await tracker.error_from_exception(e)
 
 
 async def _run_new_outline_bg(

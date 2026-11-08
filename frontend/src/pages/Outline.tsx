@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { eventBus, EventNames } from '../store/eventBus';
 import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
 import { useOutlineSync } from '../store/hooks';
-import { generateOutlineBackground } from '../services/backgroundTaskService';
+import { generateOutlineBackground, generateOutlineMetadataBackground } from '../services/backgroundTaskService';
 import { outlineApi, chapterApi, projectApi, characterApi, settingsApi } from '../services/api';
 import type { ApiError, Character, ModelsProbeResponse, OutlineImportMode, OutlineImportPreview } from '../types';
 import { Trans, useTranslation } from 'react-i18next';
@@ -94,6 +94,28 @@ function parseOutlineStructure(structure?: string): OutlineStructureData {
   }
 }
 
+type OutlineMetadataField = 'scenes' | 'characters' | 'key_points' | 'emotion' | 'goal';
+
+function hasMetadataValue(value: unknown): boolean {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized !== '' && !['未设定', '未知', '待定', '无', 'none', 'n/a'].includes(normalized);
+  }
+  if (Array.isArray(value)) return value.some(hasMetadataValue);
+  if (value && typeof value === 'object') return Object.values(value).some(hasMetadataValue);
+  return value !== null && value !== undefined;
+}
+
+function getMissingMetadataFields(structure: OutlineStructureData): OutlineMetadataField[] {
+  const missing: OutlineMetadataField[] = [];
+  if (!hasMetadataValue(structure.scenes)) missing.push('scenes');
+  if (!parseCharacterEntries(structure.characters).some(entry => hasMetadataValue(entry.name))) missing.push('characters');
+  if (!hasMetadataValue(structure.key_points) && !hasMetadataValue(structure.key_events)) missing.push('key_points');
+  if (!hasMetadataValue(structure.emotion)) missing.push('emotion');
+  if (!hasMetadataValue(structure.goal)) missing.push('goal');
+  return missing;
+}
+
 function getOutlinePreview(content: string, maxLength = 120): { text: string; truncated: boolean } {
   const normalized = (content || '').replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxLength) {
@@ -132,6 +154,10 @@ export default function Outline() {
   const [isPreviewingImport, setIsPreviewingImport] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [completingOutlineIds, setCompletingOutlineIds] = useState<string[]>([]);
+  const [isBatchCompletingMetadata, setIsBatchCompletingMetadata] = useState(false);
+  const metadataSubmittingRef = useRef(new Set<string>());
+  const batchMetadataSubmittingRef = useRef(false);
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) =>
     `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
@@ -222,6 +248,86 @@ export default function Outline() {
     });
     return parsedMap;
   }, [outlines]);
+  const hasMissingMetadata = useMemo(
+    () => outlines.some(outline => getMissingMetadataFields(outlineStructureMap[outline.id] || {}).length > 0),
+    [outlines, outlineStructureMap]
+  );
+
+  const getMetadataFieldNames = (fields: OutlineMetadataField[]) => fields.map(field => t(`page.metadataField.${field}`)).join(t('page.metadataFieldsSeparator'));
+
+  const handleCompleteOutlineMetadata = async (outlineId: string) => {
+    if (!currentProject?.id || metadataSubmittingRef.current.has(outlineId)) return;
+    metadataSubmittingRef.current.add(outlineId);
+    setCompletingOutlineIds(previous => [...previous, outlineId]);
+    const settle = () => {
+      metadataSubmittingRef.current.delete(outlineId);
+      setCompletingOutlineIds(previous => previous.filter(id => id !== outlineId));
+    };
+    let submissionFailed = false;
+    try {
+      await generateOutlineMetadataBackground(
+        { project_id: currentProject.id, outline_ids: [outlineId] },
+        undefined,
+        async result => {
+          message.success(result.task_result?.message as string || t('page.metadataComplete'));
+          settle();
+          await refreshOutlines();
+        },
+        () => {
+          submissionFailed = true;
+          message.error(t('toast.metadataTaskFailed'));
+          settle();
+        }
+      );
+      if (!submissionFailed) eventBus.emit('background-task-created');
+    } catch (error) {
+      console.error('complete outline metadata failed:', error);
+      message.error(t('toast.metadataTaskFailed'));
+      settle();
+    }
+  };
+
+  const handleBatchCompleteMetadata = () => {
+    if (!currentProject?.id || batchMetadataSubmittingRef.current || !hasMissingMetadata) return;
+    modalApi.confirm({
+      title: t('page.metadataCompleteBatch'),
+      content: t('page.metadataMissingHint', { n: outlines.filter(outline => getMissingMetadataFields(outlineStructureMap[outline.id] || {}).length > 0).length }),
+      okText: t('page.metadataCompleteBatch'),
+      cancelText: t('generate.cancel'),
+      onOk: async () => {
+        if (batchMetadataSubmittingRef.current) return;
+        batchMetadataSubmittingRef.current = true;
+        setIsBatchCompletingMetadata(true);
+        let submissionFailed = false;
+        try {
+          await generateOutlineMetadataBackground(
+            { project_id: currentProject.id },
+            undefined,
+            async () => {
+              setIsBatchCompletingMetadata(false);
+              batchMetadataSubmittingRef.current = false;
+              await refreshOutlines();
+            },
+            () => {
+              submissionFailed = true;
+              message.error(t('toast.metadataTaskFailed'));
+              setIsBatchCompletingMetadata(false);
+              batchMetadataSubmittingRef.current = false;
+            }
+          );
+          if (!submissionFailed) {
+            message.success(t('toast.metadataTaskSubmitted'));
+            eventBus.emit('background-task-created');
+          }
+        } catch (error) {
+          console.error('batch complete outline metadata failed:', error);
+          message.error(t('toast.metadataTaskFailed'));
+          setIsBatchCompletingMetadata(false);
+          batchMetadataSubmittingRef.current = false;
+        }
+      }
+    });
+  };
 
   // 当角色确认数据变化时，初始化选中状态（默认全选）
   // 当组织确认数据变化时，初始化选中状态（默认全选）
@@ -1774,6 +1880,16 @@ export default function Outline() {
             >
               {t('page.export')}
             </Button>
+            {hasMissingMetadata && (
+              <Button
+                onClick={handleBatchCompleteMetadata}
+                loading={isBatchCompletingMetadata}
+                disabled={!currentProject?.id}
+                block={isMobile}
+              >
+                {t('page.metadataCompleteBatch')}
+              </Button>
+            )}
             <Button
               icon={<PlusOutlined />}
               onClick={showManualCreateOutlineModal}
@@ -1815,6 +1931,8 @@ export default function Outline() {
               dataSource={pagedOutlines}
               renderItem={(item) => {
                   const structureData = outlineStructureMap[item.id] || {};
+                  const missingMetadataFields = getMissingMetadataFields(structureData);
+                  const missingMetadataNames = getMetadataFieldNames(missingMetadataFields);
 
                   // 解析角色/组织条目（兼容新旧格式）
                   const characterEntries = parseCharacterEntries(structureData.characters);
@@ -1935,8 +2053,19 @@ export default function Outline() {
                                 </div>
                               </div>
 
+                              {!isOutlineExpanded && missingMetadataFields.length > 0 && (
+                                <Tag color="warning" title={missingMetadataNames} style={{ whiteSpace: 'nowrap' }}>
+                                  {t('page.metadataMissing')}: {missingMetadataNames}
+                                </Tag>
+                              )}
+
                               {isOutlineExpanded && (
                                 <>
+                              {missingMetadataFields.length > 0 && (
+                                <div style={{ marginTop: 10, color: token.colorWarningText, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {t('page.metadataMissingFields', { fields: missingMetadataNames })}
+                                </div>
+                              )}
                               {/* ✨ 涉及角色展示 - 优化版（支持角色/组织分类显示） */}
                               {characterNames.length > 0 && (
                                 <div style={{
@@ -2550,6 +2679,15 @@ export default function Outline() {
                           justifyContent: 'flex-end',
                           gap: 8
                         }}>
+                          {missingMetadataFields.length > 0 && (
+                            <Button
+                              onClick={() => handleCompleteOutlineMetadata(item.id)}
+                              loading={completingOutlineIds.includes(item.id)}
+                              size={isMobile ? 'middle' : 'small'}
+                            >
+                              {completingOutlineIds.includes(item.id) ? t('page.metadataCompleting') : t('page.metadataComplete')}
+                            </Button>
+                          )}
                           {currentProject?.outline_mode === 'one-to-many' && (
                             <Button
                               icon={<BranchesOutlined />}
