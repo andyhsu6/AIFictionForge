@@ -49,6 +49,7 @@ from app.models.chapter import Chapter
 from app.models.project import Project
 from app.models.writing_style import WritingStyle
 from app.services.book_import_service import BookImportService
+from app.services.style_anchors import create_project_style_anchors
 from app.services.style_profile import profile_preset_id
 
 
@@ -168,10 +169,24 @@ async def backfill_projects(
             log(f"[{project.id}] 跳过：画像已被用户编辑")
             continue
 
+        # 回填也要重建锚点，否则存量项目的生成侧没有原文语感锚点
+        await create_project_style_anchors(
+            db,
+            project_id=project.id,
+            ranges=profile.get("ranges") or [],
+            chapter_contents={
+                chapter.chapter_number: chapter.content or "" for chapter in chapters
+            },
+        )
+
         report["project_ids"].append(project.id)
         if dry_run:
             report["planned"] += 1
-            log(f"[{project.id}] 成功（dry-run，未写入）")
+            quality = "降级：本地统计" if profile.get("degraded") else "模型抽取"
+            log(
+                f"[{project.id}] 成功（dry-run，未写入）：{quality}，"
+                f"confidence={profile.get('confidence')}，样本 {profile.get('sample_chars')} 字"
+            )
         else:
             report["written"] += 1
             log(f"[{project.id}] 成功（style_id={style_id}）")

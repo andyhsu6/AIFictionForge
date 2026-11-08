@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Button,
   Modal,
@@ -30,9 +30,12 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useStore } from '../store';
-import { projectApi, writingStyleApi } from '../services/api';
+import { projectApi, chapterApi, writingStyleApi } from '../services/api';
 import type {
   StyleProfileReextractResult,
+  VolumeProfileGenerateResult,
+  VolumeProfileInfo,
+  VolumeRange,
   WritingStyle,
   WritingStyleCreate,
   WritingStyleUpdate,
@@ -77,7 +80,7 @@ const formatDateTime = (value?: string | null): string => {
 };
 
 export default function WritingStyles() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { t } = useTranslation('writingStyles');
   const { currentProject, updateProject: updateProjectInStore } = useStore();
   const [styles, setStyles] = useState<WritingStyle[]>([]);
@@ -101,6 +104,18 @@ export default function WritingStyles() {
   const [anchorChars, setAnchorChars] = useState(currentProject?.style_anchor_chars ?? 800);
   const [anchorCount, setAnchorCount] = useState(currentProject?.style_anchor_count ?? 3);
   const [anchorSaving, setAnchorSaving] = useState(false);
+
+  // 分卷画像（计划 §13-3）：已有列表 / 自动分卷参数 / 手动区间 / 生成结果
+  const [volumes, setVolumes] = useState<VolumeProfileInfo[]>([]);
+  const [volumesLoading, setVolumesLoading] = useState(false);
+  const [perN, setPerN] = useState(25);
+  const [chapterTotal, setChapterTotal] = useState<number | null>(null);
+  const [manualRanges, setManualRanges] = useState<VolumeRange[]>([
+    { start_chapter: 1, end_chapter: 25 },
+  ]);
+  const [volumeResult, setVolumeResult] = useState<VolumeProfileGenerateResult | null>(null);
+  const [volumeBusy, setVolumeBusy] = useState<'preview' | 'create' | null>(null);
+  const [overwriteEditedVolumes, setOverwriteEditedVolumes] = useState(false);
 
   const { token } = theme.useToken();
 
@@ -159,6 +174,58 @@ export default function WritingStyles() {
       setLoading(false);
     }
   }, [currentProject?.id, message, t]);
+
+  // 分卷画像：已有卷列表
+  const loadVolumes = useCallback(async () => {
+    if (!currentProject?.id) {
+      setVolumes([]);
+      return;
+    }
+    setVolumesLoading(true);
+    try {
+      const response = await writingStyleApi.getVolumes(currentProject.id);
+      setVolumes(response.volumes || []);
+    } catch {
+      // 错误提示由 API 拦截器统一展示
+    } finally {
+      setVolumesLoading(false);
+    }
+  }, [currentProject?.id]);
+
+  // 章节总数（用于"每 N 章自动分卷"）；取最大章号，拿不到则退化为手动区间
+  const loadChapterTotal = useCallback(async () => {
+    if (!currentProject?.id) {
+      setChapterTotal(null);
+      return;
+    }
+    try {
+      const stats = await chapterApi.getChapterStats(currentProject.id);
+      setChapterTotal(stats.max_chapter_number > 0 ? stats.max_chapter_number : null);
+    } catch {
+      setChapterTotal(null);
+    }
+  }, [currentProject?.id]);
+
+  useEffect(() => {
+    setVolumeResult(null);
+    loadVolumes();
+    loadChapterTotal();
+  }, [loadVolumes, loadChapterTotal]);
+
+  // 待创建的卷区间：拿到章节总数时按 N 章自动切分，否则用手动区间
+  const volumeRanges = useMemo<VolumeRange[]>(() => {
+    if (chapterTotal === null) return manualRanges;
+    const ranges: VolumeRange[] = [];
+    for (let start = 1; start <= chapterTotal; start += perN) {
+      ranges.push({
+        start_chapter: start,
+        end_chapter: Math.min(start + perN - 1, chapterTotal),
+      });
+    }
+    return ranges;
+  }, [chapterTotal, perN, manualRanges]);
+
+  const hasVolumePreview = volumeResult?.dry_run === true;
 
   const handleCreate = async (values: { name: string; description?: string; prompt_content: string }) => {
     try {
@@ -293,6 +360,56 @@ export default function WritingStyles() {
       message.error(t('profile.applyFailed'));
     } finally {
       setReextractApplying(false);
+    }
+  };
+
+  // 分卷画像：dry_run=true 只预览，dry_run=false 写库
+  const handleVolumesSubmit = async (dryRun: boolean) => {
+    if (!currentProject?.id || volumeRanges.length === 0) return;
+    setVolumeBusy(dryRun ? 'preview' : 'create');
+    try {
+      const result = await writingStyleApi.createVolumes(currentProject.id, {
+        volumes: volumeRanges,
+        overwrite_edited: overwriteEditedVolumes,
+        dry_run: dryRun,
+      });
+      setVolumeResult(result);
+      if (dryRun) {
+        message.success(t('volumes.previewDone', { n: result.total }));
+      } else {
+        message.success(t('volumes.created', { n: result.total }));
+        await loadVolumes();
+        await loadStyles();
+      }
+    } catch {
+      message.error(t('volumes.createFailed'));
+    } finally {
+      setVolumeBusy(null);
+    }
+  };
+
+  // 删除卷画像；被手动编辑过（409）时提供 force=true 二次确认
+  const removeVolume = async (index: number, force: boolean) => {
+    if (!currentProject?.id) return;
+    try {
+      await writingStyleApi.deleteVolume(currentProject.id, index, force);
+      message.success(t('volumes.deleteSuccess'));
+      await loadVolumes();
+      await loadStyles();
+    } catch (error) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      if (status === 409 && !force) {
+        modal.confirm({
+          title: t('volumes.userEdited'),
+          content: t('volumes.forceDeleteHint'),
+          okText: t('volumes.forceDelete'),
+          cancelText: t('buttons.cancel'),
+          centered: true,
+          onOk: () => removeVolume(index, true),
+        });
+      } else {
+        message.error(t('volumes.deleteFailed'));
+      }
     }
   };
 
@@ -564,6 +681,214 @@ export default function WritingStyles() {
               );
             })}
           </Row>
+        )}
+
+        {currentProject && (
+          <Card size="small" title={t('volumes.title')} style={{ marginTop: 16 }}>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {volumesLoading ? (
+                <Spin size="small" />
+              ) : volumes.length === 0 ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>{t('volumes.empty')}</Text>
+              ) : (
+                volumes.map((volume) => (
+                  <Space
+                    key={volume.index}
+                    wrap
+                    size={8}
+                    style={{ width: '100%', justifyContent: 'space-between' }}
+                  >
+                    <Space wrap size={8}>
+                      <Text strong style={{ fontSize: 13 }}>
+                        {t('volumes.volumeLabel', {
+                          index: volume.index,
+                          start: volume.start_chapter,
+                          end: volume.end_chapter,
+                        })}
+                      </Text>
+                      <Tag color="cyan">{`${t('volumes.confidence')}: ${formatPercent(volume.confidence)}`}</Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {`${t('volumes.updatedAt')}: ${formatDateTime(volume.updated_at)}`}
+                      </Text>
+                    </Space>
+                    <Popconfirm
+                      title={t('volumes.deleteConfirm', { index: volume.index })}
+                      onConfirm={() => removeVolume(volume.index, false)}
+                      okText={t('volumes.delete')}
+                      cancelText={t('buttons.cancel')}
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />}>
+                        {t('volumes.delete')}
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                ))
+              )}
+
+              {chapterTotal !== null ? (
+                <Space wrap size={8}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('volumes.perN')}</Text>
+                  <InputNumber
+                    min={1}
+                    max={200}
+                    value={perN}
+                    onChange={(value) => setPerN(value ?? 25)}
+                    style={{ width: 80 }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('volumes.chapterTotal', { n: chapterTotal })}
+                  </Text>
+                </Space>
+              ) : (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Text strong style={{ fontSize: 12 }}>{t('volumes.manualRanges')}</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('volumes.chapterTotalUnknown')}
+                  </Text>
+                  {manualRanges.map((range, index) => (
+                    <Space key={index} wrap size={8}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{t('volumes.startChapter')}</Text>
+                      <InputNumber
+                        min={1}
+                        value={range.start_chapter}
+                        onChange={(value) =>
+                          setManualRanges((prev) =>
+                            prev.map((item, i) =>
+                              i === index ? { ...item, start_chapter: value ?? 1 } : item,
+                            ),
+                          )
+                        }
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12 }}>{t('volumes.endChapter')}</Text>
+                      <InputNumber
+                        min={1}
+                        value={range.end_chapter}
+                        onChange={(value) =>
+                          setManualRanges((prev) =>
+                            prev.map((item, i) =>
+                              i === index ? { ...item, end_chapter: value ?? 1 } : item,
+                            ),
+                          )
+                        }
+                        style={{ width: 80 }}
+                      />
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        aria-label={t('volumes.removeRange')}
+                        disabled={manualRanges.length <= 1}
+                        onClick={() =>
+                          setManualRanges((prev) => prev.filter((_, i) => i !== index))
+                        }
+                      />
+                    </Space>
+                  ))}
+                  <Button
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={() =>
+                      setManualRanges((prev) => [
+                        ...prev,
+                        {
+                          start_chapter: (prev[prev.length - 1]?.end_chapter ?? 0) + 1,
+                          end_chapter: (prev[prev.length - 1]?.end_chapter ?? 0) + 25,
+                        },
+                      ])
+                    }
+                  >
+                    {t('volumes.addRange')}
+                  </Button>
+                </Space>
+              )}
+
+              <Space wrap size={4}>
+                <Text type="secondary" style={{ fontSize: 12 }}>{t('volumes.previewRanges')}</Text>
+                {volumeRanges.map((range, index) => (
+                  <Tag key={`${range.start_chapter}-${range.end_chapter}-${index}`}>
+                    {`${range.start_chapter}–${range.end_chapter}`}
+                  </Tag>
+                ))}
+              </Space>
+
+              <Space wrap size={8}>
+                <Checkbox
+                  checked={overwriteEditedVolumes}
+                  onChange={(event) => setOverwriteEditedVolumes(event.target.checked)}
+                >
+                  {t('volumes.overwriteEdited')}
+                </Checkbox>
+                <Button
+                  size="small"
+                  loading={volumeBusy === 'preview'}
+                  disabled={volumeRanges.length === 0 || volumeBusy !== null}
+                  onClick={() => handleVolumesSubmit(true)}
+                >
+                  {t('volumes.preview')}
+                </Button>
+                <Button
+                  size="small"
+                  type="primary"
+                  loading={volumeBusy === 'create'}
+                  disabled={volumeRanges.length === 0 || volumeBusy !== null}
+                  onClick={() => handleVolumesSubmit(false)}
+                >
+                  {hasVolumePreview ? t('volumes.confirm') : t('volumes.create')}
+                </Button>
+              </Space>
+
+              {volumeResult && (
+                <div
+                  style={{
+                    width: '100%',
+                    border: `1px dashed ${token.colorBorderSecondary}`,
+                    borderRadius: 6,
+                    padding: 8,
+                  }}
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space wrap size={8}>
+                      <Text strong style={{ fontSize: 12 }}>
+                        {t('volumes.total', { n: volumeResult.total })}
+                      </Text>
+                      {volumeResult.anchors_reused && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {t('volumes.anchorsReused')}
+                        </Text>
+                      )}
+                    </Space>
+                    {volumeResult.volumes.map((item) => (
+                      <Space key={item.index} wrap size={6}>
+                        <Text style={{ fontSize: 12 }}>
+                          {t('volumes.volumeLabel', {
+                            index: item.index,
+                            start: item.start_chapter,
+                            end: item.end_chapter,
+                          })}
+                        </Text>
+                        {item.skipped ? (
+                          <Tag color="orange">
+                            {item.skip_reason === 'user_edited'
+                              ? t('volumes.userEdited')
+                              : t('volumes.skipped')}
+                          </Tag>
+                        ) : (
+                          <Tag color="green">{t('volumes.success')}</Tag>
+                        )}
+                        {typeof item.confidence === 'number' && (
+                          <Tag color="cyan">
+                            {`${t('volumes.confidence')}: ${formatPercent(item.confidence)}`}
+                          </Tag>
+                        )}
+                        {item.degraded && <Tag color="blue">{t('volumes.degraded')}</Tag>}
+                      </Space>
+                    ))}
+                  </Space>
+                </div>
+              )}
+            </Space>
+          </Card>
         )}
       </div>
 

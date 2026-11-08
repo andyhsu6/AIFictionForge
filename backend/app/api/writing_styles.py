@@ -20,7 +20,11 @@ from ..schemas.writing_style import (
     WritingStyleListResponse,
     ProfileReextractRequest,
     ProfileReextractResponse,
-    SetDefaultStyleRequest
+    SetDefaultStyleRequest,
+    VolumeProfileGenerateRequest,
+    VolumeProfileGenerateResponse,
+    VolumeProfileItem,
+    VolumeProfileListResponse,
 )
 from ..logger import get_logger
 from ..services.book_import_service import BookImportService
@@ -29,6 +33,11 @@ from ..services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     is_profile_preset_id,
     profile_preset_id,
+)
+from ..services.style_volumes import (
+    list_project_volumes,
+    upsert_volume_profile,
+    volume_preset_id,
 )
 
 router = APIRouter(prefix="/writing-styles", tags=["writing-styles"])
@@ -451,6 +460,234 @@ async def reextract_project_profile(
         f"默认={payload.set_default}，样本 {len(chapters)} 章）"
     )
     return {**diff, "updated": True, "style_id": style_id, "kept_reason": None}
+
+
+async def _require_owned_project(
+    db: AsyncSession, project_id: str, user_id: str
+) -> Project:
+    """校验项目归属（与画像相关端点同语义）。"""
+    project = (
+        await db.execute(
+            select(Project).where(
+                Project.id == project_id,
+                Project.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not project:
+        raise ApiError(code="not_found.project_or_forbidden")
+    return project
+
+
+@router.get(
+    "/project/{project_id}/profile/volumes",
+    response_model=VolumeProfileListResponse,
+)
+async def get_project_profile_volumes(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """列出项目的分卷画像（计划 §13-3），按卷序号升序。"""
+    user_id = get_current_user_id(request)
+    await _require_owned_project(db, project_id, user_id)
+    volumes = await list_project_volumes(db, project_id)
+    return {"volumes": volumes, "total": len(volumes)}
+
+
+@router.post(
+    "/project/{project_id}/profile/volumes",
+    response_model=VolumeProfileGenerateResponse,
+)
+async def generate_project_profile_volumes(
+    project_id: str,
+    request: Request,
+    payload: VolumeProfileGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """按章节区间生成分卷文笔画像（计划 §13-3）。
+
+    - 卷序号按 ``volumes`` 列表顺序从 1 开始，``preset_id=profile:<project_id>:v<index>``；
+    - 每卷只用区间内章节抽样，调用拆书链路的 ``_extract_style_profile``；
+    - ``dry_run=True`` 只返回抽取摘要（不写库）；
+    - 卷画像已被用户手改（``profile_edited``）时默认跳过，``overwrite_edited``
+      才覆盖；
+    - 锚点是项目级共用一个池，这里不重建（沿用全书画像导入时建立的锚点）。
+    """
+    user_id = get_current_user_id(request)
+    project = await _require_owned_project(db, project_id, user_id)
+
+    if len(payload.volumes) > 999:
+        # preset_id 列宽 50：profile:<uuid>:v<index> 最多容纳三位卷号
+        raise ApiError(
+            code="validation.volume_count_exceeded",
+            detail="卷数量不能超过 999",
+            status=400,
+        )
+
+    db_chapters = list(
+        (
+            await db.execute(
+                select(Chapter)
+                .where(Chapter.project_id == project_id)
+                .order_by(Chapter.chapter_number)
+            )
+        ).scalars().all()
+    )
+    chapters = [
+        BookImportChapter(
+            title=chapter.title or f"第{chapter.chapter_number}章",
+            content=chapter.content or "",
+            summary=chapter.summary,
+            chapter_number=chapter.chapter_number,
+        )
+        for chapter in db_chapters
+        if chapter.chapter_number and chapter.chapter_number >= 1
+    ]
+
+    # 先整体校验，避免校验失败前已产生 AI 调用/部分写入
+    subsets: list[tuple[int, int, int, list[BookImportChapter]]] = []
+    for index, spec in enumerate(payload.volumes, start=1):
+        start, end = spec.start_chapter, spec.end_chapter
+        if end < start:
+            raise ApiError(
+                code="validation.volume_range_invalid",
+                detail=f"第 {index} 卷区间非法：结束章 {end} 小于起始章 {start}",
+                status=400,
+                params={"index": index, "start_chapter": start, "end_chapter": end},
+            )
+        subset = [chapter for chapter in chapters if start <= chapter.chapter_number <= end]
+        if not subset:
+            raise ApiError(
+                code="validation.volume_range_empty",
+                detail=f"第 {index} 卷区间 {start}-{end} 内没有任何章节",
+                status=400,
+                params={"index": index, "start_chapter": start, "end_chapter": end},
+            )
+        subsets.append((index, start, end, subset))
+
+    existing = {item["index"]: item for item in await list_project_volumes(db, project_id)}
+
+    service = BookImportService()
+    items: list[VolumeProfileItem] = []
+    for index, start, end, subset in subsets:
+        existing_row = None
+        if index in existing:
+            existing_row = await db.get(WritingStyle, existing[index]["style_id"])
+
+        # 手改保护：不覆盖用户编辑过的卷画像（与全书画像 reextract 同语义）
+        if (
+            existing_row is not None
+            and existing_row.style_type == PROFILE_EDITED_STYLE_TYPE
+            and not payload.overwrite_edited
+        ):
+            items.append(
+                VolumeProfileItem(
+                    index=index,
+                    start_chapter=start,
+                    end_chapter=end,
+                    skipped=True,
+                    skip_reason="user_edited",
+                    style_id=existing_row.id,
+                )
+            )
+            continue
+
+        profile = await service._extract_style_profile(
+            db=db,
+            user_id=user_id,
+            project=project,
+            chapters=subset,
+            content_language=None,
+            extract_mode="full",
+        )
+        if profile.get("skipped"):
+            items.append(
+                VolumeProfileItem(
+                    index=index,
+                    start_chapter=start,
+                    end_chapter=end,
+                    skipped=True,
+                    skip_reason="insufficient_sample",
+                )
+            )
+            continue
+
+        item = VolumeProfileItem(
+            index=index,
+            start_chapter=start,
+            end_chapter=end,
+            confidence=profile.get("confidence"),
+            degraded=bool(profile.get("degraded")),
+        )
+        if not payload.dry_run:
+            item.style_id = await upsert_volume_profile(
+                db=db,
+                project=project,
+                index=index,
+                start_chapter=start,
+                end_chapter=end,
+                prompt_content=profile["prompt_content"],
+                description=profile.get("description") or "",
+                profile_data=profile.get("profile_data"),
+                profile_version=profile.get("profile_version"),
+            )
+        items.append(item)
+
+    if not payload.dry_run:
+        await db.commit()
+        logger.info(
+            f"项目 {project_id} 分卷画像已生成（{len(items)} 卷，"
+            f"覆盖手改={payload.overwrite_edited}）"
+        )
+
+    return {
+        "volumes": items,
+        "total": len(items),
+        "dry_run": payload.dry_run,
+        "anchors_reused": True,
+    }
+
+
+@router.delete("/project/{project_id}/profile/volumes/{index}", status_code=204)
+async def delete_project_profile_volume(
+    project_id: str,
+    index: int,
+    request: Request,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除指定卷画像；``profile_edited`` 需 ``force=true``。
+
+    卷画像不应是项目默认风格；如被手工设为默认，删除时一并清理该默认关系，
+    避免悬挂外键。
+    """
+    user_id = get_current_user_id(request)
+    await _require_owned_project(db, project_id, user_id)
+
+    row = (
+        await db.execute(
+            select(WritingStyle).where(
+                WritingStyle.preset_id == volume_preset_id(project_id, index)
+            )
+        )
+    ).scalars().first()
+    if row is None or (row.user_id is not None and row.user_id != user_id):
+        raise ApiError(code="not_found.writing_style")
+
+    if row.style_type == PROFILE_EDITED_STYLE_TYPE and not force:
+        raise ApiError(
+            code="conflict.profile_volume_edited",
+            detail="卷画像已被用户编辑，需 force=true 才能删除",
+            status=409,
+        )
+
+    await db.execute(
+        delete(ProjectDefaultStyle).where(ProjectDefaultStyle.style_id == row.id)
+    )
+    await db.delete(row)
+    await db.commit()
+    return None
 
 
 @router.get("/{style_id}", response_model=WritingStyleResponse)
