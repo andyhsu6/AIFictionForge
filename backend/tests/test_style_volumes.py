@@ -33,6 +33,7 @@ from app.api.writing_styles import (
     delete_project_profile_volume,
     generate_project_profile_volumes,
     get_project_profile_volumes,
+    set_default_style,
 )
 from app.core.errors import ApiError
 from app.database import Base
@@ -40,7 +41,7 @@ from app.models.chapter import Chapter
 from app.models.project import Project
 from app.models.project_default_style import ProjectDefaultStyle
 from app.models.writing_style import WritingStyle
-from app.schemas.writing_style import VolumeProfileGenerateRequest
+from app.schemas.writing_style import SetDefaultStyleRequest, VolumeProfileGenerateRequest
 from app.services.book_import_service import BookImportService
 from app.services.style_profile import profile_preset_id
 from app.services.style_volumes import (
@@ -559,3 +560,43 @@ def test_generation_paths_wire_volume_resolution():
     partial = getattr(chapters_module, "partial_regenerate_stream", None)
     if partial is not None:
         assert "_resolve_project_style_content" not in inspect.getsource(partial)
+
+
+def test_set_default_rejects_volume_profile_but_allows_full_profile():
+    """卷画像只作用于章节区间，不能被设为项目默认（回归 MAJOR）。"""
+
+    async def scenario(db):
+        project = await seed_project(db, chapter_count=5)
+        volume_style_id = await upsert_volume_profile(
+            db,
+            project=project,
+            index=1,
+            start_chapter=1,
+            end_chapter=3,
+            prompt_content="卷1内容",
+            description="",
+            profile_data={"version": 1},
+            profile_version=1,
+        )
+        await db.commit()
+
+        with pytest.raises(ApiError) as exc_info:
+            await set_default_style(
+                volume_style_id,
+                SetDefaultStyleRequest(project_id=PROJECT_ID),
+                make_request(),
+                db,
+            )
+        assert exc_info.value.code == "validation.volume_profile_cannot_be_default"
+        assert await default_style_id(db) == FULL_PROFILE_ID
+
+        # 全书画像仍允许设为默认
+        await set_default_style(
+            FULL_PROFILE_ID,
+            SetDefaultStyleRequest(project_id=PROJECT_ID),
+            make_request(),
+            db,
+        )
+        assert await default_style_id(db) == FULL_PROFILE_ID
+
+    _run(scenario)

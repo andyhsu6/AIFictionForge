@@ -142,6 +142,8 @@ def _metric_block(actual: float, expected: float) -> dict[str, Any]:
         "expected": round(expected, 2),
         "diff": round(diff, 2),
         "abs_diff": round(abs_diff, 2),
+        # 阈值比较用未舍入值，展示才 round（避免 0.054 → 0.05 的边界误判）
+        "abs_diff_raw": abs_diff,
         "rel_dev": round(rel_dev, 3),
     }
 
@@ -190,7 +192,7 @@ def build_project_report(
         # 与核心一致性检查同口径：相对偏差和绝对差都必须超阈值
         if (
             block["rel_dev"] > DEFAULT_TOLERANCE
-            and block["abs_diff"] > DEFAULT_ABSOLUTE_TOLERANCE
+            and block.get("abs_diff_raw", block["abs_diff"]) > DEFAULT_ABSOLUTE_TOLERANCE
         ):
             warnings.append(
                 {
