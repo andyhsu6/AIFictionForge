@@ -1649,6 +1649,7 @@ export default interface Resources {
       "user_delete_blocked": "无法删除该用户（用户不存在或为管理员）",
       "verification_code_format": "请输入6位数字验证码",
       "verification_code_scene": "不支持的验证码场景",
+      "volume_profile_cannot_be_default": "分卷画像只作用于其章节区间，不能设为项目默认风格",
       "wizard_fields_missing": "{{fields}} 是必需的参数"
     }
   },
@@ -4191,6 +4192,42 @@ export default interface Resources {
       "preset": "预设",
       "profile": "文笔画像",
       "profileEdited": "文笔画像（已编辑）"
+    },
+    "volumes": {
+      "addRange": "添加一卷",
+      "anchorsReused": "锚点沿用项目级锚点池，未重建",
+      "chapterTotal": "项目共 {{n}} 章",
+      "chapterTotalUnknown": "未能获取章节总数，请手动填写卷区间",
+      "confidence": "置信度",
+      "confirm": "确认生成",
+      "create": "生成分卷画像",
+      "createFailed": "生成分卷画像失败",
+      "created": "已生成 {{n}} 卷画像",
+      "degraded": "本地统计降级",
+      "delete": "删除",
+      "deleteConfirm": "确定删除第 {{index}} 卷画像吗？",
+      "deleteFailed": "删除分卷画像失败",
+      "deleteSuccess": "分卷画像已删除",
+      "empty": "暂无分卷画像",
+      "endChapter": "结束章",
+      "forceDelete": "强制删除",
+      "forceDeleteHint": "该卷画像已被手动编辑，需强制删除",
+      "manualRanges": "卷区间",
+      "overwriteEdited": "覆盖已手动编辑的卷",
+      "perN": "每 N 章自动分卷",
+      "preview": "预览",
+      "previewDone": "预览完成，共 {{n}} 卷（未写入）",
+      "previewRanges": "将创建的区间",
+      "removeRange": "移除",
+      "skipped": "样本不足，已跳过",
+      "startChapter": "起始章",
+      "success": "已生成",
+      "title": "分卷画像",
+      "tooMany": "分卷数量超过 {{n}} 个，请增大每卷章节数",
+      "total": "共 {{n}} 卷",
+      "updatedAt": "更新时间",
+      "userEdited": "已手动编辑，已跳过",
+      "volumeLabel": "第 {{index}} 卷（第 {{start}}–{{end}} 章）"
     }
   }
 }

@@ -40,6 +40,9 @@ import type {
   WritingStyleUpdate,
   StyleProfileReextractRequest,
   StyleProfileReextractResult,
+  VolumeProfileGenerateRequest,
+  VolumeProfileGenerateResult,
+  VolumeProfileListResponse,
   PresetStyle,
   WritingStyleListResponse,
   MCPPlugin,
@@ -816,6 +819,11 @@ export const chapterApi = {
   getChapters: (projectId: string) =>
     api.get<unknown, { total: number; items: Chapter[] }>(`/chapters/project/${projectId}`).then(res => res.items),
 
+  getChapterStats: (projectId: string) =>
+    api.get<unknown, { total: number; max_chapter_number: number }>(
+      `/chapters/project/${projectId}/stats`,
+    ),
+
   getChapter: (id: string) => api.get<unknown, Chapter>(`/chapters/${id}`),
 
   createChapter: (data: ChapterCreate) => api.post<unknown, Chapter>('/chapters', data),
@@ -947,6 +955,25 @@ export const writingStyleApi = {
     api.post<unknown, StyleProfileReextractResult>(
       `/writing-styles/project/${projectId}/profile/reextract`,
       payload,
+    ),
+
+  // 分卷画像（计划 §13-3）：列出 / 生成（dry_run=true 只预览）/ 删除
+  getVolumes: (projectId: string) =>
+    api.get<unknown, VolumeProfileListResponse>(
+      `/writing-styles/project/${projectId}/profile/volumes`,
+    ),
+
+  createVolumes: (projectId: string, payload: VolumeProfileGenerateRequest) =>
+    api.post<unknown, VolumeProfileGenerateResult>(
+      `/writing-styles/project/${projectId}/profile/volumes`,
+      payload,
+    ),
+
+  // force=true 才能删除已被手动编辑（profile_edited）的卷画像，否则后端返回 409
+  deleteVolume: (projectId: string, index: number, force = false) =>
+    api.delete<unknown, void>(
+      `/writing-styles/project/${projectId}/profile/volumes/${index}`,
+      force ? { params: { force: true } } : undefined,
     ),
 };
 

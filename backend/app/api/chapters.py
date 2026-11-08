@@ -35,6 +35,8 @@ from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
 from app.services.style_anchors import append_project_style_anchors
+from app.services.style_profile import profile_preset_id
+from app.services.style_volumes import parse_volume_preset_id, resolve_volume_for_chapter
 from app.schemas.chapter import (
     ChapterCreate,
     ChapterUpdate,
@@ -225,6 +227,28 @@ async def create_chapter(
     await db.commit()
     await db.refresh(db_chapter)
     return db_chapter
+
+
+@router.get("/project/{project_id}/stats", summary="项目章节统计（轻量）")
+async def get_project_chapter_stats(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """只返回章节数量与最大章号，供前端估算分卷区间（避免拉取全书正文）。"""
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+    row = (
+        await db.execute(
+            select(func.count(Chapter.id), func.max(Chapter.chapter_number)).where(
+                Chapter.project_id == project_id
+            )
+        )
+    ).one()
+    return {
+        "total": int(row[0] or 0),
+        "max_chapter_number": int(row[1] or 0),
+    }
 
 
 @router.get("/project/{project_id}", response_model=ChapterListResponse, summary="获取项目的所有章节")
@@ -1501,6 +1525,89 @@ async def _analyze_chapter_background_impl(
             await db_session.close()
 
 
+async def _resolve_project_style_content(
+    db: AsyncSession,
+    project: Optional[Project],
+    chapter_number: Optional[int],
+    style_id: Optional[int],
+    user_id: str,
+    *,
+    use_project_default: bool = False,
+) -> str:
+    """解析生成用的写作风格内容（计划 §13-3：按目标章节自动选卷）。
+
+    优先级：
+    1. ``style_id`` 指向本项目的卷画像 → 直接用该卷内容（用户显式选择）；
+    2. ``style_id`` 为空或指向本项目全书画像（``profile:<project_id>``）→ 按章号
+       匹配卷画像，命中则用卷画像；
+    3. 其余保留原有语义：显式普通风格直接用，``use_project_default`` 时回退项目默认风格。
+
+    显式选择普通风格时不会被卷画像覆盖。
+    """
+    style: Optional[WritingStyle] = None
+    if style_id:
+        style = (
+            await db.execute(select(WritingStyle).where(WritingStyle.id == style_id))
+        ).scalar_one_or_none()
+        # 全局预设（user_id 为 NULL）或本人风格可用；其他用户的风格忽略
+        if style is not None and style.user_id is not None and style.user_id != user_id:
+            logger.warning(f"风格 {style_id} 不属于当前用户，跳过")
+            style = None
+        if style is None:
+            logger.warning(f"未找到风格 {style_id}")
+
+    if style is not None:
+        volume_ref = parse_volume_preset_id(style.preset_id)
+        if volume_ref is not None:
+            if project is None or volume_ref[0] != project.id:
+                logger.warning(f"风格 {style_id} 属于其他项目的卷画像，跳过")
+                return ""
+            logger.info(f"使用指定卷画像: {style.name}（第 {volume_ref[1]} 卷）")
+            return style.prompt_content or ""
+        # 非画像风格（用户显式选择）：尊重用户选择，不参与选卷
+        if project is None or style.preset_id != profile_preset_id(project.id):
+            return style.prompt_content or ""
+
+    # 未指定风格 / 指向本项目全书画像：按目标章节匹配卷画像
+    if project is not None and chapter_number:
+        volume = await resolve_volume_for_chapter(db, project.id, chapter_number)
+        if volume is not None:
+            volume_ref = parse_volume_preset_id(volume.preset_id)
+            index_label = volume_ref[1] if volume_ref else "?"
+            logger.info(
+                f"按第 {chapter_number} 章匹配到卷画像（第 {index_label} 卷）: {volume.name}"
+            )
+            return volume.prompt_content or ""
+
+    if style is not None:
+        # 全书画像：无卷画像命中时沿用原逻辑
+        return style.prompt_content or ""
+
+    if use_project_default and project is not None:
+        from app.models.project_default_style import ProjectDefaultStyle
+
+        default_style_id = (
+            await db.execute(
+                select(ProjectDefaultStyle.style_id).where(
+                    ProjectDefaultStyle.project_id == project.id
+                )
+            )
+        ).scalar_one_or_none()
+        if default_style_id:
+            default_style = (
+                await db.execute(
+                    select(WritingStyle).where(WritingStyle.id == default_style_id)
+                )
+            ).scalar_one_or_none()
+            if default_style is not None and (
+                default_style.user_id is None or default_style.user_id == user_id
+            ):
+                logger.info(f"使用项目默认写作风格: {default_style_id}")
+                return default_style.prompt_content or ""
+
+    return ""
+
+
 @router.post("/{chapter_id}/generate-stream", summary="AI创作章节内容（流式）")
 async def generate_chapter_content_stream(
     chapter_id: str,
@@ -1618,25 +1725,15 @@ async def generate_chapter_content_stream(
                     )
                 outline = outline_result.scalar_one_or_none()
                 
-                # 获取写作风格
-                style_content = ""
-                if style_id:
-                    # 使用指定的风格
-                    style_result = await db_session.execute(
-                        select(WritingStyle).where(WritingStyle.id == style_id)
-                    )
-                    style = style_result.scalar_one_or_none()
-                    if style:
-                        # 验证风格是否可用：全局预设风格（user_id为NULL）或者当前用户的自定义风格
-                        if style.user_id is None or style.user_id == current_user_id:
-                            style_content = style.prompt_content or ""
-                            style_type = "全局预设" if style.user_id is None else "用户自定义"
-                            logger.info(f"使用指定风格: {style.name} ({style_type})")
-                        else:
-                            logger.warning(f"风格 {style_id} 不属于当前项目，无法使用")
-                    else:
-                        logger.warning(f"未找到风格 {style_id}")
-                else:
+                # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+                style_content = await _resolve_project_style_content(
+                    db_session,
+                    project,
+                    current_chapter.chapter_number,
+                    style_id,
+                    current_user_id,
+                )
+                if not style_content:
                     logger.info("未指定写作风格，使用原始提示词")
 
                 # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
@@ -2247,15 +2344,14 @@ async def _run_chapter_generation_bg(
         )
     outline = outline_result.scalar_one_or_none()
 
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style and (style.user_id is None or style.user_id == user_id):
-            style_content = style.prompt_content or ""
+    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+    style_content = await _resolve_project_style_content(
+        db,
+        project,
+        current_chapter.chapter_number,
+        style_id,
+        user_id,
+    )
 
     # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
     style_content = await append_project_style_anchors(
@@ -2802,15 +2898,14 @@ async def _run_chapter_generation_bg(
         )
     outline = outline_result.scalar_one_or_none()
 
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style and (style.user_id is None or style.user_id == user_id):
-            style_content = style.prompt_content or ""
+    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+    style_content = await _resolve_project_style_content(
+        db,
+        project,
+        current_chapter.chapter_number,
+        style_id,
+        user_id,
+    )
 
     # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
     style_content = await append_project_style_anchors(
@@ -4393,16 +4488,14 @@ async def generate_single_chapter_for_batch(
         )
     outline = outline_result.scalar_one_or_none()
     
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db_session.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style:
-            if style.user_id is None or style.user_id == user_id:
-                style_content = style.prompt_content or ""
+    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+    style_content = await _resolve_project_style_content(
+        db_session,
+        project,
+        chapter.chapter_number,
+        style_id,
+        user_id,
+    )
 
     # issue #254 P1：批量生成路径注入本书原文语感锚点（批量任务无 per-gen 覆盖，沿用项目设置）
     style_content = await append_project_style_anchors(
@@ -4831,40 +4924,15 @@ async def regenerate_chapter_stream(
                 )
             outline = outline_result.scalar_one_or_none()
             
-            # 获取写作风格
-            style_content = ""
-            style_id = regenerate_request.style_id
-            
-            # 如果没有指定风格，尝试使用项目的默认风格
-            if not style_id:
-                from app.models.project_default_style import ProjectDefaultStyle
-                default_style_result = await temp_db.execute(
-                    select(ProjectDefaultStyle.style_id)
-                    .where(ProjectDefaultStyle.project_id == chapter.project_id)
-                )
-                default_style_id = default_style_result.scalar_one_or_none()
-                if default_style_id:
-                    style_id = default_style_id
-                    logger.info(f"📝 使用项目默认写作风格: {style_id}")
-            
-            # 获取风格内容
-            if style_id:
-                style_result = await temp_db.execute(
-                    select(WritingStyle).where(WritingStyle.id == style_id)
-                )
-                style = style_result.scalar_one_or_none()
-                if style:
-                    # 验证风格是否可用：全局预设风格（user_id为NULL）或者当前用户的自定义风格
-                    if style.user_id is None or style.user_id == user_id:
-                        style_content = style.prompt_content or ""
-                        style_type = "全局预设" if style.user_id is None else "用户自定义"
-                        logger.info(f"✅ 使用写作风格: {style.name} ({style_type})")
-                    else:
-                        logger.warning(f"⚠️ 风格 {style_id} 不属于当前项目，跳过")
-                else:
-                    logger.warning(f"⚠️ 未找到风格 {style_id}")
-            else:
-                logger.info("ℹ️ 未指定写作风格，使用默认提示词")
+            # 获取写作风格（§13-3：未指定/全书画像时按目标章节选卷，无卷命中再回退默认风格）
+            style_content = await _resolve_project_style_content(
+                temp_db,
+                project,
+                chapter.chapter_number,
+                regenerate_request.style_id,
+                user_id,
+                use_project_default=True,
+            )
             
             # 构建项目上下文
             project_context = {

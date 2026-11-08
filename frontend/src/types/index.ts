@@ -792,6 +792,50 @@ export interface StyleProfileReextractResult {
   degraded?: boolean;
 }
 
+// 分卷画像（计划 §13-3）：每卷一幅画像，卷序号从 1 开始按提交顺序排列
+export interface VolumeRange {
+  start_chapter: number;
+  end_chapter: number;
+}
+
+export interface VolumeProfileInfo {
+  index: number;
+  start_chapter: number;
+  end_chapter: number;
+  style_id: number;
+  confidence?: number | null;
+  updated_at?: string | null;
+}
+
+export interface VolumeProfileListResponse {
+  volumes: VolumeProfileInfo[];
+  total: number;
+}
+
+export interface VolumeProfileGenerateRequest {
+  volumes: VolumeRange[];
+  overwrite_edited?: boolean;
+  dry_run?: boolean;
+}
+
+export interface VolumeProfileGenerateItem {
+  index: number;
+  start_chapter: number;
+  end_chapter: number;
+  confidence?: number | null;
+  degraded?: boolean;
+  skipped?: boolean;
+  skip_reason?: 'insufficient_sample' | 'user_edited' | null;
+  style_id?: number | null;
+}
+
+export interface VolumeProfileGenerateResult {
+  volumes: VolumeProfileGenerateItem[];
+  total: number;
+  dry_run: boolean;
+  anchors_reused: boolean;
+}
+
 // issue #254 P2：生成后文笔画像一致性自检（后端可选返回，缺省不影响生成流程）
 export interface StyleCheckAlert {
   metric: string;

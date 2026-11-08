@@ -24,6 +24,7 @@ from app.database import Base
 from app.models.chapter import Chapter
 from app.models.project import Project
 from app.models.project_default_style import ProjectDefaultStyle
+from app.models.project_style_anchor import ProjectStyleAnchor
 from app.models.writing_style import WritingStyle
 from app.services.book_import_service import BookImportService
 from app.services.import_export_service import ImportExportService
@@ -359,7 +360,7 @@ class _StubBookImportService(BookImportService):
             "sample_chars": 10,
             "profile_data": {**PROFILE_DATA, "source": "model"},
             "profile_version": 1,
-            "ranges": [],
+            "ranges": [{"chapter": 1, "start": 0, "end": 22}],
         }
 
 
@@ -378,8 +379,8 @@ async def _seed_backfill_projects(db):
                 project_id="project-a",
                 title="第1章",
                 chapter_number=1,
-                content="占位正文。",
-                word_count=5,
+                content="占位正文内容足够长用于锚点测试的示例句子。",
+                word_count=22,
                 status="draft",
             ),
             Chapter(
@@ -429,8 +430,15 @@ def test_backfill_dry_run_writes_nothing_and_apply_fills_only_gaps():
         assert dry["skipped_no_chapters"] == 1
         assert dry["skipped_existing"] == 1
         assert service.calls == [("project-a", 1)]
-        # 已回滚：库里仍无 project-a 画像
+        # 已回滚：库里仍无 project-a 画像与锚点
         assert await _profile_rows(db, "project-a") == []
+        assert (
+            await db.execute(
+                select(ProjectStyleAnchor).where(
+                    ProjectStyleAnchor.project_id == "project-a"
+                )
+            )
+        ).scalars().all() == []
 
         applied = await backfill_projects(db, dry_run=False, service=service, log=lambda _: None)
         assert applied["written"] == 1
@@ -439,6 +447,14 @@ def test_backfill_dry_run_writes_nothing_and_apply_fills_only_gaps():
         assert rows[0].style_type == "profile"
         assert rows[0].prompt_content == "回填画像提示词"
         assert json.loads(rows[0].profile_json)["source"] == "model"
+        anchors = (
+            await db.execute(
+                select(ProjectStyleAnchor).where(
+                    ProjectStyleAnchor.project_id == "project-a"
+                )
+            )
+        ).scalars().all()
+        assert len(anchors) > 0
         # 默认不动（未传 --set-default）
         assert (
             await db.execute(

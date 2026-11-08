@@ -247,7 +247,8 @@ async def delete_project_children(
         counts["style_profiles"] = (
             await db.execute(
                 delete(WritingStyle).where(
-                    WritingStyle.preset_id == profile_preset_id(project_id)
+                    # 全书画像 + 分卷画像（profile:<pid>:v<index>）一并清理
+                    WritingStyle.preset_id.like(f"{profile_preset_id(project_id)}%")
                 )
             )
         ).rowcount or 0

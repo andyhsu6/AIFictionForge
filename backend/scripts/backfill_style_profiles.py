@@ -14,7 +14,8 @@
 - 默认不替换项目默认风格；`--set-default` 才把新画像设为默认；
 - 幂等：二次运行会因为画像行已存在而全部跳过；
 - 图像/正文只用于本次模型调用，日志只打项目 id、章节数、是否成功，
-  不打印书名、原文或角色名；锚点不落库、不导出。
+  不打印书名、原文或角色名；`--apply` 会重建项目锚点（只存偏移与哈希），
+  锚点不导出。
 
 用法
 ----
@@ -49,6 +50,7 @@ from app.models.chapter import Chapter
 from app.models.project import Project
 from app.models.writing_style import WritingStyle
 from app.services.book_import_service import BookImportService
+from app.services.style_anchors import create_project_style_anchors
 from app.services.style_profile import profile_preset_id
 
 
@@ -168,10 +170,24 @@ async def backfill_projects(
             log(f"[{project.id}] 跳过：画像已被用户编辑")
             continue
 
+        # 回填也要重建锚点，否则存量项目的生成侧没有原文语感锚点
+        await create_project_style_anchors(
+            db,
+            project_id=project.id,
+            ranges=profile.get("ranges") or [],
+            chapter_contents={
+                chapter.chapter_number: chapter.content or "" for chapter in chapters
+            },
+        )
+
         report["project_ids"].append(project.id)
         if dry_run:
             report["planned"] += 1
-            log(f"[{project.id}] 成功（dry-run，未写入）")
+            quality = "降级：本地统计" if profile.get("degraded") else "模型抽取"
+            log(
+                f"[{project.id}] 成功（dry-run，未写入）：{quality}，"
+                f"confidence={profile.get('confidence')}，样本 {profile.get('sample_chars')} 字"
+            )
         else:
             report["written"] += 1
             log(f"[{project.id}] 成功（style_id={style_id}）")

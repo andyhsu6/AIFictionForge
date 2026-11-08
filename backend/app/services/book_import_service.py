@@ -4340,7 +4340,7 @@ class BookImportService:
             )
             data = await ai_service.call_with_json_retry(
                 prompt=prompt,
-                temperature=0.2,
+                temperature=0.1,
                 max_tokens=2000,
                 max_retries=1,
                 expected_type="object",
