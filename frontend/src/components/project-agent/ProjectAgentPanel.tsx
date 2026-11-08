@@ -483,6 +483,13 @@ export default function ProjectAgentPanel({
         onConversation: data => {
           streamConversationId = data.conversation_id;
           setActiveConversationId(data.conversation_id);
+          // issue #260：预创建会话的首条消息由后端补出标题，列表即时更新，
+          // 不用等下一次重新拉取。
+          if (data.title) {
+            setConversations(items => items.map(item => (
+              item.id === data.conversation_id ? { ...item, title: data.title } : item
+            )));
+          }
         },
         onStepStart: step => setExecutionSteps(items => [
           ...items.filter(item => item.id !== step.id),
