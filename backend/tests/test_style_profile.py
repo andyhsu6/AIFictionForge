@@ -314,10 +314,21 @@ def test_validate_accepts_quantified_item_with_vague_word():
     validate_style_profile(data)
 
 
-def test_validate_rejects_item_without_quantifier_or_action_verb():
+def test_validate_allows_specific_craft_guidance_without_quantifier():
+    """具体写作指导（无数字、无白名单动词）不应被硬拒。"""
     data = _profile()
     data["do"][2] = "白描手法为主"
-    with pytest.raises(ValueError, match="可执行约束"):
+    validate_style_profile(data)
+
+    data = _profile()
+    data["do"][2] = "情绪用动作外化：攥拳、挠头、戳胸口"
+    validate_style_profile(data)
+
+
+def test_validate_rejects_vague_adjective_without_quantifier():
+    data = _profile()
+    data["do"][2] = "语言要优美"
+    with pytest.raises(ValueError, match="空泛形容词"):
         validate_style_profile(data)
 
 

@@ -127,6 +127,24 @@ class VolumeProfileGenerateResponse(BaseModel):
     anchors_reused: bool = Field(
         default=True, description="卷画像不重建锚点，沿用项目级锚点池"
     )
+    full_profile_created: bool = Field(
+        default=False, description="本次是否补生成了全书画像并设为项目默认"
+    )
+    full_profile_error: bool = Field(
+        default=False, description="全书画像补生成失败（分卷画像仍照常生成）"
+    )
+    full_profile_skipped: bool = Field(
+        default=False, description="全书画像样本不足，未补生成"
+    )
+    full_profile_degraded: bool = Field(
+        default=False, description="全书画像使用本地统计降级结果（未设为默认）"
+    )
+    full_profile_default_kept: bool = Field(
+        default=False, description="全书画像已生成，保留用户手动选择的默认风格"
+    )
+    needs_full_profile: bool = Field(
+        default=False, description="dry_run 预览：项目当前还没有全书画像"
+    )
 
 
 class VolumeProfileInfo(BaseModel):

@@ -40,6 +40,7 @@ from app.database import Base
 from app.models.chapter import Chapter
 from app.models.project import Project
 from app.models.project_default_style import ProjectDefaultStyle
+from app.models.project_style_anchor import ProjectStyleAnchor
 from app.models.writing_style import WritingStyle
 from app.schemas.writing_style import SetDefaultStyleRequest, VolumeProfileGenerateRequest
 from app.services.book_import_service import BookImportService
@@ -598,5 +599,369 @@ def test_set_default_rejects_volume_profile_but_allows_full_profile():
             db,
         )
         assert await default_style_id(db) == FULL_PROFILE_ID
+
+    _run(scenario)
+
+
+# ========== 6. 只生成分卷画像时自动补全书画像 ==========
+
+
+async def seed_project_without_profile(db, *, chapter_count: int = 30) -> Project:
+    """项目 + 1..N 章 + 全局预设，但没有全书画像（只生成过分卷画像的用户场景）。"""
+    project = Project(id=PROJECT_ID, user_id=USER_ID, title="占位项目", current_words=0)
+    chapters = [
+        Chapter(
+            project_id=PROJECT_ID,
+            chapter_number=number,
+            title=f"第{number}章",
+            content="占位正文段落。" * 40,
+            word_count=280,
+        )
+        for number in range(1, chapter_count + 1)
+    ]
+    preset = WritingStyle(
+        id=PRESET_STYLE_ID,
+        user_id=None,
+        name="预设一",
+        style_type="preset",
+        preset_id="natural",
+        prompt_content="预设风格内容",
+        order_index=1,
+    )
+    db.add_all([project, *chapters, preset])
+    await db.commit()
+    return project
+
+
+async def full_profile_rows(db):
+    return (
+        await db.execute(
+            select(WritingStyle).where(
+                WritingStyle.user_id == USER_ID,
+                WritingStyle.preset_id == profile_preset_id(PROJECT_ID),
+            )
+        )
+    ).scalars().all()
+
+
+async def anchor_count(db):
+    return len(
+        (
+            await db.execute(
+                select(ProjectStyleAnchor).where(
+                    ProjectStyleAnchor.project_id == PROJECT_ID
+                )
+            )
+        ).scalars().all()
+    )
+
+
+def _fake_extract_with_ranges(ranges):
+    async def fake_extract(self, **kwargs):
+        numbers = [chapter.chapter_number for chapter in kwargs["chapters"]]
+        return {
+            "skipped": False,
+            "prompt_content": f"画像内容·{numbers[0]}-{numbers[-1]}",
+            "description": "占位画像描述",
+            "degraded": False,
+            "confidence": 0.66,
+            "sample_chars": len(numbers) * 100,
+            "profile_data": {"version": 1, "confidence": 0.66},
+            "profile_version": 1,
+            "ranges": ranges,
+        }
+
+    return fake_extract
+
+
+def test_volume_dry_run_reports_missing_full_profile_without_writing(monkeypatch):
+    """dry_run 只报告缺全书画像，不写任何行（含全书画像与卷画像）。"""
+    monkeypatch.setattr(
+        BookImportService, "_extract_style_profile", _fake_extract_with_ranges([])
+    )
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}],
+                dry_run=True,
+            ),
+            db=db,
+        )
+
+        assert result["dry_run"] is True
+        assert result["needs_full_profile"] is True
+        assert result["full_profile_created"] is False
+        assert await full_profile_rows(db) == []
+        assert await volume_rows(db) == []
+        assert await default_style_id(db) is None
+
+    _run(scenario)
+
+
+def test_volume_write_creates_full_profile_and_default(monkeypatch):
+    """写库时缺全书画像 → 用全部章节补一份、设为默认并建锚点。"""
+    calls: list[list[int]] = []
+    monkeypatch.setattr(
+        BookImportService,
+        "_extract_style_profile",
+        _fake_extract_with_ranges([{"chapter": 1, "start": 0, "end": 200}]),
+    )
+    original = BookImportService._extract_style_profile
+
+    async def tracking(self, **kwargs):
+        calls.append([c.chapter_number for c in kwargs["chapters"]])
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(BookImportService, "_extract_style_profile", tracking)
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[
+                    {"start_chapter": 1, "end_chapter": 10},
+                    {"start_chapter": 11, "end_chapter": 20},
+                ]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is True
+        assert result["full_profile_error"] is False
+        assert result["needs_full_profile"] is False
+        # 第一次调用用全部 30 章生成全书画像，随后才是各卷
+        assert calls[0] == list(range(1, 31))
+        assert calls[1:] == [list(range(1, 11)), list(range(11, 21))]
+
+        full_rows = await full_profile_rows(db)
+        assert len(full_rows) == 1
+        full = full_rows[0]
+        assert full.style_type == "profile"
+        assert full.preset_id == profile_preset_id(PROJECT_ID)
+        assert full.user_id == USER_ID
+        assert full.profile_json
+        assert await default_style_id(db) == full.id
+        assert await anchor_count(db) >= 1
+
+        # 卷画像照常写入，且不抢默认
+        assert len(await volume_rows(db)) == 2
+        assert await default_style_id(db) == full.id
+
+    _run(scenario)
+
+
+def test_volume_write_skips_when_full_profile_exists(monkeypatch):
+    """全书画像已存在时不重复抽取、不覆盖（full_profile_created=False）。"""
+    calls: list[list[int]] = []
+    monkeypatch.setattr(
+        BookImportService, "_extract_style_profile", _fake_extract_with_ranges([])
+    )
+    original = BookImportService._extract_style_profile
+
+    async def tracking(self, **kwargs):
+        calls.append([c.chapter_number for c in kwargs["chapters"]])
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(BookImportService, "_extract_style_profile", tracking)
+
+    async def scenario(db):
+        await seed_project(db)  # 自带全书画像且是默认
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[
+                    {"start_chapter": 1, "end_chapter": 10},
+                    {"start_chapter": 11, "end_chapter": 20},
+                ]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is False
+        assert result["full_profile_error"] is False
+        assert result["needs_full_profile"] is False
+        # 只有两卷各一次抽取，没有为全书画像再调一次
+        assert calls == [list(range(1, 11)), list(range(11, 21))]
+        assert len(await full_profile_rows(db)) == 1
+        full = (await full_profile_rows(db))[0]
+        assert full.id == FULL_PROFILE_ID
+        assert full.prompt_content == "全书画像内容"
+        assert await default_style_id(db) == FULL_PROFILE_ID
+
+    _run(scenario)
+
+
+def test_volume_write_survives_full_profile_failure(monkeypatch):
+    """全书画像抽取失败 → 分卷仍成功，响应标记 full_profile_error。"""
+
+    async def failing_on_full_set(self, **kwargs):
+        numbers = [chapter.chapter_number for chapter in kwargs["chapters"]]
+        if len(numbers) > 10:  # 只有"全部章节"这一次失败
+            raise RuntimeError("占位：AI 调用失败")
+        return {
+            "skipped": False,
+            "prompt_content": f"卷画像内容·{numbers[0]}-{numbers[-1]}",
+            "description": "占位画像描述",
+            "degraded": False,
+            "confidence": 0.5,
+            "sample_chars": 2800,
+            "profile_data": {"version": 1},
+            "profile_version": 1,
+            "ranges": [],
+        }
+
+    monkeypatch.setattr(
+        BookImportService, "_extract_style_profile", failing_on_full_set
+    )
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[
+                    {"start_chapter": 1, "end_chapter": 10},
+                    {"start_chapter": 11, "end_chapter": 20},
+                ]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is False
+        assert result["full_profile_error"] is True
+        assert result["needs_full_profile"] is False
+        assert await full_profile_rows(db) == []
+        # 分卷照常写入并提交
+        rows = await volume_rows(db)
+        assert len(rows) == 2
+        assert {row.preset_id for row in rows} == {
+            f"profile:{PROJECT_ID}:v1",
+            f"profile:{PROJECT_ID}:v2",
+        }
+        assert all(item.style_id for item in result["volumes"])
+
+    _run(scenario)
+
+
+def test_volume_auto_full_profile_keeps_user_selected_default(monkeypatch):
+    """用户手选了默认风格时，分卷自动补全不抢默认（§5.2 同语义）。"""
+    monkeypatch.setattr(
+        BookImportService,
+        "_extract_style_profile",
+        _fake_extract_with_ranges([{"chapter": 1, "start": 0, "end": 200}]),
+    )
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+        preset = (
+            await db.execute(
+                select(WritingStyle).where(WritingStyle.user_id.is_(None))
+            )
+        ).scalars().first()
+        db.add(ProjectDefaultStyle(project_id=PROJECT_ID, style_id=preset.id))
+        await db.commit()
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is True
+        assert result["full_profile_default_kept"] is True
+        assert result["full_profile_degraded"] is False
+        assert len(await full_profile_rows(db)) == 1
+        # 用户手选的默认保留
+        assert await default_style_id(db) == preset.id
+
+    _run(scenario)
+
+
+def test_volume_auto_full_profile_degraded_does_not_steal_default(monkeypatch):
+    """降级（本地统计）的全书画像不抢默认。"""
+
+    async def degraded_extract(self, **kwargs):
+        numbers = [chapter.chapter_number for chapter in kwargs["chapters"]]
+        return {
+            "skipped": False,
+            "prompt_content": "降级画像内容",
+            "description": "占位降级描述",
+            "degraded": True,
+            "confidence": 0.3,
+            "sample_chars": len(numbers) * 100,
+            "profile_data": {"version": 1, "confidence": 0.3, "source": "local"},
+            "profile_version": 1,
+            "ranges": [{"chapter": 1, "start": 0, "end": 200}],
+        }
+
+    monkeypatch.setattr(BookImportService, "_extract_style_profile", degraded_extract)
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is True
+        assert result["full_profile_degraded"] is True
+        assert result["full_profile_default_kept"] is False
+        assert len(await full_profile_rows(db)) == 1
+        # 降级画像落库，但不设为默认
+        assert await default_style_id(db) is None
+
+    _run(scenario)
+
+
+def test_volume_auto_full_profile_upsert_failure_keeps_volumes(monkeypatch):
+    """全书画像写库失败（savepoint 内）不影响分卷画像落库。"""
+    monkeypatch.setattr(
+        BookImportService,
+        "_extract_style_profile",
+        _fake_extract_with_ranges([{"chapter": 1, "start": 0, "end": 200}]),
+    )
+
+    async def boom(self, **kwargs):
+        raise RuntimeError("upsert failed")
+
+    monkeypatch.setattr(BookImportService, "_upsert_project_profile_style", boom)
+
+    async def scenario(db):
+        await seed_project_without_profile(db)
+
+        result = await generate_project_profile_volumes(
+            PROJECT_ID,
+            request=make_request(),
+            payload=VolumeProfileGenerateRequest(
+                volumes=[{"start_chapter": 1, "end_chapter": 10}]
+            ),
+            db=db,
+        )
+
+        assert result["full_profile_created"] is False
+        assert result["full_profile_error"] is True
+        # 分卷仍成功提交
+        assert len(await volume_rows(db)) == 1
+        assert await full_profile_rows(db) == []
 
     _run(scenario)

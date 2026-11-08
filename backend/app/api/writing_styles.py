@@ -512,7 +512,10 @@ async def generate_project_profile_volumes(
     - ``dry_run=True`` 只返回抽取摘要（不写库）；
     - 卷画像已被用户手改（``profile_edited``）时默认跳过，``overwrite_edited``
       才覆盖；
-    - 锚点是项目级共用一个池，这里不重建（沿用全书画像导入时建立的锚点）。
+    - 写库时若项目还没有全书画像（``profile:<project_id>``），用全部章节补生成
+      一份并设为默认，否则生成章节时画像/锚点都不生效（只生成分卷画像的用户场景）；
+      该步骤失败只记 warning，不阻断分卷生成；
+    - 卷画像本身不重建锚点（锚点池由全书画像维护）。
     """
     user_id = get_current_user_id(request)
     project = await _require_owned_project(db, project_id, user_id)
@@ -568,7 +571,87 @@ async def generate_project_profile_volumes(
 
     existing = {item["index"]: item for item in await list_project_volumes(db, project_id)}
 
+    # 全书画像是否已存在：存在则完全跳过（不重复调用 AI）
+    full_profile_exists = (
+        await db.execute(
+            select(WritingStyle.id).where(
+                WritingStyle.user_id == user_id,
+                WritingStyle.preset_id == profile_preset_id(project_id),
+            )
+        )
+    ).scalars().first() is not None
+
     service = BookImportService()
+
+    # 只生成分卷画像时项目仍可能没有全书画像：这里用全部章节补一份，
+    # 否则生成章节时画像与锚点都不生效。失败不阻断分卷生成。
+    # 默认替换遵循 §5.2：只在"原本无默认"时设置；用户手选的默认保留。
+    current_default_id = (
+        await db.execute(
+            select(ProjectDefaultStyle.style_id).where(
+                ProjectDefaultStyle.project_id == project_id
+            )
+        )
+    ).scalar_one_or_none()
+    full_profile_created = False
+    full_profile_error = False
+    full_profile_skipped = False
+    full_profile_degraded = False
+    full_profile_default_kept = False
+    if not payload.dry_run and not full_profile_exists:
+        try:
+            full_profile = await service._extract_style_profile(
+                db=db,
+                user_id=user_id,
+                project=project,
+                chapters=chapters,
+                content_language=None,
+                extract_mode="full",
+            )
+            if full_profile.get("skipped"):
+                logger.warning(
+                    f"项目 {project_id} 全书画像样本不足，未补生成（不影响分卷画像）"
+                )
+                full_profile_skipped = True
+            else:
+                full_profile_degraded = bool(full_profile.get("degraded"))
+                # 降级画像（本地统计）不抢默认；用户手选的默认也不抢。
+                replace_default = current_default_id is None and not full_profile_degraded
+                full_profile_default_kept = (
+                    current_default_id is not None and not full_profile_degraded
+                )
+                # savepoint 隔离：这一步失败不回滚已生成的分卷画像，
+                # 也不会把外层事务置为失败状态。
+                async with db.begin_nested():
+                    style_id = await service._upsert_project_profile_style(
+                        db=db,
+                        project=project,
+                        user_id=user_id,
+                        prompt_content=full_profile["prompt_content"],
+                        description=full_profile.get("description") or "",
+                        replace_default=replace_default,
+                        profile_data=full_profile.get("profile_data"),
+                        profile_version=full_profile.get("profile_version"),
+                    )
+                    if style_id is None:
+                        raise RuntimeError("全书画像写入被手改保护拒绝")
+                    await create_project_style_anchors(
+                        db,
+                        project_id=project_id,
+                        ranges=full_profile.get("ranges") or [],
+                        chapter_contents={
+                            chapter.chapter_number: chapter.content or ""
+                            for chapter in db_chapters
+                        },
+                    )
+                full_profile_created = True
+        except Exception as exc:
+            logger.warning(
+                f"项目 {project_id} 全书画像补生成失败，继续生成分卷画像"
+                f"（异常类型 {type(exc).__name__}）"
+            )
+            full_profile_error = True
+
     items: list[VolumeProfileItem] = []
     for index, start, end, subset in subsets:
         existing_row = None
@@ -638,7 +721,8 @@ async def generate_project_profile_volumes(
         await db.commit()
         logger.info(
             f"项目 {project_id} 分卷画像已生成（{len(items)} 卷，"
-            f"覆盖手改={payload.overwrite_edited}）"
+            f"覆盖手改={payload.overwrite_edited}，"
+            f"补全书画像={full_profile_created}）"
         )
 
     return {
@@ -646,6 +730,12 @@ async def generate_project_profile_volumes(
         "total": len(items),
         "dry_run": payload.dry_run,
         "anchors_reused": True,
+        "full_profile_created": full_profile_created,
+        "full_profile_error": full_profile_error,
+        "full_profile_skipped": full_profile_skipped,
+        "full_profile_degraded": full_profile_degraded,
+        "full_profile_default_kept": full_profile_default_kept,
+        "needs_full_profile": bool(payload.dry_run and not full_profile_exists),
     }
 
 
