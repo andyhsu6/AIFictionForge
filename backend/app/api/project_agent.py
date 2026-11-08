@@ -27,6 +27,7 @@ from app.schemas.project_agent import (
     AgentConversationCreate,
     AgentConversationDetail,
     AgentConversationResponse,
+    AgentConversationUpdate,
     AgentPlanApprovalRequest,
     AgentPlanApprovalResponse,
     AgentToolCallResponse,
@@ -192,12 +193,36 @@ async def create_conversation(
 ):
     user_id = _user_id(request)
     await verify_project_access(project_id, user_id, db)
+    has_explicit_title = bool(payload.title and payload.title.strip())
     conversation = AgentConversation(
         user_id=user_id,
         project_id=project_id,
         title=(payload.title or "新对话").strip()[:200] or "新对话",
+        # 显式命名的会话不允许自动标题覆盖（issue #262）。
+        title_user_edited=has_explicit_title,
     )
     db.add(conversation)
+    await db.commit()
+    await db.refresh(conversation)
+    return conversation
+
+
+@router.patch("/conversations/{conversation_id}", response_model=AgentConversationResponse)
+async def rename_conversation(
+    project_id: str,
+    conversation_id: str,
+    payload: AgentConversationUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """用户重命名会话；标记 title_user_edited，自动标题不再覆盖（issue #262）。"""
+    user_id = _user_id(request)
+    await verify_project_access(project_id, user_id, db)
+    conversation = await _get_conversation(
+        db, conversation_id=conversation_id, project_id=project_id, user_id=user_id
+    )
+    conversation.title = payload.title
+    conversation.title_user_edited = True
     await db.commit()
     await db.refresh(conversation)
     return conversation

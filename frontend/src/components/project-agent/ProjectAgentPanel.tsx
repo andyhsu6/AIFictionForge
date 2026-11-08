@@ -6,6 +6,7 @@ import {
   CloseOutlined,
   CloseCircleOutlined,
   DeleteOutlined,
+  EditOutlined,
   HistoryOutlined,
   LoadingOutlined,
   MenuFoldOutlined,
@@ -24,6 +25,7 @@ import {
   Drawer,
   Dropdown,
   Input,
+  Modal,
   Popconfirm,
   Space,
   Spin,
@@ -191,6 +193,9 @@ export default function ProjectAgentPanel({
   });
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>();
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
   const [executionSteps, setExecutionSteps] = useState<AgentExecutionStep[]>([]);
@@ -452,6 +457,34 @@ export default function ProjectAgentPanel({
     }
   };
 
+  const openRename = () => {
+    const current = conversations.find(item => item.id === activeConversationId);
+    setRenameValue(current?.title || '');
+    setRenameOpen(true);
+  };
+
+  const submitRename = async () => {
+    if (!activeConversationId) return;
+    const title = renameValue.trim();
+    if (!title) return;
+    try {
+      setRenaming(true);
+      const updated = await projectAgentApi.renameConversation(
+        projectId, activeConversationId, title
+      );
+      setConversations(items => items.map(item => (
+        item.id === updated.id ? { ...item, ...updated } : item
+      )));
+      setRenameOpen(false);
+      message.success(t('renameSuccess'));
+    } catch (error) {
+      console.error('重命名灵创创作助手对话失败:', error);
+      message.error(t('renameFailed'));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content || sendingRef.current) return;
@@ -604,6 +637,8 @@ export default function ProjectAgentPanel({
       sendingRef.current = false;
       abortRef.current = undefined;
       setStreamingMessageId(undefined);
+      // issue #262：模型标题在首轮后异步生成，延迟拉一次列表让标题尽快出现。
+      window.setTimeout(() => { void loadConversations(); }, 1500);
     }
   }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, planMode, projectId, reloadConversation, t]);
 
@@ -1041,6 +1076,11 @@ export default function ProjectAgentPanel({
           </Dropdown>
           <Tooltip title={t('newConversation')}><Button type="text" icon={<PlusOutlined />} onClick={() => void newConversation()} /></Tooltip>
           {activeConversationId && (
+            <Tooltip title={t('renameConversation')}>
+              <Button type="text" icon={<EditOutlined />} onClick={openRename} />
+            </Tooltip>
+          )}
+          {activeConversationId && (
             <Popconfirm title={t('deleteCurrentConfirm')} onConfirm={() => void removeConversation()}>
               <Tooltip title={t('deleteConversation')}><Button type="text" danger icon={<DeleteOutlined />} /></Tooltip>
             </Popconfirm>
@@ -1051,6 +1091,24 @@ export default function ProjectAgentPanel({
             <Tooltip title={t('collapse')}><Button type="text" icon={<MenuFoldOutlined />} onClick={() => changeExpanded(false)} /></Tooltip>
           )}
         </Space>
+        <Modal
+          title={t('renameConversation')}
+          open={renameOpen}
+          onOk={() => void submitRename()}
+          onCancel={() => setRenameOpen(false)}
+          confirmLoading={renaming}
+          okText={t('renameSave')}
+          cancelText={t('renameCancel')}
+          destroyOnClose
+        >
+          <Input
+            value={renameValue}
+            onChange={event => setRenameValue(event.target.value)}
+            placeholder={t('renamePlaceholder')}
+            maxLength={60}
+            onPressEnter={() => void submitRename()}
+          />
+        </Modal>
       </div>
 
       <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', padding: 12 }}>

@@ -2,11 +2,25 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AgentConversationCreate(BaseModel):
     title: Optional[str] = Field(None, max_length=200)
+
+
+class AgentConversationUpdate(BaseModel):
+    """用户重命名会话（issue #262）。"""
+
+    title: str = Field(..., max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("标题不能为空")
+        return normalized
 
 
 class AgentConversationResponse(BaseModel):

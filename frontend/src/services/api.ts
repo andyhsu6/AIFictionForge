@@ -1343,6 +1343,12 @@ export const projectAgentApi = {
       `/projects/${projectId}/agent/conversations/${conversationId}`
     ),
 
+  renameConversation: (projectId: string, conversationId: string, title: string) =>
+    api.patch<unknown, AgentConversation>(
+      `/projects/${projectId}/agent/conversations/${conversationId}`,
+      { title },
+    ),
+
   deleteConversation: (projectId: string, conversationId: string) =>
     api.delete(`/projects/${projectId}/agent/conversations/${conversationId}`),
 
