@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 import json
 import asyncio
 import hashlib
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timedelta
 from asyncio import Queue, Lock
 from math import ceil
@@ -63,6 +63,7 @@ from app.services.ai_service import (
     AIService,
     detect_max_output_tokens,
     ensure_thinking_model_min_tokens,
+    plan_output_budget,
 )
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
@@ -158,6 +159,200 @@ def _build_lightweight_chapter_summary(content: str, max_length: int = 300) -> s
         return ""
     normalized = " ".join(content.split())
     return normalized[:max_length]
+
+
+# 「疑似空转」阈值：只在 finish_reason=stop 且正文明显偏短时用。
+_TRUNCATION_MIN_RATIO = 0.5
+
+
+def _is_truncated_chapter_content(
+    content: str,
+    target_word_count: int,
+    finish_reason: Optional[str],
+    chapter_label: Optional[str] = None,
+) -> bool:
+    """判断这一章是否算「没写完」：空正文 / 被上限切断。
+
+    - 空正文（含纯空白）：一律失败 —— 0 字章节不得冒充成功。
+    - ``finish_reason == "length"``：**一律**算截断，与目标字数占比无关。该值的
+      语义就是「被输出上限切断、还想继续写」，50%~100% 的半截章节同样是残稿。
+    - 其它结束原因（含 ``stop``）：正文非空即视为成功。正文明显偏短（不足目标一半）
+      只打 WARNING 做可观测性统计（「模型偷懒」频率），**不走失败路径** ——
+      「短但完整」是写作质量问题，不是数据完整性问题。
+
+    ``target_word_count`` 在该函数里**只用于那条告警**；告警阈值（0.5）仅在中文口径
+    （1 字符 ≈ 1 字，见 ai_service `_FULL_BOOK_BUDGET_RATIO` 注释）下有意义。
+    """
+    text = content or ""
+    label = chapter_label or "章节"
+    if not text.strip():
+        return True
+    if finish_reason == "length":
+        return True
+    try:
+        target = int(target_word_count or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if target > 0 and len(text) < target * _TRUNCATION_MIN_RATIO:
+        logger.warning(
+            f"⚠️ {label}偏短但已自然收尾（finish_reason={finish_reason or '未知'}）："
+            f"正文 {len(text)} 字 / 目标 {target} 字，按成功处理"
+        )
+    return False
+
+
+def _reasoning_chars_from_usage(usage: Any, content_chars: int) -> Optional[int]:
+    """推理字符的估算值：completion_tokens - 正文字符（无 usage 时返回 None）。
+
+    OpenAI 兼容客户端目前只把 reasoning 计入日志、不单独回传，因此这里只能给
+    估算值；消息里必须标 `≈`，不得冒充精确读数。
+    """
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if completion_tokens is None:
+        return None
+    try:
+        estimated = int(completion_tokens) - int(content_chars)
+    except (TypeError, ValueError):
+        return None
+    return estimated if estimated > 0 else None
+
+
+# 截断后的预算升级：有正文时首轮 + 最多 2 次重试；空正文最多 1 次（见下方判定）。
+_BUDGET_MAX_RETRIES = 2
+# 拿不到推理用量时的保守升级倍数。
+_BUDGET_FALLBACK_GROWTH = 2
+# 推理用量的预留倍数（推理与正文共享预算，留 50% 余量）。
+_REASONING_BUDGET_RATIO = 1.5
+# 正文为 0 且**有实测 reasoning** 时的跳幅倍数：首跳已按 reasoning 兜住（实测那章
+# 是 64565，覆盖 43678），后续不该再按 2× 一步跳到十几万，故降到 1.5×。
+_EMPTY_CONTENT_GROWTH_WITH_REASONING = 1.5
+# 正文为 0 且拿不到 reasoning 时的盲抬倍数。
+_EMPTY_CONTENT_GROWTH_NO_REASONING = 2
+# 截断类错误允许外层（批量 max_retries 循环）重试的上限：1 次，不是 3 次。
+_TRUNCATION_OUTER_RETRIES = 1
+
+
+class ChapterGenerationTruncatedError(RuntimeError):
+    """截断类失败：换更大预算重试有意义（外层最多再试 1 次）。"""
+
+
+class NonRetryableChapterGenerationError(ChapterGenerationTruncatedError):
+    """不可重试的生成失败：预算已到上限，或连续两次空正文。
+
+    外层批量重试会整段重放「内层预算尝试」，对一个已证明写不出正文的模型再跑
+    3 次只是烧 3 次全额调用，故明确禁止外层重试。
+    """
+
+
+def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
+    """外层对该异常允许的重试次数（批量 max_retries 的有效值）。"""
+    if isinstance(exc, NonRetryableChapterGenerationError):
+        return 0
+    if isinstance(exc, ChapterGenerationTruncatedError):
+        return min(_TRUNCATION_OUTER_RETRIES, task_max_retries)
+    return task_max_retries
+
+
+def _is_budget_retry_exhausted(
+    *,
+    upgraded_budget: Optional[int],
+    budget_retries: int,
+    content_is_empty: bool,
+) -> bool:
+    """内层预算重试是否到此为止。
+
+    - 算不出更大预算（含已到 cap）→ 停；
+    - **连续两次空正文** → 停：第一次已按实测 reasoning 抬到 64565，还是 0 字
+      说明这一轮模型就是写不出，再升只会多烧调用；
+    - 有正文的截断允许用满 `_BUDGET_MAX_RETRIES` 次升级。
+    """
+    if upgraded_budget is None:
+        return True
+    if content_is_empty and budget_retries >= 1:
+        return True
+    return budget_retries >= _BUDGET_MAX_RETRIES
+
+
+def _is_non_retryable_truncation(
+    *,
+    upgraded_budget: Optional[int],
+    content_is_empty: bool,
+) -> bool:
+    """**仅在 `_is_budget_retry_exhausted` 为真之后**判断该失败是否不可重试。
+
+    此时：算不出更大预算（到 cap）→ 外层 0 次；仍是空正文 → 外层 0 次
+    （首跳已按实测 reasoning 抬过，再整段重放预算阶梯只会多烧调用）。
+    有正文的截断 → 可外层重试 1 次。
+    """
+    return upgraded_budget is None or content_is_empty
+
+
+def _next_budget_after_truncation(
+    *,
+    content_budget: int,
+    current_max_tokens: int,
+    cap: int,
+    reasoning_tokens: Optional[int] = None,
+    content_chars: int = 0,
+) -> Optional[int]:
+    """截断后下一轮的 max_tokens；返回 None 表示不能再升、不应重试。
+
+    - 正文为 0（``content_chars == 0``）→ ``content_budget + max(1.5 × current,
+      ceil(reasoning × 1.5) + 2048)``：首跳用实测量兜底，同时保留 1.5× 下限；
+      无用量时才退化为 2×（看不到推理规模，只能盲抬）。
+    - 有正文 + 拿得到真实推理用量 → ``content_budget + ceil(reasoning × 1.5) + 2048``。
+    - 有正文 + 拿不到用量 → ``current × 2``（保守）。
+    结果钳到 ``cap``；钳完仍 <= 当前预算时返回 None（再试也不会变大）。
+    """
+    if current_max_tokens >= cap:
+        return None
+
+    if content_chars <= 0:
+        if reasoning_tokens is not None and reasoning_tokens > 0:
+            bumped = max(
+                ceil(current_max_tokens * _EMPTY_CONTENT_GROWTH_WITH_REASONING),
+                ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048,
+            )
+        else:
+            bumped = current_max_tokens * _EMPTY_CONTENT_GROWTH_NO_REASONING
+        wanted = content_budget + bumped
+    elif reasoning_tokens is not None and reasoning_tokens > 0:
+        wanted = content_budget + ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048
+    else:
+        wanted = current_max_tokens * _BUDGET_FALLBACK_GROWTH
+
+    upgraded = min(wanted, cap)
+    if upgraded <= current_max_tokens:
+        return None
+    return upgraded
+
+
+def _truncation_error_message(
+    *,
+    chapter_label: str,
+    content_chars: int,
+    target_word_count: int,
+    finish_reason: Optional[str],
+    reasoning_tokens: Optional[int],
+    reasoning_chars: Optional[int],
+    breakdown: Dict[str, Any],
+    budget_attempts: List[int],
+) -> str:
+    """截断失败的诊断信息（含推理用量、结束原因与每次尝试的预算）。"""
+    reasoning_tokens_text = (
+        str(reasoning_tokens) if reasoning_tokens is not None else "未知（客户端未回传）"
+    )
+    reasoning_chars_text = f"≈{reasoning_chars}" if reasoning_chars is not None else "未知"
+    return (
+        f"{chapter_label}生成被截断：预计推理占用了输出预算"
+        f"（正文 {content_chars} 字 / 目标 {target_word_count} 字，"
+        f"finish_reason={finish_reason or '未知'}，"
+        f"reasoning_tokens={reasoning_tokens_text}，"
+        f"reasoning_chars={reasoning_chars_text}，"
+        f"尝试预算={budget_attempts}，最终 max_tokens={budget_attempts[-1]}，"
+        f"content={breakdown.get('content')}，reserve={breakdown.get('reserve')}，"
+        f"cap={breakdown.get('cap')}，context_room={breakdown.get('context_room')}）"
+    )
 
 
 async def _set_analysis_task_terminal_state(
@@ -1972,27 +2167,32 @@ async def generate_chapter_content_stream(
 确保在整个章节创作过程中始终保持风格的一致性。"""
                     logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
                 
-                # 🔢 计算 max_tokens 限制
-                # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-                # 同时设置上限防止过长，下限确保基本可用
-                calculated_max_tokens = int(target_word_count * 3)
-                calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-                logger.info(f"📊 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
-                
-                # 🔢 计算 max_tokens 限制
-                # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-                # 同时设置上限防止过长，下限确保基本可用
-                calculated_max_tokens = int(target_word_count * 3)
-                calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-                logger.info(f"📊 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
+                # 🔢 输出预算：单一来源（思考型推理预留 + 网关实测上限 + 上下文剩余），
+                # 不再本地硬算后显式传 max_tokens —— 那会绕过 resolve_effective_max_tokens
+                # 的全部能力判定（2026-11-08 批量第 58 章空正文的根因）。
+                generated_model = custom_model or getattr(user_ai_service, "default_model", None)
+                calculated_max_tokens, budget_breakdown = plan_output_budget(
+                    target_chars=target_word_count,
+                    model=generated_model,
+                    base_url=getattr(user_ai_service, "base_url", None),
+                )
+                logger.info(
+                    f"📊 输出预算: 目标 {target_word_count} 字 → "
+                    f"content={budget_breakdown['content']} "
+                    f"reserve={budget_breakdown['reserve']} "
+                    f"cap={budget_breakdown['cap']} "
+                    f"→ max_tokens={calculated_max_tokens}"
+                )
                 
                 # 准备生成参数
+                finish_sink: Dict[str, Any] = {}
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
                     "tool_choice": "required",
                     "max_tokens": calculated_max_tokens,
-                    "auto_mcp": bool(generate_request.enable_mcp)
+                    "auto_mcp": bool(generate_request.enable_mcp),
+                    "finish_sink": finish_sink,
                 }
                 if custom_model:
                     logger.info(f"  使用自定义模型: {custom_model}")
@@ -2029,6 +2229,32 @@ async def generate_chapter_content_stream(
                         yield await tracker.heartbeat()
                     
                     await asyncio.sleep(0)  # 让出控制权
+
+                # 截断判定：空正文/预算耗尽不得冒充成功（流已发给客户端，无法原地重生成，
+                # 因此这里明确报错而不是写一张 0 字章节）
+                finish_reason = finish_sink.get("finish_reason")
+                if _is_truncated_chapter_content(
+                    full_content,
+                    target_word_count,
+                    finish_reason,
+                    f"第{current_chapter.chapter_number}章",
+                ):
+                    usage = finish_sink.get("usage")
+                    budget_error = _truncation_error_message(
+                        chapter_label=f"第{current_chapter.chapter_number}章",
+                        content_chars=len(full_content),
+                        target_word_count=target_word_count,
+                        finish_reason=finish_reason,
+                        reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+                        reasoning_chars=_reasoning_chars_from_usage(
+                            usage, len(full_content)
+                        ),
+                        breakdown=budget_breakdown,
+                        budget_attempts=[calculated_max_tokens],
+                    )
+                    logger.error(f"❌ {budget_error}")
+                    yield await tracker.error(budget_error, error_code="task.failed")
+                    return
                 
                 # === 保存阶段 ===
                 yield await tracker.saving("正在保存章节...", 0.3)
@@ -2284,375 +2510,6 @@ async def generate_chapter_content_background(
         "status": "pending",
         "message": "任务已创建，请通过 GET /api/tasks/{task_id} 查询进度"
     }
-
-
-async def _run_chapter_generation_bg(
-    task_input: dict,
-    db: AsyncSession,
-    ai_service: AIService,
-    tracker,
-    user_id: str,
-    task_id: str,
-):
-    """后台执行章节生成（不使用SSE，直接生成并保存）"""
-    from app.services.chapter_context_service import (
-        OneToManyContextBuilder,
-        OneToOneContextBuilder
-    )
-
-    chapter_id = task_input["chapter_id"]
-    style_id = task_input.get("style_id")
-    target_word_count = task_input.get("target_word_count", 3000)
-    custom_model = task_input.get("model")
-    temp_narrative_perspective = task_input.get("narrative_perspective")
-    enable_mcp = task_input.get("enable_mcp", True)
-    write_lock = await get_db_write_lock(user_id)
-
-    # === 加载阶段 ===
-    await tracker.loading("加载章节信息...", 0.2)
-
-    chapter_result = await db.execute(
-        select(Chapter).where(Chapter.id == chapter_id)
-    )
-    current_chapter = chapter_result.scalar_one_or_none()
-    if not current_chapter:
-        await tracker.error("章节不存在", error_code="not_found.chapter")
-        return
-
-    await tracker.loading("加载项目信息...", 0.4)
-
-    project_result = await db.execute(
-        select(Project).where(Project.id == current_chapter.project_id)
-    )
-    project = project_result.scalar_one_or_none()
-    if not project:
-        await tracker.error("项目不存在", error_code="not_found.project")
-        return
-
-    outline_mode = project.outline_mode if project else 'one-to-many'
-
-    # 获取大纲
-    if current_chapter.outline_id:
-        outline_result = await db.execute(
-            select(Outline).where(Outline.id == current_chapter.outline_id)
-        )
-    else:
-        outline_result = await db.execute(
-            select(Outline)
-            .where(Outline.project_id == current_chapter.project_id)
-            .where(Outline.order_index == current_chapter.chapter_number)
-        )
-    outline = outline_result.scalar_one_or_none()
-
-    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
-    style_content = await _resolve_project_style_content(
-        db,
-        project,
-        current_chapter.chapter_number,
-        style_id,
-        user_id,
-    )
-
-    # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
-    style_content = await append_project_style_anchors(
-        db,
-        project=project,
-        style_content=style_content,
-        before_chapter_number=current_chapter.chapter_number,
-        override=_build_style_anchor_override(
-            enabled=task_input.get("style_anchor_enabled"),
-            chars=task_input.get("style_anchor_chars"),
-            count=task_input.get("style_anchor_count"),
-        ),
-    )
-
-    # === 构建上下文 ===
-    if outline_mode == 'one-to-one':
-        context_builder = OneToOneContextBuilder(
-            memory_service=memory_service,
-            foreshadow_service=foreshadow_service,
-            full_book_budget_chars=await _resolve_full_book_budget(
-                ai_service,
-                custom_model or getattr(ai_service, "default_model", None),
-            ),
-        )
-        chapter_context = await context_builder.build(
-            chapter=current_chapter,
-            project=project,
-            outline=outline,
-            user_id=user_id,
-            db=db,
-            target_word_count=target_word_count
-        )
-    else:
-        context_builder = OneToManyContextBuilder(
-            memory_service=memory_service,
-            foreshadow_service=foreshadow_service,
-            full_book_budget_chars=await _resolve_full_book_budget(
-                ai_service,
-                custom_model or getattr(ai_service, "default_model", None),
-            ),
-        )
-        chapter_context = await context_builder.build(
-            chapter=current_chapter,
-            project=project,
-            outline=outline,
-            user_id=user_id,
-            db=db,
-            style_content=style_content,
-            target_word_count=target_word_count,
-            temp_narrative_perspective=temp_narrative_perspective
-        )
-
-    await tracker.loading("上下文构建完成", 0.8)
-
-    # 确定叙事人称
-    chapter_perspective = (
-        temp_narrative_perspective or
-        project.narrative_perspective or
-        '第三人称'
-    )
-
-    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
-    generation_language = await resolve_user_generation_language(
-        db, user_id, task_input.get("content_language")
-    )
-
-    # === 准备提示词 ===
-    if outline_mode == 'one-to-one':
-        if chapter_context.continuation_point:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE_NEXT", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                previous_chapter_content=chapter_context.continuation_point,
-                previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
-                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-        else:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-    else:
-        if chapter_context.continuation_point:
-            previous_summary = chapter_context.previous_chapter_summary or "（无上一章摘要，请根据锚点续写）"
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY_NEXT", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                continuation_point=chapter_context.continuation_point,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                previous_chapter_summary=previous_summary,
-                recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or '',
-                content_language=generation_language
-            )
-        else:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-
-    # 应用写作风格
-    if style_content:
-        prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
-    else:
-        prompt = base_prompt
-    prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
-
-    # === 准备阶段 ===
-    await tracker.preparing("准备AI提示词...")
-
-    system_prompt_with_style = None
-    if style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))
-
-    generate_kwargs = {
-        "prompt": prompt,
-        "system_prompt": system_prompt_with_style,
-        "tool_choice": "required",
-        "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
-    }
-    if custom_model:
-        generate_kwargs["model"] = custom_model
-
-    # === 生成阶段 ===
-    full_content = ""
-    chunk_count = 0
-
-    await tracker.generating(
-        current_chars=0,
-        estimated_total=target_word_count
-    )
-
-    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-        # 检查是否被取消
-        if chunk_count % 10 == 0 and await tracker.check_cancelled():
-            logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
-            return
-
-        full_content += chunk
-        chunk_count += 1
-
-        # 每10个chunk更新一次进度
-        if chunk_count % 10 == 0:
-            await tracker.generating(
-                current_chars=len(full_content),
-                estimated_total=target_word_count,
-                message=f'正在创作中... 已生成 {len(full_content)} 字'
-            )
-
-        await asyncio.sleep(0)
-
-    # === 保存阶段 ===
-    if await tracker.check_cancelled():
-        logger.info(f"🚫 后台章节生成保存前被取消: {chapter_id}")
-        return
-
-    await tracker.saving("正在保存章节...", 0.3)
-
-    async with write_lock:
-        # 重新获取章节（确保最新状态）
-        chapter_result = await db.execute(
-            select(Chapter).where(Chapter.id == chapter_id)
-        )
-        current_chapter = chapter_result.scalar_one_or_none()
-        if not current_chapter:
-            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
-            return
-
-        old_word_count = current_chapter.word_count or 0
-        current_chapter.content = full_content
-        new_word_count = len(full_content)
-        current_chapter.word_count = new_word_count
-        current_chapter.status = "completed"
-        current_chapter.summary = _build_lightweight_chapter_summary(full_content)
-
-        # 更新项目字数
-        project_result = await db.execute(
-            select(Project).where(Project.id == current_chapter.project_id)
-        )
-        project_obj = project_result.scalar_one_or_none()
-        if project_obj:
-            project_obj.current_words = (project_obj.current_words or 0) - old_word_count + new_word_count
-
-        # 记录生成历史
-        history = GenerationHistory(
-            project_id=current_chapter.project_id,
-            chapter_id=current_chapter.id,
-            prompt=f"创作章节: 第{current_chapter.chapter_number}章 {current_chapter.title}",
-            generated_content=full_content[:500] if len(full_content) > 500 else full_content,
-            model="default"
-        )
-        db.add(history)
-
-        await db.commit()
-
-    logger.info(f"✅ 后台创作章节 {chapter_id} 完成，共 {new_word_count} 字")
-
-    # 🔮 自动标记伏笔
-    try:
-        plant_result = await foreshadow_service.auto_plant_pending_foreshadows(
-            db=db,
-            project_id=current_chapter.project_id,
-            chapter_id=chapter_id,
-            chapter_number=current_chapter.chapter_number,
-            chapter_content=full_content
-        )
-        if plant_result.get('planted_count', 0) > 0:
-            logger.info(f"🔮 自动标记伏笔已埋入: {plant_result['planted_count']}个")
-    except Exception as plant_error:
-        logger.warning(f"⚠️ 自动标记伏笔埋入失败: {str(plant_error)}")
-
-    # 创建分析任务
-    analysis_task = AnalysisTask(
-        chapter_id=chapter_id,
-        user_id=user_id,
-        project_id=current_chapter.project_id,
-        status='pending',
-        progress=0
-    )
-    db.add(analysis_task)
-    await db.commit()
-    await db.refresh(analysis_task)
-
-    logger.info(f"📋 后台生成：已创建分析任务: {analysis_task.id}")
-
-    await tracker.set_result({
-        "chapter_id": chapter_id,
-        "word_count": new_word_count,
-        "analysis_task_id": analysis_task.id,
-    })
-    await tracker.analyzing(0, "章节创作完成，准备分析...")
-
-    analysis_success = await analyze_chapter_background(
-        chapter_id=chapter_id,
-        user_id=user_id,
-        project_id=current_chapter.project_id,
-        task_id=analysis_task.id,
-        progress_callback=tracker.analyzing,
-    )
-    if not analysis_success:
-        raise RuntimeError("章节内容已生成，但章节分析失败")
-
-    # === 完成 ===
-    await tracker.complete(
-        f"创作和分析完成！共 {new_word_count} 字",
-        code="progress.creation_done_words", params={"word_count": new_word_count},
-    )
 
 
 def _build_analysis_task_status_payload(
@@ -3095,15 +2952,29 @@ async def _run_chapter_generation_bg(
 ⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
 确保在整个章节创作过程中始终保持风格的一致性。"""
 
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))
+    # 输出预算单一来源（见 plan_output_budget；不再本地 clamp 后显式传入）
+    generated_model = custom_model or getattr(ai_service, "default_model", None)
+    calculated_max_tokens, budget_breakdown = plan_output_budget(
+        target_chars=target_word_count,
+        model=generated_model,
+        base_url=getattr(ai_service, "base_url", None),
+    )
+    logger.info(
+        f"📊 输出预算: 目标 {target_word_count} 字 → "
+        f"content={budget_breakdown['content']} "
+        f"reserve={budget_breakdown['reserve']} "
+        f"cap={budget_breakdown['cap']} "
+        f"→ max_tokens={calculated_max_tokens}"
+    )
 
+    finish_sink: Dict[str, Any] = {}
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
         "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
+        "auto_mcp": bool(enable_mcp),
+        "finish_sink": finish_sink,
     }
     if custom_model:
         generate_kwargs["model"] = custom_model
@@ -3117,24 +2988,84 @@ async def _run_chapter_generation_bg(
         estimated_total=target_word_count
     )
 
-    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-        # 检查是否被取消
-        if chunk_count % 10 == 0 and await tracker.check_cancelled():
-            logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
+    budget_retries = 0
+    budget_attempts = [calculated_max_tokens]
+    while True:
+        full_content = ""
+        chunk_count = 0
+        finish_sink.clear()
+        generate_kwargs["max_tokens"] = calculated_max_tokens
+
+        async for chunk in ai_service.generate_text_stream(**generate_kwargs):
+            # 检查是否被取消
+            if chunk_count % 10 == 0 and await tracker.check_cancelled():
+                logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
+                return
+
+            full_content += chunk
+            chunk_count += 1
+
+            # 每10个chunk更新一次进度
+            if chunk_count % 10 == 0:
+                await tracker.generating(
+                    current_chars=len(full_content),
+                    estimated_total=target_word_count,
+                    message=f'正在创作中... 已生成 {len(full_content)} 字'
+                )
+
+            await asyncio.sleep(0)
+
+        finish_reason = finish_sink.get("finish_reason")
+        if not _is_truncated_chapter_content(
+            full_content,
+            target_word_count,
+            finish_reason,
+            f"第{current_chapter.chapter_number}章",
+        ):
+            break
+
+        # 截断失败：空正文 / 撞上限 / 疑似空转。推理吃掉了预算 → 升档重试。
+        # reasoning_tokens 取自本轮 API 回报的 usage（缺失时代码自动退化为 ×2）。
+        usage = finish_sink.get("usage")
+        reasoning_tokens = getattr(usage, "reasoning_tokens", None)
+        upgraded_budget = _next_budget_after_truncation(
+            content_budget=budget_breakdown["content"],
+            current_max_tokens=calculated_max_tokens,
+            cap=budget_breakdown["cap"],
+            reasoning_tokens=reasoning_tokens,
+            content_chars=len(full_content),
+        )
+        # 正文为 0 且已升过一次仍为 0 → 不可重试（首跳已按实测 reasoning 兜住）。
+        content_is_empty = not (full_content or "").strip()
+        exhausted = _is_budget_retry_exhausted(
+            upgraded_budget=upgraded_budget,
+            budget_retries=budget_retries,
+            content_is_empty=content_is_empty,
+        )
+        if exhausted:
+            budget_error = _truncation_error_message(
+                chapter_label=f"第{current_chapter.chapter_number}章",
+                content_chars=len(full_content),
+                target_word_count=target_word_count,
+                finish_reason=finish_reason,
+                reasoning_tokens=reasoning_tokens,
+                reasoning_chars=_reasoning_chars_from_usage(
+                    usage, len(full_content)
+                ),
+                breakdown=budget_breakdown,
+                budget_attempts=budget_attempts,
+            )
+            logger.error(f"❌ {budget_error}")
+            await tracker.error(budget_error, error_code="task.failed")
             return
 
-        full_content += chunk
-        chunk_count += 1
-
-        # 每10个chunk更新一次进度
-        if chunk_count % 10 == 0:
-            await tracker.generating(
-                current_chars=len(full_content),
-                estimated_total=target_word_count,
-                message=f'正在创作中... 已生成 {len(full_content)} 字'
-            )
-
-        await asyncio.sleep(0)
+        budget_retries += 1
+        logger.warning(
+            f"⚠️ 后台章节生成被截断（正文 {len(full_content)} 字 / 目标 {target_word_count} 字，"
+            f"finish_reason={finish_reason}），预算 {calculated_max_tokens} → {upgraded_budget} 重试"
+        )
+        calculated_max_tokens = upgraded_budget
+        budget_attempts.append(upgraded_budget)
 
     # === 保存阶段 ===
     await tracker.saving("正在保存章节...", 0.3)
@@ -3889,7 +3820,7 @@ async def batch_generate_chapters_in_order(
     1. 严格按章节序号顺序生成（不可跳过）
     2. 自动检测起始章节是否可生成
     3. 可选同步分析（影响耗时和质量）
-    4. 失败后终止，不继续后续章节
+    4. 单章失败不中断整批（失败明细进 failed_chapters，结束汇总）
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -4144,7 +4075,9 @@ async def execute_batch_generation_in_order(
     """
     按顺序执行批量生成任务（后台任务）
     - 严格按章节序号顺序
-    - 任一章节失败则终止后续生成
+    - 单章失败**不中断**整批：失败明细写入 `failed_chapters`，继续下一章，
+      结束时若存在失败章节则任务状态为 failed 并在 error_message 汇总
+    - 截断类错误外层最多重试 1 次；升级预算后正文仍为 0 的失败不可重试
     - 可选同步分析
     """
     db_session = None
@@ -4321,7 +4254,9 @@ async def execute_batch_generation_in_order(
 
                         if not analysis_result:
                             error_message = "分析函数返回失败"
-                            logger.error(f"❌ 章节分析失败，批量生成中断: 第{chapter.chapter_number}章")
+                            logger.error(
+                                f"❌ 章节分析失败，记录后继续下一章: 第{chapter.chapter_number}章"
+                            )
 
                             failed_info = {
                                 'chapter_id': chapter_id,
@@ -4332,17 +4267,15 @@ async def execute_batch_generation_in_order(
                             }
 
                             async with write_lock:
-                                if task.failed_chapters is None:
-                                    task.failed_chapters = []
-                                task.failed_chapters.append(failed_info)
-
-                                task.status = 'failed'
-                                task.error_message = f"第{chapter.chapter_number}章分析失败: {error_message}"[:500]
-                                task.completed_at = datetime.now()
+                                # 整表赋值而不是原地 append：JSON 列没有 MutableList，
+                                # 原地修改不会被 ORM 记为脏数据（失败明细会静默丢失）。
+                                task.failed_chapters = list(task.failed_chapters or []) + [failed_info]
                                 task.current_retry_count = 0
                                 await db_session.commit()
 
-                            return
+                            # 单章分析失败不再中断整批（批量任务按章独立结算），
+                            # 失败明细进 failed_chapters，最终汇总时统一报告。
+                            break
 
                         logger.info(f"✅ 章节分析成功: 第{chapter.chapter_number}章")
                     
@@ -4367,15 +4300,17 @@ async def execute_batch_generation_in_order(
                     logger.error(f"❌ {error_msg}")
                     
                     retry_count += 1
+                    # 重试额度按异常类型收敛：不可重试 → 0；截断类 → 1；其它 → max_retries。
+                    retry_allowance = _retry_allowance(e, task.max_retries)
                     
                     # 如果还有重试机会，等待一小段时间后重试
-                    if retry_count <= task.max_retries:
+                    if retry_count <= retry_allowance:
                         wait_time = min(2 ** retry_count, 10)  # 指数退避，最多等待10秒
                         logger.info(f"⏳ 等待 {wait_time} 秒后重试...")
                         await asyncio.sleep(wait_time)
                     else:
-                        # 达到最大重试次数，记录失败信息
-                        logger.error(f"❌ 章节生成失败，已达最大重试次数({task.max_retries}): 第{chapter.chapter_number if chapter else '?'}章")
+                        # 达到该异常类型的重试上限，记录失败信息
+                        logger.error(f"❌ 章节生成失败，已达重试上限({retry_allowance}): 第{chapter.chapter_number if chapter else '?'}章")
                         
                         failed_info = {
                             'chapter_id': chapter_id,
@@ -4386,39 +4321,51 @@ async def execute_batch_generation_in_order(
                         }
                         
                         async with write_lock:
-                            if task.failed_chapters is None:
-                                task.failed_chapters = []
-                            task.failed_chapters.append(failed_info)
-                            
-                            # 标记任务失败并终止
-                            task.status = 'failed'
-                            task.error_message = f"第{chapter.chapter_number}章生成失败(重试{retry_count-1}次): {last_error}"[:500]
-                            task.completed_at = datetime.now()
+                            # JSON 列无 MutableList，必须整表赋值才会被持久化
+                            task.failed_chapters = list(task.failed_chapters or []) + [failed_info]
                             task.current_retry_count = 0
                             await db_session.commit()
-                        
-                        # ⚠️ 如果启用了同步分析，任何错误都应该中断任务
-                        # 因为章节生成或分析失败会影响后续章节的职业更新和剧情连贯性
-                        if task.enable_analysis:
-                            logger.error(f"🛑 批量生成中断: 因启用同步分析，任何错误都会中断任务以确保职业信息和剧情连贯性")
-                        else:
-                            logger.error(f"🛑 批量生成终止于第{chapter.chapter_number}章")
-                        
-                        return
+
+                        # 单章失败只记账，不中断整批：后续章节继续生成，最终汇总统一报告。
+                        logger.error(
+                            f"🛑 第{chapter.chapter_number if chapter else '?'}章失败，"
+                            f"记录后继续下一章（原因: {last_error}）"
+                        )
+                        # 必须显式退出「单章重试 while」：否则控制流回到
+                        # `while retry_count <= task.max_retries and not chapter_success`
+                        # （两者都仍成立）→ 该章被反复重试、failed_chapters 重复记账，
+                        # allowance=0 的 NonRetryable 也就形同虚设。
+                        break
         
-        # 全部完成
+        # 全部完成（单章失败不中断整批，但最终状态必须如实反映失败章节）
         async with write_lock:
             await db_session.refresh(task)
             if task.status == 'cancelled':
                 logger.info(f"🛑 批量生成任务已被取消，跳过完成状态覆盖: {batch_id}")
                 return
-            task.status = 'completed'
+            failures = task.failed_chapters or []
+            if failures:
+                detail = "；".join(
+                    f"第{f.get('chapter_number')}章《{f.get('title')}》{f.get('error')}"
+                    for f in failures
+                )
+                task.status = 'failed'
+                task.error_message = (
+                    f"批量生成结束：成功 {task.completed_chapters}/{task.total_chapters} 章，"
+                    f"失败 {len(failures)} 章。{detail}"
+                )[:500]
+                logger.error(f"⚠️ 批量生成结束但有失败章节: {task.error_message}")
+            else:
+                task.status = 'completed'
             task.completed_at = datetime.now()
             task.current_chapter_id = None
             task.current_chapter_number = None
             await db_session.commit()
         
-        logger.info(f"✅ 批量生成任务全部完成: {batch_id}, 成功生成 {task.completed_chapters} 章")
+        logger.info(
+            f"✅ 批量生成任务结束: {batch_id}, 成功生成 {task.completed_chapters} 章, "
+            f"失败 {len(task.failed_chapters or [])} 章"
+        )
         
     except Exception as e:
         logger.error(f"❌ 批量生成任务异常: {str(e)}", exc_info=True)
@@ -4697,22 +4644,34 @@ async def generate_single_chapter_for_batch(
 确保在整个章节创作过程中始终保持风格的一致性。"""
         logger.info(f"✅ 批量生成 - 已将写作风格注入系统提示词（{len(style_content)}字符）")
     
-    # 🔢 计算 max_tokens 限制（批量生成）
-    # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-    # 同时设置上限防止过长，下限确保基本可用
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-    logger.info(f"📊 批量生成 - 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
-    
+    # 🔢 输出预算：单一来源（思考型推理预留 + 网关实测上限 + 上下文剩余），
+    # 不再本地硬算后显式传 max_tokens —— 那会绕过 resolve_effective_max_tokens
+    # 的能力判定（2026-11-08 批量第 58 章：6000 字目标被钉在 16000，推理吃光预算后正文 0 字）。
+    generated_model = custom_model or getattr(ai_service, "default_model", None)
+    calculated_max_tokens, budget_breakdown = plan_output_budget(
+        target_chars=target_word_count,
+        model=generated_model,
+        base_url=getattr(ai_service, "base_url", None),
+    )
+    logger.info(
+        f"📊 输出预算: 目标 {target_word_count} 字 → "
+        f"content={budget_breakdown['content']} "
+        f"reserve={budget_breakdown['reserve']} "
+        f"cap={budget_breakdown['cap']} "
+        f"→ max_tokens={calculated_max_tokens}"
+    )
+
     # 非流式生成内容
     full_content = ""
+    finish_sink: Dict[str, Any] = {}
     # 准备生成参数
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
         "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
+        "auto_mcp": bool(enable_mcp),
+        "finish_sink": finish_sink,
     }
     # 如果传入了自定义模型，使用指定的模型
     if custom_model:
@@ -4728,13 +4687,81 @@ async def generate_single_chapter_for_batch(
         return result.scalar_one_or_none() == 'cancelled'
 
     # 批量生成中的流式生成（非SSE，不需要修改进度显示）
-    chunk_count = 0
-    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-        if chunk_count % 10 == 0 and await _is_batch_cancelled():
-            logger.info(f"🛑 批量生成单章流式生成被取消: batch={batch_id}, chapter={chapter.id}")
-            raise Exception("批量生成任务已取消")
-        full_content += chunk
-        chunk_count += 1
+    budget_retries = 0
+    budget_attempts = [calculated_max_tokens]
+    while True:
+        full_content = ""
+        finish_sink.clear()
+        generate_kwargs["max_tokens"] = calculated_max_tokens
+
+        chunk_count = 0
+        async for chunk in ai_service.generate_text_stream(**generate_kwargs):
+            if chunk_count % 10 == 0 and await _is_batch_cancelled():
+                logger.info(f"🛑 批量生成单章流式生成被取消: batch={batch_id}, chapter={chapter.id}")
+                raise Exception("批量生成任务已取消")
+            full_content += chunk
+            chunk_count += 1
+
+        finish_reason = finish_sink.get("finish_reason")
+        if not _is_truncated_chapter_content(
+            full_content,
+            target_word_count,
+            finish_reason,
+            f"第{chapter.chapter_number}章",
+        ):
+            break
+
+        # 截断失败：空正文 / 撞上限 / 疑似空转。推理吃掉了预算 → 升档重试。
+        # reasoning_tokens 取自本轮 API 回报的 usage（缺失时代码自动退化为 ×2）。
+        usage = finish_sink.get("usage")
+        reasoning_tokens = getattr(usage, "reasoning_tokens", None)
+        upgraded_budget = _next_budget_after_truncation(
+            content_budget=budget_breakdown["content"],
+            current_max_tokens=calculated_max_tokens,
+            cap=budget_breakdown["cap"],
+            reasoning_tokens=reasoning_tokens,
+            content_chars=len(full_content),
+        )
+        # 正文为 0 且已升过一次仍为 0 → 不可重试：首跳已按实测 reasoning 抬到够用
+        # （实测那章 16240 → 64565），仍是 0 字说明这一轮写不出，外层也不再重放。
+        content_is_empty = not (full_content or "").strip()
+        exhausted = _is_budget_retry_exhausted(
+            upgraded_budget=upgraded_budget,
+            budget_retries=budget_retries,
+            content_is_empty=content_is_empty,
+        )
+        if exhausted:
+            budget_error = _truncation_error_message(
+                chapter_label=f"第{chapter.chapter_number}章",
+                content_chars=len(full_content),
+                target_word_count=target_word_count,
+                finish_reason=finish_reason,
+                reasoning_tokens=reasoning_tokens,
+                reasoning_chars=_reasoning_chars_from_usage(
+                    usage, len(full_content)
+                ),
+                breakdown=budget_breakdown,
+                budget_attempts=budget_attempts,
+            )
+            logger.error(f"❌ {budget_error}")
+            error_type = (
+                NonRetryableChapterGenerationError
+                if _is_non_retryable_truncation(
+                    upgraded_budget=upgraded_budget,
+                    content_is_empty=content_is_empty,
+                )
+                else ChapterGenerationTruncatedError
+            )
+            raise error_type(budget_error)
+
+        budget_retries += 1
+        logger.warning(
+            f"⚠️ 批量生成 - 第{chapter.chapter_number}章被截断"
+            f"（正文 {len(full_content)} 字 / 目标 {target_word_count} 字，"
+            f"finish_reason={finish_reason}），预算 {calculated_max_tokens} → {upgraded_budget} 重试"
+        )
+        calculated_max_tokens = upgraded_budget
+        budget_attempts.append(upgraded_budget)
 
     if await _is_batch_cancelled():
         logger.info(f"🛑 批量生成保存前被取消: batch={batch_id}, chapter={chapter.id}")

@@ -367,7 +367,16 @@ async def test_stream_site_raises_enriched_upstream_error(site):
             [
                 {"content": "Hello"},
                 {"content": " world"},
-                {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}},
+                # 2026-11-08：usage 增加 completion_tokens_details 原样透传（推理用量
+                # 走该子字段）；上游未给时值为 None，成功路径其余形状不变。
+                {
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 3,
+                        "total_tokens": 5,
+                        "completion_tokens_details": None,
+                    }
+                },
                 {"done": True, "finish_reason": "stop"},
             ],
         ),

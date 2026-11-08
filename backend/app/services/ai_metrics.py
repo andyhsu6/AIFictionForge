@@ -13,6 +13,9 @@ class TokenUsage:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    # 推理用量（与正文共享完成 token）。部分网关放在
+    # usage.completion_tokens_details.reasoning_tokens，缺失即为 None。
+    reasoning_tokens: Optional[int] = None
 
     @classmethod
     def from_response(cls, response: Optional[Dict[str, Any]]) -> "TokenUsage":
@@ -24,11 +27,16 @@ class TokenUsage:
         prompt_tokens = cls._to_int(usage.get("prompt_tokens"))
         completion_tokens = cls._to_int(usage.get("completion_tokens"))
         total_tokens = cls._to_int(usage.get("total_tokens"))
+        details = usage.get("completion_tokens_details")
+        reasoning_tokens = cls._to_int(
+            details.get("reasoning_tokens") if isinstance(details, dict) else None
+        )
 
         return cls(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
 
     @staticmethod
@@ -45,6 +53,7 @@ class TokenUsage:
         self.prompt_tokens = self._sum_optional(self.prompt_tokens, other.prompt_tokens)
         self.completion_tokens = self._sum_optional(self.completion_tokens, other.completion_tokens)
         self.total_tokens = self._sum_optional(self.total_tokens, other.total_tokens)
+        self.reasoning_tokens = self._sum_optional(self.reasoning_tokens, other.reasoning_tokens)
 
     @staticmethod
     def _sum_optional(left: Optional[int], right: Optional[int]) -> Optional[int]:

@@ -173,6 +173,7 @@ class OpenAIClient(BaseAIClient):
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_tokens": usage.get("total_tokens"),
+                "completion_tokens_details": usage.get("completion_tokens_details"),
             },
         }
 
@@ -271,6 +272,7 @@ class OpenAIClient(BaseAIClient):
                                             "prompt_tokens": usage.get("prompt_tokens"),
                                             "completion_tokens": usage.get("completion_tokens"),
                                             "total_tokens": usage.get("total_tokens"),
+                                            "completion_tokens_details": usage.get("completion_tokens_details"),
                                         }
                                     }
 
