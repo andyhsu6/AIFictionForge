@@ -291,7 +291,7 @@ def derive_conversation_title(first_message: str | None) -> str:
     （issue #260 的回填实测场景）。
     """
     for raw_line in (first_message or "").splitlines():
-        line = raw_line.strip().lstrip("#>-* ").strip()
+        line = raw_line.strip().lstrip("#>-* ").strip().rstrip("*#").strip()
         normalized = " ".join(line.split())
         if normalized:
             return normalized[:40]
@@ -381,7 +381,7 @@ class ProjectAgentService:
                         AgentMessage.conversation_id == conversation.id,
                         AgentMessage.role == "user",
                     )
-                    .order_by(AgentMessage.created_at.asc())
+                    .order_by(AgentMessage.created_at.asc(), AgentMessage.id.asc())
                     .limit(1)
                 )
                 conversation.title = derive_conversation_title(

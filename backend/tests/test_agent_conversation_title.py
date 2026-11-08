@@ -120,17 +120,25 @@ def test_derive_title_uses_first_non_empty_line():
     assert derive_conversation_title(message) == "一、项目概况"
 
 
+def test_derive_title_strips_markdown_markers():
+    assert derive_conversation_title("**重点：投入产出比**\n后续正文") == "重点：投入产出比"
+
+
 def test_backfill_script_plans_only_default_titles(tmp_path):
     import sqlite3
 
-    from scripts.backfill_agent_conversation_titles import plan_updates
+    from scripts.backfill_agent_conversation_titles import (
+        apply_updates,
+        count_unrepairable,
+        plan_updates,
+    )
 
     db_path = tmp_path / "backfill.db"
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("CREATE TABLE agent_conversations (id TEXT PRIMARY KEY, title TEXT)")
         conn.execute(
-            "CREATE TABLE agent_messages (conversation_id TEXT, role TEXT, content TEXT, created_at TEXT)"
+            "CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, created_at TEXT)"
         )
         conn.executemany(
             "INSERT INTO agent_conversations (id, title) VALUES (?, ?)",
@@ -152,5 +160,13 @@ def test_backfill_script_plans_only_default_titles(tmp_path):
 
         planned = plan_updates(conn)
         assert dict(planned) == {"c-default": "占位历史消息"}
+        assert count_unrepairable(conn) == 2  # c-empty + c-no-msg
+
+        assert apply_updates(conn, planned) == 1
+        assert plan_updates(conn) == []  # 幂等：复跑无待修项
+        title = conn.execute(
+            "SELECT title FROM agent_conversations WHERE id = 'c-default'"
+        ).fetchone()[0]
+        assert title == "占位历史消息"
     finally:
         conn.close()
