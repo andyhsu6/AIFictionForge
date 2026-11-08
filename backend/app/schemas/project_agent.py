@@ -1,12 +1,35 @@
 """灵创创作助手 API 模型。"""
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+
+
+def _collapse_whitespace(value: str) -> str:
+    """标题输入统一口径：内部空白折叠 + 去首尾（issue #262）。
+
+    用 BeforeValidator 而不是自定义 field_validator：后者抛出的 ValueError
+    会让 422 错误序列化失败；折叠后空白标题变空串，交给标准 min_length 报错。
+    """
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
+#: 创建/重命名共用的标题约束（折叠空白、非空、<=200）。
+ConversationTitle = Annotated[
+    str,
+    BeforeValidator(_collapse_whitespace),
+    StringConstraints(min_length=1, max_length=200),
+]
 
 
 class AgentConversationCreate(BaseModel):
-    title: Optional[str] = Field(None, max_length=200)
+    title: Optional[ConversationTitle] = None
+
+
+class AgentConversationUpdate(BaseModel):
+    """用户重命名会话（issue #262）。"""
+
+    title: ConversationTitle
 
 
 class AgentConversationResponse(BaseModel):

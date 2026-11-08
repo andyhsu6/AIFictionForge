@@ -6,6 +6,7 @@ import {
   CloseOutlined,
   CloseCircleOutlined,
   DeleteOutlined,
+  EditOutlined,
   HistoryOutlined,
   LoadingOutlined,
   MenuFoldOutlined,
@@ -24,6 +25,7 @@ import {
   Drawer,
   Dropdown,
   Input,
+  Modal,
   Popconfirm,
   Space,
   Spin,
@@ -191,6 +193,9 @@ export default function ProjectAgentPanel({
   });
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>();
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
   const [executionSteps, setExecutionSteps] = useState<AgentExecutionStep[]>([]);
@@ -206,6 +211,11 @@ export default function ProjectAgentPanel({
   const [planMode, setPlanMode] = useState(() => localStorage.getItem(PLAN_MODE_KEY) === 'true');
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController>();
+
+  // issue #262：卸载时清掉延迟刷新定时器，避免向已卸载/已切项目视图回写列表。
+  useEffect(() => () => {
+    if (titleRefreshTimerRef.current) window.clearTimeout(titleRefreshTimerRef.current);
+  }, []);
   const autoApprovalAttemptedRef = useRef<Set<string>>(new Set());
 
   const notifyLayout = useCallback((nextExpanded: boolean, nextWidth = panelWidth) => {
@@ -272,6 +282,7 @@ export default function ProjectAgentPanel({
   // 分工：业务数据刷新由 ProjectDetail.tsx 的 SETTLED 监听负责；
   // 本面板只刷会话（messages / tool_calls / execution_steps），两侧互不重叠。
   const sendingRef = useRef(false);
+  const titleRefreshTimerRef = useRef<number>();
   const reloadInFlightRef = useRef(false);
   const reloadQueuedRef = useRef(false);
   const pendingSettleConversationRef = useRef<string | null>(null);
@@ -452,6 +463,34 @@ export default function ProjectAgentPanel({
     }
   };
 
+  const openRename = () => {
+    const current = conversations.find(item => item.id === activeConversationId);
+    setRenameValue(current?.title || '');
+    setRenameOpen(true);
+  };
+
+  const submitRename = async () => {
+    if (!activeConversationId) return;
+    const title = renameValue.trim();
+    if (!title) return;
+    try {
+      setRenaming(true);
+      const updated = await projectAgentApi.renameConversation(
+        projectId, activeConversationId, title
+      );
+      setConversations(items => items.map(item => (
+        item.id === updated.id ? { ...item, ...updated } : item
+      )));
+      setRenameOpen(false);
+      message.success(t('renameSuccess'));
+    } catch (error) {
+      console.error('重命名灵创创作助手对话失败:', error);
+      message.error(t('renameFailed'));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content || sendingRef.current) return;
@@ -604,6 +643,11 @@ export default function ProjectAgentPanel({
       sendingRef.current = false;
       abortRef.current = undefined;
       setStreamingMessageId(undefined);
+      // issue #262：模型标题在首轮后异步生成，延迟拉一次列表让标题尽快出现。
+      if (titleRefreshTimerRef.current) window.clearTimeout(titleRefreshTimerRef.current);
+      titleRefreshTimerRef.current = window.setTimeout(() => {
+        void loadConversations();
+      }, 1500);
     }
   }, [activeConversationId, autoApprove, input, loadConversation, loadConversations, location.pathname, message, notifyToolResources, planMode, projectId, reloadConversation, t]);
 
@@ -1041,6 +1085,11 @@ export default function ProjectAgentPanel({
           </Dropdown>
           <Tooltip title={t('newConversation')}><Button type="text" icon={<PlusOutlined />} onClick={() => void newConversation()} /></Tooltip>
           {activeConversationId && (
+            <Tooltip title={t('renameConversation')}>
+              <Button type="text" icon={<EditOutlined />} onClick={openRename} />
+            </Tooltip>
+          )}
+          {activeConversationId && (
             <Popconfirm title={t('deleteCurrentConfirm')} onConfirm={() => void removeConversation()}>
               <Tooltip title={t('deleteConversation')}><Button type="text" danger icon={<DeleteOutlined />} /></Tooltip>
             </Popconfirm>
@@ -1051,6 +1100,24 @@ export default function ProjectAgentPanel({
             <Tooltip title={t('collapse')}><Button type="text" icon={<MenuFoldOutlined />} onClick={() => changeExpanded(false)} /></Tooltip>
           )}
         </Space>
+        <Modal
+          title={t('renameConversation')}
+          open={renameOpen}
+          onOk={() => void submitRename()}
+          onCancel={() => setRenameOpen(false)}
+          confirmLoading={renaming}
+          okText={t('renameSave')}
+          cancelText={t('renameCancel')}
+          destroyOnHidden
+        >
+          <Input
+            value={renameValue}
+            onChange={event => setRenameValue(event.target.value)}
+            placeholder={t('renamePlaceholder')}
+            maxLength={60}
+            onPressEnter={() => void submitRename()}
+          />
+        </Modal>
       </div>
 
       <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', padding: 12 }}>

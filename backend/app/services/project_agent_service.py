@@ -513,6 +513,9 @@ class ProjectAgentService:
         conversation.last_message_at = _naive_utc_now()
         await self.db.commit()
 
+        # issue #262：首轮结束后异步生成摘要标题（规则标题先占位，失败不阻塞）。
+        await self._maybe_schedule_title(conversation, message)
+
         yield {
             "type": "conversation",
             "data": {"conversation_id": conversation.id, "title": conversation.title},
@@ -1709,6 +1712,35 @@ class ProjectAgentService:
                 return
         except Exception:  # noqa: BLE001 —— 补生成失败不得影响对话
             logger.warning("补生成上一会话结论失败", exc_info=True)
+
+    async def _maybe_schedule_title(
+        self, conversation: AgentConversation, first_message: str
+    ) -> None:
+        """首轮（尚无 assistant 消息）时调度一次模型标题生成；用户已重命名则跳过。"""
+        try:
+            if conversation.title_user_edited:
+                return
+            assistant_count = (
+                await self.db.execute(
+                    select(func.count())
+                    .select_from(AgentMessage)
+                    .where(
+                        AgentMessage.conversation_id == conversation.id,
+                        AgentMessage.role == "assistant",
+                    )
+                )
+            ).scalar_one()
+            if assistant_count:
+                return
+            from app.services.agent_conversation_title import (
+                schedule_conversation_title,
+            )
+
+            schedule_conversation_title(
+                conversation.id, self.user_id, first_message=first_message
+            )
+        except Exception:  # noqa: BLE001 —— 标题调度失败不得影响对话
+            logger.warning("调度会话标题生成失败", exc_info=True)
 
     async def _maybe_schedule_own_summary(self, conversation_id: str) -> None:
         """本会话聊得够久时补一次结论，覆盖「用户从不新开会话」的路径。

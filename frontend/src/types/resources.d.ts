@@ -2882,6 +2882,12 @@ export default interface Resources {
     "preparingToolCalls_other": "🔧 准备调用 {{count}} 个工具...",
     "processChangeFailed": "处理修改失败",
     "processLabel": "思考与调用过程",
+    "renameCancel": "取消",
+    "renameConversation": "重命名对话",
+    "renameFailed": "重命名失败，请重试",
+    "renamePlaceholder": "输入新的对话标题",
+    "renameSave": "保存",
+    "renameSuccess": "标题已更新",
     "requestFailed": "请求失败：{{message}}",
     "riskReason": {
       "analysis_probe_failed": "无法确认该章节是否已有分析结果，已按需要确认处理。",
