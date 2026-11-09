@@ -1114,6 +1114,20 @@ class AIService:
                     response_parts.append(chunk)
                 yield chunk
 
+            # 网关没回 completion_tokens_details 时，用「完成 token - 正文字符」
+            # 估算推理用量（中文口径 1 字符 ≈ 1 token），并标记为估算值。
+            # 只影响日志/预算归因，不改变 yield 契约。
+            if (
+                latest_usage.reasoning_tokens is None
+                and latest_usage.completion_tokens is not None
+            ):
+                estimated_reasoning = int(latest_usage.completion_tokens) - len(
+                    "".join(response_parts)
+                )
+                if estimated_reasoning > 0:
+                    latest_usage.reasoning_tokens = estimated_reasoning
+                    latest_usage.reasoning_estimated = True
+
             metrics.finish(
                 success=True,
                 response_length=len("".join(response_parts)),

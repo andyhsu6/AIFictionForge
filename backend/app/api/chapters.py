@@ -85,9 +85,20 @@ router = APIRouter(prefix="/chapters", tags=["章节管理"])
 logger = get_logger(__name__)
 
 analysis_background_tasks: set[asyncio.Task] = set()
+batch_background_tasks: set[asyncio.Task] = set()
 
 ANALYSIS_TASK_TIMEOUT_SECONDS = 600
 ANALYSIS_TASK_STALE_SECONDS = 720
+
+# 批量生成任务心跳超时阈值（分钟）。注意：该阈值在心跳 ticker 正常工作的前提下生效
+# —— ticker（_batch_heartbeat_loop）每 60s 独立刷新心跳，协程长时间执行也不会窒息；
+# 只有 worker 整体消失（重启/被杀）时心跳才会停止。模块常量便于测试 monkeypatch。
+BATCH_STALE_MINUTES = 10
+# 心跳 ticker 间隔（秒）。单章可能包含 600s 同步分析 + 生成 + 退避，必须远小于阈值。
+BATCH_HEARTBEAT_INTERVAL_SECONDS = 60
+# 心跳 ticker 连续失败上限：瞬时 DB 抖动（database is locked）不应让 ticker 永久退出，
+# 连续失败达到该次数才放弃（放弃后由陈旧回收兜底）。
+BATCH_HEARTBEAT_MAX_FAILURES = 3
 
 # 章内 AI 续写（continue 模式）分段/能力参数（W5 冻结契约；字数即 len(str)）
 SINGLE_REQUEST_MAX_CHARS = 12000
@@ -151,6 +162,173 @@ def _schedule_analysis_background(coroutine) -> asyncio.Task:
     task = asyncio.create_task(coroutine)
     analysis_background_tasks.add(task)
     task.add_done_callback(analysis_background_tasks.discard)
+    return task
+
+
+async def _mark_batch_failed_after_crash(
+    batch_id: str,
+    user_id: str,
+    exc: BaseException,
+) -> None:
+    """用独立会话把异常退出的批量任务置为 failed（请求级会话可能已关闭）。"""
+    from app.database import get_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+    try:
+        engine = await get_engine(user_id)
+        session_factory = async_sessionmaker(
+            engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        async with session_factory() as session:
+            await session.execute(
+                update(BatchGenerationTask)
+                .where(
+                    BatchGenerationTask.id == batch_id,
+                    # 幂等条件：只有仍 running 才改，避免覆盖陈旧回收/已结案的结果
+                    BatchGenerationTask.status == "running",
+                )
+                .values(
+                    status="failed",
+                    completed_at=datetime.now(),
+                    error_message=(
+                        f"批量生成异常中断：{type(exc).__name__}: {exc}"
+                    )[:500],
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+    except Exception as cleanup_error:
+        logger.error(
+            f"❌ 兜底标记批量生成任务失败时出错: {batch_id}: {cleanup_error}"
+        )
+
+
+def _on_batch_generation_task_done(
+    task: asyncio.Task,
+    *,
+    batch_id: str,
+    user_id: str,
+) -> None:
+    """后台批量协程结束回调：取走异常并兜底标记失败。"""
+    batch_background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()  # 必须取走，否则 Task exception was never retrieved
+    if exc is None:
+        return
+    logger.error(f"❌ 批量生成后台任务异常退出: {batch_id}", exc_info=exc)
+    cleanup_task = asyncio.create_task(
+        _mark_batch_failed_after_crash(batch_id, user_id, exc)
+    )
+    batch_background_tasks.add(cleanup_task)
+    cleanup_task.add_done_callback(batch_background_tasks.discard)
+
+
+async def _make_heartbeat_session(user_id: str):
+    """构造 ticker 的独立会话工厂与写锁（初始化放在循环内，失败可重试）。"""
+    from app.database import get_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+    engine = await get_engine(user_id)
+    session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    write_lock = await get_db_write_lock(user_id)
+    return session_factory, write_lock
+
+
+async def _batch_heartbeat_loop(
+    batch_id: str,
+    user_id: str,
+    interval: float = BATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> None:
+    """独立心跳 ticker：每 interval 秒刷新一次 heartbeat_at。
+
+    不用打点频率保证存活：单章可能内联 600s 同步分析 + 生成 + 退避，打点间隔
+    会超过 BATCH_STALE_MINUTES。单次 DB 抖动不得让 ticker 永久退出（否则 10 分钟后
+    正常协程会被误杀）；连续失败 BATCH_HEARTBEAT_MAX_FAILURES 次才放弃。
+    rowcount==0（任务已不在 running）即自行退出。
+    """
+    consecutive_failures = 0
+    # 惰性初始化：get_engine / 建工厂 / 取写锁都放在循环内，启动瞬间 DB 忙也能重试
+    session_factory = None
+    write_lock = None
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if session_factory is None or write_lock is None:
+                session_factory, write_lock = await _make_heartbeat_session(user_id)
+            async with write_lock:
+                async with session_factory() as session:
+                    result = await session.execute(
+                        update(BatchGenerationTask)
+                        .where(
+                            BatchGenerationTask.id == batch_id,
+                            BatchGenerationTask.status == "running",
+                        )
+                        .values(heartbeat_at=datetime.now())
+                        .execution_options(synchronize_session=False)
+                    )
+                    await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            consecutive_failures += 1
+            logger.warning(
+                f"⚠️ 批量任务心跳失败（连续 {consecutive_failures}/{BATCH_HEARTBEAT_MAX_FAILURES}）"
+                f": {batch_id}: {exc}"
+            )
+            if consecutive_failures >= BATCH_HEARTBEAT_MAX_FAILURES:
+                logger.error(
+                    f"❌ 批量任务心跳连续失败 {consecutive_failures} 次，ticker 退出: {batch_id}"
+                )
+                return
+            continue
+        consecutive_failures = 0
+        if not result.rowcount:
+            # 任务已终态（完成/失败/取消/被回收）：ticker 自行退出，不再写库
+            return
+
+
+def _spawn_batch_generation(
+    coroutine,
+    *,
+    batch_id: str,
+    user_id: str,
+    heartbeat_interval: float = BATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> asyncio.Task:
+    """启动批量生成协程与心跳 ticker，并持有引用直到主任务结束。"""
+
+    async def _run_with_heartbeat():
+        ticker = asyncio.create_task(
+            _batch_heartbeat_loop(batch_id, user_id, heartbeat_interval)
+        )
+        try:
+            return await coroutine
+        finally:
+            # 主任务正常结束 / 抛异常 / 被取消，都必须停掉 ticker，避免泄漏与幽灵写库
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # ticker 自身异常不得掩盖主任务结果
+                logger.warning(
+                    f"⚠️ 批量任务心跳 ticker 结束异常: {batch_id}: {exc}"
+                )
+
+    task = asyncio.create_task(_run_with_heartbeat())
+    batch_background_tasks.add(task)
+    task.add_done_callback(
+        lambda finished: _on_batch_generation_task_done(
+            finished, batch_id=batch_id, user_id=user_id
+        )
+    )
     return task
 
 
@@ -224,11 +402,14 @@ _BUDGET_MAX_RETRIES = 2
 _BUDGET_FALLBACK_GROWTH = 2
 # 推理用量的预留倍数（推理与正文共享预算，留 50% 余量）。
 _REASONING_BUDGET_RATIO = 1.5
-# 正文为 0 且**有实测 reasoning** 时的跳幅倍数：首跳已按 reasoning 兜住（实测那章
-# 是 64565，覆盖 43678），后续不该再按 2× 一步跳到十几万，故降到 1.5×。
+# 正文为 0 且**有实测 reasoning** 时的跳幅下限倍数：首跳已按 reasoning 兜住（实测那章
+# 是 64565，覆盖 43678），后续不该再按 2× 一步跳到十几万，故用 1.5×。
 _EMPTY_CONTENT_GROWTH_WITH_REASONING = 1.5
-# 正文为 0 且拿不到 reasoning 时的盲抬倍数。
-_EMPTY_CONTENT_GROWTH_NO_REASONING = 2
+# 正文为 0 且拿不到 reasoning 时的盲抬倍数。取 4× 而不是 2×：实测该任务
+# reasoning 占 completion 的 96%（311/325），即「输出几乎全是推理」，而
+# 16240 的 2× 只有 32480，仍低于该章所需的下限 43678；16240 的 4× = 64960 才够。
+# 仍受 cap 与「连续两次空正文即停」约束，不会无限膨胀。
+_EMPTY_CONTENT_GROWTH_NO_REASONING = 4
 # 截断类错误允许外层（批量 max_retries 循环）重试的上限：1 次，不是 3 次。
 _TRUNCATION_OUTER_RETRIES = 1
 
@@ -308,9 +489,9 @@ def _next_budget_after_truncation(
 ) -> Optional[int]:
     """截断后下一轮的 max_tokens；返回 None 表示不能再升、不应重试。
 
-    - 正文为 0（``content_chars == 0``）→ ``content_budget + max(1.5 × current,
-      ceil(reasoning × 1.5) + 2048)``：首跳用实测量兜底，同时保留 1.5× 下限；
-      无用量时才退化为 2×（看不到推理规模，只能盲抬）。
+    - 正文为 0（``content_chars == 0``）：
+      有实测 reasoning → ``content_budget + max(1.5 × current, ceil(reasoning × 1.5) + 2048)``；
+      无 reasoning → 总预算 ``×4``（16240 → 64960，盲抬，见常量注释）。
     - 有正文 + 拿得到真实推理用量 → ``content_budget + ceil(reasoning × 1.5) + 2048``。
     - 有正文 + 拿不到用量 → ``current × 2``（保守）。
     结果钳到 ``cap``；钳完仍 <= 当前预算时返回 None（再试也不会变大）。
@@ -324,9 +505,12 @@ def _next_budget_after_truncation(
                 ceil(current_max_tokens * _EMPTY_CONTENT_GROWTH_WITH_REASONING),
                 ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048,
             )
+            wanted = content_budget + bumped
         else:
-            bumped = current_max_tokens * _EMPTY_CONTENT_GROWTH_NO_REASONING
-        wanted = content_budget + bumped
+            # 看不到推理规模：直接按**总预算** ×4 盲抬（16240 → 64960），
+            # 不再叠加 content_budget —— 与「该任务 reasoning 占 completion 96%」
+            # 的实测锚点对齐，也避免算子在不同口径间不一致。
+            wanted = current_max_tokens * _EMPTY_CONTENT_GROWTH_NO_REASONING
     elif reasoning_tokens is not None and reasoning_tokens > 0:
         wanted = content_budget + ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048
     else:
@@ -348,17 +532,21 @@ def _truncation_error_message(
     reasoning_chars: Optional[int],
     breakdown: Dict[str, Any],
     budget_attempts: List[int],
+    reasoning_estimated: bool = False,
 ) -> str:
     """截断失败的诊断信息（含推理用量、结束原因与每次尝试的预算）。"""
-    reasoning_tokens_text = (
-        str(reasoning_tokens) if reasoning_tokens is not None else "未知（客户端未回传）"
-    )
+    if reasoning_tokens is None:
+        reasoning_field = "reasoning_tokens=未知（客户端未回传）"
+    elif reasoning_estimated:
+        reasoning_field = f"reasoning_tokens≈{reasoning_tokens}（估算）"
+    else:
+        reasoning_field = f"reasoning_tokens={reasoning_tokens}"
     reasoning_chars_text = f"≈{reasoning_chars}" if reasoning_chars is not None else "未知"
     return (
         f"{chapter_label}生成被截断：预计推理占用了输出预算"
         f"（正文 {content_chars} 字 / 目标 {target_word_count} 字，"
         f"finish_reason={finish_reason or '未知'}，"
-        f"reasoning_tokens={reasoning_tokens_text}，"
+        f"{reasoning_field}，"
         f"reasoning_chars={reasoning_chars_text}，"
         f"尝试预算={budget_attempts}，最终 max_tokens={budget_attempts[-1]}，"
         f"content={breakdown.get('content')}，reserve={breakdown.get('reserve')}，"
@@ -2257,6 +2445,7 @@ async def generate_chapter_content_stream(
                         target_word_count=target_word_count,
                         finish_reason=finish_reason,
                         reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+                        reasoning_estimated=getattr(usage, "reasoning_estimated", False),
                         reasoning_chars=_reasoning_chars_from_usage(
                             usage, len(full_content)
                         ),
@@ -2597,6 +2786,59 @@ async def _recover_stale_analysis_tasks(
             if task.id in recovered_ids:
                 await db.refresh(task)
         logger.warning(f"自动恢复陈旧章节分析任务: {len(recovered_ids)} 个")
+
+    return recovered_ids
+
+
+async def _recover_stale_batch_tasks(
+    db: AsyncSession,
+    tasks: list[BatchGenerationTask],
+    *,
+    stale_minutes: Optional[int] = None,
+) -> set[str]:
+    """将心跳超时的批量生成任务原子地恢复为失败状态。
+
+    worker 被重启（如 uvicorn --reload 重载）后，正在执行的批量协程不会留下
+    任何终态；读取接口据此把「假 running」恢复为 failed，避免任务永久卡住。
+    """
+    minutes = BATCH_STALE_MINUTES if stale_minutes is None else stale_minutes
+    now = datetime.now()
+    cutoff = now - timedelta(minutes=minutes)
+    recovered_ids: set[str] = set()
+
+    for task in tasks:
+        if task.status != "running":
+            continue
+        # 回退链不含 created_at：created_at 存 UTC，其余是本地 naive，混用会早杀 8 小时；
+        # 进入 running 时必然写 started_at。
+        reference_time = task.heartbeat_at or task.started_at
+        if not reference_time or reference_time >= cutoff:
+            continue
+
+        result = await db.execute(
+            update(BatchGenerationTask)
+            .where(
+                BatchGenerationTask.id == task.id,
+                # 与 done-callback 共用同一幂等条件：只有仍 running 才翻转。
+                # 两条路径的 UPDATE 各自原子，先到者成功，后到者 rowcount=0。
+                BatchGenerationTask.status == "running",
+            )
+            .values(
+                status="failed",
+                completed_at=now,
+                error_message="批量生成中断：worker 心跳超时（可能是服务重启），请重新发起",
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.rowcount:
+            recovered_ids.add(task.id)
+
+    if recovered_ids:
+        await db.commit()
+        for task in tasks:
+            if task.id in recovered_ids:
+                await db.refresh(task)
+        logger.warning(f"自动恢复陈旧批量生成任务: {len(recovered_ids)} 个")
 
     return recovered_ids
 
@@ -3060,6 +3302,7 @@ async def _run_chapter_generation_bg(
                 target_word_count=target_word_count,
                 finish_reason=finish_reason,
                 reasoning_tokens=reasoning_tokens,
+                reasoning_estimated=getattr(usage, "reasoning_estimated", False),
                 reasoning_chars=_reasoning_chars_from_usage(
                     usage, len(full_content)
                 ),
@@ -3820,7 +4063,6 @@ async def batch_generate_chapters_in_order(
     project_id: str,
     batch_request: BatchGenerateRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user_ai_service: AIService = Depends(get_user_ai_service)
 ):
@@ -3918,16 +4160,21 @@ async def batch_generate_chapters_in_order(
     logger.info(f"📦 创建批量生成任务: {batch_id}, 章节: 第{start_number}-{end_number}章, 预估耗时: {estimated_time}分钟")
     
     # 启动后台批量生成任务，传递model参数和skill_key
-    background_tasks.add_task(
-        execute_batch_generation_in_order,
+    # 用持有引用的 create_task 替代 BackgroundTasks：后者在进程被杀时会连同
+    # 正在执行的批量协程一起丢失且无任何清理（done-callback 负责兜底置 failed）
+    _spawn_batch_generation(
+        execute_batch_generation_in_order(
+            batch_id=batch_id,
+            user_id=user_id,
+            ai_service=user_ai_service,
+            custom_model=batch_request.model,
+            skill_key=batch_request.skill_key,
+            enable_mcp=batch_request.enable_mcp,
+            narrative_perspective=batch_request.narrative_perspective,
+            content_language=batch_request.content_language
+        ),
         batch_id=batch_id,
         user_id=user_id,
-        ai_service=user_ai_service,
-        custom_model=batch_request.model,
-        skill_key=batch_request.skill_key,
-        enable_mcp=batch_request.enable_mcp,
-        narrative_perspective=batch_request.narrative_perspective,
-        content_language=batch_request.content_language
     )
     
     return BatchGenerateResponse(
@@ -3966,7 +4213,10 @@ async def get_batch_generation_status(
     
     if not task:
         raise ApiError(code="not_found.batch_task")
-    
+
+    # worker 被重启后协程已消失：按心跳把「假 running」恢复为 failed 再返回
+    await _recover_stale_batch_tasks(db, [task])
+
     return BatchGenerateStatusResponse(
         batch_id=task.id,
         status=task.status,
@@ -4007,9 +4257,15 @@ async def get_active_batch_generation(
         .where(BatchGenerationTask.user_id == user_id)
         .where(BatchGenerationTask.status.in_(['pending', 'running']))
         .order_by(BatchGenerationTask.created_at.desc())
-        .limit(1)
     )
-    task = result.scalar_one_or_none()
+    tasks = list(result.scalars().all())
+
+    # 先按心跳回收陈旧任务，再挑仍活跃的那条（否则会返回假 running）
+    await _recover_stale_batch_tasks(db, tasks)
+    task = next(
+        (item for item in tasks if item.status in ('pending', 'running')),
+        None,
+    )
     
     if not task:
         return {
@@ -4053,7 +4309,10 @@ async def cancel_batch_generation(
     
     if not task:
         raise ApiError(code="not_found.batch_task")
-    
+
+    # 先回收心跳超时的「假 running」：否则会 400 invalid status 且取消不到
+    await _recover_stale_batch_tasks(db, [task])
+
     if task.status in ['completed', 'failed', 'cancelled']:
         raise ApiError(
             code="task.cancel_invalid_status",
@@ -4073,6 +4332,56 @@ async def cancel_batch_generation(
         "completed_chapters": task.completed_chapters,
         "total_chapters": task.total_chapters
     }
+
+
+async def _touch_batch_heartbeat(db_session: AsyncSession, batch_id: str) -> None:
+    """即时刷新心跳（每章开始 / 每次预算重试前）；仅任务仍 running 时生效。"""
+    await db_session.execute(
+        update(BatchGenerationTask)
+        .where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.status == "running",
+        )
+        .values(heartbeat_at=datetime.now())
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+
+
+async def _update_batch_status_if_running(
+    db_session: AsyncSession,
+    batch_id: str,
+    *,
+    status: str,
+    error_message: Optional[str] = None,
+    clear_current: bool = False,
+) -> int:
+    """条件落终态：仅当任务仍 running 时更新，返回 rowcount。
+
+    与陈旧回收 / done-callback 共用同一 WHERE status='running' 幂等条件：
+    外部已抢先落终态时 rowcount=0，调用方据此跳过，不覆盖他人的结果。
+    """
+    values: Dict[str, Any] = {
+        "status": status,
+        "completed_at": datetime.now(),
+    }
+    if error_message is not None:
+        values["error_message"] = error_message
+    if clear_current:
+        values["current_chapter_id"] = None
+        values["current_chapter_number"] = None
+
+    result = await db_session.execute(
+        update(BatchGenerationTask)
+        .where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.status == "running",
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+    return result.rowcount
 
 
 async def execute_batch_generation_in_order(
@@ -4122,15 +4431,15 @@ async def execute_batch_generation_in_order(
             logger.error(f"❌ 批量生成任务不存在: {batch_id}")
             return
 
-        if task.status == 'cancelled':
-            logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+        if task.status in ('cancelled', 'failed'):
+            logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
             return
         
         # 更新任务状态为运行中
         async with write_lock:
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                 return
             task.status = 'running'
             task.started_at = datetime.now()
@@ -4141,11 +4450,15 @@ async def execute_batch_generation_in_order(
 
         # 按顺序生成每个章节
         for idx, chapter_id in enumerate(task.chapter_ids, 1):
-            # 检查任务是否被取消
+            # 存活检查：cancelled 是用户取消；failed 可能是陈旧回收/兜底先落了终态
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                 return
+
+            # 每章开始写一次心跳：worker 被杀后由陈旧回收据此判定中断
+            async with write_lock:
+                await _touch_batch_heartbeat(db_session, batch_id)
             
             # 更新当前章节
             async with write_lock:
@@ -4163,8 +4476,8 @@ async def execute_batch_generation_in_order(
             while retry_count <= task.max_retries and not chapter_success:
                 try:
                     await db_session.refresh(task)
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
 
                     # 获取章节信息
@@ -4289,8 +4602,8 @@ async def execute_batch_generation_in_order(
                         # 必须在 refresh 之后赋值：refresh 会用 DB 值覆盖未提交的
                         # in-memory 变更（issue #254 审核 BLOCKER）。
                         task.style_check = batch_style_check
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消，跳过后续处理: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
                     
                     # 更新上一章摘要，供下一章使用
@@ -4303,8 +4616,8 @@ async def execute_batch_generation_in_order(
                     # 如果启用同步分析
                     if task.enable_analysis:
                         await db_session.refresh(task)
-                        if task.status == 'cancelled':
-                            logger.info(f"🛑 批量生成任务已被取消，跳过同步分析: {batch_id}")
+                        if task.status in ('cancelled', 'failed'):
+                            logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出（跳过同步分析）: {batch_id}")
                             return
                         logger.info(f"🔍 开始同步分析章节: 第{chapter.chapter_number}章")
 
@@ -4369,8 +4682,8 @@ async def execute_batch_generation_in_order(
                 except Exception as e:
                     last_error = str(e)
                     await db_session.refresh(task)
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
                     error_msg = f"第{chapter.chapter_number if chapter else '?'}章出错: {last_error}"
                     logger.error(f"❌ {error_msg}")
@@ -4421,28 +4734,39 @@ async def execute_batch_generation_in_order(
         # 最终状态必须如实反映失败章节）
         async with write_lock:
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务已被取消，跳过完成状态覆盖: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                # 终态已被用户取消 / 陈旧回收抢先写入：绝不覆盖
+                logger.warning(f"批量任务已被外部标记为 {task.status}，跳过终态写入: {batch_id}")
                 return
             failures = task.failed_chapters or []
+            terminal_status = 'completed'
+            error_message: Optional[str] = None
             if failures:
                 detail = "；".join(
                     f"第{f.get('chapter_number')}章《{f.get('title')}》{f.get('error')}"
                     for f in failures
                 )
-                task.status = 'failed'
-                task.error_message = (
+                terminal_status = 'failed'
+                error_message = (
                     f"批量生成结束：成功 {task.completed_chapters}/{task.total_chapters} 章，"
                     f"失败 {len(failures)} 章。{detail}"
                 )[:500]
-                logger.error(f"⚠️ 批量生成结束但有失败章节: {task.error_message}")
-            else:
-                task.status = 'completed'
-            task.completed_at = datetime.now()
-            task.current_chapter_id = None
-            task.current_chapter_number = None
-            await db_session.commit()
-        
+            # 条件更新（rowcount=0 ⇒ 别的路径已抢先落终态），避免无条件覆写
+            updated = await _update_batch_status_if_running(
+                db_session,
+                batch_id,
+                status=terminal_status,
+                error_message=error_message,
+                clear_current=True,
+            )
+            if not updated:
+                logger.warning(f"⚠️ 批量生成终态已被其他路径写入，跳过覆盖: {batch_id}")
+                return
+
+        await db_session.refresh(task)
+        if terminal_status == 'failed':
+            logger.error(f"⚠️ 批量生成结束但有失败章节: {task.error_message}")
+
         logger.info(
             f"✅ 批量生成任务结束: {batch_id}, 成功生成 {task.completed_chapters} 章, "
             f"失败 {len(task.failed_chapters or [])} 章"
@@ -4453,12 +4777,17 @@ async def execute_batch_generation_in_order(
         if db_session and task:
             try:
                 async with write_lock:
-                    await db_session.refresh(task)
-                    if task.status != 'cancelled':
-                        task.status = 'failed'
-                        task.error_message = str(e)[:500]
-                        task.completed_at = datetime.now()
-                        await db_session.commit()
+                    updated = await _update_batch_status_if_running(
+                        db_session,
+                        batch_id,
+                        status='failed',
+                        error_message=str(e)[:500],
+                        clear_current=True,
+                    )
+                    if not updated:
+                        logger.warning(
+                            f"⚠️ 批量任务终态已被其他路径写入，跳过异常态覆盖: {batch_id}"
+                        )
             except Exception as commit_error:
                 logger.error(f"❌ 更新任务失败状态失败: {str(commit_error)}")
     finally:
@@ -4760,17 +5089,21 @@ async def generate_single_chapter_for_batch(
         logger.info(f"  批量生成使用自定义模型: {custom_model}")
     
     async def _is_batch_cancelled() -> bool:
+        """流式过程中快速止损：用户取消，或任务已被外部回收为 failed。"""
         if not batch_id:
             return False
         result = await db_session.execute(
             select(BatchGenerationTask.status).where(BatchGenerationTask.id == batch_id)
         )
-        return result.scalar_one_or_none() == 'cancelled'
+        return result.scalar_one_or_none() in ('cancelled', 'failed')
 
     # 批量生成中的流式生成（非SSE，不需要修改进度显示）
     budget_retries = 0
     budget_attempts = [calculated_max_tokens]
     while True:
+        # 每次预算重试前刷新心跳：单次生成可能持续数分钟，心跳间隔过长会被判陈旧
+        if budget_retries and batch_id:
+            await _touch_batch_heartbeat(db_session, batch_id)
         full_content = ""
         finish_sink.clear()
         generate_kwargs["max_tokens"] = calculated_max_tokens
@@ -4818,6 +5151,7 @@ async def generate_single_chapter_for_batch(
                 target_word_count=target_word_count,
                 finish_reason=finish_reason,
                 reasoning_tokens=reasoning_tokens,
+                reasoning_estimated=getattr(usage, "reasoning_estimated", False),
                 reasoning_chars=_reasoning_chars_from_usage(
                     usage, len(full_content)
                 ),

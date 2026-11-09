@@ -20,6 +20,29 @@ from .base_client import BaseAIClient, _enrich_http_status_error
 
 logger = get_logger(__name__)
 
+# 已知不接受 `stream_options.include_usage` 的网关（按 base_url 归一化后缓存）。
+# 目的：第一次撞 400 后学习一次，后续请求不再重复「先失败一次」。
+_STREAM_USAGE_UNSUPPORTED_BASE_URLS: set = set()
+
+
+def _stream_usage_cache_key(base_url: Optional[str]) -> str:
+    return (base_url or "").strip().rstrip("/").lower()
+
+
+def stream_usage_supported(base_url: Optional[str]) -> bool:
+    """该网关是否还没被证明「不支持 stream_options.include_usage」。"""
+    return _stream_usage_cache_key(base_url) not in _STREAM_USAGE_UNSUPPORTED_BASE_URLS
+
+
+def mark_stream_usage_unsupported(base_url: Optional[str]) -> None:
+    _STREAM_USAGE_UNSUPPORTED_BASE_URLS.add(_stream_usage_cache_key(base_url))
+
+
+def _mentions_stream_options(error_text: str) -> bool:
+    """400 的 body 是否在抱怨 stream_options / include_usage 这两个字段。"""
+    text = (error_text or "").lower()
+    return "stream_options" in text or "include_usage" in text
+
 
 def _message_content_length(content: Any) -> int:
     if content is None:
@@ -113,6 +136,10 @@ class OpenAIClient(BaseAIClient):
             payload.update(self.extra_body)
         if stream:
             payload["stream"] = True
+            # 流式 usage（含 completion_tokens_details.reasoning_tokens）默认不返回，
+            # 必须显式开启；不支持该字段的网关在下面按 400 降级并记忆。
+            if stream_usage_supported(self.base_url):
+                payload["stream_options"] = {"include_usage": True}
         if uses_minimax_api(model, self.base_url):
             # MiniMax otherwise embeds <think> in the visible chapter text.
             # extra_body is the SDK name; the HTTP JSON body uses the raw field.
@@ -210,6 +237,29 @@ class OpenAIClient(BaseAIClient):
                 except httpx.HTTPStatusError as e:
                     # 必须在流上下文内 await 读取 body，退出 async with 后将无法再读取
                     enriched = await _enrich_http_status_error(e)
+                    # 兼容不支持 stream_options.include_usage 的网关：去掉该字段重试一次。
+                    # 先记忆 base_url 再递归，嵌套调用的 _build_payload 就不会再加回来，
+                    # 因此不会无限递归；该 base_url 后续请求也不再先撞一次 400。
+                    if "stream_options" in payload and _mentions_stream_options(str(enriched)):
+                        mark_stream_usage_unsupported(self.base_url)
+                        logger.warning(
+                            "网关不接受 stream_options.include_usage，去掉该字段重试一次: "
+                            "model=%s, status=%s, body=%s",
+                            model,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                        ):
+                            yield retry_chunk
+                        return
                     # 流已经打开，本次无法原地重发；但学到的上限会让下一次调用
                     # （含 call_with_json_retry 自带重试）直接落在网关接受的预算内。
                     learn_output_ceiling(
@@ -240,6 +290,19 @@ class OpenAIClient(BaseAIClient):
                         try:
                             data = json.loads(data_str)
                             choices = data.get("choices", [])
+                            # usage 必须在 choices 之外解析：开启 include_usage 后，
+                            # 携带 usage 的最后一个 chunk 是 `choices: []`（实测 glm 网关），
+                            # 放在 if choices 里会把它整个丢掉 → reasoning_tokens 永远拿不到。
+                            usage = data.get("usage")
+                            if usage:
+                                yield {
+                                    "usage": {
+                                        "prompt_tokens": usage.get("prompt_tokens"),
+                                        "completion_tokens": usage.get("completion_tokens"),
+                                        "total_tokens": usage.get("total_tokens"),
+                                        "completion_tokens_details": usage.get("completion_tokens_details"),
+                                    }
+                                }
                             if choices and len(choices) > 0:
                                 choice = choices[0]
                                 finish_reason = choice.get("finish_reason") or finish_reason
@@ -264,17 +327,6 @@ class OpenAIClient(BaseAIClient):
                                                         existing["function"].get("arguments", "") +
                                                         tc["function"]["arguments"]
                                                     )
-
-                                usage = data.get("usage")
-                                if usage:
-                                    yield {
-                                        "usage": {
-                                            "prompt_tokens": usage.get("prompt_tokens"),
-                                            "completion_tokens": usage.get("completion_tokens"),
-                                            "total_tokens": usage.get("total_tokens"),
-                                            "completion_tokens_details": usage.get("completion_tokens_details"),
-                                        }
-                                    }
 
                                 if reasoning:
                                     reasoning_chars += len(reasoning)

@@ -15,6 +15,7 @@ from app.api.chapters import (
     _next_budget_after_truncation,
     _reasoning_chars_from_usage,
     _retry_allowance,
+    _truncation_error_message,
 )
 from app.services.ai_service import plan_output_budget
 from app.services.ai_metrics import TokenUsage
@@ -238,7 +239,7 @@ def test_retry_budget_doubles_when_content_is_empty():
         )
         == 64565
     )
-    # 只有 1.5× 信号时（无 reasoning_tokens → 盲抬 2×）
+    # 只有 1.5× 信号时（无 reasoning_tokens → 总预算盲抬 4×：16240 → 64960）
     assert (
         _next_budget_after_truncation(
             content_budget=6000,
@@ -247,7 +248,7 @@ def test_retry_budget_doubles_when_content_is_empty():
             reasoning_tokens=None,
             content_chars=0,
         )
-        == 38480
+        == 4 * 16240
     )
     # reasoning 信号比 1.5× 小时取 1.5×（max 语义）
     assert (
@@ -372,6 +373,30 @@ def test_retry_budget_stops_at_cap():
         )
         == 200000
     )
+
+
+def test_truncation_message_marks_estimated_reasoning():
+    """估算的推理用量必须标「≈（估算）」，不得冒充实测值。"""
+    message = _truncation_error_message(
+        chapter_label="第60章",
+        content_chars=0,
+        target_word_count=6000,
+        finish_reason="length",
+        reasoning_tokens=311,
+        reasoning_estimated=True,
+        reasoning_chars=311,
+        breakdown={
+            "content": 6000,
+            "reserve": 8192,
+            "cap": 200000,
+            "context_room": None,
+        },
+        budget_attempts=[16240, 64960],
+    )
+
+    assert "第60章" in message
+    assert "reasoning_tokens≈311（估算）" in message
+    assert "尝试预算=[16240, 64960]" in message
 
 
 def test_retry_allowance_by_error_type():

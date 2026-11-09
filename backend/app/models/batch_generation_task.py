@@ -1,5 +1,9 @@
 """批量生成任务数据模型"""
+from datetime import datetime
+from typing import Optional
+
 from sqlalchemy import Column, String, Integer, DateTime, Boolean, JSON
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 from app.database import Base
 import uuid
@@ -39,6 +43,8 @@ class BatchGenerationTask(Base):
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     started_at = Column(DateTime, comment="开始时间")
     completed_at = Column(DateTime, comment="完成时间")
+    # worker 心跳：批量协程在每章开始 / 每次预算重试前刷新，供陈旧任务回收判断
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     # 错误信息
     error_message = Column(String(500), comment="错误信息")
