@@ -43,7 +43,8 @@ class BatchGenerationTask(Base):
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     started_at = Column(DateTime, comment="开始时间")
     completed_at = Column(DateTime, comment="完成时间")
-    # worker 心跳：批量协程在每章开始 / 每次预算重试前刷新，供陈旧任务回收判断
+    # worker 心跳：批量协程在每章开始时刷新，运行期由 60s ticker 持续维持，
+    # 供陈旧任务回收判断（早期的「每次预算重试前刷新」已随预算重试循环一并删除）
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     # 错误信息
