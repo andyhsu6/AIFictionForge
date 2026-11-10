@@ -41,6 +41,8 @@ import type {
   WritingStyleUpdate,
 } from '../types';
 import { useTranslation } from 'react-i18next';
+// 服务端时间戳不带时区（UTC），按 UTC 解析后再本地化显示（issue #283）
+import { formatServerDateTime as formatDateTime } from '../utils/serverDateTime';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -73,11 +75,6 @@ const formatPercent = (value: unknown): string => {
   return num === null ? '-' : `${Math.round(num * 1000) / 10}%`;
 };
 
-const formatDateTime = (value?: string | null): string => {
-  if (!value) return '-';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
-};
 
 export default function WritingStyles() {
   const { message, modal } = App.useApp();
