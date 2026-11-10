@@ -38,7 +38,11 @@ from app.schemas.writing_style import WritingStyleCreate, WritingStyleUpdate
 from app.services.book_import_service import BookImportService
 from app.services.cascade_cleanup import delete_project_children
 from app.services.import_export_service import ImportExportService
-from app.services.style_profile import profile_preset_id
+from app.services.style_profile import (
+    build_style_sample,
+    local_stats_fallback,
+    profile_preset_id,
+)
 
 USER_ID = "user-1"
 
@@ -468,5 +472,129 @@ def test_create_rejects_reserved_profile_prefix():
                 db,
             )
         assert exc_info.value.code == "validation.profile_preset_reserved"
+
+    _run(scenario)
+
+
+# ---- issue #279：metrics 必须来自实测，不采信模型自报值 ----
+
+# 每句 20 字、每段 40 字；与 MODEL_CLAIMED_PROFILE 声称的 130 字/段、0.45 对话占比明显不同
+_CONTROLLED_SENTENCE = "占" * 19 + "。"
+_CONTROLLED_PARAGRAPH = _CONTROLLED_SENTENCE * 2
+
+MODEL_CLAIMED_PROFILE = {
+    **VALID_PROFILE,
+    "metrics": {
+        "avg_sentence_chars": 12.5,
+        "median_sentence_chars": 12,
+        "short_sentence_ratio": 0.6,
+        "dialogue_ratio": 0.45,
+        "paragraph_chars_p50": 130,
+    },
+}
+
+
+def measured_chapters(count: int = 3) -> list[SimpleNamespace]:
+    content = "\n\n".join([_CONTROLLED_PARAGRAPH] * 10)
+    return [
+        SimpleNamespace(chapter_number=index, title=f"第{index}章", content=content)
+        for index in range(1, count + 1)
+    ]
+
+
+def measured_metrics(chapters) -> dict:
+    return local_stats_fallback(build_style_sample(chapters))["metrics"]
+
+
+async def extract_profile(project, db, *, ai, chapters):
+    return await BookImportService()._extract_style_profile(
+        db=db,
+        user_id=USER_ID,
+        project=project,
+        chapters=chapters,
+        ai_service=ai,
+        content_language="zh",
+    )
+
+
+def test_model_metrics_are_overridden_by_measured_values(caplog):
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        with caplog.at_level("INFO", logger="app.services.book_import_service"):
+            profile = await extract_profile(
+                project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+            )
+
+        metrics = profile["profile_data"]["metrics"]
+        assert metrics == expected
+        assert metrics["paragraph_chars_p50"] == 40
+        assert metrics["avg_sentence_chars"] == pytest.approx(20.0)
+        assert metrics["dialogue_ratio"] == 0  # 模型声称 0.45
+        # 质性字段仍来自模型（未降级）
+        assert profile["degraded"] is False
+        assert profile["profile_data"]["source"] == "model"
+        assert (
+            profile["profile_data"]["narrative"]["pov"]
+            == MODEL_CLAIMED_PROFILE["narrative"]["pov"]
+        )
+
+    _run(scenario)
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "以实测覆盖模型估计" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    # 只记偏差 >30% 的键，且日志不含任何原文
+    assert "paragraph_chars_p50 130->40" in messages[0]
+    assert "avg_sentence_chars 12.5->20.0" in messages[0]
+    assert "dialogue_ratio 0.45->0.0" in messages[0]
+    assert "占" not in messages[0]
+
+
+def test_prompt_content_renders_measured_metrics():
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+    assert expected["paragraph_chars_p50"] == 40
+    assert round(expected["avg_sentence_chars"]) == 20
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+        )
+
+        content = profile["prompt_content"]
+        assert "- 平均句长：20 字（中位 20 字）" in content
+        assert "- 段落长度中位：40 字" in content
+        assert "- 对话占比：0%" in content
+        # 模型声称的数值不得出现在注入内容里
+        assert "130" not in content
+        assert "45%" not in content
+        assert "12.5" not in content
+
+    _run(scenario)
+
+
+def test_model_failure_metrics_stay_measured():
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project,
+            db,
+            ai=fake_ai(error=RuntimeError("upstream down")),
+            chapters=chapters,
+        )
+
+        assert profile["degraded"] is True
+        assert profile["profile_data"]["source"] == "local"
+        assert profile["profile_data"]["metrics"] == expected
 
     _run(scenario)
