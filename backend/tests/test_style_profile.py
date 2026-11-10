@@ -203,6 +203,20 @@ def test_render_does_not_leak_sample_text():
         assert line.strip() not in rendered
 
 
+def test_render_declares_measured_metrics_priority_in_both_languages():
+    """量化块声明实测优先，避免与 do/dont 里的模型估计数字冲突时被误读（#279）。"""
+    zh = render_style_profile(_profile())
+    en = render_style_profile(_profile(), None, language="en")
+
+    assert (
+        "- 以上量化指标为抽样实测值；若与下方条目中的数字冲突，以量化指标为准。" in zh
+    )
+    assert (
+        "- The metrics above are measured from the sample; "
+        "if a number below conflicts with them, the measured value wins." in en
+    )
+
+
 def test_local_stats_fallback_passes_validation():
     text = (
         "占位短句一。"

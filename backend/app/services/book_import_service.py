@@ -462,6 +462,25 @@ def _finalize_skipped_chapters(skipped: Optional[list[dict[str, Any]]]) -> list[
     return sorted(unique.values(), key=lambda e: (e.get("chapter_number") or 0, e.get("scope") or ""))
 
 
+def _metric_override_note(key: str, model_value: Any, measured_value: Any) -> Optional[str]:
+    """返回偏差 >30% 的指标对比串（``key 模型值->实测值``）；不满足时返回 None。
+
+    只做数值比较与格式化，调用方写日志时不会带入原文（issue #279）。
+    """
+    if not isinstance(model_value, (int, float)) or isinstance(model_value, bool):
+        return None
+    model = float(model_value)
+    measured = float(measured_value)
+    if measured == 0:
+        # 实测为 0 时相对偏差无定义：模型给出非零值按 100% 计入
+        deviation = 0.0 if model == 0 else float("inf")
+    else:
+        deviation = abs(model - measured) / abs(measured)
+    if deviation <= 0.3:
+        return None
+    return f"{key} {model_value}->{measured_value}"
+
+
 @dataclass
 class _StepFailure:
     """记录某个生成步骤的失败信息"""
@@ -4317,6 +4336,11 @@ class BookImportService:
                 "confidence": None,
             }
 
+        # 本地统计只算一次：模型失败兜底与「实测覆盖 metrics」共用同一份结果
+        # （同一 sample ⇒ 同一口径，也不会对抽样文本做两遍正则扫描）。
+        local_profile = local_stats_fallback(sample)
+        measured_metrics = local_profile["metrics"]
+
         degraded = False
         generation_language = "zh"
         try:
@@ -4354,13 +4378,31 @@ class BookImportService:
                 "拆书导入：文笔画像抽取失败，改用本地统计兜底"
                 f"（异常类型 {type(exc).__name__}，章节 {sample.meta.get('chapter_numbers') or '-'}）"
             )
-            data = local_stats_fallback(sample)
+            data = local_profile
             degraded = True
 
         if not isinstance(data, dict):
             # 兜底产物也可能被异常路径污染，保证后续 .get 安全
-            data = local_stats_fallback(sample)
+            data = local_profile
             degraded = True
+
+        # issue #279：模型自报的 metrics 只过了范围校验，数值常与原文实测偏差很大，
+        # 会让章节提示词与一致性自检拿错基准；统一用同一份抽样文本的本地统计覆盖。
+        # 质性字段（narrative/diction/dialogue/do/dont）仍由模型给出，source 保持 model。
+        model_metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+        deviations = [
+            note
+            for key, value in measured_metrics.items()
+            for note in (_metric_override_note(key, model_metrics.get(key), value),)
+            if note
+        ]
+        if deviations:
+            # 日志只含指标名与数字，不含原文/书名/角色名
+            logger.info(
+                "文笔画像：metrics 以实测覆盖模型估计（偏差>30%%: %s）",
+                ", ".join(deviations),
+            )
+        data = {**data, "metrics": measured_metrics}
 
         return {
             "skipped": False,
@@ -4374,7 +4416,13 @@ class BookImportService:
             "degraded": degraded,
             "confidence": data.get("confidence"),
             "sample_chars": sample_chars,
-            "profile_data": {**data, "source": "local" if degraded else "model"},
+            "profile_data": {
+                **data,
+                "source": "local" if degraded else "model",
+                # 指标来源与质性字段来源不同：metrics 恒为抽样实测（issue #279），
+                # 排查时不必再从 confidence 反推这组数字是不是模型说的。
+                "metrics_source": "measured",
+            },
             "profile_version": int(data.get("version") or 1),
             "ranges": list(sample.meta.get("ranges") or []),
         }

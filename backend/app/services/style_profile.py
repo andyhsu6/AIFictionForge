@@ -518,6 +518,7 @@ def _render_zh(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str)
         f"- 说话人标注：{dialogue.get('attribution', '')}",
         f"- 对话标签密度：{dialogue.get('tag_density', '')}",
         f"- 对话占比：{_fmt_percent(metrics.get('dialogue_ratio', 0))}",
+        "- 以上量化指标为抽样实测值；若与下方条目中的数字冲突，以量化指标为准。",
         "",
         "## 必须做到",
     ]
@@ -581,6 +582,7 @@ def _render_en(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str)
         f"- Speaker attribution: {dialogue.get('attribution', '')}",
         f"- Dialogue tag density: {dialogue.get('tag_density', '')}",
         f"- Dialogue ratio: {_fmt_percent(metrics.get('dialogue_ratio', 0))}",
+        "- The metrics above are measured from the sample; if a number below conflicts with them, the measured value wins.",
         "",
         "## Must do",
     ]
