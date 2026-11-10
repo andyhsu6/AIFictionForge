@@ -587,6 +587,24 @@ def test_model_metrics_are_overridden_by_measured_values(caplog):
     assert "占" not in messages[0]
 
 
+def test_profile_advice_uses_measured_metrics_not_model_claims():
+    """do/dont 里的量化条目必须换成实测值（模型声称的 13–19 字必须消失）。"""
+    chapters = measured_chapters()
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(VALID_PROFILE), chapters=chapters
+        )
+        data = profile["profile_data"]
+        assert "13–19" not in " ".join(data["do"])
+        assert any("20" in item for item in data["do"])  # 受控文本每句 20 字
+        assert 3 <= len(data["do"]) <= 6
+        assert 3 <= len(data["dont"]) <= 6
+
+    _run(scenario)
+
+
 def test_prompt_content_renders_measured_metrics():
     chapters = measured_chapters()
     expected = measured_metrics(chapters)

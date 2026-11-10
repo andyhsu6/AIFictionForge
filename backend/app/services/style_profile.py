@@ -479,6 +479,77 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         raise ValueError(f"画像 JSON 不得超过 {PROFILE_JSON_MAX_CHARS} 字")
 
 
+# 量化建议（含数字的 do/dont 条目）在实测覆盖 metrics 后会与基线自相矛盾：
+# 实测句长 29.7 字，而模型写的 "平均句长控制在 12-20 字" 仍是显式命令（比渲染层的
+# "以量化指标为准" 更强），照着写就必然回到短句腔。这里统一把量化条目换成实测值。
+_QUANTITATIVE_ADVICE_RE = re.compile(r"\d")
+_QUANTITATIVE_UNITS = ("字", "%", "％")
+# 实测句长偏长时（≥ 26 字），"短句/断句/短促" 类条目同样与基线相反。
+SHORT_SENTENCE_ADVICE_AVG_THRESHOLD = 26.0
+_SHORT_SENTENCE_HINTS = ("短句", "断句", "短促", "碎句")
+
+_QUALITATIVE_ADVICE_FALLBACK = ("避免无标记地切换叙述人称或时态",)
+
+
+def _is_quantitative_advice(item: str) -> bool:
+    return bool(_QUANTITATIVE_ADVICE_RE.search(item)) and any(
+        unit in item for unit in _QUANTITATIVE_UNITS
+    )
+
+
+def measured_advice(metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """由实测指标生成 do/dont（与 ``local_stats_fallback`` 同口径）。"""
+    avg = float(metrics.get("avg_sentence_chars") or 0)
+    median = float(metrics.get("median_sentence_chars") or 0)
+    short = float(metrics.get("short_sentence_ratio") or 0)
+    dialogue = float(metrics.get("dialogue_ratio") or 0)
+    paragraph = float(metrics.get("paragraph_chars_p50") or 0)
+    low, high = max(1, round(avg) - 2), max(2, round(avg) + 2)
+    do = [
+        f"平均句长控制在 {low}–{high} 字",
+        f"中位句长保持在 {round(median)} 字左右",
+        f"对话占比约 {round(dialogue * 100)}%",
+        f"短句（≤15 字）占比约 {round(short * 100)}%",
+        f"段落长度中位数约 {round(paragraph)} 字",
+    ]
+    dont = [
+        f"避免段落长度长期偏离 {round(paragraph)} 字",
+        *_QUALITATIVE_ADVICE_FALLBACK,
+    ]
+    return do, dont
+
+
+def reconcile_advice_with_metrics(data: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    """把 do/dont 里的量化条目替换为实测值，并剔除与实测相反的短句类建议。
+
+    - 含「数字 + 字/%」的条目一律丢弃（它们是模型对指标的主观估计）；
+    - 实测平均句长 ≥ 26 字时，含「短句/断句/短促」的条目也丢弃（与基线相反）；
+    - 其余质性条目保留（控制人数上限），不足上限时补实测条目。
+    """
+    avg = float(metrics.get("avg_sentence_chars") or 0)
+    prefer_long = avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD
+
+    def _keep(item: Any) -> bool:
+        if not isinstance(item, str) or not item.strip():
+            return False
+        if _is_quantitative_advice(item):
+            return False
+        if prefer_long and any(hint in item for hint in _SHORT_SENTENCE_HINTS):
+            return False
+        return True
+
+    measured_do, measured_dont = measured_advice(metrics)
+    kept_do = [item.strip() for item in (data.get("do") or []) if _keep(item)][: max(0, DO_DONT_MAX - len(measured_do))]
+    kept_dont = [item.strip() for item in (data.get("dont") or []) if _keep(item)][: max(0, DO_DONT_MAX - len(measured_dont))]
+    do = (measured_do + kept_do)[:DO_DONT_MAX]
+    dont = (measured_dont + kept_dont)[:DO_DONT_MAX]
+    if len(do) < DO_DONT_MIN:
+        do = (do + [item for item in measured_do if item not in do])[:DO_DONT_MAX]
+    if len(dont) < DO_DONT_MIN:
+        dont = (dont + [item for item in measured_dont if item not in dont])[:DO_DONT_MAX]
+    return {**data, "do": do, "dont": dont}
+
+
 def _fmt_number(value: float) -> str:
     if isinstance(value, float):
         return f"{value:.2f}".rstrip("0").rstrip(".")

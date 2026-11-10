@@ -367,3 +367,48 @@ def test_validate_rejects_nested_source_free_text():
     data = _profile()
     data["diction"]["source"] = "model"
     validate_style_profile(data)
+
+
+# ---- issue #279 后续：do/dont 里的量化条目必须与实测 metrics 一致 ----
+
+def test_reconcile_advice_drops_model_numbers_and_keeps_measured():
+    from app.services.style_profile import reconcile_advice_with_metrics
+
+    metrics = {
+        "avg_sentence_chars": 29.7,
+        "median_sentence_chars": 28.0,
+        "short_sentence_ratio": 0.28,
+        "dialogue_ratio": 0.23,
+        "paragraph_chars_p50": 38,
+    }
+    data = {
+        "do": ["平均句长控制在 12-20 字", "对话占比保持 35-45%", "心理疑问用连续短句排比"],
+        "dont": ["避免连续 3 句超过 40 字", "避免无标记地切换叙述人称或时态"],
+    }
+    updated = reconcile_advice_with_metrics(data, metrics)
+
+    joined = " ".join(updated["do"])
+    assert "12-20" not in joined and "35-45" not in joined
+    assert "短句排比" not in joined, "实测句长 29.7 字时不得保留“连续短句”类建议"
+    # 实测 29.7 字 ⇒ 区间 28–32
+    assert any("28–32" in item for item in updated["do"]), f"应换成实测句长区间: {updated['do']}"
+    assert any("23%" in item for item in updated["do"]), "应带上实测对话占比"
+    assert "避免无标记地切换叙述人称或时态" in updated["dont"], "质性条目必须保留"
+    assert 3 <= len(updated["do"]) <= 6
+    assert 3 <= len(updated["dont"]) <= 6
+
+
+def test_reconcile_advice_keeps_short_sentence_hint_for_a_short_sentence_book():
+    from app.services.style_profile import reconcile_advice_with_metrics
+
+    metrics = {
+        "avg_sentence_chars": 16.0,
+        "median_sentence_chars": 15.0,
+        "short_sentence_ratio": 0.55,
+        "dialogue_ratio": 0.35,
+        "paragraph_chars_p50": 60,
+    }
+    updated = reconcile_advice_with_metrics(
+        {"do": ["心理疑问用连续短句推进"], "dont": ["避免长句堆叠"]}, metrics
+    )
+    assert "心理疑问用连续短句推进" in updated["do"]
