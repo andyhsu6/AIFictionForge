@@ -76,6 +76,7 @@ from app.services.style_profile import (
     PROFILE_STYLE_TYPE,
     SAMPLE_MIN_CHARS,
     build_corpus_sample,
+    reconcile_advice_with_metrics,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
@@ -4410,7 +4411,7 @@ class BookImportService:
                 "文笔画像：metrics 以实测覆盖模型估计（偏差>30%%: %s）",
                 ", ".join(deviations),
             )
-        data = {**data, "metrics": measured_metrics}
+        data = reconcile_advice_with_metrics({**data, "metrics": measured_metrics}, measured_metrics)
 
         return {
             "skipped": False,
