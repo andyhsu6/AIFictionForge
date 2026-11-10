@@ -167,6 +167,44 @@ def _chapter_windows(content: str, per_chapter_budget: int) -> list[tuple[int, i
     return merged
 
 
+def build_corpus_sample(chapters: list[Any]) -> StyleSample:
+    """把传入章节的**全部正文**拼成一份样本，只用于本地统计（不送给模型）。
+
+    抽样（`build_style_sample`）的意义是控制模型输入的 token 成本；统计口径没有
+    这个约束。用 5 章抽样算出的句长/对话占比会被样本的偶然分布放大——实测同一本书
+    抽样得对话占比 0.45，全书实测 0.23——所以 `metrics` 一律按全量正文统计，
+    抽样只服务于模型的质性字段（issue #279 后续）。
+    """
+    valid = [
+        chapter
+        for chapter in (chapters or [])
+        if str(getattr(chapter, "content", None) or "").strip()
+    ]
+    valid.sort(key=lambda chapter: getattr(chapter, "chapter_number", 0))
+    parts: list[str] = []
+    numbers: list[int] = []
+    used = 0
+    for chapter in valid:
+        content = str(getattr(chapter, "content") or "")
+        parts.append(content)
+        used += len(content)
+        try:
+            numbers.append(int(getattr(chapter, "chapter_number", 0)))
+        except (TypeError, ValueError):
+            continue
+    return StyleSample(
+        text="\n\n".join(parts),
+        meta={
+            "chapter_numbers": numbers,
+            "ranges": [],
+            "char_count": used,
+            "strategy": "corpus",
+            "tail": False,
+            "truncated": False,
+        },
+    )
+
+
 def build_style_sample(
     chapters: list[Any],
     *,

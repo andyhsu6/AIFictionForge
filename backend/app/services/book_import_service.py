@@ -75,6 +75,7 @@ from app.services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     PROFILE_STYLE_TYPE,
     SAMPLE_MIN_CHARS,
+    build_corpus_sample,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
@@ -4339,7 +4340,14 @@ class BookImportService:
         # 本地统计只算一次：模型失败兜底与「实测覆盖 metrics」共用同一份结果
         # （同一 sample ⇒ 同一口径，也不会对抽样文本做两遍正则扫描）。
         local_profile = local_stats_fallback(sample)
-        measured_metrics = local_profile["metrics"]
+        # metrics 按**全量正文**统计（抽样只服务模型的质性字段）：5 章抽样会把
+        # 对话占比这类指标按偶然分布放大（实测抽样 0.45 vs 全书 0.23）。
+        metrics_sample = build_corpus_sample(chapters)
+        measured_metrics = (
+            local_profile["metrics"]
+            if not metrics_sample.text.strip()
+            else local_stats_fallback(metrics_sample)["metrics"]
+        )
 
         degraded = False
         generation_language = "zh"
