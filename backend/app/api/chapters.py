@@ -64,8 +64,7 @@ from app.services.agent_prompt_budget import CHARS_PER_TOKEN
 from app.services.model_capability_probe import CAPABILITY_INCOMPLETE_CODE
 from app.services.ai_service import (
     AIService,
-    detect_max_output_tokens,
-    ensure_thinking_model_min_tokens,
+    THINKING_MODEL_DEFAULT_MAX_TOKENS,
     plan_output_budget,
 )
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
@@ -432,6 +431,26 @@ def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
         # 截断类固定 1 次（覆盖推理量偶发波动），不受任务 max_retries 放大。
         return min(_TRUNCATION_OUTER_RETRIES, task_max_retries)
     return task_max_retries
+
+
+def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], scope: str) -> None:
+    """能力预算降级时的日志分级（续写/重写与三条章节主路径同口径）。
+
+    - `CAPABILITY_INCOMPLETE`（门禁判合格但缓存窗口数值缺失）：门禁在派发处**不会**重抛，
+      所以这里必须 ERROR —— 否则本次会带着保守上限静默跑完，没人知道预算退化了；
+    - 其它门禁类 `ApiError`：派发处会按同一三元组重抛真实错误，WARNING 足够；
+    - 未知异常（DB 抖动、解析 bug）：同样不会被重抛，ERROR 并带上异常类型。
+    """
+    code = getattr(exc, "code", None)
+    if code == CAPABILITY_INCOMPLETE_CODE:
+        logger.error(f"❌ {scope}上下文窗口结论缺失有效数值，预算退化: model={model}, code={code}")
+    elif isinstance(exc, ApiError):
+        logger.warning(f"⚠️ {scope}上下文窗口不可得，预算退回保守上限: model={model}, code={code}")
+    else:
+        logger.error(
+            f"❌ {scope}读取上下文窗口异常，预算退化: "
+            f"model={model}, {type(exc).__name__}: {exc}"
+        )
 
 
 def _extract_chapter_numbers(message: str) -> set[int]:
@@ -5749,8 +5768,35 @@ async def partial_regenerate_stream(
 
         # ---- 能力推导与服务端分段（无服务端循环：单请求单段，客户端驱动 0..N-1）----
         continue_model = getattr(user_ai_service, "default_model", None)
-        continue_base_url = getattr(user_ai_service, "base_url", None)
-        output_limit = detect_max_output_tokens(continue_model, continue_base_url)
+        # prompt_chars 口径：此刻 prompt 还没拼（分段必须先于 prompt 决定，本函数不为此
+        # 调整顺序），所以按该请求**真正会拼出的**上下文规模的已知组成估算（见下方
+        # continue_event_generator）：首段前窗 3000 + 后窗 1200 字，后续段改用滚动上下文
+        # rolling_context（取两者较大值），再叠加锚点文本与用户额外要求。风格正文与模板
+        # 在此刻尚未读取，按 0 计 —— 输入估算只用于「窗口剩余」判断，少算几千字符在实测
+        # 窗口（≥1M）面前不改变结论。
+        continue_prompt_chars = (
+            max(3000 + 1200, len((partial_request.rolling_context or "").strip()))
+            + len(partial_request.selected_text or "")
+            + len(partial_request.user_instructions or "")
+        )
+        # 注：rolling_context 在模板里会被拼**两次**（前文 + 锚点文本，见
+        # continue_event_generator 的 k>0 分支），故再叠一份；少算会让窗口剩余偏大。
+        continue_prompt_chars += len((partial_request.rolling_context or "").strip())
+        # 输出上限来自**实测能力**（窗口剩余 / 网关报过的输出上限），不按模型名登记表猜。
+        # 同一请求内只算一次（分段数必须跨段稳定），失败才退回保守上限。
+        try:
+            segment_budget, _ = await user_ai_service.resolve_output_budget(
+                target_chars=target_chars,
+                prompt_chars=continue_prompt_chars,
+                model=continue_model,
+            )
+            # 用**已被窗口剩余钳过**的预算当上限，而不是裸的 cap：网关报过很大的输出
+            # 上限（如 200000）而 prompt 几乎占满窗口时，裸 cap 会让分段按
+            # SEGMENT_TARGET_CHARS 规划出一段塞不进窗口的请求（上游 400 兜底）。
+            output_limit = max(1, int(segment_budget))
+        except Exception as exc:
+            _log_budget_capability_failure(exc, model=continue_model, scope="续写")
+            output_limit = THINKING_MODEL_DEFAULT_MAX_TOKENS
         safety_factor = 2.0
         effective_segment_chars = min(SEGMENT_TARGET_CHARS, output_limit // 2)
         if effective_segment_chars < CONTINUE_MIN_SEGMENT_CHARS:
@@ -5764,10 +5810,8 @@ async def partial_regenerate_stream(
 
         remaining = max(0, target_chars - partial_request.already_generated_chars)
         seg_chars = max(1, min(effective_segment_chars, remaining))
+        # 上限来自能力：max_tokens 是上限不是花费，给足由模型在推理与正文间自行分配
         budget = min(ceil(seg_chars * safety_factor), output_limit)
-        budget = ensure_thinking_model_min_tokens(budget, continue_model, continue_base_url)
-        # 思考模型抬底永远不得穿透 provider 输出上限
-        budget = min(budget, output_limit)
     else:
         # ---- 局部重写：既有位置校验（行为保持）----
         if partial_request.start_position >= content_length:
@@ -6035,11 +6079,31 @@ async def partial_regenerate_stream(
             else:
                 target_words = int(original_word_count * 1.5)
             
-            calculated_max_tokens = max(500, min(int(target_words * 3), 8000))
-            calculated_max_tokens = ensure_thinking_model_min_tokens(
-                calculated_max_tokens,
-                getattr(user_ai_service, "default_model", None),
-                getattr(user_ai_service, "base_url", None),
+            # 计算 max_tokens：单一来源 = 实测能力（窗口剩余 / 网关报过的输出上限），
+            # 不按选区字数硬算、也不按模型名抬底。失败时才退回 plan_output_budget 的
+            # 保守上限（无实测上限、无窗口时它内部按 THINKING_MODEL_DEFAULT_MAX_TOKENS 封顶）。
+            rewrite_model = getattr(user_ai_service, "default_model", None)
+            try:
+                calculated_max_tokens, budget_breakdown = await user_ai_service.resolve_output_budget(
+                    target_chars=target_words,
+                    prompt_chars=len(prompt),
+                    model=rewrite_model,
+                )
+            except Exception as exc:
+                _log_budget_capability_failure(exc, model=rewrite_model, scope="局部重写")
+                calculated_max_tokens, budget_breakdown = plan_output_budget(
+                    target_chars=target_words,
+                    model=rewrite_model,
+                    base_url=getattr(user_ai_service, "base_url", None),
+                )
+            logger.info(
+                f"📊 局部重写输出预算: 目标 {target_words} 字 → "
+                f"cap={budget_breakdown.get('cap')} "
+                f"measured_cap={budget_breakdown.get('measured_cap')} "
+                f"context_room={budget_breakdown.get('context_room')} "
+                f"window={budget_breakdown.get('window')} "
+                f"input_tokens={budget_breakdown.get('input_tokens')} "
+                f"→ max_tokens={calculated_max_tokens}"
             )
             
             # 流式生成

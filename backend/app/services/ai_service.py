@@ -22,6 +22,10 @@ from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
 from app.services.ai_clients.output_caps import resolve_output_ceiling
+# 字符↔token 换算的唯一来源（`CHARS_PER_TOKEN = 1.0`，中文≈1 字符/token）。
+# 可直接顶层导入，不存在循环依赖：agent_prompt_budget 只在 TYPE_CHECKING 分支里
+# 引用本模块（`from app.services.ai_service import AIService`），运行期不引入。
+from app.services.agent_prompt_budget import CHARS_PER_TOKEN
 from app.services.model_capability_probe import (
     TRIGGER_DISPATCH,
     ensure_model_allowed,
@@ -69,6 +73,12 @@ def is_thinking_model(model: Optional[str], base_url: Optional[str] = None) -> b
 
     - 模型名含 deepseek / r1 / reasoning / think 视为思考型；
     - 网关域名含 commandcode.ai 视为思考型（Command Code 通道）。
+
+    **本判定已不参与章节生成 / 章内续写 / 局部重写的预算判定**（issue #276）：
+    那三条路径改走实测能力（`AIService.resolve_output_budget` ⇒ 窗口剩余 + 网关报过的
+    输出上限），预算里不再有任何按模型名分支的逻辑。这里只剩**通用路径的默认值兜底**
+    （`resolve_effective_max_tokens`：调用方没显式传 max_tokens 时才抬同一模型的下限）。
+    别把新预算需求接回本函数 —— 名字猜出来的能力必然过期。
     """
     model_name = (model or "").lower()
     url = (base_url or "").lower()
@@ -101,27 +111,6 @@ def resolve_effective_max_tokens(
     ):
         return THINKING_MODEL_DEFAULT_MAX_TOKENS
     return default
-
-
-def ensure_thinking_model_min_tokens(
-    max_tokens: int,
-    model: Optional[str],
-    base_url: Optional[str] = None,
-    floor: int = THINKING_MODEL_DEFAULT_MAX_TOKENS,
-) -> int:
-    """为思考型模型显式传入的 max_tokens 兜底抬升到下限（修复 #45）。
-
-    与 resolve_effective_max_tokens 不同：后者对显式传入的 requested 原样返回
-    （该契约被 test_ai_token_budget.py 钉死，不能改）。部分调用点会显式传入一个
-    很小的预算（例如局部重写按选区字数算出的下限 500），思考型模型的推理过程会
-    把预算耗尽，导致正文为空、finish_reason=length。本函数只用于这类调用点，
-    在不改变全局契约的前提下把预算抬到安全下限。
-
-    max_tokens 是上限而非目标，模型遇到 EOS 会自然停止，抬高下限不会强制变长。
-    """
-    if is_thinking_model(model, base_url):
-        return max(max_tokens, floor)
-    return max_tokens
 
 
 # 已知模型上下文窗口。**需求 #55 步骤 3 起降级为「提示」**：只用来决定探测
@@ -167,65 +156,6 @@ def detect_context_window(model: Optional[str]) -> Optional[int]:
         if key in name:
             return window
     return None
-
-
-# 保守默认输出上限（章内续写 B0：未登记模型按此值推导输出预算）
-_DEFAULT_MAX_OUTPUT_TOKENS = 8192
-
-# 已知模型最大输出 token。**与 #55 对窗口登记表的处理同一条路子：这是「提示」不是
-# 判据** —— 网关自己报过的上限（#147 的 output_caps 记忆）优先于本表，两个方向都优先
-# （见 detect_max_output_tokens）。未登记且未测过的模型才按保守值处理。
-# 思考/推理模型条目不得低于 THINKING_MODEL_DEFAULT_MAX_TOKENS：推理与正文
-# 共享输出预算，登记过低会让续写段正文为空，与修复 #13 的语义一致。
-_KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
-    "deepseek-v4": 64000,
-    "deepseek-v3": 64000,
-    "deepseek-r1": 64000,
-    "gpt-5": 128000,
-    "gpt-4o": 16384,
-    "gpt-4.1": 32768,
-    "gpt-4-turbo": 16384,
-    "gpt-4": 8192,
-    "gpt-3.5": 4096,
-    "claude-3": 8192,
-    "claude-2": 4096,
-    "gemini-1.5": 8192,
-    "gemini-2": 65536,
-    "qwen": 8192,
-    # 2026-11-08 实测 commandcode + z-ai/glm-5.3-flash 接受 max_tokens=200000（三次均 200）。
-    # 键收窄到 "glm-5.3"：登记表按子串匹配，写 "glm" 会把 glm4-9b-chat 这类别的
-    # 网关模型一并抬到 200000；glm-4.6 等未登记版本回落到 `_DEFAULT_MAX_OUTPUT_TOKENS`
-    # （与收窄前的旧行为一致）。
-    "glm-5.3": 200000,
-    "minimax": 16384,
-}
-
-
-def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = None) -> int:
-    """检测模型最大输出 token 数：实测优先，登记表只当提示（issue #152）。
-
-    顺序：
-    1. **网关为这个 (base_url, model) 报过的上限**（#147 学到并存进进程内记忆）——
-       两个方向都优先：实测比登记表小，按登记表规划分段会被上游拒；实测比登记表大，
-       按登记表规划就是白腰斩容量（实测：未登记的 LongCat 报 131072，却被按保守值
-       8192 规划，长续写容量只剩登记模型的一半）。
-    2. 登记表提示（谁还没被测过时用）。
-    3. 保守默认值。
-
-    返回值恒 > 0。`base_url` 省略时不去查记忆（记忆的键含网关，缺一半就没法归属），
-    退化成「提示 → 默认」；对 None/空 model 健壮。
-    """
-    if base_url and model:
-        measured = resolve_output_ceiling(base_url, model)
-        if measured is not None and measured > 0:
-            return measured
-    name = (model or "").lower()
-    for key, limit in sorted(
-        _KNOWN_OUTPUT_LIMITS.items(), key=lambda kv: len(kv[0]), reverse=True
-    ):
-        if key in name and limit > 0:
-            return limit
-    return _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # ========== 章节输出预算（单一来源） ==========
@@ -697,6 +627,49 @@ class AIService:
                 params={"model": (model or self.default_model or "")},
             )
         return budget
+
+    async def resolve_output_budget(
+        self,
+        *,
+        target_chars: int,
+        prompt_chars: int,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """按**实测能力**规划本次请求的输出预算：`(max_tokens, breakdown)`。
+
+        统一入口：章节生成 / 章内续写分段 / 局部重写等所有按能力取输出预算的调用点都走这里
+        （issue #276）：先取本次实发模型**实测/显式声明的上下文窗口**
+        （`resolve_effective_window_tokens`，含派发门禁的补测顺序），把 prompt 字符数
+        按 `CHARS_PER_TOKEN` 折成输入 token，再交给 `plan_output_budget` 求
+        `min(窗口剩余, 网关报过的输出上限)`。
+
+        为什么预算必须走窗口而不是模型名：2026-11-08 批量第 58 章的空正文与 #152 的
+        「未登记的 LongCat 被按 8192 规划」是同一个病 —— 预算按名字从静态登记表/名字
+        判定推出来，名字错了或表过期了，预算就悄悄腰斩（短则白扔容量，长则推理吃光
+        预算、正文 0 字）。实测窗口是唯一被上游确认过的数字，换任何模型名都不改变
+        结论；名字表已随之删除。
+
+        **失败契约（故意抛异常，不返回猜测值）**：窗口拿不到时原样抛
+        `ApiError`（未配置 → `validation.ai_model_not_configured`；补测后仍无合格结论
+        → `validation.ai_model_below_minimum` / `CAPABILITY_INCOMPLETE_CODE`），
+        非门禁异常（DB 抖动等）同样上抛。降级策略由**调用方**决定（例如续写退回保守
+        分段上限并记 WARNING），本方法不替调用方把「不知道」渲染成某个具体预算 ——
+        那正是静默降级。
+
+        `target_chars` 只作为 breakdown 里的目标信息（不参与 max_tokens 计算），
+        `prompt_chars` 是本次真正会送出的输入规模（字符）。`provider` 与派发路径
+        同源的覆盖值：请求体允许 per-call provider 覆盖时，调用方必须传同一个值。
+        """
+        window = await self.resolve_effective_window_tokens(model, provider)
+        input_tokens = int(max(0, prompt_chars) / CHARS_PER_TOKEN)
+        return plan_output_budget(
+            target_chars=target_chars,
+            model=model or self.default_model,
+            base_url=self.base_url,
+            input_tokens=input_tokens,
+            context_window=window,
+        )
 
     def _build_call_metrics(
         self,

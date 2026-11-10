@@ -1,29 +1,59 @@
-"""模型输出能力注册表测试（章内续写 B0：输出 token 上限 → 字符预算换算的数据基础）。
+"""输出预算能力测试：预算按**实测能力**（窗口剩余 + 网关报过的输出上限）定，不按模型名。
 
-背景：章内续写需要把模型 max output tokens 换算为安全字符预算
-（effective_segment_chars = min(8000, floor(output_limit / 2.0))），
-因此 ai_service 需要一个与 _KNOWN_CONTEXT_WINDOWS 对称的输出上限注册表。
+背景（issue #276）：章内续写/局部重写原先走「模型名登记表 + 思考型名字判定」
+（`detect_max_output_tokens` / `ensure_thinking_model_min_tokens`），名字错了或表过期
+预算就悄悄腰斩。这两个函数与登记表已删除，统一入口是
+`AIService.resolve_output_budget`（实测窗口 ⇒ `plan_output_budget`）。
 
-本文件先钉住相邻既有函数的当前可观测行为（characterization），
-再对新函数 detect_max_output_tokens 做行为测试。
+本文件钉住该入口的可观测行为：
+  1. 1M 窗口 + 小 prompt ⇒ 预算 ≈ 窗口剩余，且**换任意模型名结果相同**；
+  2. 网关报过更小的输出上限（`learn_output_ceiling`）⇒ 预算被钳；
+  3. 窗口不可得 ⇒ 入口**抛异常**（降级由调用方决定，不返回猜测值）；
+  4. 递归到 `plan_output_budget` 的窗口/下限语义不变。
+
+全部使用合成数值，不含任何真实书籍原文。
 """
-from app.services.ai_service import (
-    _DEFAULT_MAX_OUTPUT_TOKENS,
-    _KNOWN_OUTPUT_LIMITS,
-    THINKING_MODEL_DEFAULT_MAX_TOKENS,
-    detect_context_window,
-    detect_max_output_tokens,
-    is_thinking_model,
-)
+import pytest
 
-
-from app.services.ai_clients.output_caps import (  # noqa: E402
+from app.core.errors import ApiError
+from app.services.ai_clients.output_caps import (
     clear_output_ceiling_memo,
     learn_output_ceiling,
 )
+from app.services.ai_service import (
+    AIService,
+    THINKING_MODEL_DEFAULT_MAX_TOKENS,
+    detect_context_window,
+    is_thinking_model,
+)
+
+MEASURED_GW = "https://api.commandcode.ai/provider/v1"
+BIG_WINDOW = 1_000_000
+CONTEXT_MARGIN = 2048
 
 
-def remember_output_ceiling_for_test(base_url, model, ceiling):
+def _service(base_url: str, model: str) -> AIService:
+    """不发真实请求的 AIService（不绑定用户；窗口由用例 monkeypatch 提供）。"""
+    return AIService(
+        api_provider="openai",
+        api_key="test",
+        api_base_url=base_url,
+        default_model=model,
+    )
+
+
+def _patch_window(monkeypatch, svc: AIService, window=None, error=None):
+    """替掉窗口访问器：给一个实测窗口，或抛出门禁错误。"""
+
+    async def _fake(model=None, provider=None):
+        if error is not None:
+            raise error
+        return window
+
+    monkeypatch.setattr(svc, "resolve_effective_window_tokens", _fake)
+
+
+def _remember_output_ceiling_for_test(base_url, model, ceiling):
     """喂一条网关风格的拒绝给公开学习入口，等价于一次真实 400 学到的结果。"""
     learned = learn_output_ceiling(
         base_url=base_url,
@@ -35,8 +65,7 @@ def remember_output_ceiling_for_test(base_url, model, ceiling):
 
 
 # ---------------------------------------------------------------------------
-# Characterization：钉住未改动的既有行为（对应 test_model_capability /
-# test_ai_token_budget 所依赖的契约，防止新注册表引入时被误改）
+# 残留的相邻函数：当前可观测行为不变（预算判定已不用它们）
 # ---------------------------------------------------------------------------
 
 
@@ -63,99 +92,134 @@ def test_characterization_thinking_default_budget_constant():
 
 
 # ---------------------------------------------------------------------------
-# detect_max_output_tokens 行为测试
+# 1. 预算 = 窗口剩余；模型名不影响结论
 # ---------------------------------------------------------------------------
 
 
-def test_default_output_limit_is_positive():
-    assert _DEFAULT_MAX_OUTPUT_TOKENS > 0
+def test_budget_follows_measured_window_and_ignores_model_name(monkeypatch):
+    prompt_chars = 5_000
+    expected = BIG_WINDOW - prompt_chars - CONTEXT_MARGIN
+
+    results = {}
+    for model in ("deepseek-v4-flash", "some-brand-new-model-9000", ""):
+        svc = _service(MEASURED_GW, model)
+        _patch_window(monkeypatch, svc, window=BIG_WINDOW)
+        max_tokens, breakdown = _run(
+            svc.resolve_output_budget(
+                target_chars=6000, prompt_chars=prompt_chars, model=model
+            )
+        )
+        results[model] = max_tokens
+        assert max_tokens == expected, f"{model}: 预算应等于窗口剩余"
+        assert breakdown["window"] == BIG_WINDOW
+        assert breakdown["input_tokens"] == prompt_chars  # CHARS_PER_TOKEN == 1.0
+        assert breakdown["context_room"] == expected
+        assert breakdown["measured_cap"] is None
+
+    # 三个完全不同的模型名（含空名）得到同一个预算 ⇒ 判定里没有名字分支
+    assert len(set(results.values())) == 1
 
 
-def test_registry_values_are_all_positive():
-    assert all(limit > 0 for limit in _KNOWN_OUTPUT_LIMITS.values())
+def test_small_window_clamps_budget_to_remaining_room(monkeypatch):
+    # 窗口 8000、输入 6000 ⇒ 剩余 8000-6000-2048 = -48（已超窗）：预算被下限钳住，
+    # context_room 保持非正数作为「这段 prompt 塞不进窗口」的信号，而不是当成无约束。
+    svc = _service(MEASURED_GW, "gpt-4o")
+    _patch_window(monkeypatch, svc, window=8_000)
+    max_tokens, breakdown = _run(
+        svc.resolve_output_budget(target_chars=6000, prompt_chars=6000, model="gpt-4o")
+    )
+    assert breakdown["context_room"] == -48
+    assert max_tokens == 1024  # _OUTPUT_BUDGET_MIN_TOKENS
 
 
-def test_exact_model_match():
-    assert detect_max_output_tokens("deepseek-v4") == 64000
-    assert detect_max_output_tokens("gpt-4.1") == 32768
-    assert detect_max_output_tokens("gemini-2.5-pro") == 65536
-    assert detect_max_output_tokens("gpt-4o") == 16384
+# ---------------------------------------------------------------------------
+# 2. 网关报过的输出上限优先（issue #147 的记忆）
+# ---------------------------------------------------------------------------
 
 
-def test_longest_key_wins_over_shorter_prefix():
-    # gpt-4.1 键必须先于 gpt-4 命中；gpt-4o 同理
-    assert detect_max_output_tokens("gpt-4.1-mini") == 32768
-    assert detect_max_output_tokens("gpt-4o-2024-08-06") == 16384
-    # 裸 gpt-4 仍命中短键
-    assert detect_max_output_tokens("gpt-4-0613") == 8192
-
-
-def test_thinking_models_never_below_thinking_default():
-    # 思考/推理模型条目不得低于 THINKING_MODEL_DEFAULT_MAX_TOKENS（修复 #13 语义）
-    for model in ("deepseek-v3", "deepseek-r1", "deepseek-r1-distill-qwen"):
-        assert detect_max_output_tokens(model) >= THINKING_MODEL_DEFAULT_MAX_TOKENS
-
-
-def test_case_insensitive_match():
-    assert detect_max_output_tokens("DeepSeek-V4") == 64000
-
-
-def test_unknown_model_falls_back_to_conservative_default():
-    assert detect_max_output_tokens("some-brand-new-model-9000") == _DEFAULT_MAX_OUTPUT_TOKENS
-
-
-def test_none_and_empty_model_are_robust():
-    assert detect_max_output_tokens(None) == _DEFAULT_MAX_OUTPUT_TOKENS
-    assert detect_max_output_tokens("") == _DEFAULT_MAX_OUTPUT_TOKENS
-    assert detect_max_output_tokens("   ") == _DEFAULT_MAX_OUTPUT_TOKENS
-
-
-def test_base_url_none_is_robust_and_gateway_url_accepted():
-    assert detect_max_output_tokens("gpt-4o", None) == 16384
-    assert detect_max_output_tokens("gpt-4o", "https://api.commandcode.ai/v1") == 16384
-    assert detect_max_output_tokens(None, "https://api.commandcode.ai/v1") == _DEFAULT_MAX_OUTPUT_TOKENS
-
-
-# ========== 实测输出上限优先于登记表（issue #152）==========
-# #147 起，网关自己报过的输出上限已经存在 output_caps 的进程内记忆里；本段钉住
-# 「实测优先」这条口径（与 #55 把窗口登记表降级成提示是同一条路子）。
-
-MEASURED_GW = "https://api.commandcode.ai/provider/v1"
-LONGCAT = "meituan/LongCat-2.0:free"
-
-
-def _with_measured_ceiling(base_url, model, ceiling):
-    """在「网关报过一个上限」的状态下求值，求完立刻清干净，别污染同文件其他用例。"""
+def test_gateway_reported_ceiling_clamps_the_budget(monkeypatch):
     clear_output_ceiling_memo()
-    remember_output_ceiling_for_test(base_url, model, ceiling)
+    _remember_output_ceiling_for_test(MEASURED_GW, "gpt-4o", 16384)
     try:
-        return detect_max_output_tokens(model, base_url)
+        svc = _service(MEASURED_GW, "gpt-4o")
+        _patch_window(monkeypatch, svc, window=BIG_WINDOW)
+        max_tokens, breakdown = _run(
+            svc.resolve_output_budget(target_chars=6000, prompt_chars=5_000, model="gpt-4o")
+        )
     finally:
         clear_output_ceiling_memo()
 
-
-def test_a_measured_ceiling_below_the_registered_hint_wins():
-    # 实测比登记表小：按登记表规划分段会被上游拒，所以小的那个才算数
-    assert _with_measured_ceiling(MEASURED_GW, "deepseek-v4", 16384) == 16384
-
-
-def test_a_measured_ceiling_lifts_an_unregistered_model_off_the_default():
-    # 未登记模型本落到保守 8192；网关报过 131072 之后不该再按 8192 规划
-    assert _with_measured_ceiling(MEASURED_GW, LONGCAT, 131072) == 131072
+    assert breakdown["measured_cap"] == 16384
+    assert breakdown["cap"] == 16384
+    assert max_tokens == 16384  # 即便窗口还剩近 1M，也按上游确认过的上限规划
 
 
-def test_measurement_is_scoped_to_the_gateway_that_reported_it():
+def test_ceiling_memory_is_scoped_to_the_gateway_that_reported_it(monkeypatch):
     clear_output_ceiling_memo()
-    remember_output_ceiling_for_test(MEASURED_GW, LONGCAT, 131072)
+    _remember_output_ceiling_for_test(MEASURED_GW, "gpt-4o", 16384)
     try:
-        assert detect_max_output_tokens(LONGCAT, "https://other.test/v1") == _DEFAULT_MAX_OUTPUT_TOKENS
-        assert detect_max_output_tokens(LONGCAT, MEASURED_GW) == 131072
+        other = _service("https://other.test/v1", "gpt-4o")
+        _patch_window(monkeypatch, other, window=BIG_WINDOW)
+        max_tokens, breakdown = _run(
+            other.resolve_output_budget(target_chars=6000, prompt_chars=5_000, model="gpt-4o")
+        )
     finally:
         clear_output_ceiling_memo()
 
+    assert breakdown["measured_cap"] is None
+    assert max_tokens == BIG_WINDOW - 5_000 - CONTEXT_MARGIN
 
-def test_registry_and_default_still_answer_when_nothing_has_been_measured():
-    clear_output_ceiling_memo()
-    assert detect_max_output_tokens("gpt-4o", MEASURED_GW) == _KNOWN_OUTPUT_LIMITS["gpt-4o"]
-    assert detect_max_output_tokens("brand-new-model", MEASURED_GW) == _DEFAULT_MAX_OUTPUT_TOKENS
-    assert detect_max_output_tokens("gpt-4o") == 16384  # base_url 省略时不去查记忆
+
+# ---------------------------------------------------------------------------
+# 3. 窗口不可得 ⇒ 抛异常（失败契约，降级归调用方）
+# ---------------------------------------------------------------------------
+
+
+def test_window_failure_propagates_to_the_caller(monkeypatch):
+    svc = _service(MEASURED_GW, "gpt-4o")
+    _patch_window(
+        monkeypatch,
+        svc,
+        error=ApiError(
+            code="validation.ai_model_below_minimum", params={"model": "gpt-4o"}
+        ),
+    )
+
+    with pytest.raises(ApiError) as excinfo:
+        _run(svc.resolve_output_budget(target_chars=6000, prompt_chars=500, model="gpt-4o"))
+    assert excinfo.value.code == "validation.ai_model_below_minimum"
+
+
+def test_unexpected_window_error_also_propagates(monkeypatch):
+    # 非门禁异常（DB 抖动/解析 bug）不能被吞成某个具体预算
+    svc = _service(MEASURED_GW, "gpt-4o")
+    _patch_window(monkeypatch, svc, error=RuntimeError("db down"))
+
+    with pytest.raises(RuntimeError):
+        _run(svc.resolve_output_budget(target_chars=6000, prompt_chars=500, model="gpt-4o"))
+
+
+# ---------------------------------------------------------------------------
+# 4. 名字登记表机制已删除（issue #276）
+# ---------------------------------------------------------------------------
+
+
+def test_name_based_output_registry_is_gone():
+    import app.services.ai_service as module
+
+    for symbol in (
+        "detect_max_output_tokens",
+        "ensure_thinking_model_min_tokens",
+        "_KNOWN_OUTPUT_LIMITS",
+        "_DEFAULT_MAX_OUTPUT_TOKENS",
+    ):
+        assert not hasattr(module, symbol), (
+            f"{symbol} 又回来了 —— 输出预算必须走实测能力，不能按模型名猜"
+        )
+
+
+def _run(awaitable):
+    """在同步用例里驱动一次 async 调用（本文件不需要事件循环夹具）。"""
+    import asyncio
+
+    return asyncio.run(awaitable)

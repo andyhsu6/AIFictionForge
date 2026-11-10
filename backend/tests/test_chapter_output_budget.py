@@ -185,10 +185,15 @@ _CALL_ARG_WINDOW = 8
 
 
 def test_every_plan_output_budget_call_point_wires_context_window_and_input_tokens():
-    """chapters.py 里每一处 `plan_output_budget(` 都必须喂实测窗口与输入量。
+    """chapters.py 的章节生成调用点必须喂实测窗口与输入量；唯一例外是重写的降级分支。
 
     漏传 `context_window` ⇒ 预算退回 `THINKING_MODEL_DEFAULT_MAX_TOKENS`（正是
     2026-11-08 批量第 58 章空正文的形态）；漏传 `input_tokens` ⇒ 剩余空间算不出来。
+
+    issue #276 后章节生成仍有 3 处主调用点走 `resolve_effective_window_tokens` +
+    `plan_output_budget`；另有一处**故意的**降级调用 —— 局部重写在
+    `resolve_output_budget` 抛错（能力不可得）时退回保守上限，它本来就没有窗口可用，
+    所以只断言它确实位于 except 分支内、且不是「悄悄换成按目标字数硬算」。
     """
     lines = CHAPTERS_PY.read_text(encoding="utf-8").splitlines()
     call_rows = [
@@ -196,21 +201,39 @@ def test_every_plan_output_budget_call_point_wires_context_window_and_input_toke
         for idx, line in enumerate(lines)
         if "plan_output_budget(" in line and not line.lstrip().startswith("#")
     ]
-    assert len(call_rows) == 3, (
-        f"预期 3 处调用点（流式/后台/批量），实际 {len(call_rows)} 处: "
+    assert len(call_rows) == 4, (
+        f"预期 4 处调用点（流式/后台/批量 + 重写降级），实际 {len(call_rows)} 处: "
         f"{[row + 1 for row in call_rows]}"
     )
+
+    primary_rows, fallback_rows = [], []
     for row in call_rows:
         window = "\n".join(lines[row : row + _CALL_ARG_WINDOW + 1])
-        # 必须字面绑定到变量，不接受 `context_window=None` 这类「传了但没值」的形态：
-        # 后者能骗过子串检查，却让预算退回保守上限（变异实测存活，故收窄）。
-        assert "context_window=window_tokens" in window, (
-            f"chapters.py:{row + 1} 的 plan_output_budget 调用没有把实测窗口传进去"
-            "（必须是 context_window=window_tokens，不能是 None 常量）"
-        )
-        assert "input_tokens=input_tokens_est" in window, (
-            f"chapters.py:{row + 1} 的 plan_output_budget 调用没有喂估算的输入 token"
-        )
+        if "context_window=window_tokens" in window:
+            primary_rows.append(row)
+            # 必须字面绑定到变量，不接受 `context_window=None` 这类「传了但没值」的形态：
+            # 后者能骗过子串检查，却让预算退回保守上限（变异实测存活，故收窄）。
+            assert "input_tokens=input_tokens_est" in window, (
+                f"chapters.py:{row + 1} 的 plan_output_budget 调用没有喂估算的输入 token"
+            )
+        else:
+            fallback_rows.append(row)
+
+    assert len(primary_rows) == 3, (
+        f"预期 3 处主调用点喂了实测窗口，实际 {len(primary_rows)} 处: "
+        f"{[row + 1 for row in primary_rows]}"
+    )
+    assert len(fallback_rows) == 1, (
+        f"预期只有 1 处无窗口的降级调用，实际 {[row + 1 for row in fallback_rows]}"
+    )
+    fallback_row = fallback_rows[0]
+    fallback_context = "\n".join(lines[max(0, fallback_row - _CALL_ARG_WINDOW) : fallback_row + 1])
+    assert "except Exception" in fallback_context, (
+        f"chapters.py:{fallback_row + 1} 的无窗口调用必须位于能力不可得的 except 分支内"
+    )
+    assert "max(" not in "\n".join(
+        lines[fallback_row + 1 : fallback_row + _CALL_ARG_WINDOW + 1]
+    ), f"chapters.py:{fallback_row + 1} 又按目标字数硬算 max_tokens 了"
 
 
 def test_chapters_has_no_local_max_tokens_hardcoding_left():
