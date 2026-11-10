@@ -39,6 +39,7 @@ from app.services.book_import_service import BookImportService
 from app.services.cascade_cleanup import delete_project_children
 from app.services.import_export_service import ImportExportService
 from app.services.style_profile import (
+    build_corpus_sample,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
@@ -503,7 +504,8 @@ def measured_chapters(count: int = 3) -> list[SimpleNamespace]:
 
 
 def measured_metrics(chapters) -> dict:
-    return local_stats_fallback(build_style_sample(chapters))["metrics"]
+    """metrics 口径 = 全量正文（抽样只服务模型质性字段，issue #279 后续）。"""
+    return local_stats_fallback(build_corpus_sample(chapters))["metrics"]
 
 
 async def extract_profile(project, db, *, ai, chapters):
@@ -515,6 +517,35 @@ async def extract_profile(project, db, *, ai, chapters):
         ai_service=ai,
         content_language="zh",
     )
+
+
+def test_metrics_use_the_whole_corpus_not_the_sampled_chapters():
+    """抽样 5 章会把对话占比按偶然分布放大；metrics 必须按全量正文统计。"""
+    dialogue_paragraph = "“" + "对" * 18 + "”"
+    narration_paragraph = "叙" * 38 + "。"
+    chapters = []
+    for index in range(1, 9):
+        # 抽样命中 1/2/5/6/8（开头两章、中部两章、末章）：这些章写成对话体，
+        # 其余章写成叙述体 —— 抽样口径会得到高对话占比，全量口径不会。
+        content = "\n\n".join(
+            [dialogue_paragraph if index in (1, 2, 5, 6, 8) else narration_paragraph] * 12
+        )
+        chapters.append(SimpleNamespace(chapter_number=index, title=f"第{index}章", content=content))
+
+    sample_metrics = local_stats_fallback(build_style_sample(chapters))["metrics"]
+    corpus_metrics = local_stats_fallback(build_corpus_sample(chapters))["metrics"]
+    assert sample_metrics["dialogue_ratio"] > corpus_metrics["dialogue_ratio"] + 0.2
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+        )
+        metrics = profile["profile_data"]["metrics"]
+        assert metrics == corpus_metrics
+        assert metrics["dialogue_ratio"] != sample_metrics["dialogue_ratio"]
+
+    _run(scenario)
 
 
 def test_model_metrics_are_overridden_by_measured_values(caplog):
