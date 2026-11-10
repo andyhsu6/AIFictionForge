@@ -16,6 +16,9 @@ class TokenUsage:
     # 推理用量（与正文共享完成 token）。部分网关放在
     # usage.completion_tokens_details.reasoning_tokens，缺失即为 None。
     reasoning_tokens: Optional[int] = None
+    # True 表示 reasoning_tokens 是**估算值**（completion_tokens - 正文字符），
+    # 不是网关回报的实测值；日志必须标「≈/估算」，不得冒充实测。
+    reasoning_estimated: bool = False
 
     @classmethod
     def from_response(cls, response: Optional[Dict[str, Any]]) -> "TokenUsage":
@@ -54,6 +57,7 @@ class TokenUsage:
         self.completion_tokens = self._sum_optional(self.completion_tokens, other.completion_tokens)
         self.total_tokens = self._sum_optional(self.total_tokens, other.total_tokens)
         self.reasoning_tokens = self._sum_optional(self.reasoning_tokens, other.reasoning_tokens)
+        self.reasoning_estimated = self.reasoning_estimated or other.reasoning_estimated
 
     @staticmethod
     def _sum_optional(left: Optional[int], right: Optional[int]) -> Optional[int]:
