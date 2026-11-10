@@ -260,14 +260,37 @@ class OpenAIClient(BaseAIClient):
                         ):
                             yield retry_chunk
                         return
-                    # 流已经打开，本次无法原地重发；但学到的上限会让下一次调用
-                    # （含 call_with_json_retry 自带重试）直接落在网关接受的预算内。
-                    learn_output_ceiling(
+                    # 网关报出了更低的上限（issue #147）：预算给足后第一次撞上就在这里
+                    # 原地重发，不让这次生成白失败。`clamp_to_known_ceiling` 保证下一次
+                    # payload 的 max_tokens <= learned；学到同值不会再次变小（learn 只在
+                    # value < requested 时记录），故递归有界。
+                    learned = learn_output_ceiling(
                         base_url=self.base_url,
                         model=model,
                         body=str(enriched),
                         requested_max_tokens=payload["max_tokens"],
                     )
+                    if learned is not None and learned < payload["max_tokens"]:
+                        logger.warning(
+                            "网关报出更低的输出上限，按该上限原地重试一次: "
+                            "model=%s, max_tokens=%s -> %s, status=%s, body=%s",
+                            model,
+                            payload["max_tokens"],
+                            learned,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=learned,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                        ):
+                            yield retry_chunk
+                        return
                     raise enriched from e
                 try:
                     async for line in response.aiter_lines():

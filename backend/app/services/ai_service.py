@@ -239,8 +239,6 @@ def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = Non
 _OUTPUT_BUDGET_MIN_TOKENS = 1024
 # 上下文余量：留给模板收尾/工具结果拼装等不可预见的追加。
 _OUTPUT_BUDGET_CONTEXT_MARGIN = 2048
-# 预算额外余量：正文 + 推理之外给 finish 停顿留一点空间。
-_OUTPUT_BUDGET_SLACK = 2048
 
 
 def _coerce_int(value: Any) -> Optional[int]:
@@ -261,59 +259,67 @@ def plan_output_budget(
     input_tokens: Optional[int] = None,
     context_window: Optional[int] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    """按任务目标 + 模型能力 + 上下文剩余规划 max_tokens。
+    """按**实测能力**规划 max_tokens：预算 = 窗口剩余空间，不按目标字数预测。
 
-    返回 ``(max_tokens, breakdown)``；breakdown 的键用于日志归因：
+    契约：``(max_tokens, breakdown)``，breakdown 的键用于日志归因：
 
-    - ``content``：正文预算 = max(1024, target_chars)（中文约 1 字符 ≈ 1 token，
-      口径同 `_FULL_BOOK_BUDGET_RATIO` 附近注释）；
-    - ``reserve``：思考型模型的推理预留 = max(content, 8192)，非思考型为 0 ——
-      推理与正文**共享**输出预算，实测 glm 的 reasoning 可达 content 的 6 倍，
-      所以预留不能小于 content；**这只是首轮保底**：实测推理开销随任务难度变化而非
-      随输入线性变化（同一模型：简单续写 21632 字符输入仅 88 reasoning_tokens；
-      失败章 181068 字符输入 37678 字符推理），故更长的推理靠调用点按 API 回报的
-      真实用量升级预算，而不是在这里按比例猜；
-    - ``cap``：`detect_max_output_tokens`（网关实测上限优先，登记表只是提示）；
+    - ``content``：目标正文字数 = max(1024, target_chars)。中文约 1 字符 ≈ 1 token，
+      口径同 `_FULL_BOOK_BUDGET_RATIO` 附近注释；它只作为**信息**（目标长度、重试
+      升级基准），**不再参与** max_tokens 计算 —— 按目标字数预测预算正是 2026-11-08
+      批量第 58 章空正文的成因（6000 字目标被钉在 16000，推理吃光后正文 0 字）。
+    - ``measured_cap``：网关自己报过的输出上限（`resolve_output_ceiling`，issue #147
+      学到并存进进程内记忆）。有则优先：它是唯一被上游确认过的数字。
     - ``context_room``：``context_window - input_tokens - 2048``。<= 0 表示
-      **输入已超窗**（含 2048 余量），此时预算被压到下限 `max(1024, …)`，日志里看到
-      负数即可判定「这段 prompt 塞不进窗口」，而不是当成「无此约束」放行。
-    - ``requested``：content + reserve + 2048，即未受上限约束前的期望值。
+      **输入已超窗**（含 2048 余量），此时预算被下限钳住，日志里看到非正数即可判定
+      「这段 prompt 塞不进窗口」，而不是当成「无此约束」放行。
+    - ``cap``：本次生效的预算上限 = 实测输出上限 > 窗口剩余 > ``THINKING_MODEL_DEFAULT_MAX_TOKENS``。
+    - ``window`` / ``input_tokens``：本次参与计算的原始输入（None 表示未探测）。
 
-    `input_tokens` / `context_window` 是**预留参数**：当前生产调用点（SSE / 后台 /
-    批量 / 续写）都只传 `target_chars + model + base_url`，两参数暂无调用方，
-    `context_room` 因此恒为 None；接上窗口探测后才生效，本函数不代替调用方猜窗口。
+    规则：``max_tokens = max(1024, min(cap, context_room))``（context_room 仅在探测到
+    正整数窗口与输入时参与）。
 
-    结果 = max(1024, min(requested, cap, context_room))。
+    为什么按窗口给足而不按目标字数预测：
+    1. **能力无关模型名**：任何模型（全新的、未登记的、无名字的）只要探测到的窗口大，
+       预算就自动给足；预算判定里没有一条 "glm"/"gpt-4o" 之类的名字分支。
+    2. **思考与正文共享预算**：推理开销随任务难度变化而非随输入线性变化（实测同一模型
+       简单续写 88 reasoning_tokens，失败章 37678），预测必然偏；给足上限后由模型自己
+       在推理与正文间分配，无需再预留。
+    3. **max_tokens 是上限不是花费**：给足不增加成本，只避免推理吃光预算后的空正文；
+       真正的花费由实际生成的 token 决定。
+    4. **实测优先于任何登记表**：两个方向都对 —— 实测比登记表小，按登记表规划会被上游
+       400；实测比登记表大，按登记表规划就是白腰斩容量。
     """
     content = _coerce_int(target_chars)
     if content is None or content < _OUTPUT_BUDGET_MIN_TOKENS:
         content = _OUTPUT_BUDGET_MIN_TOKENS
 
-    reserve = 0
-    if is_thinking_model(model, base_url):
-        reserve = max(content, 8192)
-
-    cap = detect_max_output_tokens(model, base_url)
-    requested = content + reserve + _OUTPUT_BUDGET_SLACK
-
-    context_room: Optional[int] = None
     window = _coerce_int(context_window)
     used = _coerce_int(input_tokens)
+    context_room: Optional[int] = None
     if window is not None and used is not None and window > 0 and used > 0:
         # 剩余 <= 0 也要保留：它是「输入已超窗」的信号，不是「无约束」。
         context_room = window - used - _OUTPUT_BUDGET_CONTEXT_MARGIN
 
-    limits = [requested, cap]
+    measured = resolve_output_ceiling(base_url, model)
+    if measured:
+        cap = measured
+    elif context_room is not None:
+        cap = context_room
+    else:
+        cap = THINKING_MODEL_DEFAULT_MAX_TOKENS
+
+    limits = [cap]
     if context_room is not None:
         limits.append(context_room)
     max_tokens = max(_OUTPUT_BUDGET_MIN_TOKENS, min(limits))
 
     breakdown: Dict[str, Any] = {
         "content": content,
-        "reserve": reserve,
         "cap": cap,
+        "measured_cap": measured,
         "context_room": context_room,
-        "requested": requested,
+        "window": window,
+        "input_tokens": used,
     }
     return max_tokens, breakdown
 

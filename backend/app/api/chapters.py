@@ -60,6 +60,8 @@ from app.schemas.regeneration import (
     RegenerationTaskResponse,
     RegenerationTaskStatus
 )
+from app.services.agent_prompt_budget import CHARS_PER_TOKEN
+from app.services.model_capability_probe import CAPABILITY_INCOMPLETE_CODE
 from app.services.ai_service import (
     AIService,
     detect_max_output_tokens,
@@ -396,33 +398,29 @@ def _reasoning_chars_from_usage(usage: Any, content_chars: int) -> Optional[int]
     return estimated if estimated > 0 else None
 
 
-# 截断后的预算升级：有正文时首轮 + 最多 2 次重试；空正文最多 1 次（见下方判定）。
-_BUDGET_MAX_RETRIES = 2
-# 拿不到推理用量时的保守升级倍数。
-_BUDGET_FALLBACK_GROWTH = 2
-# 推理用量的预留倍数（推理与正文共享预算，留 50% 余量）。
-_REASONING_BUDGET_RATIO = 1.5
-# 正文为 0 且**有实测 reasoning** 时的跳幅下限倍数：首跳已按 reasoning 兜住（实测那章
-# 是 64565，覆盖 43678），后续不该再按 2× 一步跳到十几万，故用 1.5×。
-_EMPTY_CONTENT_GROWTH_WITH_REASONING = 1.5
-# 正文为 0 且拿不到 reasoning 时的盲抬倍数。取 4× 而不是 2×：实测该任务
-# reasoning 占 completion 的 96%（311/325），即「输出几乎全是推理」，而
-# 16240 的 2× 只有 32480，仍低于该章所需的下限 43678；16240 的 4× = 64960 才够。
-# 仍受 cap 与「连续两次空正文即停」约束，不会无限膨胀。
-_EMPTY_CONTENT_GROWTH_NO_REASONING = 4
-# 截断类错误允许外层（批量 max_retries 循环）重试的上限：1 次，不是 3 次。
+# 截断即失败：预算已按窗口剩余一次给足（不再抬预算重试，见
+# `AIService.resolve_effective_window_tokens` + `plan_output_budget`）。
+#
+# 但「预算给足」不等于「截断必然复现」：思考型模型的推理量随运行波动，偶发一次
+# 吃满上限是可能的。所以截断类仍保留 **1 次**外层重试（首发生成 + 1 次 = 2 次调用），
+# 而不是跟着 max_retries 跑满 4 次全额生成——抬预算已经无意义，多跑只会多烧钱。
 _TRUNCATION_OUTER_RETRIES = 1
 
 
 class ChapterGenerationTruncatedError(RuntimeError):
-    """截断类失败：换更大预算重试有意义（外层最多再试 1 次）。"""
+    """截断类失败：预算已按窗口剩余一次给足；外层最多重试 `_TRUNCATION_OUTER_RETRIES` 次。"""
 
 
 class NonRetryableChapterGenerationError(ChapterGenerationTruncatedError):
-    """不可重试的生成失败：预算已到上限，或连续两次空正文。
+    """不可重试的生成失败（外层批量重试 0 次）。
 
-    外层批量重试会整段重放「内层预算尝试」，对一个已证明写不出正文的模型再跑
-    3 次只是烧 3 次全额调用，故明确禁止外层重试。
+    预算已按窗口剩余一次给足，截断不再走预算阶梯；该类型保留给「已证明
+    再怎么重放也写不出来」的失败，避免整段重放只多烧全额调用。
+
+    注意：当前生产代码**没有抛出点**（预算重试已删除后不再有「重放必然同样失败」
+    的判定处）。保留它是为了让 `_retry_allowance` 仍有一个表达「allowance=0」的
+    语义位，并维持 `tests/test_batch_retry_control_flow.py` 的既有契约；
+    不要据此以为某个真实失败路径仍在生效。
     """
 
 
@@ -431,6 +429,7 @@ def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
     if isinstance(exc, NonRetryableChapterGenerationError):
         return 0
     if isinstance(exc, ChapterGenerationTruncatedError):
+        # 截断类固定 1 次（覆盖推理量偶发波动），不受任务 max_retries 放大。
         return min(_TRUNCATION_OUTER_RETRIES, task_max_retries)
     return task_max_retries
 
@@ -443,83 +442,6 @@ def _extract_chapter_numbers(message: str) -> set[int]:
             if part.isdigit():
                 numbers.add(int(part))
     return numbers
-
-
-def _is_budget_retry_exhausted(
-    *,
-    upgraded_budget: Optional[int],
-    budget_retries: int,
-    content_is_empty: bool,
-) -> bool:
-    """内层预算重试是否到此为止。
-
-    - 算不出更大预算（含已到 cap）→ 停；
-    - **连续两次空正文** → 停：第一次已按实测 reasoning 抬到 64565，还是 0 字
-      说明这一轮模型就是写不出，再升只会多烧调用；
-    - 有正文的截断允许用满 `_BUDGET_MAX_RETRIES` 次升级。
-    """
-    if upgraded_budget is None:
-        return True
-    if content_is_empty and budget_retries >= 1:
-        return True
-    return budget_retries >= _BUDGET_MAX_RETRIES
-
-
-def _is_non_retryable_truncation(
-    *,
-    upgraded_budget: Optional[int],
-    content_is_empty: bool,
-) -> bool:
-    """**仅在 `_is_budget_retry_exhausted` 为真之后**判断该失败是否不可重试。
-
-    此时：算不出更大预算（到 cap）→ 外层 0 次；仍是空正文 → 外层 0 次
-    （首跳已按实测 reasoning 抬过，再整段重放预算阶梯只会多烧调用）。
-    有正文且算得出更大预算 → 可外层重试 1 次。
-    """
-    return upgraded_budget is None or content_is_empty
-
-
-def _next_budget_after_truncation(
-    *,
-    content_budget: int,
-    current_max_tokens: int,
-    cap: int,
-    reasoning_tokens: Optional[int] = None,
-    content_chars: int = 0,
-) -> Optional[int]:
-    """截断后下一轮的 max_tokens；返回 None 表示不能再升、不应重试。
-
-    - 正文为 0（``content_chars == 0``）：
-      有实测 reasoning → ``content_budget + max(1.5 × current, ceil(reasoning × 1.5) + 2048)``；
-      无 reasoning → 总预算 ``×4``（16240 → 64960，盲抬，见常量注释）。
-    - 有正文 + 拿得到真实推理用量 → ``content_budget + ceil(reasoning × 1.5) + 2048``。
-    - 有正文 + 拿不到用量 → ``current × 2``（保守）。
-    结果钳到 ``cap``；钳完仍 <= 当前预算时返回 None（再试也不会变大）。
-    """
-    if current_max_tokens >= cap:
-        return None
-
-    if content_chars <= 0:
-        if reasoning_tokens is not None and reasoning_tokens > 0:
-            bumped = max(
-                ceil(current_max_tokens * _EMPTY_CONTENT_GROWTH_WITH_REASONING),
-                ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048,
-            )
-            wanted = content_budget + bumped
-        else:
-            # 看不到推理规模：直接按**总预算** ×4 盲抬（16240 → 64960），
-            # 不再叠加 content_budget —— 与「该任务 reasoning 占 completion 96%」
-            # 的实测锚点对齐，也避免算子在不同口径间不一致。
-            wanted = current_max_tokens * _EMPTY_CONTENT_GROWTH_NO_REASONING
-    elif reasoning_tokens is not None and reasoning_tokens > 0:
-        wanted = content_budget + ceil(reasoning_tokens * _REASONING_BUDGET_RATIO) + 2048
-    else:
-        wanted = current_max_tokens * _BUDGET_FALLBACK_GROWTH
-
-    upgraded = min(wanted, cap)
-    if upgraded <= current_max_tokens:
-        return None
-    return upgraded
 
 
 def _truncation_error_message(
@@ -543,14 +465,17 @@ def _truncation_error_message(
         reasoning_field = f"reasoning_tokens={reasoning_tokens}"
     reasoning_chars_text = f"≈{reasoning_chars}" if reasoning_chars is not None else "未知"
     return (
-        f"{chapter_label}生成被截断：预计推理占用了输出预算"
+        f"{chapter_label}生成被截断（预算已按窗口剩余给足，截断即失败）"
         f"（正文 {content_chars} 字 / 目标 {target_word_count} 字，"
         f"finish_reason={finish_reason or '未知'}，"
         f"{reasoning_field}，"
         f"reasoning_chars={reasoning_chars_text}，"
         f"尝试预算={budget_attempts}，最终 max_tokens={budget_attempts[-1]}，"
-        f"content={breakdown.get('content')}，reserve={breakdown.get('reserve')}，"
-        f"cap={breakdown.get('cap')}，context_room={breakdown.get('context_room')}）"
+        f"content={breakdown.get('content')}，cap={breakdown.get('cap')}，"
+        f"measured_cap={breakdown.get('measured_cap')}，"
+        f"context_room={breakdown.get('context_room')}，"
+        f"window={breakdown.get('window')}，"
+        f"input_tokens={breakdown.get('input_tokens')}）"
     )
 
 
@@ -2366,20 +2291,48 @@ async def generate_chapter_content_stream(
 确保在整个章节创作过程中始终保持风格的一致性。"""
                     logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
                 
-                # 🔢 输出预算：单一来源（思考型推理预留 + 网关实测上限 + 上下文剩余），
-                # 不再本地硬算后显式传 max_tokens —— 那会绕过 resolve_effective_max_tokens
-                # 的全部能力判定（2026-11-08 批量第 58 章空正文的根因）。
+                # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
+                # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens。
                 generated_model = custom_model or getattr(user_ai_service, "default_model", None)
+                input_tokens_est = int(
+                    (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+                )
+                window_tokens = None
+                window_note: Optional[str] = None
+                try:
+                    window_tokens = await user_ai_service.resolve_effective_window_tokens(
+                        generated_model
+                    )
+                except ApiError as exc:
+                    window_note = exc.code
+                    if exc.code == CAPABILITY_INCOMPLETE_CODE:
+                        # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+                        # 本次预算退化了。必须 ERROR 级。
+                        logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+                    else:
+                        # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+                        # 这里退回保守上限不会掩盖失败。
+                        logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+                except Exception as exc:
+                    # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+                    window_note = type(exc).__name__
+                    logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
                 calculated_max_tokens, budget_breakdown = plan_output_budget(
                     target_chars=target_word_count,
                     model=generated_model,
                     base_url=getattr(user_ai_service, "base_url", None),
+                    input_tokens=input_tokens_est,
+                    context_window=window_tokens,
                 )
                 logger.info(
                     f"📊 输出预算: 目标 {target_word_count} 字 → "
-                    f"content={budget_breakdown['content']} "
-                    f"reserve={budget_breakdown['reserve']} "
-                    f"cap={budget_breakdown['cap']} "
+                    f"content={budget_breakdown.get('content')} "
+                    f"cap={budget_breakdown.get('cap')} "
+                    f"measured_cap={budget_breakdown.get('measured_cap')} "
+                    f"context_room={budget_breakdown.get('context_room')} "
+                    f"window={budget_breakdown.get('window')} "
+                    f"input_tokens={budget_breakdown.get('input_tokens')} "
+                    f"window_note={window_note or 'ok'} "
                     f"→ max_tokens={calculated_max_tokens}"
                 )
                 
@@ -3205,18 +3158,45 @@ async def _run_chapter_generation_bg(
 ⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
 确保在整个章节创作过程中始终保持风格的一致性。"""
 
-    # 输出预算单一来源（见 plan_output_budget；不再本地 clamp 后显式传入）
+    # 输出预算单一来源：按**实际探测到的**上下文窗口剩余给足上限（见 plan_output_budget）
     generated_model = custom_model or getattr(ai_service, "default_model", None)
+    input_tokens_est = int(
+        (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+    )
+    window_tokens = None
+    window_note: Optional[str] = None
+    try:
+        window_tokens = await ai_service.resolve_effective_window_tokens(generated_model)
+    except ApiError as exc:
+        window_note = exc.code
+        if exc.code == CAPABILITY_INCOMPLETE_CODE:
+            # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+            # 本次预算退化了。必须 ERROR 级。
+            logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+        else:
+            # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+            # 这里退回保守上限不会掩盖失败。
+            logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+    except Exception as exc:
+        # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+        window_note = type(exc).__name__
+        logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
     calculated_max_tokens, budget_breakdown = plan_output_budget(
         target_chars=target_word_count,
         model=generated_model,
         base_url=getattr(ai_service, "base_url", None),
+        input_tokens=input_tokens_est,
+        context_window=window_tokens,
     )
     logger.info(
         f"📊 输出预算: 目标 {target_word_count} 字 → "
-        f"content={budget_breakdown['content']} "
-        f"reserve={budget_breakdown['reserve']} "
-        f"cap={budget_breakdown['cap']} "
+        f"content={budget_breakdown.get('content')} "
+        f"cap={budget_breakdown.get('cap')} "
+        f"measured_cap={budget_breakdown.get('measured_cap')} "
+        f"context_room={budget_breakdown.get('context_room')} "
+        f"window={budget_breakdown.get('window')} "
+        f"input_tokens={budget_breakdown.get('input_tokens')} "
+        f"window_note={window_note or 'ok'} "
         f"→ max_tokens={calculated_max_tokens}"
     )
 
@@ -3241,85 +3221,50 @@ async def _run_chapter_generation_bg(
         estimated_total=target_word_count
     )
 
-    budget_retries = 0
-    budget_attempts = [calculated_max_tokens]
-    while True:
-        full_content = ""
-        chunk_count = 0
-        finish_sink.clear()
-        generate_kwargs["max_tokens"] = calculated_max_tokens
-
-        async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-            # 检查是否被取消
-            if chunk_count % 10 == 0 and await tracker.check_cancelled():
-                logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
-                return
-
-            full_content += chunk
-            chunk_count += 1
-
-            # 每10个chunk更新一次进度
-            if chunk_count % 10 == 0:
-                await tracker.generating(
-                    current_chars=len(full_content),
-                    estimated_total=target_word_count,
-                    message=f'正在创作中... 已生成 {len(full_content)} 字'
-                )
-
-            await asyncio.sleep(0)
-
-        finish_reason = finish_sink.get("finish_reason")
-        if not _is_truncated_chapter_content(
-            full_content,
-            target_word_count,
-            finish_reason,
-            f"第{current_chapter.chapter_number}章",
-        ):
-            break
-
-        # 截断失败：空正文 / 撞上限 / 疑似空转。推理吃掉了预算 → 升档重试。
-        # reasoning_tokens 取自本轮 API 回报的 usage（缺失时代码自动退化为 ×2）。
-        usage = finish_sink.get("usage")
-        reasoning_tokens = getattr(usage, "reasoning_tokens", None)
-        upgraded_budget = _next_budget_after_truncation(
-            content_budget=budget_breakdown["content"],
-            current_max_tokens=calculated_max_tokens,
-            cap=budget_breakdown["cap"],
-            reasoning_tokens=reasoning_tokens,
-            content_chars=len(full_content),
-        )
-        # 正文为 0 且已升过一次仍为 0 → 不可重试（首跳已按实测 reasoning 兜住）。
-        content_is_empty = not (full_content or "").strip()
-        exhausted = _is_budget_retry_exhausted(
-            upgraded_budget=upgraded_budget,
-            budget_retries=budget_retries,
-            content_is_empty=content_is_empty,
-        )
-        if exhausted:
-            budget_error = _truncation_error_message(
-                chapter_label=f"第{current_chapter.chapter_number}章",
-                content_chars=len(full_content),
-                target_word_count=target_word_count,
-                finish_reason=finish_reason,
-                reasoning_tokens=reasoning_tokens,
-                reasoning_estimated=getattr(usage, "reasoning_estimated", False),
-                reasoning_chars=_reasoning_chars_from_usage(
-                    usage, len(full_content)
-                ),
-                breakdown=budget_breakdown,
-                budget_attempts=budget_attempts,
-            )
-            logger.error(f"❌ {budget_error}")
-            await tracker.error(budget_error, error_code="task.failed")
+    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
+        # 检查是否被取消
+        if chunk_count % 10 == 0 and await tracker.check_cancelled():
+            logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
             return
 
-        budget_retries += 1
-        logger.warning(
-            f"⚠️ 后台章节生成被截断（正文 {len(full_content)} 字 / 目标 {target_word_count} 字，"
-            f"finish_reason={finish_reason}），预算 {calculated_max_tokens} → {upgraded_budget} 重试"
+        full_content += chunk
+        chunk_count += 1
+
+        # 每10个chunk更新一次进度
+        if chunk_count % 10 == 0:
+            await tracker.generating(
+                current_chars=len(full_content),
+                estimated_total=target_word_count,
+                message=f'正在创作中... 已生成 {len(full_content)} 字'
+            )
+
+        await asyncio.sleep(0)
+
+    finish_reason = finish_sink.get("finish_reason")
+    if _is_truncated_chapter_content(
+        full_content,
+        target_word_count,
+        finish_reason,
+        f"第{current_chapter.chapter_number}章",
+    ):
+        # 截断即失败：预算已按窗口剩余给足，不再抬预算重试。
+        usage = finish_sink.get("usage")
+        budget_error = _truncation_error_message(
+            chapter_label=f"第{current_chapter.chapter_number}章",
+            content_chars=len(full_content),
+            target_word_count=target_word_count,
+            finish_reason=finish_reason,
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+            reasoning_estimated=getattr(usage, "reasoning_estimated", False),
+            reasoning_chars=_reasoning_chars_from_usage(
+                usage, len(full_content)
+            ),
+            breakdown=budget_breakdown,
+            budget_attempts=[calculated_max_tokens],
         )
-        calculated_max_tokens = upgraded_budget
-        budget_attempts.append(upgraded_budget)
+        logger.error(f"❌ {budget_error}")
+        await tracker.error(budget_error, error_code="task.failed")
+        return
 
     # === 保存阶段 ===
     await tracker.saving("正在保存章节...", 0.3)
@@ -5054,20 +4999,47 @@ async def generate_single_chapter_for_batch(
 确保在整个章节创作过程中始终保持风格的一致性。"""
         logger.info(f"✅ 批量生成 - 已将写作风格注入系统提示词（{len(style_content)}字符）")
     
-    # 🔢 输出预算：单一来源（思考型推理预留 + 网关实测上限 + 上下文剩余），
-    # 不再本地硬算后显式传 max_tokens —— 那会绕过 resolve_effective_max_tokens
-    # 的能力判定（2026-11-08 批量第 58 章：6000 字目标被钉在 16000，推理吃光预算后正文 0 字）。
+    # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
+    # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens
+    # （2026-11-08 批量第 58 章：6000 字目标被钉在 16000，推理吃光预算后正文 0 字）。
     generated_model = custom_model or getattr(ai_service, "default_model", None)
+    input_tokens_est = int(
+        (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+    )
+    window_tokens = None
+    window_note: Optional[str] = None
+    try:
+        window_tokens = await ai_service.resolve_effective_window_tokens(generated_model)
+    except ApiError as exc:
+        window_note = exc.code
+        if exc.code == CAPABILITY_INCOMPLETE_CODE:
+            # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+            # 本次预算退化了。必须 ERROR 级。
+            logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+        else:
+            # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+            # 这里退回保守上限不会掩盖失败。
+            logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+    except Exception as exc:
+        # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+        window_note = type(exc).__name__
+        logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
     calculated_max_tokens, budget_breakdown = plan_output_budget(
         target_chars=target_word_count,
         model=generated_model,
         base_url=getattr(ai_service, "base_url", None),
+        input_tokens=input_tokens_est,
+        context_window=window_tokens,
     )
     logger.info(
         f"📊 输出预算: 目标 {target_word_count} 字 → "
-        f"content={budget_breakdown['content']} "
-        f"reserve={budget_breakdown['reserve']} "
-        f"cap={budget_breakdown['cap']} "
+        f"content={budget_breakdown.get('content')} "
+        f"cap={budget_breakdown.get('cap')} "
+        f"measured_cap={budget_breakdown.get('measured_cap')} "
+        f"context_room={budget_breakdown.get('context_room')} "
+        f"window={budget_breakdown.get('window')} "
+        f"input_tokens={budget_breakdown.get('input_tokens')} "
+        f"window_note={window_note or 'ok'} "
         f"→ max_tokens={calculated_max_tokens}"
     )
 
@@ -5098,85 +5070,38 @@ async def generate_single_chapter_for_batch(
         return result.scalar_one_or_none() in ('cancelled', 'failed')
 
     # 批量生成中的流式生成（非SSE，不需要修改进度显示）
-    budget_retries = 0
-    budget_attempts = [calculated_max_tokens]
-    while True:
-        # 每次预算重试前刷新心跳：单次生成可能持续数分钟，心跳间隔过长会被判陈旧
-        if budget_retries and batch_id:
-            await _touch_batch_heartbeat(db_session, batch_id)
-        full_content = ""
-        finish_sink.clear()
-        generate_kwargs["max_tokens"] = calculated_max_tokens
+    chunk_count = 0
+    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
+        if chunk_count % 10 == 0 and await _is_batch_cancelled():
+            logger.info(f"🛑 批量生成单章流式生成被取消: batch={batch_id}, chapter={chapter.id}")
+            raise Exception("批量生成任务已取消")
+        full_content += chunk
+        chunk_count += 1
 
-        chunk_count = 0
-        async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-            if chunk_count % 10 == 0 and await _is_batch_cancelled():
-                logger.info(f"🛑 批量生成单章流式生成被取消: batch={batch_id}, chapter={chapter.id}")
-                raise Exception("批量生成任务已取消")
-            full_content += chunk
-            chunk_count += 1
-
-        finish_reason = finish_sink.get("finish_reason")
-        if not _is_truncated_chapter_content(
-            full_content,
-            target_word_count,
-            finish_reason,
-            f"第{chapter.chapter_number}章",
-        ):
-            break
-
-        # 截断失败：空正文 / 撞上限 / 疑似空转。推理吃掉了预算 → 升档重试。
-        # reasoning_tokens 取自本轮 API 回报的 usage（缺失时代码自动退化为 ×2）。
+    finish_reason = finish_sink.get("finish_reason")
+    if _is_truncated_chapter_content(
+        full_content,
+        target_word_count,
+        finish_reason,
+        f"第{chapter.chapter_number}章",
+    ):
+        # 截断即失败：预算已按窗口剩余给足，不再抬预算重试；外层按 max_retries 处理。
         usage = finish_sink.get("usage")
-        reasoning_tokens = getattr(usage, "reasoning_tokens", None)
-        upgraded_budget = _next_budget_after_truncation(
-            content_budget=budget_breakdown["content"],
-            current_max_tokens=calculated_max_tokens,
-            cap=budget_breakdown["cap"],
-            reasoning_tokens=reasoning_tokens,
+        budget_error = _truncation_error_message(
+            chapter_label=f"第{chapter.chapter_number}章",
             content_chars=len(full_content),
+            target_word_count=target_word_count,
+            finish_reason=finish_reason,
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+            reasoning_estimated=getattr(usage, "reasoning_estimated", False),
+            reasoning_chars=_reasoning_chars_from_usage(
+                usage, len(full_content)
+            ),
+            breakdown=budget_breakdown,
+            budget_attempts=[calculated_max_tokens],
         )
-        # 正文为 0 且已升过一次仍为 0 → 不可重试：首跳已按实测 reasoning 抬到够用
-        # （实测那章 16240 → 64565），仍是 0 字说明这一轮写不出，外层也不再重放。
-        content_is_empty = not (full_content or "").strip()
-        exhausted = _is_budget_retry_exhausted(
-            upgraded_budget=upgraded_budget,
-            budget_retries=budget_retries,
-            content_is_empty=content_is_empty,
-        )
-        if exhausted:
-            budget_error = _truncation_error_message(
-                chapter_label=f"第{chapter.chapter_number}章",
-                content_chars=len(full_content),
-                target_word_count=target_word_count,
-                finish_reason=finish_reason,
-                reasoning_tokens=reasoning_tokens,
-                reasoning_estimated=getattr(usage, "reasoning_estimated", False),
-                reasoning_chars=_reasoning_chars_from_usage(
-                    usage, len(full_content)
-                ),
-                breakdown=budget_breakdown,
-                budget_attempts=budget_attempts,
-            )
-            logger.error(f"❌ {budget_error}")
-            error_type = (
-                NonRetryableChapterGenerationError
-                if _is_non_retryable_truncation(
-                    upgraded_budget=upgraded_budget,
-                    content_is_empty=content_is_empty,
-                )
-                else ChapterGenerationTruncatedError
-            )
-            raise error_type(budget_error)
-
-        budget_retries += 1
-        logger.warning(
-            f"⚠️ 批量生成 - 第{chapter.chapter_number}章被截断"
-            f"（正文 {len(full_content)} 字 / 目标 {target_word_count} 字，"
-            f"finish_reason={finish_reason}），预算 {calculated_max_tokens} → {upgraded_budget} 重试"
-        )
-        calculated_max_tokens = upgraded_budget
-        budget_attempts.append(upgraded_budget)
+        logger.error(f"❌ {budget_error}")
+        raise ChapterGenerationTruncatedError(budget_error)
 
     if await _is_batch_cancelled():
         logger.info(f"🛑 批量生成保存前被取消: batch={batch_id}, chapter={chapter.id}")
