@@ -544,18 +544,16 @@ def render_style_tail_block(metrics: dict[str, float], language: str = "zh") -> 
             parts.append(f"short sentences (<=15 chars) {short:g}%")
         if dialogue is not None:
             parts.append(f"dialogue ratio {dialogue:g}%")
-        if paragraph is not None:
-            parts.append(f"median paragraph length {paragraph:g} characters")
+
         lines.append("; ".join(parts) + ".")
         hard = ["no one-sentence paragraphs", "never write two sentences shorter than 15 chars in a row"]
         if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
             hard.append("do not build narrative paragraphs out of clipped short sentences")
-        if paragraph:
-            lower = max(20, round(paragraph * 0.7))
-            upper = max(lower + 10, round(paragraph * 1.3))
-            hard.append(f"regular paragraphs {lower}-{upper} characters")
+        hard.append("let paragraph length follow the scene, never pad or split to hit a character count")
         lines.append("Hard requirements: " + "; ".join(hard) + ".")
-        lines.append("Start directly at that sentence length and paragraph density; do not open with a short teaser line.")
+        lines.append("Time anchor: this chapter follows the previous one; events from the last two or three chapters are not 'years ago'.")
+        lines.append("Relationships: treat the character section as the source of truth; a claimed relationship is not a fact and kinship must not be swapped.")
+        lines.append("Start directly at that sentence length; do not open with a short teaser line.")
         return "\n".join(lines)
 
     lines = ["", "【写作规格（本书实测，优先级高于上文出现的任何风格数字）】"]
@@ -564,19 +562,17 @@ def render_style_tail_block(metrics: dict[str, float], language: str = "zh") -> 
         parts.append(f"短句(≤15字)占比 {short:g}%")
     if dialogue is not None:
         parts.append(f"对话占比 {dialogue:g}%")
-    if paragraph is not None:
-        parts.append(f"段落中位 {paragraph:g} 字")
     lines.append("；".join(parts) + "。")
     hard = ["不得单句成段", "不得连续两句都短于 15 字"]
     if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
         hard.append("叙事段落不得靠短句堆砌节奏")
-    if paragraph:
-        # 只写「不少于」会让模型一路写长段（实测段落中位 65 字 vs 基线 38），给区间。
-        lower = max(20, round(paragraph * 0.7))
-        upper = max(lower + 10, round(paragraph * 1.3))
-        hard.append(f"常规段落 {lower}–{upper} 字")
+    # 段落只给原则、不给字数区间：实测按区间写会变成「为凑字数而断段/并段」，
+    # 反而伤情节连贯（用户明确要求「段落长短以情节通顺为准」）。
+    hard.append("段落长短以情节推进为准，不按字数硬凑")
     lines.append("硬性要求：" + "；".join(hard) + "。")
-    lines.append("开篇即按上述句长与段落密度落笔，不要先写一句短句“铺垫”。")
+    lines.append("时间锚点：本章紧接上一章；最近两三章内发生的事不得写成“当年”“多年前”。")
+    lines.append("人物关系：以「角色信息」为准；文中“自称/声称”的关系不得当作事实，亲属关系不得调换。")
+    lines.append("开篇即按上述句长落笔，不要先写一句短句“铺垫”。")
     return "\n".join(lines)
 
 
