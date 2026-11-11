@@ -412,3 +412,94 @@ def test_reconcile_advice_keeps_short_sentence_hint_for_a_short_sentence_book():
         {"do": ["心理疑问用连续短句推进"], "dont": ["避免长句堆叠"]}, metrics
     )
     assert "心理疑问用连续短句推进" in updated["do"]
+
+
+# ---- 生成期「写作规格」尾块：把实测指标贴到用户提示词末尾 ----
+
+def test_render_style_tail_block_carries_measured_numbers():
+    from app.services.style_profile import render_style_tail_block
+
+    block = render_style_tail_block(
+        {
+            "avg_sentence_chars": 29.7,
+            "short_sentence_ratio": 28,
+            "dialogue_ratio": 23,
+            "paragraph_chars_p50": 38,
+        }
+    )
+    assert "平均句长 29.7 字" in block
+    assert "短句(≤15字)占比 28%" in block
+    assert "对话占比 23%" in block
+    assert "段落中位 38 字" in block
+    assert "不得单句成段" in block
+    assert "常规段落 27–49 字" in block  # 38 * 0.7 / 1.3
+    assert "优先级高于上文" in block
+
+
+def test_render_style_tail_block_is_empty_without_avg_sentence():
+    from app.services.style_profile import render_style_tail_block
+
+    assert render_style_tail_block({}) == ""
+    assert render_style_tail_block({"dialogue_ratio": 23}) == ""
+
+
+def test_extract_rendered_metrics_round_trips_the_renderer():
+    from app.services.style_profile import (
+        extract_rendered_metrics,
+        render_style_profile,
+    )
+
+    profile = {
+        "version": 1,
+        "confidence": 0.8,
+        "metrics": {
+            "avg_sentence_chars": 29.7,
+            "median_sentence_chars": 28,
+            "short_sentence_ratio": 0.28,
+            "dialogue_ratio": 0.23,
+            "paragraph_chars_p50": 38,
+        },
+        "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近"},
+        "diction": {"register": "书面", "concreteness": "高", "idiom_density": "中"},
+        "dialogue": {"attribution": "动作引出", "tag_density": "中"},
+        "rhetoric": ["白描"],
+        "do": ["保持信息密度"],
+        "dont": ["避免抒情"],
+        "evidence_chapters": [1],
+    }
+    rendered = render_style_profile(profile, {"chapter_numbers": [1], "char_count": 3000}, title="t", language="zh")
+    metrics = extract_rendered_metrics(rendered)
+    assert metrics["avg_sentence_chars"] == 29.7
+    assert metrics["paragraph_chars_p50"] == 38
+    # 渲染层把比例写成百分数
+    assert metrics["dialogue_ratio"] == 23
+    assert metrics["short_sentence_ratio"] == 28
+
+
+def test_extract_rendered_metrics_ignores_unrelated_text():
+    from app.services.style_profile import extract_rendered_metrics
+
+    assert extract_rendered_metrics("") == {}
+    assert extract_rendered_metrics("没有任何指标的一段文字") == {}
+
+
+def test_render_style_tail_block_english_variant():
+    from app.services.style_profile import render_style_tail_block
+
+    block = render_style_tail_block(
+        {"avg_sentence_chars": 29.7, "dialogue_ratio": 23, "paragraph_chars_p50": 38},
+        language="en",
+    )
+    assert "Writing spec" in block
+    assert "average sentence length 29.7 characters" in block
+    assert "dialogue ratio 23%" in block
+    assert "regular paragraphs 27-49 characters" in block
+    assert "不得单句成段" not in block
+
+
+def test_style_content_language_detects_english_rendering():
+    from app.services.style_profile import style_content_language
+
+    assert style_content_language("【本书文笔画像】平均句长：29.7 字") == "zh"
+    assert style_content_language("Book style profile: Average sentence length: 29.7") == "en"
+    assert style_content_language("") == "zh"
