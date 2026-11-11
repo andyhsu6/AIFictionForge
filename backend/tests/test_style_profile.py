@@ -430,9 +430,12 @@ def test_render_style_tail_block_carries_measured_numbers():
     assert "平均句长 29.7 字" in block
     assert "短句(≤15字)占比 28%" in block
     assert "对话占比 23%" in block
-    assert "段落中位 38 字" in block
     assert "不得单句成段" in block
-    assert "常规段落 27–49 字" in block  # 38 * 0.7 / 1.3
+    # 段落不再给字数区间（用户要求：段落长短以情节通顺为准）
+    assert "常规段落" not in block
+    assert "段落长短以情节推进为准" in block
+    assert "时间锚点" in block
+    assert "自称" in block and "亲属关系不得调换" in block
     assert "优先级高于上文" in block
 
 
@@ -493,7 +496,9 @@ def test_render_style_tail_block_english_variant():
     assert "Writing spec" in block
     assert "average sentence length 29.7 characters" in block
     assert "dialogue ratio 23%" in block
-    assert "regular paragraphs 27-49 characters" in block
+    assert "regular paragraphs" not in block
+    assert "Time anchor" in block
+    assert "claimed relationship is not a fact" in block
     assert "不得单句成段" not in block
 
 

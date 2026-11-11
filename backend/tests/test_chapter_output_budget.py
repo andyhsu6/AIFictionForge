@@ -266,6 +266,7 @@ def test_every_generation_path_appends_the_style_tail_block():
     """
     source = CHAPTERS_PY.read_text(encoding="utf-8")
     wiring = "prompt = _append_style_tail(prompt, style_content)"
-    assert source.count(wiring) == 3, (
-        f"预期 3 处生成路径（SSE/后台/批量）都接线，实际 {source.count(wiring)} 处"
+    assert source.count(wiring) == 5, (
+        "预期 5 处生成路径（SSE/后台/批量/续写/局部重写）都接线，"
+        f"实际 {source.count(wiring)} 处"
     )

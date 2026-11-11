@@ -5952,6 +5952,7 @@ async def partial_regenerate_stream(
                 style_content=style_content or "保持与原文一致的叙事风格",
                 content_language=generation_language,
             )
+            prompt = _append_style_tail(prompt, style_content)
 
             yield await tracker.preparing("开始生成...")
 
@@ -6092,6 +6093,7 @@ async def partial_regenerate_stream(
                 style_content=style_content if style_content else "保持与原文一致的叙事风格",
                 content_language=generation_language
             )
+            prompt = _append_style_tail(prompt, style_content)
             
             yield await tracker.preparing("开始生成...")
             
