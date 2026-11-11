@@ -479,6 +479,107 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         raise ValueError(f"画像 JSON 不得超过 {PROFILE_JSON_MAX_CHARS} 字")
 
 
+# ========== 生成期「写作规格」尾块（issue #279 后续） ==========
+# 实测发现：把风格要求放在 system 开头、同时塞进 12 万 token 的全书上下文时，
+# 模型仍按自己的默认腔调写短句。同一模型给一个 106 字的风格块（无上下文）却能
+# 写到 28.1 字/句（目标 29.4）。所以关键约束必须**贴着生成点**再讲一遍。
+_RENDERED_METRIC_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "avg_sentence_chars": (
+        re.compile(r"平均句长[：:]\s*([\d.]+)\s*字"),
+        re.compile(r"[Aa]verage sentence length[：:]\s*([\d.]+)"),
+    ),
+    "short_sentence_ratio": (
+        re.compile(r"短句占比[：:]\s*([\d.]+)\s*%"),
+        re.compile(r"[Ss]hort-sentence ratio[：:]\s*([\d.]+)\s*%"),
+    ),
+    "dialogue_ratio": (
+        re.compile(r"对话占比[：:]\s*([\d.]+)\s*%"),
+        re.compile(r"[Dd]ialogue ratio[：:]\s*([\d.]+)\s*%"),
+    ),
+    "paragraph_chars_p50": (
+        re.compile(r"段落长度中位[：:]\s*([\d.]+)\s*字"),
+        re.compile(r"[Mm]edian paragraph length[：:]\s*([\d.]+)"),
+    ),
+}
+
+
+def extract_rendered_metrics(style_content: str) -> dict[str, float]:
+    """从渲染好的画像正文里取回量化指标（取不到返回空 dict）。
+
+    为什么不重新查库：调用点已经拿到了渲染后的风格文本，而它由本模块的渲染器生成、
+    行格式固定；再查一次库反而会与「本次实际注入的风格」不一致（卷画像/项目默认）。
+    """
+    text = style_content or ""
+    metrics: dict[str, float] = {}
+    for key, patterns in _RENDERED_METRIC_PATTERNS.items():
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match:
+                try:
+                    metrics[key] = float(match.group(1))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return metrics
+
+
+def style_content_language(style_content: str) -> str:
+    """画像正文用的语言（渲染器只有 zh/en 两套措辞，据此判定尾块语言）。"""
+    return "en" if "Average sentence length" in (style_content or "") else "zh"
+
+
+def render_style_tail_block(metrics: dict[str, float], language: str = "zh") -> str:
+    """生成贴在用户提示词末尾的「写作规格」块；关键指标缺失时返回空串。"""
+    avg = metrics.get("avg_sentence_chars")
+    if not avg or avg <= 0:
+        return ""
+    short = metrics.get("short_sentence_ratio")
+    dialogue = metrics.get("dialogue_ratio")
+    paragraph = metrics.get("paragraph_chars_p50")
+    en = (language or "zh").lower().startswith("en")
+    if en:
+        lines = ["", "【Writing spec (measured from this book; overrides any style numbers above)】"]
+        parts = [f"average sentence length {avg:g} characters"]
+        if short is not None:
+            parts.append(f"short sentences (<=15 chars) {short:g}%")
+        if dialogue is not None:
+            parts.append(f"dialogue ratio {dialogue:g}%")
+        if paragraph is not None:
+            parts.append(f"median paragraph length {paragraph:g} characters")
+        lines.append("; ".join(parts) + ".")
+        hard = ["no one-sentence paragraphs", "never write two sentences shorter than 15 chars in a row"]
+        if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+            hard.append("do not build narrative paragraphs out of clipped short sentences")
+        if paragraph:
+            lower = max(20, round(paragraph * 0.7))
+            upper = max(lower + 10, round(paragraph * 1.3))
+            hard.append(f"regular paragraphs {lower}-{upper} characters")
+        lines.append("Hard requirements: " + "; ".join(hard) + ".")
+        lines.append("Start directly at that sentence length and paragraph density; do not open with a short teaser line.")
+        return "\n".join(lines)
+
+    lines = ["", "【写作规格（本书实测，优先级高于上文出现的任何风格数字）】"]
+    parts = [f"平均句长 {avg:g} 字"]
+    if short is not None:
+        parts.append(f"短句(≤15字)占比 {short:g}%")
+    if dialogue is not None:
+        parts.append(f"对话占比 {dialogue:g}%")
+    if paragraph is not None:
+        parts.append(f"段落中位 {paragraph:g} 字")
+    lines.append("；".join(parts) + "。")
+    hard = ["不得单句成段", "不得连续两句都短于 15 字"]
+    if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+        hard.append("叙事段落不得靠短句堆砌节奏")
+    if paragraph:
+        # 只写「不少于」会让模型一路写长段（实测段落中位 65 字 vs 基线 38），给区间。
+        lower = max(20, round(paragraph * 0.7))
+        upper = max(lower + 10, round(paragraph * 1.3))
+        hard.append(f"常规段落 {lower}–{upper} 字")
+    lines.append("硬性要求：" + "；".join(hard) + "。")
+    lines.append("开篇即按上述句长与段落密度落笔，不要先写一句短句“铺垫”。")
+    return "\n".join(lines)
+
+
 # 量化建议（含数字的 do/dont 条目）在实测覆盖 metrics 后会与基线自相矛盾：
 # 实测句长 29.7 字，而模型写的 "平均句长控制在 12-20 字" 仍是显式命令（比渲染层的
 # "以量化指标为准" 更强），照着写就必然回到短句腔。这里统一把量化条目换成实测值。

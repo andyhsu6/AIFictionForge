@@ -255,3 +255,17 @@ def test_plan_output_budget_does_not_reintroduce_name_or_table_branches():
         assert symbol not in body, (
             f"plan_output_budget 函数体引用了 {symbol} —— 预算又按模型名/登记表猜了"
         )
+
+
+def test_every_generation_path_appends_the_style_tail_block():
+    """三条生成路径都必须把实测「写作规格」贴到提示词末尾（issue #279 后续）。
+
+    变异实测：把 ``_append_style_tail`` 改成直接返回 prompt（不追加）时，行为测试
+    全绿 —— 因为「模型是否听话」无法在单测里断言。这里用源码守卫钉住接线本身：
+    少了任何一处，模型就会退回被 12 万 token 上下文稀释的短句腔。
+    """
+    source = CHAPTERS_PY.read_text(encoding="utf-8")
+    wiring = "prompt = _append_style_tail(prompt, style_content)"
+    assert source.count(wiring) == 3, (
+        f"预期 3 处生成路径（SSE/后台/批量）都接线，实际 {source.count(wiring)} 处"
+    )

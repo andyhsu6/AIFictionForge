@@ -36,7 +36,12 @@ from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
 from app.services.style_anchors import append_project_style_anchors
-from app.services.style_profile import profile_preset_id
+from app.services.style_profile import (
+    extract_rendered_metrics,
+    profile_preset_id,
+    render_style_tail_block,
+    style_content_language,
+)
 from app.services.style_volumes import parse_volume_preset_id, resolve_volume_for_chapter
 from app.schemas.chapter import (
     ChapterCreate,
@@ -451,6 +456,22 @@ def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], 
             f"❌ {scope}读取上下文窗口异常，预算退化: "
             f"model={model}, {type(exc).__name__}: {exc}"
         )
+
+
+def _append_style_tail(prompt: str, style_content: Optional[str]) -> str:
+    """把实测「写作规格」贴在用户提示词末尾（近因位置）。
+
+    实测依据：风格块放 system 开头 + 12 万 token 全书上下文时，模型仍写 17 字短句；
+    同一模型只给 106 字风格块（无上下文）能写到 28.1 字/句。关键约束必须贴近生成点。
+    """
+    text = style_content or ""
+    metrics = extract_rendered_metrics(text)
+    block = render_style_tail_block(metrics, language=style_content_language(text))
+    if not block and ("文笔画像" in text or "Style profile" in text):
+        # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
+        # 原始缺陷）。这里必须留痕，不能静默退化。
+        logger.warning("⚠️ 画像量化指标解析失败，写作规格尾块未注入（检查渲染措辞与正则是否一致）")
+    return f"{prompt}\n{block}" if block else prompt
 
 
 def _extract_chapter_numbers(message: str) -> set[int]:
@@ -2357,6 +2378,7 @@ async def generate_chapter_content_stream(
                 
                 # 准备生成参数
                 finish_sink: Dict[str, Any] = {}
+                prompt = _append_style_tail(prompt, style_content)
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
@@ -3220,6 +3242,7 @@ async def _run_chapter_generation_bg(
     )
 
     finish_sink: Dict[str, Any] = {}
+    prompt = _append_style_tail(prompt, style_content)
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
@@ -5066,6 +5089,7 @@ async def generate_single_chapter_for_batch(
     full_content = ""
     finish_sink: Dict[str, Any] = {}
     # 准备生成参数
+    prompt = _append_style_tail(prompt, style_content)
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
