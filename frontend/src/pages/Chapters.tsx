@@ -1437,9 +1437,26 @@ export default function Chapters() {
   // 打开批量生成对话框
   const handleOpenBatchGenerate = async () => {
     // 找到第一个未生成的章节
-    const firstIncompleteChapter = sortedChapters.find(
+    let firstIncompleteChapter = sortedChapters.find(
       ch => !ch.content || ch.content.trim() === ''
     );
+
+    // 只有章节行全都有正文时，才可能「全部写完」；但大纲可能还有没建行的章节
+    // （删过章节、或导入只生成了大纲）。此时先按大纲补齐空章节再继续（issue #290）。
+    if (!firstIncompleteChapter && currentProject?.id) {
+      try {
+        const stats = await chapterApi.getChapterStats(currentProject.id);
+        if ((stats.missing_from_outlines ?? 0) > 0) {
+          await chapterApi.materializeOutlines(currentProject.id);
+          const latest = await refreshChapters(currentProject.id);
+          firstIncompleteChapter = latest.find(
+            ch => !ch.content || ch.content.trim() === ''
+          );
+        }
+      } catch (error) {
+        console.error('[open-batch-generate] 按大纲补齐章节失败:', error);
+      }
+    }
 
     if (!firstIncompleteChapter) {
       message.info(t('toast.allGenerated'));
