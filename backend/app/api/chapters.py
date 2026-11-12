@@ -594,7 +594,11 @@ async def get_project_chapter_stats(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """只返回章节数量与最大章号，供前端估算分卷区间（避免拉取全书正文）。"""
+    """章节统计：数量、最大章号，以及「有大纲但还没有章节」的数量。
+
+    最后一项是为了让前端能区分「全部写完」与「大纲还有几章没建」——只扫章节行时，
+    被删过章节的项目会被误判成「所有章节都已生成」（issue #290）。
+    """
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(project_id, user_id, db)
     row = (
@@ -604,10 +608,98 @@ async def get_project_chapter_stats(
             )
         )
     ).one()
+    outline_row = (
+        await db.execute(
+            select(func.count(Outline.id), func.max(Outline.order_index)).where(
+                Outline.project_id == project_id
+            )
+        )
+    ).one()
+    outline_total = int(outline_row[0] or 0)
+    chapter_numbers = set(
+        (
+            await db.execute(
+                select(Chapter.chapter_number).where(Chapter.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+    outline_numbers = set(
+        (
+            await db.execute(
+                select(Outline.order_index).where(
+                    Outline.project_id == project_id, Outline.order_index.is_not(None)
+                )
+            )
+        ).scalars().all()
+    )
+    missing = sorted(n for n in outline_numbers if int(n) > 0 and int(n) not in chapter_numbers)
     return {
         "total": int(row[0] or 0),
         "max_chapter_number": int(row[1] or 0),
+        "outline_total": outline_total,
+        "max_outline_number": int(outline_row[1] or 0),
+        "missing_from_outlines": len(missing),
     }
+
+
+@router.post("/project/{project_id}/materialize-outlines", summary="按大纲补齐缺失章节")
+async def materialize_chapters_from_outlines(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """把「有大纲但没有章节行」的章节建出来（幂等，不覆盖已有章节）。
+
+    章节被删除后大纲仍然保留（大纲是计划，章节是稿子），但没有任何路径能把稿子位
+    重新建出来，批量生成于是只看得到已有章节（issue #290）。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    outlines = (
+        await db.execute(
+            select(Outline)
+            .where(Outline.project_id == project_id)
+            .order_by(Outline.order_index)
+        )
+    ).scalars().all()
+    existing = set(
+        int(n)
+        for n in (
+            await db.execute(
+                select(Chapter.chapter_number).where(Chapter.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+
+    created: list[int] = []
+    for outline in outlines:
+        number = int(outline.order_index or 0)
+        if number <= 0 or number in existing:
+            continue
+        try:
+            structure = json.loads(outline.structure or "{}")
+        except ValueError:
+            structure = {}
+        title = str(structure.get("title") or outline.title or f"第{number}章")[:200]
+        db.add(
+            Chapter(
+                project_id=project_id,
+                chapter_number=number,
+                title=title,
+                content=None,
+                summary=None,
+                word_count=0,
+                status="draft",
+                outline_id=outline.id,
+            )
+        )
+        created.append(number)
+
+    if created:
+        await db.commit()
+        logger.info(f"📄 按大纲补齐章节: project={project_id[:8]} 新建 {len(created)} 章")
+    return {"created": created, "count": len(created)}
 
 
 @router.get("/project/{project_id}", response_model=ChapterListResponse, summary="获取项目的所有章节")

@@ -820,8 +820,21 @@ export const chapterApi = {
     api.get<unknown, { total: number; items: Chapter[] }>(`/chapters/project/${projectId}`).then(res => res.items),
 
   getChapterStats: (projectId: string) =>
-    api.get<unknown, { total: number; max_chapter_number: number }>(
-      `/chapters/project/${projectId}/stats`,
+    api.get<
+      unknown,
+      {
+        total: number;
+        max_chapter_number: number;
+        outline_total?: number;
+        max_outline_number?: number;
+        missing_from_outlines?: number;
+      }
+    >(`/chapters/project/${projectId}/stats`),
+
+  // 按大纲补齐缺失的章节行（幂等）：章节被删后大纲仍在，批量生成否则看不到它们
+  materializeOutlines: (projectId: string) =>
+    api.post<unknown, { created: number[]; count: number }>(
+      `/chapters/project/${projectId}/materialize-outlines`,
     ),
 
   getChapter: (id: string) => api.get<unknown, Chapter>(`/chapters/${id}`),
