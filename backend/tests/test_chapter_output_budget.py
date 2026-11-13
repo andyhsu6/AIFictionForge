@@ -270,3 +270,16 @@ def test_every_generation_path_appends_the_style_tail_block():
         "预期 5 处生成路径（SSE/后台/批量/续写/局部重写）都接线，"
         f"实际 {source.count(wiring)} 处"
     )
+
+
+def test_every_chapter_path_injects_the_established_names_block():
+    """三条章节生成路径都必须注入「已确立专名」块。
+
+    变异实测（同类守卫）：删掉注入不会让任何行为测试失败，只会让模型重新开始
+    自造地名并沿分析链路进入正史——所以用电到源码守卫钉住。
+    """
+    source = CHAPTERS_PY.read_text(encoding="utf-8")
+    assert source.count("established_names = await build_established_names_block(") == 3, (
+        "预期 3 处章节生成路径注入专名块，实际 "
+        f"{source.count('established_names = await build_established_names_block(')} 处"
+    )
