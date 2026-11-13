@@ -29,7 +29,7 @@ import {
   mapSSEProgressMessage,
   mapTaskStatusMessage,
 } from '../services/errorMapper';
-import { getProjectTasks, pollTaskUntilComplete } from '../services/backgroundTaskService';
+import { getProjectTasks, pollTaskUntilComplete, isTaskAuthError } from '../services/backgroundTaskService';
 import { resolveImportWarningText } from '../utils/importWarnings';
 
 beforeAll(async () => {
@@ -260,6 +260,22 @@ describe('backgroundTaskService mapping over real fetch payloads', () => {
     );
     await expect(getProjectTasks('p1')).rejects.toThrow('Failed to fetch task list: Not logged in');
     await expect(getProjectTasks('p1')).rejects.not.toThrow(/原始错误|RAW diag/);
+  });
+
+  it('auth failure stays detectable so polling callers can stop retrying', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ code: 'auth.unauthorized' }), { status: 401 }))
+    );
+    const authError = await getProjectTasks('p1').catch(error => error);
+    expect(isTaskAuthError(authError)).toBe(true);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ code: 'internal.server_error' }), { status: 500 }))
+    );
+    const serverError = await getProjectTasks('p1').catch(error => error);
+    expect(isTaskAuthError(serverError)).toBe(false);
   });
 });
 

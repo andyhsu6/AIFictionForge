@@ -2,7 +2,7 @@
  * 后台任务服务 - 轮询任务进度，替代SSE
  */
 import i18n from '../i18n';
-import { mapErrorPayload, mapTaskStatusMessage } from './errorMapper';
+import { mapErrorPayload, mapTaskStatusMessage, isUnauthenticatedError } from './errorMapper';
 
 const API_BASE = '/api/tasks';
 
@@ -48,12 +48,34 @@ type TaskErrorKey =
   | 'task.failed'
   | 'task.cancelled';
 
-function taskRequestError(actionKey: TaskErrorKey, envelope: ApiErrorEnvelope, statusText: string, status: number): Error {
+export interface TaskRequestError extends Error {
+  /** HTTP 状态码；调用方据此区分鉴权失效与普通失败 */
+  status: number;
+  code: string | null;
+}
+
+function taskRequestError(actionKey: TaskErrorKey, envelope: ApiErrorEnvelope, statusText: string, status: number): TaskRequestError {
   const action = i18n.t(actionKey, { ns: 'errors' });
-  if (envelope.code || envelope.detail) {
-    return new Error(`${action}: ${mapErrorPayload({ ...envelope, status })}`);
-  }
-  return new Error(`${action}: ${statusText}`);
+  const message = envelope.code || envelope.detail
+    ? `${action}: ${mapErrorPayload({ ...envelope, status })}`
+    : `${action}: ${statusText}`;
+  const error = new Error(message) as TaskRequestError;
+  error.status = status;
+  error.code = envelope.code ?? null;
+  return error;
+}
+
+/**
+ * 该失败是否等于「会话已失效」。
+ *
+ * 本模块走裸 fetch，不经过 `api.ts` 的 axios 响应拦截器，所以那里的
+ * 「401 → 跳 /login」不会生效。轮询调用方必须自己判定并停止刷新，
+ * 否则面板会一直拿 401、一直重试、永远显示旧状态。
+ */
+export function isTaskAuthError(error: unknown): boolean {
+  const status = (error as { status?: number } | null)?.status;
+  const code = (error as { code?: string | null } | null)?.code ?? null;
+  return isUnauthenticatedError(code, status);
 }
 
 export interface TaskStatus {
