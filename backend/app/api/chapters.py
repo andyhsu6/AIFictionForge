@@ -81,6 +81,7 @@ from app.services.derived_state import (
     clamp_derived_state_after_delete,
     find_stale_derived_state,
 )
+from app.services.prompt_names import build_established_names_block
 from app.services.chapter_regenerator import (
     ChapterRegenerator,
     STYLE_CHECK_UNAVAILABLE,
@@ -2498,6 +2499,11 @@ async def generate_chapter_content_stream(
                 
                 # 准备生成参数
                 finish_sink: Dict[str, Any] = {}
+                established_names = await build_established_names_block(
+                    db_session, project=project, chapter_number=current_chapter.chapter_number
+                )
+                if established_names:
+                    prompt = f"{prompt}\n{established_names}"
                 prompt = _append_style_tail(prompt, style_content)
                 generate_kwargs = {
                     "prompt": prompt,
@@ -3362,6 +3368,11 @@ async def _run_chapter_generation_bg(
     )
 
     finish_sink: Dict[str, Any] = {}
+    established_names = await build_established_names_block(
+        db, project=project, chapter_number=current_chapter.chapter_number
+    )
+    if established_names:
+        prompt = f"{prompt}\n{established_names}"
     prompt = _append_style_tail(prompt, style_content)
     generate_kwargs = {
         "prompt": prompt,
@@ -5209,6 +5220,11 @@ async def generate_single_chapter_for_batch(
     full_content = ""
     finish_sink: Dict[str, Any] = {}
     # 准备生成参数
+    established_names = await build_established_names_block(
+        db_session, project=project, chapter_number=chapter.chapter_number
+    )
+    if established_names:
+        prompt = f"{prompt}\n{established_names}"
     prompt = _append_style_tail(prompt, style_content)
     generate_kwargs = {
         "prompt": prompt,
