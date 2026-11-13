@@ -34,20 +34,39 @@ STATUS_LABELS = {
 }
 
 
-def _append_current_state_lines(info_lines: List[str], character: Character) -> None:
-    """向角色上下文注入分析系统维护的最新状态。"""
+def _append_current_state_lines(
+    info_lines: List[str],
+    character: Character,
+    *,
+    target_chapter: Optional[int] = None,
+) -> None:
+    """向角色上下文注入分析系统维护的最新状态。
+
+    `target_chapter` 是本次要写的章号：状态/状态变更如果是**在这之后**推进的
+    （删章后残留、或同步超前），一律不注入——否则模型会把尚未发生的剧情当已知
+    （issue #288）。不传则保持旧行为。
+    """
     status = character.status or "active"
     status_label = STATUS_LABELS.get(status, status)
+    status_chapter = character.status_changed_chapter
+    if target_chapter is not None and status_chapter and int(status_chapter) > int(target_chapter):
+        status_chapter = None
     status_line = f"  当前状态: {status_label}"
-    if character.status_changed_chapter:
-        status_line += f"（第{character.status_changed_chapter}章变更）"
+    if status_chapter:
+        status_line += f"（第{status_chapter}章变更）"
     info_lines.append(status_line)
 
-    if character.current_state:
+    state_chapter = character.state_updated_chapter
+    future_state = (
+        target_chapter is not None
+        and state_chapter is not None
+        and int(state_chapter) > int(target_chapter)
+    )
+    if character.current_state and not future_state:
         current_state = character.current_state[:150] if len(character.current_state) > 150 else character.current_state
         state_line = f"  当前心理/处境: {current_state}"
-        if character.state_updated_chapter:
-            state_line += f"（第{character.state_updated_chapter}章更新）"
+        if state_chapter:
+            state_line += f"（第{state_chapter}章更新）"
         info_lines.append(state_line)
 
 
@@ -708,7 +727,9 @@ class OneToManyContextBuilder:
             if c.background:
                 background_preview = c.background[:150] if len(c.background) > 150 else c.background
                 info_lines.append(f"  背景: {background_preview}")
-            _append_current_state_lines(info_lines, c)
+            _append_current_state_lines(
+                info_lines, c, target_chapter=getattr(chapter, "chapter_number", None)
+            )
             
             # 职业信息
             if c.id in char_career_relations:
