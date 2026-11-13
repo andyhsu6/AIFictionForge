@@ -77,6 +77,10 @@ from app.services.plot_analyzer import PlotAnalyzer
 from app.services.outline_plan_adapter import to_storage_plan
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
+from app.services.derived_state import (
+    clamp_derived_state_after_delete,
+    find_stale_derived_state,
+)
 from app.services.chapter_regenerator import (
     ChapterRegenerator,
     STYLE_CHECK_UNAVAILABLE,
@@ -702,6 +706,21 @@ async def materialize_chapters_from_outlines(
     return {"created": created, "count": len(created)}
 
 
+@router.get("/project/{project_id}/consistency", summary="派生状态一致性自检")
+async def check_derived_state_consistency(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """报告仍引用「不存在的章节」的角色事实/状态标记（只读，issue #288）。
+
+    这类偏差不会报错，只会让生成链路悄悄用上已删内容，所以需要能主动查出来。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+    return await find_stale_derived_state(db, project_id)
+
+
 @router.get("/project/{project_id}", response_model=ChapterListResponse, summary="获取项目的所有章节")
 async def get_project_chapters(
     project_id: str,
@@ -1023,6 +1042,15 @@ async def delete_chapter(
     # 删除章节
     await db.delete(chapter)
     await db.commit()
+
+    # 派生状态按章节号推进，删章不会自动回退（issue #288）：钳到当前最大存活章，
+    # 否则 profile_facts / current_state 会继续引用已经不存在的章节，并被注入提示词。
+    try:
+        await clamp_derived_state_after_delete(db, chapter.project_id)
+        await db.commit()
+    except Exception as exc:  # 清理失败不应阻断删除本身
+        await db.rollback()
+        logger.warning(f"⚠️ 派生状态回滚失败（章节已删除）: {exc}")
     
     return {"message": "章节删除成功"}
 
