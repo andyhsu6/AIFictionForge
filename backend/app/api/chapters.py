@@ -463,7 +463,40 @@ def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], 
         )
 
 
-def _append_style_tail(prompt: str, style_content: Optional[str]) -> str:
+_LENGTH_FLOOR_RATIO = 0.93
+
+
+def _length_floor_note(target_chars: Optional[int], language: str) -> str:
+    """生成「字数硬约束」尾注；无目标字数时返回空串。
+
+    实测（第 67 章、glm-5.3-flash、reasoning_effort=low）：不写下限时 3000 字目标
+    只写 2,200–2,600 字；补一条「不少于 93%」后回到 2,700–2,900 字，推理量仍在
+    500 token 以内（未加约束时 100–300），几十秒级，不是靠"多思考"换字数。
+    """
+    try:
+        target = int(target_chars or 0)
+    except (TypeError, ValueError):
+        return ""
+    if target <= 0:
+        return ""
+    floor = max(500, int(target * _LENGTH_FLOOR_RATIO))
+    if (language or "").lower().startswith("en"):
+        return (
+            f"\n\n【Length floor】This chapter must be at least {floor} characters. "
+            "Do not wrap up before reaching it; if the plot beats are done, extend with "
+            "concrete action, detail and dialogue — never with summary or mood writing."
+        )
+    return (
+        f"\n\n【字数硬约束】本章正文不少于 {floor} 字。写到 {floor} 字之前不得收尾；"
+        "若情节已推进完毕，用细节、动作与对话扩展，不要用总结或抒情凑字。"
+    )
+
+
+def _append_style_tail(
+    prompt: str,
+    style_content: Optional[str],
+    target_chars: Optional[int] = None,
+) -> str:
     """把实测「写作规格」贴在用户提示词末尾（近因位置）。
 
     实测依据：风格块放 system 开头 + 12 万 token 全书上下文时，模型仍写 17 字短句；
@@ -471,11 +504,16 @@ def _append_style_tail(prompt: str, style_content: Optional[str]) -> str:
     """
     text = style_content or ""
     metrics = extract_rendered_metrics(text)
-    block = render_style_tail_block(metrics, language=style_content_language(text))
+    language = style_content_language(text)
+    block = render_style_tail_block(metrics, language=language)
     if not block and ("文笔画像" in text or "Style profile" in text):
         # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
         # 原始缺陷）。这里必须留痕，不能静默退化。
         logger.warning("⚠️ 画像量化指标解析失败，写作规格尾块未注入（检查渲染措辞与正则是否一致）")
+    floor_note = _length_floor_note(target_chars, language)
+    if floor_note:
+        # 字数下限对"有没有画像"都成立：它约束的是篇幅，不是文风。
+        block = f"{block}{floor_note}" if block else floor_note.strip()
     return f"{prompt}\n{block}" if block else prompt
 
 
@@ -2504,7 +2542,7 @@ async def generate_chapter_content_stream(
                 )
                 if established_names:
                     prompt = f"{prompt}\n{established_names}"
-                prompt = _append_style_tail(prompt, style_content)
+                prompt = _append_style_tail(prompt, style_content, target_word_count)
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
@@ -2512,6 +2550,7 @@ async def generate_chapter_content_stream(
                     "max_tokens": calculated_max_tokens,
                     "auto_mcp": bool(generate_request.enable_mcp),
                     "finish_sink": finish_sink,
+                    "reasoning_effort": generate_request.reasoning_effort,
                 }
                 if custom_model:
                     logger.info(f"  使用自定义模型: {custom_model}")
@@ -2774,6 +2813,7 @@ async def generate_chapter_content_background(
             "style_anchor_enabled": generate_request.style_anchor_enabled,
             "style_anchor_chars": generate_request.style_anchor_chars,
             "style_anchor_count": generate_request.style_anchor_count,
+            "reasoning_effort": generate_request.reasoning_effort,
         },
         db=db
     )
@@ -2808,6 +2848,7 @@ async def generate_chapter_content_background(
                         "style_anchor_enabled": generate_request.style_anchor_enabled,
                         "style_anchor_chars": generate_request.style_anchor_chars,
                         "style_anchor_count": generate_request.style_anchor_count,
+                        "reasoning_effort": generate_request.reasoning_effort,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -3012,6 +3053,7 @@ async def generate_chapter_content_background_legacy(
             "style_anchor_enabled": generate_request.style_anchor_enabled,
             "style_anchor_chars": generate_request.style_anchor_chars,
             "style_anchor_count": generate_request.style_anchor_count,
+            "reasoning_effort": generate_request.reasoning_effort,
         },
         db=db
     )
@@ -3045,6 +3087,7 @@ async def generate_chapter_content_background_legacy(
                         "style_anchor_enabled": generate_request.style_anchor_enabled,
                         "style_anchor_chars": generate_request.style_anchor_chars,
                         "style_anchor_count": generate_request.style_anchor_count,
+                        "reasoning_effort": generate_request.reasoning_effort,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -3089,6 +3132,7 @@ async def _run_chapter_generation_bg(
     custom_model = task_input.get("model")
     temp_narrative_perspective = task_input.get("narrative_perspective")
     enable_mcp = task_input.get("enable_mcp", True)
+    reasoning_effort = task_input.get("reasoning_effort")
     skill_key = task_input.get("skill_key")
     write_lock = await get_db_write_lock(user_id)
 
@@ -3373,7 +3417,7 @@ async def _run_chapter_generation_bg(
     )
     if established_names:
         prompt = f"{prompt}\n{established_names}"
-    prompt = _append_style_tail(prompt, style_content)
+    prompt = _append_style_tail(prompt, style_content, target_word_count)
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
@@ -3381,6 +3425,7 @@ async def _run_chapter_generation_bg(
         "max_tokens": calculated_max_tokens,
         "auto_mcp": bool(enable_mcp),
         "finish_sink": finish_sink,
+        "reasoning_effort": reasoning_effort,
     }
     if custom_model:
         generate_kwargs["model"] = custom_model
@@ -4289,7 +4334,8 @@ async def batch_generate_chapters_in_order(
             skill_key=batch_request.skill_key,
             enable_mcp=batch_request.enable_mcp,
             narrative_perspective=batch_request.narrative_perspective,
-            content_language=batch_request.content_language
+            content_language=batch_request.content_language,
+            reasoning_effort=batch_request.reasoning_effort,
         ),
         batch_id=batch_id,
         user_id=user_id,
@@ -4510,7 +4556,8 @@ async def execute_batch_generation_in_order(
     skill_key: Optional[str] = None,
     enable_mcp: bool = True,
     narrative_perspective: Optional[str] = None,
-    content_language: Optional[str] = None
+    content_language: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ):
     """
     按顺序执行批量生成任务（后台任务）
@@ -4705,6 +4752,7 @@ async def execute_batch_generation_in_order(
                         temp_narrative_perspective=narrative_perspective,
                         content_language=content_language,
                         anchor_override=task.anchor_settings,
+                        reasoning_effort=reasoning_effort,
                     ) or {}
 
                     # issue #254 P2：批量生成后的文笔一致性自检结果
@@ -4929,6 +4977,7 @@ async def generate_single_chapter_for_batch(
     temp_narrative_perspective: Optional[str] = None,
     content_language: Optional[str] = None,
     anchor_override: Optional[dict] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> dict:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -5225,7 +5274,7 @@ async def generate_single_chapter_for_batch(
     )
     if established_names:
         prompt = f"{prompt}\n{established_names}"
-    prompt = _append_style_tail(prompt, style_content)
+    prompt = _append_style_tail(prompt, style_content, target_word_count)
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
@@ -5233,6 +5282,7 @@ async def generate_single_chapter_for_batch(
         "max_tokens": calculated_max_tokens,
         "auto_mcp": bool(enable_mcp),
         "finish_sink": finish_sink,
+        "reasoning_effort": reasoning_effort,
     }
     # 如果传入了自定义模型，使用指定的模型
     if custom_model:
