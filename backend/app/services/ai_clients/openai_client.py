@@ -213,6 +213,7 @@ class OpenAIClient(BaseAIClient):
         tools: Optional[list] = None,
         tool_choice: Optional[str] = None,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         流式生成，支持工具调用
@@ -224,6 +225,10 @@ class OpenAIClient(BaseAIClient):
             - done: bool - 是否结束
         """
         payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True, response_format=response_format)
+        # 思考强度档位（OpenAI 兼容网关透传）：实测同一提示词下 low 档推理量从
+        # 1.9-3.6 万 token 降到 100-300，是本项目章节生成延迟的主控变量。
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         
         tool_calls_buffer = {}  # 收集工具调用块
         content_chars = 0
@@ -257,6 +262,7 @@ class OpenAIClient(BaseAIClient):
                             tools=tools,
                             tool_choice=tool_choice,
                             response_format=response_format,
+                            reasoning_effort=reasoning_effort,
                         ):
                             yield retry_chunk
                         return
@@ -288,6 +294,7 @@ class OpenAIClient(BaseAIClient):
                             tools=tools,
                             tool_choice=tool_choice,
                             response_format=response_format,
+                            reasoning_effort=reasoning_effort,
                         ):
                             yield retry_chunk
                         return
