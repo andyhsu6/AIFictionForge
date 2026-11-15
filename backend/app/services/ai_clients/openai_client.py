@@ -8,6 +8,7 @@ from app.logger import get_logger, summarize_log_value
 from app.services.ai_clients.output_caps import (
     clamp_to_known_ceiling,
     learn_output_ceiling,
+    remember_output_ceiling,
 )
 from app.services.ai_config import AIClientConfig
 from app.utils.reasoning_text import (
@@ -342,6 +343,8 @@ class OpenAIClient(BaseAIClient):
                     ):
                         # 报错没给数字（学不到上限）：退到保守预算原地重试一次。
                         # 递归有界：退到 64000 后再被拒时该分支不再成立，直接抛错。
+                        # 下界：请求值本身 ≤ 64000 时不走这条（否则等于空试一次），
+                        # 这类模型维持原来的"拒绝即失败"行为。
                         logger.warning(
                             "网关拒绝 max_tokens 但未报出上限，退到保守预算重试一次: "
                             "model=%s, max_tokens=%s -> %s, body=%s",
@@ -361,6 +364,13 @@ class OpenAIClient(BaseAIClient):
                             reasoning_effort=reasoning_effort,
                         ):
                             yield retry_chunk
+                        # 重试成功才记：该 (网关, 模型) 下次直接用已验证的预算，
+                        # 不再固定多付一次注定失败的 400。
+                        remember_output_ceiling(
+                            base_url=self.base_url,
+                            model=model,
+                            ceiling=_MAX_TOKENS_REJECTION_FALLBACK,
+                        )
                         return
                     if learned is not None and learned < payload["max_tokens"]:
                         logger.warning(
