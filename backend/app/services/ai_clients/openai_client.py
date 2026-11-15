@@ -38,6 +38,27 @@ def mark_stream_usage_unsupported(base_url: Optional[str]) -> None:
     _STREAM_USAGE_UNSUPPORTED_BASE_URLS.add(_stream_usage_cache_key(base_url))
 
 
+# 已知不接受顶层 `reasoning_effort` 的网关（按 base_url 归一化后缓存）。
+# 该字段现在默认随每次章节生成发出，若某网关对未知字段回 400 而这里不降级，
+# 整章生成会直接失败且用户无法关闭 —— 与 stream_options 同一类风险，同一套处置。
+_REASONING_EFFORT_UNSUPPORTED_BASE_URLS: set = set()
+
+
+def reasoning_effort_supported(base_url: Optional[str]) -> bool:
+    """该网关是否还没被证明「不接受 reasoning_effort」。"""
+    return _stream_usage_cache_key(base_url) not in _REASONING_EFFORT_UNSUPPORTED_BASE_URLS
+
+
+def mark_reasoning_effort_unsupported(base_url: Optional[str]) -> None:
+    _REASONING_EFFORT_UNSUPPORTED_BASE_URLS.add(_stream_usage_cache_key(base_url))
+
+
+def _mentions_reasoning_effort(error_text: str) -> bool:
+    """400 的 body 是否在抱怨 reasoning_effort 字段。"""
+    text = (error_text or "").lower()
+    return "reasoning_effort" in text or "reasoning effort" in text
+
+
 def _mentions_stream_options(error_text: str) -> bool:
     """400 的 body 是否在抱怨 stream_options / include_usage 这两个字段。"""
     text = (error_text or "").lower()
@@ -213,6 +234,7 @@ class OpenAIClient(BaseAIClient):
         tools: Optional[list] = None,
         tool_choice: Optional[str] = None,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         流式生成，支持工具调用
@@ -224,6 +246,11 @@ class OpenAIClient(BaseAIClient):
             - done: bool - 是否结束
         """
         payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True, response_format=response_format)
+        # 思考强度档位（OpenAI 兼容网关透传）：实测同一提示词下 low 档推理量从
+        # 1.9-3.6 万 token 降到 100-300，是本项目章节生成延迟的主控变量。
+        # 该网关已被证明不接受此字段时不再发（否则每次生成都要先吃一次 400）。
+        if reasoning_effort and reasoning_effort_supported(self.base_url):
+            payload["reasoning_effort"] = reasoning_effort
         
         tool_calls_buffer = {}  # 收集工具调用块
         content_chars = 0
@@ -257,6 +284,31 @@ class OpenAIClient(BaseAIClient):
                             tools=tools,
                             tool_choice=tool_choice,
                             response_format=response_format,
+                            reasoning_effort=reasoning_effort,
+                        ):
+                            yield retry_chunk
+                        return
+                    if reasoning_effort and _mentions_reasoning_effort(str(enriched)):
+                        # 网关不认这个字段：记忆到 base_url，去掉字段原地重试一次。
+                        # 递归有界：重试时 reasoning_effort=None，不再进入本分支。
+                        mark_reasoning_effort_unsupported(self.base_url)
+                        logger.warning(
+                            "网关不接受 reasoning_effort，去掉该字段重试一次: "
+                            "model=%s, effort=%s, status=%s, body=%s",
+                            model,
+                            reasoning_effort,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=None,
                         ):
                             yield retry_chunk
                         return
@@ -288,6 +340,7 @@ class OpenAIClient(BaseAIClient):
                             tools=tools,
                             tool_choice=tool_choice,
                             response_format=response_format,
+                            reasoning_effort=reasoning_effort,
                         ):
                             yield retry_chunk
                         return

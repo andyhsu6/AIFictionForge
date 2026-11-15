@@ -49,6 +49,7 @@ class OpenAIProvider(BaseAIProvider):
         tool_choice: Optional[str] = None,
         user_id: Optional[str] = None,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         messages = []
         if system_prompt:
@@ -70,6 +71,7 @@ class OpenAIProvider(BaseAIProvider):
                 tools=tools,
                 tool_choice=actual_tool_choice,
                 response_format=response_format,
+                reasoning_effort=reasoning_effort,
             ):
                 # 检查是否有工具调用
                 if chunk.get("tool_calls"):
@@ -96,7 +98,7 @@ class OpenAIProvider(BaseAIProvider):
                         
                         # 递归调用生成最终结果
                         async for final_chunk in self._generate_with_tools(
-                            final_messages, model, temperature, max_tokens, tools, user_id
+                            final_messages, model, temperature, max_tokens, tools, user_id, reasoning_effort
                         ):
                             yield final_chunk
                     if chunk.get("finish_reason"):
@@ -118,6 +120,7 @@ class OpenAIProvider(BaseAIProvider):
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            reasoning_effort=reasoning_effort,
         ):
             if isinstance(chunk, dict):
                 if chunk.get("usage"):
@@ -137,6 +140,7 @@ class OpenAIProvider(BaseAIProvider):
         max_tokens: int,
         tools: list,
         user_id: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """辅助方法：带工具的流式生成（无tool_choice，AI自由决定）"""
         async for chunk in self.client.chat_completion_stream(
@@ -146,6 +150,7 @@ class OpenAIProvider(BaseAIProvider):
             max_tokens=max_tokens,
             tools=tools,
             tool_choice="auto",
+            reasoning_effort=reasoning_effort,
         ):
             if chunk.get("tool_calls"):
                 from app.mcp import mcp_client
@@ -160,7 +165,7 @@ class OpenAIProvider(BaseAIProvider):
                 messages.append({"role": "user", "content": f"{tool_context}\n\n请基于以上工具查询结果，给出完整详细的回答。"})
                 
                 async for final_chunk in self._generate_with_tools(
-                    messages, model, temperature, max_tokens, tools, user_id
+                    messages, model, temperature, max_tokens, tools, user_id, reasoning_effort
                 ):
                     yield final_chunk
                 break
