@@ -44,7 +44,7 @@ from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
-from app.services.style_anchors import append_project_style_anchors
+from app.services.style_anchors import ANCHOR_HEADER, append_project_style_anchors
 from app.services.style_profile import (
     extract_rendered_metrics,
     profile_preset_id,
@@ -472,13 +472,28 @@ def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], 
         )
 
 
-_ANCHOR_HEADER = "【本书原文语感锚点"
-
-
 def _extract_anchor_block(text: str) -> str:
-    """从风格内容里取出「原文语感锚点」段（没有则空串）。"""
-    index = (text or "").find(_ANCHOR_HEADER)
-    return text[index:].strip() if index >= 0 else ""
+    """从风格内容里取出「原文语感锚点」段（没有则空串）。
+
+    匹配的是 `style_anchors.ANCHOR_HEADER`（标题的唯一来源，全串匹配）。定位不到却
+    见到"语感锚点"字样时留 warning：那说明渲染头被改过而这里没同步，锚点会静默消失。
+    """
+    body = text or ""
+    index = body.find(ANCHOR_HEADER)
+    if index < 0:
+        if "语感锚点" in body:
+            logger.warning(
+                "⚠️ 风格内容里出现「语感锚点」但无法按渲染头定位，原文样本未注入"
+                "（检查 style_anchors.ANCHOR_HEADER 是否被改过而这里没同步）"
+            )
+        return ""
+    block = body[index:].strip()
+    if "\n【" in block:
+        logger.warning(
+            "⚠️ 原文锚点段之后还有其它【…】小节，已被一并当作样本复制进尾块"
+            "（锚点应为 style_content 的最后一块）"
+        )
+    return block
 
 
 def _length_floor_note(target_chars: Optional[int], language: str) -> str:

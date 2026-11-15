@@ -378,12 +378,22 @@ async def load_style_anchor_fragments(
     return selected
 
 
+# 锚点段落的标题。**唯一来源**：生成路径要靠它把锚点从风格正文里定位出来
+# （见 api/chapters.py 的 _extract_anchor_block）。改这里的措辞会同时改变定位前缀，
+# 不要把字面量再抄一份到别处。
+ANCHOR_HEADER_PREFIX = "【本书原文语感锚点"
+ANCHOR_HEADER = (
+    ANCHOR_HEADER_PREFIX
+    + "（仅模仿句长、节奏与叙述距离；禁止复述、改写或引用其中内容）】"
+)
+
+
 def build_style_anchor_block(fragments: list[str]) -> str:
     if not fragments:
         return ""
     lines = [
         "",
-        "【本书原文语感锚点（仅模仿句长、节奏与叙述距离；禁止复述、改写或引用其中内容）】",
+        ANCHOR_HEADER,
     ]
     for index, fragment in enumerate(fragments, 1):
         lines.append(f"[锚点 {index}]")

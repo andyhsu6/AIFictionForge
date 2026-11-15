@@ -347,13 +347,19 @@ async def test_unrelated_400_still_raises(monkeypatch):
 
 # ===== 原文语感锚点：必须贴在生成点，且排在字数下限之前 =====
 
-_ANCHOR_TEXT = "【本书原文语感锚点（仅模仿句长、节奏与叙述距离；禁止复述、改写或引用其中内容）】\n甲句。乙句。"
+
+def _anchor_content() -> str:
+    """用真实渲染函数生成风格正文，避免在测试里再抄一份标题字面量。"""
+    from app.services.style_anchors import append_project_style_anchors  # noqa: F401
+    from app.services.style_anchors import build_style_anchor_block
+
+    return "普通风格描述\n" + build_style_anchor_block(["甲句。乙句。"])
 
 
 def test_style_tail_copies_the_anchor_block_to_the_end():
     from app.api.chapters import _append_style_tail
 
-    prompt = _append_style_tail("BODY", _ANCHOR_TEXT, 3000)
+    prompt = _append_style_tail("BODY", _anchor_content(), 3000)
     assert "甲句。乙句。" in prompt
     assert prompt.index("甲句") > prompt.index("BODY")
 
@@ -362,7 +368,7 @@ def test_length_floor_stays_after_the_anchor_sample():
     """硬约束要在样本之后（最贴近生成点），否则模型会照着样本随手收尾。"""
     from app.api.chapters import _append_style_tail
 
-    prompt = _append_style_tail("BODY", _ANCHOR_TEXT, 3000)
+    prompt = _append_style_tail("BODY", _anchor_content(), 3000)
     assert prompt.index("不少于 2790 字") > prompt.index("甲句")
 
 
@@ -376,4 +382,25 @@ def test_extract_anchor_block_returns_empty_when_absent():
     from app.api.chapters import _extract_anchor_block
 
     assert _extract_anchor_block("普通风格描述") == ""
-    assert _extract_anchor_block(_ANCHOR_TEXT).startswith("【本书原文语感锚点")
+    assert _extract_anchor_block(_anchor_content()).startswith("【本书原文语感锚点")
+
+
+def test_extract_anchor_block_matches_the_real_renderer():
+    """定位前缀与渲染头必须同源：改了渲染头而没改前缀时，这里会先红。"""
+    from app.api.chapters import _extract_anchor_block
+    from app.services.style_anchors import ANCHOR_HEADER, build_style_anchor_block
+
+    rendered = build_style_anchor_block(["样本一。"])
+    assert ANCHOR_HEADER in rendered
+    assert _extract_anchor_block("规格\n" + rendered).startswith(ANCHOR_HEADER)
+
+
+def test_extract_anchor_block_warns_when_the_header_drifted(caplog):
+    """渲染头被改掉、前缀失配时必须留痕，不能静默不注入。"""
+    import logging
+
+    from app.api.chapters import _extract_anchor_block
+
+    with caplog.at_level(logging.WARNING):
+        assert _extract_anchor_block("【本书原文语感锚点（措辞改过了）】\n样本") == ""
+    assert any("无法按渲染头定位" in record.message for record in caplog.records)
