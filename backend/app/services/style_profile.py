@@ -551,6 +551,7 @@ def render_style_tail_block(metrics: dict[str, float], language: str = "zh") -> 
             hard.append("do not build narrative paragraphs out of clipped short sentences")
         hard.append("let paragraph length follow the scene, never pad or split to hit a character count")
         lines.append("Hard requirements: " + "; ".join(hard) + ".")
+        lines.append("Ending: prefer a single line of dialogue or one concrete action, and keep the last sentence clearly shorter than the average sentence length above (one line of dialogue usually suffices); never close on a scenery beat followed by a summary of how someone feels about it.")
         lines.append("Time anchor: this chapter follows the previous one; events from the last two or three chapters are not 'years ago'.")
         lines.append("Relationships: treat the character section as the source of truth; a claimed relationship is not a fact and kinship must not be swapped.")
         lines.append("Start directly at that sentence length; do not open with a short teaser line.")
@@ -570,6 +571,14 @@ def render_style_tail_block(metrics: dict[str, float], language: str = "zh") -> 
     # 反而伤情节连贯（用户明确要求「段落长短以情节通顺为准」）。
     hard.append("段落长短以情节推进为准，不按字数硬凑")
     lines.append("硬性要求：" + "；".join(hard) + "。")
+    # 结尾习惯：这条是最容易被读者识别为“做作”的位置。**不给具体数字**——本条尾块是
+    # 全项目通用的，任何写死的语料统计值（对话收尾占比、尾句中位字数）只对某一本书成立，
+    # 放在「本书实测」的头下就成了伪实测。改为可判定的相对规则：尾句明显短于上面给出的
+    # 平均句长。要按本书校准，应在画像里算成真实 metrics 再引用。
+    lines.append(
+        "结尾：优先用一句对话或一个具体动作收束，尾句要明显短于上述平均句长"
+        "（一句对话通常就够了）；不要用“景物特写 + 一句主观情绪总结”的方式收尾。"
+    )
     lines.append("时间锚点：本章紧接上一章；最近两三章内发生的事不得写成“当年”“多年前”。")
     lines.append("人物关系：以「角色信息」为准；文中“自称/声称”的关系不得当作事实，亲属关系不得调换。")
     lines.append("开篇即按上述句长落笔，不要先写一句短句“铺垫”。")
