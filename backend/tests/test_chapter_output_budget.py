@@ -264,14 +264,21 @@ def test_every_generation_path_appends_the_style_tail_block():
     全绿 —— 因为「模型是否听话」无法在单测里断言。这里用源码守卫钉住接线本身：
     少了任何一处，模型就会退回被 12 万 token 上下文稀释的短句腔。
 
-    只匹配到参数列表的第一个实参：全章生成路径在 `style_content` 之后还传
-    `target_word_count`（字数下限尾注），续写/局部重写不传。
+    只按**精确调用形式**分别计数：全章三条路径必须带 `target_word_count`（字数下限
+    尾注的接线点），续写/局部重写两条路径不带。放宽成前缀匹配会让"漏传第三参"
+    静默通过 —— 那等于字数下限失效，正文退回到 2,200–2,600 字 / 3,000 目标。
     """
     source = CHAPTERS_PY.read_text(encoding="utf-8")
-    wiring = "prompt = _append_style_tail(prompt, style_content"
-    assert source.count(wiring) == 5, (
-        "预期 5 处生成路径（SSE/后台/批量/续写/局部重写）都接线，"
-        f"实际 {source.count(wiring)} 处"
+    full_chapter = "prompt = _append_style_tail(prompt, style_content, target_word_count)"
+    segment = "prompt = _append_style_tail(prompt, style_content)"
+    assert source.count(full_chapter) == 3, (
+        "预期 3 处全章生成路径（SSE/后台/批量）都传 target_word_count，"
+        f"实际 {source.count(full_chapter)} 处"
+    )
+    # 续写/局部重写是分段生成，不加全章级字数下限；它们必须保持两参形式。
+    assert source.count(segment) == 2, (
+        "预期 2 处分段生成路径（续写/局部重写）不带字数下限，"
+        f"实际 {source.count(segment)} 处"
     )
 
 

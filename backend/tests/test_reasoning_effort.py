@@ -227,3 +227,119 @@ def test_append_style_tail_has_no_floor_when_target_missing():
     from app.api.chapters import _append_style_tail
 
     assert _append_style_tail("BODY", "") == "BODY"
+
+
+@pytest.mark.anyio
+async def test_gateway_rejecting_reasoning_effort_is_retried_without_it(monkeypatch):
+    """网关不认识该字段 → 去字段重试一次并成功，不再让整章生成直接失败。"""
+    from app.services.ai_clients import openai_client as openai_client_module
+
+    monkeypatch.setattr(openai_client_module, "_STREAM_USAGE_UNSUPPORTED_BASE_URLS", set())
+    monkeypatch.setattr(
+        openai_client_module, "_REASONING_EFFORT_UNSUPPORTED_BASE_URLS", set()
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "unknown field 'reasoning_effort'"}},
+            )
+        return _ok_stream()
+
+    client, pooled = _make_client(handler, "https://gateway-strict.test/v1")
+    try:
+        chunks = [
+            chunk
+            async for chunk in client.chat_completion_stream(
+                [{"role": "user", "content": "hi"}],
+                "test-model",
+                0.7,
+                100,
+                reasoning_effort="medium",
+            )
+        ]
+    finally:
+        await _close(client, pooled)
+
+    assert chunks
+    assert len(seen) == 2
+    assert "reasoning_effort" in seen[0]
+    assert "reasoning_effort" not in seen[1]
+
+
+@pytest.mark.anyio
+async def test_rejected_reasoning_effort_is_remembered_per_base_url(monkeypatch):
+    """学到之后，同一网关的后续请求不再先吃一次 400。"""
+    from app.services.ai_clients import openai_client as openai_client_module
+
+    monkeypatch.setattr(openai_client_module, "_STREAM_USAGE_UNSUPPORTED_BASE_URLS", set())
+    monkeypatch.setattr(
+        openai_client_module, "_REASONING_EFFORT_UNSUPPORTED_BASE_URLS", set()
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(
+                400, json={"error": {"message": "unrecognized field reasoning_effort"}}
+            )
+        return _ok_stream()
+
+    client, pooled = _make_client(handler, "https://gateway-memo.test/v1")
+    try:
+        for _ in range(2):
+            [
+                chunk
+                async for chunk in client.chat_completion_stream(
+                    [{"role": "user", "content": "hi"}],
+                    "test-model",
+                    0.7,
+                    100,
+                    reasoning_effort="low",
+                )
+            ]
+    finally:
+        await _close(client, pooled)
+
+    # 第一次：带字段撞 400 → 去字段重试；第二次：直接不带字段。
+    assert [("reasoning_effort" in body) for body in seen] == [True, False, False]
+
+
+@pytest.mark.anyio
+async def test_unrelated_400_still_raises(monkeypatch):
+    """降级只在错误体提到该字段时触发，其它 400 不能被吞成「去掉字段再试」。"""
+    from app.services.ai_clients import openai_client as openai_client_module
+
+    monkeypatch.setattr(openai_client_module, "_STREAM_USAGE_UNSUPPORTED_BASE_URLS", set())
+    monkeypatch.setattr(
+        openai_client_module, "_REASONING_EFFORT_UNSUPPORTED_BASE_URLS", set()
+    )
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": {"message": "invalid api key"}})
+
+    client, pooled = _make_client(handler, "https://gateway-badkey.test/v1")
+    try:
+        with pytest.raises(Exception):
+            [
+                chunk
+                async for chunk in client.chat_completion_stream(
+                    [{"role": "user", "content": "hi"}],
+                    "test-model",
+                    0.7,
+                    100,
+                    reasoning_effort="low",
+                )
+            ]
+    finally:
+        await _close(client, pooled)
+
+    assert len(attempts) == 1
