@@ -115,7 +115,9 @@ async def test_stream_output_cap_400_is_retried_in_place_with_learned_ceiling():
     assert resolve_output_ceiling(BASE, MODEL) == CEILING
 
 
-async def _collect_with_handler(handler, *, max_tokens: int = REQUESTED) -> list:
+async def _collect_with_handler(
+    handler, *, max_tokens: int = REQUESTED, **stream_kwargs
+) -> list:
     """用 MockTransport 跑一次流式请求；异常原样抛给调用方断言。"""
     client = OpenAIClient(api_key="k", base_url=BASE, config=_fast_config())
     pooled = client.http_client
@@ -128,6 +130,7 @@ async def _collect_with_handler(handler, *, max_tokens: int = REQUESTED) -> list
                 model=MODEL,
                 temperature=0.7,
                 max_tokens=max_tokens,
+                **stream_kwargs,
             )
         ]
     finally:
@@ -175,3 +178,129 @@ async def test_stream_output_cap_400_without_a_cap_number_is_not_memoized():
 
     assert bodies == [REQUESTED]
     assert resolve_output_ceiling(BASE, MODEL) is None
+
+
+@pytest.mark.anyio
+async def test_stream_max_tokens_rejection_without_a_number_falls_back_once():
+    """网关拒绝 max_tokens 但不报上限（实测 gpt-6-luna）：退到保守预算重试一次。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content.decode()))
+        if bodies[-1]["max_tokens"] > 64_000:
+            return httpx.Response(
+                400,
+                text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit. Lower it and retry.\"}}",
+            )
+        return httpx.Response(
+            200,
+            stream=_UnreadStream(
+                [
+                    _sse([{"choices": [{"index": 0, "delta": {"content": "正文"}, "finish_reason": "stop"}]}])
+                    + b"data: [DONE]\n\n"
+                ]
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    chunks = await _collect_with_handler(handler)
+    assert [body["max_tokens"] for body in bodies] == [REQUESTED, 64_000]
+    assert {"content": "正文"} in chunks
+    # 报错没给数字，但 64,000 已被证明可用：记下来，下次不再重复吃一次 400
+    assert resolve_output_ceiling(BASE, MODEL) == 64_000
+
+    # 第二次请求直接从 64,000 起，不再有注定失败的往返
+    bodies.clear()
+    await _collect_with_handler(handler)
+    assert [body["max_tokens"] for body in bodies] == [64_000]
+
+
+@pytest.mark.anyio
+async def test_stream_max_tokens_rejection_fallback_is_bounded():
+    """退到 64000 后仍被拒：不再递归，直接抛错。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(
+            400,
+            text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit.\"}}",
+        )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _collect_with_handler(handler)
+    assert [body["max_tokens"] for body in bodies] == [REQUESTED, 64_000]
+
+
+@pytest.mark.anyio
+async def test_reported_ceiling_ending_with_a_period_is_learned_not_fallen_back():
+    """网关最常见的措辞是 "…limit of 131072. Lower it and retry."。
+
+    句号收尾的形态若解析不出数字，常量的 64,000 会抢先触发，把网关明说的
+   上限压掉一半多 —— 这正是本次修掉的 MAJOR。
+    """
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content.decode())
+        bodies.append(body["max_tokens"])
+        if body["max_tokens"] > 131_072:
+            return httpx.Response(
+                400,
+                text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit of 131072. Lower it and retry.\"}}",
+            )
+        return httpx.Response(
+            200,
+            stream=_UnreadStream(
+                [
+                    _sse([{"choices": [{"index": 0, "delta": {"content": "正文"}, "finish_reason": "stop"}]}])
+                    + b"data: [DONE]\n\n"
+                ]
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    await _collect_with_handler(handler)
+    assert bodies == [REQUESTED, 131_072]
+    assert resolve_output_ceiling(BASE, MODEL) == 131_072
+
+
+@pytest.mark.anyio
+async def test_fallback_retry_keeps_request_parameters():
+    """常量兜底的重试不能把 reasoning_effort / response_format 丢掉。
+
+    丢了 reasoning_effort 会静默退回网关默认思考档，单章又变 5–8 分钟；
+    丢了 response_format 会退化成自由文本。
+    """
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content.decode())
+        bodies.append(body)
+        if body["max_tokens"] > 64_000:
+            return httpx.Response(
+                400,
+                text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit. Lower it and retry.\"}}",
+            )
+        return httpx.Response(
+            200,
+            stream=_UnreadStream(
+                [
+                    _sse([{"choices": [{"index": 0, "delta": {"content": "正文"}, "finish_reason": "stop"}]}])
+                    + b"data: [DONE]\n\n"
+                ]
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    await _collect_with_handler(
+        handler,
+        reasoning_effort="low",
+        response_format={"type": "json_object"},
+    )
+
+    assert len(bodies) == 2
+    retry = bodies[1]
+    assert retry["max_tokens"] == 64_000
+    assert retry["reasoning_effort"] == "low"
+    assert retry["response_format"] == {"type": "json_object"}
