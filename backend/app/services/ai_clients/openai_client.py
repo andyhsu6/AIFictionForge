@@ -59,6 +59,19 @@ def _mentions_reasoning_effort(error_text: str) -> bool:
     return "reasoning_effort" in text or "reasoning effort" in text
 
 
+# 网关拒绝 max_tokens 但不报具体上限时（实测 gpt-6-luna：
+# "The value of 'max_tokens' is above this model's limit. Lower it and retry."），
+# 没有数字可学，只能退到一个保守预算再试一次，否则整章生成直接失败。
+_MAX_TOKENS_REJECTION_FALLBACK = 64000
+
+
+def _mentions_max_tokens_limit(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    return "max_tokens" in text and any(
+        hint in text for hint in ("limit", "above", "exceed", "too large", "too long")
+    )
+
+
 def _mentions_stream_options(error_text: str) -> bool:
     """400 的 body 是否在抱怨 stream_options / include_usage 这两个字段。"""
     text = (error_text or "").lower()
@@ -322,6 +335,33 @@ class OpenAIClient(BaseAIClient):
                         body=str(enriched),
                         requested_max_tokens=payload["max_tokens"],
                     )
+                    if (
+                        learned is None
+                        and payload["max_tokens"] > _MAX_TOKENS_REJECTION_FALLBACK
+                        and _mentions_max_tokens_limit(str(enriched))
+                    ):
+                        # 报错没给数字（学不到上限）：退到保守预算原地重试一次。
+                        # 递归有界：退到 64000 后再被拒时该分支不再成立，直接抛错。
+                        logger.warning(
+                            "网关拒绝 max_tokens 但未报出上限，退到保守预算重试一次: "
+                            "model=%s, max_tokens=%s -> %s, body=%s",
+                            model,
+                            payload["max_tokens"],
+                            _MAX_TOKENS_REJECTION_FALLBACK,
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=_MAX_TOKENS_REJECTION_FALLBACK,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=reasoning_effort,
+                        ):
+                            yield retry_chunk
+                        return
                     if learned is not None and learned < payload["max_tokens"]:
                         logger.warning(
                             "网关报出更低的输出上限，按该上限原地重试一次: "

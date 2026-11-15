@@ -175,3 +175,50 @@ async def test_stream_output_cap_400_without_a_cap_number_is_not_memoized():
 
     assert bodies == [REQUESTED]
     assert resolve_output_ceiling(BASE, MODEL) is None
+
+
+@pytest.mark.anyio
+async def test_stream_max_tokens_rejection_without_a_number_falls_back_once():
+    """网关拒绝 max_tokens 但不报上限（实测 gpt-6-luna）：退到保守预算重试一次。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content.decode()))
+        if bodies[-1]["max_tokens"] > 64_000:
+            return httpx.Response(
+                400,
+                text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit. Lower it and retry.\"}}",
+            )
+        return httpx.Response(
+            200,
+            stream=_UnreadStream(
+                [
+                    _sse([{"choices": [{"index": 0, "delta": {"content": "正文"}, "finish_reason": "stop"}]}])
+                    + b"data: [DONE]\n\n"
+                ]
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    chunks = await _collect_with_handler(handler)
+    assert [body["max_tokens"] for body in bodies] == [REQUESTED, 64_000]
+    assert {"content": "正文"} in chunks
+    # 没学到具体数字，不能凭空写记忆
+    assert resolve_output_ceiling(BASE, MODEL) is None
+
+
+@pytest.mark.anyio
+async def test_stream_max_tokens_rejection_fallback_is_bounded():
+    """退到 64000 后仍被拒：不再递归，直接抛错。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(
+            400,
+            text="{\"error\":{\"message\":\"The value of 'max_tokens' is above this model's limit.\"}}",
+        )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _collect_with_handler(handler)
+    assert [body["max_tokens"] for body in bodies] == [REQUESTED, 64_000]
