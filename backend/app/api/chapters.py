@@ -19,9 +19,10 @@ from app.core.db_write_lock import get_db_write_lock
 from app.services.chapter_generation_guard import (
     ChapterCheckpointer,
     build_continuation_block,
+    build_resume_plan,
     length_floor_for,
     needs_top_up,
-    should_resume,
+    restore_before_top_up,
     top_up_max_tokens,
 )
 from app.services.chapter_context_service import (
@@ -1159,6 +1160,14 @@ async def check_previous_analysis_ready(db: AsyncSession, chapter: Chapter) -> t
     analysis_task = analysis_result.first()
     if analysis_task and analysis_task.status == 'completed':
         return True, ""
+
+    # 断点草稿（status=writing）意味着上一章的生成中断了：它永远不会有分析任务，
+    # 这时让用户"等待分析完成"是死胡同，必须指向真正的恢复动作。
+    if (prev_chapter.status or "") == "writing":
+        return False, (
+            f"上一章（第{prev_chapter.chapter_number}章）的生成被中断，只写了部分正文。"
+            "请先重新生成该章（会从断点继续），完成后再生成下一章"
+        )
 
     return False, f"上一章（第{prev_chapter.chapter_number}章）内容分析尚未完成，请等待分析完成后再生成下一章，以保证角色状态、记忆和伏笔连贯"
 
@@ -2545,15 +2554,20 @@ async def generate_chapter_content_stream(
                     prompt = f"{prompt}\n{established_names}"
                 prompt = _append_style_tail(prompt, style_content, target_word_count)
                 resume_language = getattr(generate_request, "content_language", None) or "zh"
-                if should_resume(current_chapter.status, current_chapter.content):
+                # 补写轮次用"未注入续写块"的提示词，避免两份尾块叠加导致模型复述
+                prompt_without_resume = prompt
+                resume_block, resume_content = build_resume_plan(
+                    current_chapter.status,
+                    current_chapter.content,
+                    target_word_count,
+                    resume_language,
+                )
+                if resume_block:
                     logger.info(
                         f"♻️ 第{current_chapter.chapter_number}章发现中断草稿"
-                        f"（{len(current_chapter.content)} 字），从断点续写"
+                        f"（{len(resume_content)} 字），从断点续写"
                     )
-                    prompt = (
-                        f"{prompt}\n"
-                        f"{build_continuation_block(current_chapter.content, target_word_count, resume_language, reason='resume')}"
-                    )
+                    prompt = f"{prompt}\n{resume_block}"
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
@@ -2571,11 +2585,7 @@ async def generate_chapter_content_stream(
                 
                 # === 生成阶段 ===
                 # 上次被中断（status=writing）且草稿够长时接着写，否则从头生成
-                full_content = (
-                    current_chapter.content
-                    if should_resume(current_chapter.status, current_chapter.content)
-                    else ""
-                )
+                full_content = resume_content
                 chunk_count = 0
                 checkpointer = ChapterCheckpointer(db_session, current_chapter)
                 
@@ -2649,9 +2659,10 @@ async def generate_chapter_content_stream(
                         estimated_total=target_word_count,
                         message='正文偏短，正在补写...'
                     )
+                    topup_snapshot = len(full_content)
                     topup_kwargs = dict(generate_kwargs)
                     topup_kwargs["prompt"] = (
-                        f"{generate_kwargs['prompt']}\n"
+                        f"{prompt_without_resume}\n"
                         f"{build_continuation_block(full_content, target_word_count, resume_language)}"
                     )
                     topup_kwargs["max_tokens"] = top_up_max_tokens(
@@ -2664,8 +2675,11 @@ async def generate_chapter_content_stream(
                             yield await tracker.generating_chunk(chunk)
                             await checkpointer.maybe_checkpoint(full_content)
                     except Exception as exc:
+                        # 补写是逐块 append 的：中途失败必须截回快照点，
+                        # 否则半截续写会在章尾留下断句垃圾并被落库成成稿
+                        full_content = restore_before_top_up(full_content, topup_snapshot)
                         logger.warning(
-                            f"补写失败，保留已有正文（{len(full_content)} 字）: "
+                            f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
                             f"{type(exc).__name__}: {exc}"
                         )
                 
@@ -3473,15 +3487,19 @@ async def _run_chapter_generation_bg(
         prompt = f"{prompt}\n{established_names}"
     prompt = _append_style_tail(prompt, style_content, target_word_count)
     resume_language = task_input.get("content_language") or "zh"
-    if should_resume(current_chapter.status, current_chapter.content):
+    prompt_without_resume = prompt
+    resume_block, resume_content = build_resume_plan(
+        current_chapter.status,
+        current_chapter.content,
+        target_word_count,
+        resume_language,
+    )
+    if resume_block:
         logger.info(
             f"♻️ 后台生成 - 第{current_chapter.chapter_number}章发现中断草稿"
-            f"（{len(current_chapter.content)} 字），从断点续写"
+            f"（{len(resume_content)} 字），从断点续写"
         )
-        prompt = (
-            f"{prompt}\n"
-            f"{build_continuation_block(current_chapter.content, target_word_count, resume_language, reason='resume')}"
-        )
+        prompt = f"{prompt}\n{resume_block}"
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
@@ -3495,11 +3513,7 @@ async def _run_chapter_generation_bg(
         generate_kwargs["model"] = custom_model
 
     # === 生成阶段 ===
-    full_content = (
-        current_chapter.content
-        if should_resume(current_chapter.status, current_chapter.content)
-        else ""
-    )
+    full_content = resume_content
     chunk_count = 0
     checkpointer = ChapterCheckpointer(db, current_chapter)
 
@@ -3565,9 +3579,10 @@ async def _run_chapter_generation_bg(
             estimated_total=target_word_count,
             message='正文偏短，正在补写...'
         )
+        topup_snapshot = len(full_content)
         topup_kwargs = dict(generate_kwargs)
         topup_kwargs["prompt"] = (
-            f"{generate_kwargs['prompt']}\n"
+            f"{prompt_without_resume}\n"
             f"{build_continuation_block(full_content, target_word_count, resume_language)}"
         )
         topup_kwargs["max_tokens"] = top_up_max_tokens(
@@ -3579,8 +3594,10 @@ async def _run_chapter_generation_bg(
                 full_content += chunk
                 await checkpointer.maybe_checkpoint(full_content)
         except Exception as exc:
+            # 中途失败必须截回快照点，避免半截续写落库成稿
+            full_content = restore_before_top_up(full_content, topup_snapshot)
             logger.warning(
-                f"补写失败，保留已有正文（{len(full_content)} 字）: "
+                f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
                 f"{type(exc).__name__}: {exc}"
             )
 
@@ -5375,18 +5392,17 @@ async def generate_single_chapter_for_batch(
         prompt = f"{prompt}\n{established_names}"
     prompt = _append_style_tail(prompt, style_content, target_word_count)
     resume_language = content_language or "zh"
-    if should_resume(chapter.status, chapter.content):
+    prompt_without_resume = prompt
+    resume_block, resume_content = build_resume_plan(
+        chapter.status, chapter.content, target_word_count, resume_language
+    )
+    if resume_block:
         logger.info(
             f"♻️ 批量生成 - 第{chapter.chapter_number}章发现中断草稿"
-            f"（{len(chapter.content)} 字），从断点续写"
+            f"（{len(resume_content)} 字），从断点续写"
         )
-        prompt = (
-            f"{prompt}\n"
-            f"{build_continuation_block(chapter.content, target_word_count, resume_language, reason='resume')}"
-        )
-    full_content = (
-        chapter.content if should_resume(chapter.status, chapter.content) else ""
-    )
+        prompt = f"{prompt}\n{resume_block}"
+    full_content = resume_content
     checkpointer = ChapterCheckpointer(db_session, chapter)
     generate_kwargs = {
         "prompt": prompt,
@@ -5451,9 +5467,10 @@ async def generate_single_chapter_for_batch(
             f"📏 批量生成 - 第{chapter.chapter_number}章正文 {len(full_content)} 字"
             f"低于下限，补写一轮"
         )
+        topup_snapshot = len(full_content)
         topup_kwargs = dict(generate_kwargs)
         topup_kwargs["prompt"] = (
-            f"{generate_kwargs['prompt']}\n"
+            f"{prompt_without_resume}\n"
             f"{build_continuation_block(full_content, target_word_count, resume_language)}"
         )
         topup_kwargs["max_tokens"] = top_up_max_tokens(
@@ -5465,8 +5482,10 @@ async def generate_single_chapter_for_batch(
                 full_content += chunk
                 await checkpointer.maybe_checkpoint(full_content)
         except Exception as exc:
+            # 中途失败必须截回快照点，避免半截续写落库成稿
+            full_content = restore_before_top_up(full_content, topup_snapshot)
             logger.warning(
-                f"补写失败，保留已有正文（{len(full_content)} 字）: "
+                f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
                 f"{type(exc).__name__}: {exc}"
             )
 

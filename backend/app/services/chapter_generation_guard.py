@@ -24,6 +24,11 @@ import logging
 import time
 from typing import Any, Optional
 
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models.chapter import Chapter
+
 logger = logging.getLogger(__name__)
 
 # 字数下限相对目标字数的比例（与提示词尾注同一口径，见 chapters._length_floor_note）
@@ -70,6 +75,36 @@ def needs_top_up(
     if content_chars < MIN_RESUMABLE_CHARS:
         return False
     return content_chars < floor
+
+
+def build_resume_plan(
+    status: Optional[str],
+    content: Optional[str],
+    target_chars: Optional[int],
+    language: Optional[str] = "zh",
+) -> tuple[str, str]:
+    """返回 ``(提示词块, 生成初值)``；不续写时两者都是空串。
+
+    两个返回值必须同源：判定一次、用一次，避免"注入了续写块但初值仍为空"
+    （模型会把已有正文再写一遍）或反之。
+    """
+    if not should_resume(status, content):
+        return "", ""
+    text = content or ""
+    return (
+        build_continuation_block(text, target_chars, language, reason="resume"),
+        text,
+    )
+
+
+def restore_before_top_up(content: str, snapshot_len: int) -> str:
+    """补写失败时把正文截回补写前的长度。
+
+    补写是逐块 append 的：中途失败时 ``content`` 里已经混进了半截续写，直接落库
+    会在章尾留下断句垃圾。调用方必须先记下快照长度。
+    """
+    text = content or ""
+    return text if snapshot_len <= 0 else text[:snapshot_len]
 
 
 def _tail(text: Optional[str], limit: int = CONTINUATION_TAIL_CHARS) -> str:
@@ -132,8 +167,13 @@ def top_up_max_tokens(content_chars: int, target_chars: Optional[int], ceiling: 
 class ChapterCheckpointer:
     """把生成中的正文按节奏写进章节行，供中断后继续。
 
-    只改 ``content`` / ``status``，**不动 ``word_count``**：各生成路径落库时用
-    ``word_count`` 作为"生成前字数"来修正项目总字数，断点改写它会让总字数增量算成 0。
+    **用独立短会话按主键写入**，不复用调用方 session：断点写入随时可能失败
+    （``database is locked`` 是真实故障），而 SQLAlchemy 的 ``rollback()`` 会过期
+    session 里全部 ORM 对象，之后调用方任何属性访问都会抛 ``MissingGreenlet``，
+    一次瞬时锁冲突就会把整次生成打死 —— 那正好违背断点保存的目的。
+
+    只写 ``content`` / ``status``，**不动 ``word_count``**：落库阶段用它作为
+    "生成前字数"修正项目总字数，断点改写它会让增量算成 0。
     """
 
     def __init__(
@@ -147,15 +187,27 @@ class ChapterCheckpointer:
     ) -> None:
         self.db = db
         self.chapter = chapter
+        # 先把主键取出来：之后不再触碰调用方 session 的 ORM 对象
+        self.chapter_id = getattr(chapter, "id", None)
         self.min_chars = min_chars
         self.min_seconds = min_seconds
         self._clock = clock
         self._last_chars = 0
         self._last_at = clock()
         self.writes = 0
-        # 已有成稿（completed）的章节不能被断点覆盖：重生成失败时用户要能拿回原文，
-        # 否则一次失败就把好稿换成了半截草稿。这类章节只在成功落库时替换。
-        self.enabled = getattr(chapter, "status", None) != "completed"
+        # 已有成稿（completed）的章节不能被断点覆盖：重生成失败时用户要能拿回原文
+        self.enabled = bool(self.chapter_id) and getattr(chapter, "status", None) != "completed"
+        self._session_factory = self._make_factory(db)
+
+    @staticmethod
+    def _make_factory(db: Any):
+        try:
+            bind = getattr(db, "bind", None) or db.get_bind()
+        except Exception:  # pragma: no cover - 拿不到 bind 时退化为不保存
+            return None
+        if bind is None:
+            return None
+        return async_sessionmaker(bind, class_=AsyncSession, expire_on_commit=False)
 
     def _due(self, content_chars: int) -> bool:
         grown = content_chars - self._last_chars
@@ -166,36 +218,45 @@ class ChapterCheckpointer:
             and (self._clock() - self._last_at) >= self.min_seconds
         )
 
+    async def _write(self, text: str) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                update(Chapter)
+                .where(Chapter.id == self.chapter_id)
+                .values(content=text, status="writing")
+            )
+            await session.commit()
+
     async def maybe_checkpoint(self, content: str, *, force: bool = False) -> bool:
-        """到点就落一次草稿；写库失败只记日志，绝不打断生成。"""
+        """到点就落一次草稿；任何失败只记日志，绝不打断生成。"""
         text = content or ""
-        if not text or not self.enabled:
+        if not text or not self.enabled or self._session_factory is None:
             return False
         if not force and not self._due(len(text)):
             return False
         try:
-            self.chapter.content = text
-            self.chapter.status = "writing"
-            await self.db.commit()
+            await self._write(text)
         except Exception as exc:  # noqa: BLE001 - 断点保存失败必须降级为"不保存"
-            try:
-                await self.db.rollback()
-            except Exception:  # pragma: no cover - rollback 失败时无处可退
-                pass
             logger.warning(
                 "断点保存失败（已继续生成，不影响正文）: chapter=%s, chars=%s, %s: %s",
-                getattr(self.chapter, "id", None),
+                self.chapter_id,
                 len(text),
                 type(exc).__name__,
                 exc,
             )
             return False
+        # 同步内存对象上的展示字段，但**不 commit 调用方 session**
+        try:
+            self.chapter.content = text
+            self.chapter.status = "writing"
+        except Exception:  # pragma: no cover - 对象已分离时忽略
+            pass
         self._last_chars = len(text)
         self._last_at = self._clock()
         self.writes += 1
         logger.info(
             "💾 断点已保存: chapter=%s, chars=%s, 第 %s 次",
-            getattr(self.chapter, "id", None),
+            self.chapter_id,
             len(text),
             self.writes,
         )
