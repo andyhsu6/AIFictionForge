@@ -12,7 +12,7 @@ import {
   DownOutlined,
   ClearOutlined,
 } from '@ant-design/icons';
-import { getProjectTasks, getTaskStatus, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
+import { getProjectTasks, getTaskStatus, cancelTask, cancelBatchTask, deleteTask, clearProjectTasks, isTaskAuthError, type TaskStatus } from '../services/backgroundTaskService';
 import { mapTaskStatusMessage, getErrorDiagnostic, isModelGateError } from '../services/errorMapper';
 import { eventBus, EventNames } from '../store/eventBus';
 
@@ -40,11 +40,13 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
   const taskStatusRef = useRef<Map<string, TaskStatus['status']>>(new Map());
   const watchedTaskIdsRef = useRef<Set<string>>(new Set());
   const loadRequestIdRef = useRef(0);
+  // 会话失效后停止一切轮询：否则 401 会被 catch 吞掉，面板永远停在旧状态
+  const authExpiredRef = useRef(false);
   const { token } = theme.useToken();
 
   // 加载任务列表
   const loadTasks = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId || authExpiredRef.current) return;
     const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     try {
@@ -86,6 +88,16 @@ export const FloatingTaskPanel: React.FC<FloatingTaskPanelProps> = ({
       taskStatusRef.current = new Map(observedTasks.map(task => [task.id, task.status]));
       setTaskList(nextTasks);
     } catch (error) {
+      // 本模块用裸 fetch，没有 axios 拦截器的「401 → /login」，必须自己收口：
+      // 否则 setInterval 会以 15s 一次无限重试 401，界面看起来像"任务卡住没结果"。
+      if (isTaskAuthError(error)) {
+        authExpiredRef.current = true;
+        console.warn('任务列表鉴权失效：已停止轮询，请重新登录');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+        return;
+      }
       console.error('加载任务列表失败:', error);
     } finally {
       if (requestId === loadRequestIdRef.current) setLoading(false);
