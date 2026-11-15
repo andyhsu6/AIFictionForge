@@ -44,7 +44,7 @@ from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
-from app.services.style_anchors import append_project_style_anchors
+from app.services.style_anchors import ANCHOR_HEADER, append_project_style_anchors
 from app.services.style_profile import (
     extract_rendered_metrics,
     profile_preset_id,
@@ -472,6 +472,30 @@ def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], 
         )
 
 
+def _extract_anchor_block(text: str) -> str:
+    """从风格内容里取出「原文语感锚点」段（没有则空串）。
+
+    匹配的是 `style_anchors.ANCHOR_HEADER`（标题的唯一来源，全串匹配）。定位不到却
+    见到"语感锚点"字样时留 warning：那说明渲染头被改过而这里没同步，锚点会静默消失。
+    """
+    body = text or ""
+    index = body.find(ANCHOR_HEADER)
+    if index < 0:
+        if "语感锚点" in body:
+            logger.warning(
+                "⚠️ 风格内容里出现「语感锚点」但无法按渲染头定位，原文样本未注入"
+                "（检查 style_anchors.ANCHOR_HEADER 是否被改过而这里没同步）"
+            )
+        return ""
+    block = body[index:].strip()
+    if "\n【" in block:
+        logger.warning(
+            "⚠️ 原文锚点段之后还有其它【…】小节，已被一并当作样本复制进尾块"
+            "（锚点应为 style_content 的最后一块）"
+        )
+    return block
+
+
 def _length_floor_note(target_chars: Optional[int], language: str) -> str:
     """生成「字数硬约束」尾注；无目标字数时返回空串。
 
@@ -499,10 +523,13 @@ def _append_style_tail(
     style_content: Optional[str],
     target_chars: Optional[int] = None,
 ) -> str:
-    """把实测「写作规格」贴在用户提示词末尾（近因位置）。
+    """把实测「写作规格」+ 原文语感样本贴在用户提示词末尾（近因位置）。
 
-    实测依据：风格块放 system 开头 + 12 万 token 全书上下文时，模型仍写 17 字短句；
-    同一模型只给 106 字风格块（无上下文）能写到 28.1 字/句。关键约束必须贴近生成点。
+    实测依据：
+    - 风格块放 system 开头 + 12 万 token 全书上下文时，模型仍写 17 字短句；同一模型只给
+      106 字风格块（无上下文）能写到 28.1 字/句。关键约束必须贴近生成点。
+    - 仅靠量化指标仍与原文有句法差距（功能字指纹全部落在原文分布之外），所以把原文
+      锚点样本也复制到末尾：模型对紧贴生成点的示例模仿力最强。
     """
     text = style_content or ""
     metrics = extract_rendered_metrics(text)
@@ -512,6 +539,11 @@ def _append_style_tail(
         # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
         # 原始缺陷）。这里必须留痕，不能静默退化。
         logger.warning("⚠️ 画像量化指标解析失败，写作规格尾块未注入（检查渲染措辞与正则是否一致）")
+
+    anchor = _extract_anchor_block(text)
+    if anchor and anchor not in block:
+        sample_hint = "以下为本书原文语感样本：只模仿句法与叙述节奏，禁止复述、改写或引用其中内容。"
+        block = f"{block}\n\n{sample_hint}\n{anchor}" if block else f"{sample_hint}\n{anchor}"
     floor_note = _length_floor_note(target_chars, language)
     if floor_note:
         # 字数下限对"有没有画像"都成立：它约束的是篇幅，不是文风。
