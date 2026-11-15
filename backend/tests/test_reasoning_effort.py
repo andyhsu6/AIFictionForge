@@ -343,3 +343,37 @@ async def test_unrelated_400_still_raises(monkeypatch):
         await _close(client, pooled)
 
     assert len(attempts) == 1
+
+
+# ===== 原文语感锚点：必须贴在生成点，且排在字数下限之前 =====
+
+_ANCHOR_TEXT = "【本书原文语感锚点（仅模仿句长、节奏与叙述距离；禁止复述、改写或引用其中内容）】\n甲句。乙句。"
+
+
+def test_style_tail_copies_the_anchor_block_to_the_end():
+    from app.api.chapters import _append_style_tail
+
+    prompt = _append_style_tail("BODY", _ANCHOR_TEXT, 3000)
+    assert "甲句。乙句。" in prompt
+    assert prompt.index("甲句") > prompt.index("BODY")
+
+
+def test_length_floor_stays_after_the_anchor_sample():
+    """硬约束要在样本之后（最贴近生成点），否则模型会照着样本随手收尾。"""
+    from app.api.chapters import _append_style_tail
+
+    prompt = _append_style_tail("BODY", _ANCHOR_TEXT, 3000)
+    assert prompt.index("不少于 2790 字") > prompt.index("甲句")
+
+
+def test_style_tail_without_anchor_does_not_invent_one():
+    from app.api.chapters import _append_style_tail
+
+    assert "本书原文语感锚点" not in _append_style_tail("BODY", "普通风格描述", 3000)
+
+
+def test_extract_anchor_block_returns_empty_when_absent():
+    from app.api.chapters import _extract_anchor_block
+
+    assert _extract_anchor_block("普通风格描述") == ""
+    assert _extract_anchor_block(_ANCHOR_TEXT).startswith("【本书原文语感锚点")
