@@ -75,12 +75,16 @@ from app.services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     PROFILE_STYLE_TYPE,
     SAMPLE_MIN_CHARS,
+    analyze_corpus_fingerprint,
     build_corpus_sample,
+    build_multi_scene_batches,
     reconcile_advice_with_metrics,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
     render_style_profile,
+    StyleSample,
+    validate_batch_observation,
     validate_style_profile,
 )
 from app.services.style_anchors import create_project_style_anchors
@@ -4339,65 +4343,163 @@ class BookImportService:
             }
 
         # 本地统计只算一次：模型失败兜底与「实测覆盖 metrics」共用同一份结果
-        # （同一 sample ⇒ 同一口径，也不会对抽样文本做两遍正则扫描）。
         local_profile = local_stats_fallback(sample)
-        # metrics 按**全量正文**统计（抽样只服务模型的质性字段）：5 章抽样会把
-        # 对话占比这类指标按偶然分布放大（实测抽样 0.45 vs 全书 0.23）。
         metrics_sample = build_corpus_sample(chapters)
         measured_metrics = (
             local_profile["metrics"]
             if not metrics_sample.text.strip()
             else local_stats_fallback(metrics_sample)["metrics"]
         )
+        fingerprint = analyze_corpus_fingerprint(chapters)
+
+        batches = build_multi_scene_batches(chapters, mode=extract_mode)
+        if not batches:
+            batches = [sample]
+
+        merged_numbers: list[int] = []
+        merged_ranges: list[dict[str, int]] = []
+        merged_chars = 0
+        for batch in batches:
+            for ch_no in (batch.meta or {}).get("chapter_numbers") or []:
+                if ch_no not in merged_numbers:
+                    merged_numbers.append(ch_no)
+            merged_ranges.extend((batch.meta or {}).get("ranges") or [])
+            merged_chars += int((batch.meta or {}).get("char_count") or 0)
+        merged_numbers.sort()
+        merged_sample = StyleSample(
+            text="\n\n".join(batch.text for batch in batches),
+            meta={
+                "chapter_numbers": merged_numbers,
+                "ranges": merged_ranges,
+                "char_count": merged_chars,
+                "strategy": (batches[0].meta or {}).get("strategy") or "layered",
+                "tail": extract_mode == "tail",
+                "truncated": any(bool((b.meta or {}).get("truncated")) for b in batches),
+            },
+        )
 
         degraded = False
         generation_language = "zh"
         try:
-            # AI 服务构建/语言解析/模板获取同属"抽取链路"：任一失败都走本地统计
-            # 兜底（degraded），不产生失败步骤（计划 §5.5）。
             ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
-            # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh
             generation_language = await resolve_user_generation_language(
                 db, user_id, content_language
             )
-            template = await PromptService.get_template("BOOK_IMPORT_STYLE_PROFILE", user_id, db)
-            prompt = PromptService.format_prompt(
-                template,
-                title=project.title or "",
-                genre=project.genre or "",
-                theme=project.theme or "",
-                narrative_perspective=project.narrative_perspective or "",
-                sampled_text=sample.text,
-                sample_meta=json.dumps(sample.meta, ensure_ascii=False),
-                content_language=generation_language,
-            )
-            data = await ai_service.call_with_json_retry(
-                prompt=prompt,
-                temperature=0.1,
-                max_tokens=2000,
-                max_retries=1,
-                expected_type="object",
-                validator=lambda payload: validate_style_profile(
-                    payload, sampled_text=sample.text
-                ),
-            )
+            fingerprint_json = json.dumps(fingerprint, ensure_ascii=False)
+            if len(batches) == 1:
+                batch = batches[0]
+                template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
+                )
+                prompt = PromptService.format_prompt(
+                    template,
+                    title=project.title or "",
+                    genre=project.genre or "",
+                    theme=project.theme or "",
+                    narrative_perspective=project.narrative_perspective or "",
+                    corpus_fingerprint=fingerprint_json,
+                    batch_observations="无（单批完整样本）",
+                    sampled_text=batch.text,
+                    sample_meta=json.dumps(batch.meta, ensure_ascii=False),
+                    content_language=generation_language,
+                )
+                data = await ai_service.call_with_json_retry(
+                    prompt=prompt,
+                    temperature=0.1,
+                    max_tokens=2500,
+                    max_retries=1,
+                    expected_type="object",
+                    validator=lambda payload: validate_style_profile(
+                        payload, sampled_text=batch.text
+                    ),
+                )
+            else:
+                batch_template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_BATCH", user_id, db
+                )
+
+                async def _observe_batch(batch_item: StyleSample) -> dict[str, Any]:
+                    batch_prompt = PromptService.format_prompt(
+                        batch_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        sampled_text=batch_item.text,
+                        sample_meta=json.dumps(batch_item.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    return await ai_service.call_with_json_retry(
+                        prompt=batch_prompt,
+                        temperature=0.1,
+                        max_tokens=1500,
+                        max_retries=1,
+                        expected_type="object",
+                        validator=lambda payload, txt=batch_item.text: validate_batch_observation(
+                            payload, sampled_text=txt
+                        ),
+                    )
+
+                raw_observations = await asyncio.gather(
+                    *(_observe_batch(item) for item in batches),
+                    return_exceptions=True,
+                )
+                observations: list[dict[str, Any]] = []
+                for idx, obs in enumerate(raw_observations):
+                    if isinstance(obs, Exception):
+                        logger.warning(
+                            "拆书导入：多场景文笔观察第 %s 批跳过（异常类型 %s，章节 %s）",
+                            idx + 1,
+                            type(obs).__name__,
+                            (batches[idx].meta or {}).get("chapter_numbers") or "-",
+                        )
+                        continue
+                    if isinstance(obs, dict):
+                        observations.append(
+                            {
+                                "chapters": (batches[idx].meta or {}).get("chapter_numbers") or [],
+                                **obs,
+                            }
+                        )
+                if not observations:
+                    raise RuntimeError("所有多场景文笔观察批次均失败")
+
+                reduce_template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
+                )
+                reduce_prompt = PromptService.format_prompt(
+                    reduce_template,
+                    title=project.title or "",
+                    genre=project.genre or "",
+                    theme=project.theme or "",
+                    narrative_perspective=project.narrative_perspective or "",
+                    corpus_fingerprint=fingerprint_json,
+                    batch_observations=json.dumps(observations, ensure_ascii=False),
+                    sampled_text="（已由多场景分批观察汇总，请基于全书指纹与分批观察综合归纳）",
+                    sample_meta=json.dumps(merged_sample.meta, ensure_ascii=False),
+                    content_language=generation_language,
+                )
+                data = await ai_service.call_with_json_retry(
+                    prompt=reduce_prompt,
+                    temperature=0.1,
+                    max_tokens=2500,
+                    max_retries=1,
+                    expected_type="object",
+                    validator=lambda payload: validate_style_profile(
+                        payload, sampled_text=merged_sample.text
+                    ),
+                )
         except Exception as exc:
-            # 日志安全：只记录异常类型与章号，不打印提示词/原文
             logger.warning(
                 "拆书导入：文笔画像抽取失败，改用本地统计兜底"
-                f"（异常类型 {type(exc).__name__}，章节 {sample.meta.get('chapter_numbers') or '-'}）"
+                f"（异常类型 {type(exc).__name__}，章节 {merged_sample.meta.get('chapter_numbers') or '-'}）"
             )
             data = local_profile
             degraded = True
 
         if not isinstance(data, dict):
-            # 兜底产物也可能被异常路径污染，保证后续 .get 安全
             data = local_profile
             degraded = True
 
-        # issue #279：模型自报的 metrics 只过了范围校验，数值常与原文实测偏差很大，
-        # 会让章节提示词与一致性自检拿错基准；统一用同一份抽样文本的本地统计覆盖。
-        # 质性字段（narrative/diction/dialogue/do/dont）仍由模型给出，source 保持 model。
         model_metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
         deviations = [
             note
@@ -4406,34 +4508,34 @@ class BookImportService:
             if note
         ]
         if deviations:
-            # 日志只含指标名与数字，不含原文/书名/角色名
             logger.info(
                 "文笔画像：metrics 以实测覆盖模型估计（偏差>30%%: %s）",
                 ", ".join(deviations),
             )
-        data = reconcile_advice_with_metrics({**data, "metrics": measured_metrics}, measured_metrics)
+        merged_data: dict[str, Any] = {**data, "metrics": measured_metrics}
+        if int(merged_data.get("version") or 1) >= 2 and fingerprint:
+            merged_data["fingerprint"] = fingerprint
+        data = reconcile_advice_with_metrics(merged_data, measured_metrics)
 
         return {
             "skipped": False,
             "prompt_content": render_style_profile(
                 data,
-                sample.meta,
+                merged_sample.meta,
                 title=project.title or "",
                 language=generation_language or "zh",
             ),
-            "description": self._describe_style_sample(sample, extract_mode),
+            "description": self._describe_style_sample(merged_sample, extract_mode),
             "degraded": degraded,
             "confidence": data.get("confidence"),
-            "sample_chars": sample_chars,
+            "sample_chars": merged_chars or sample_chars,
             "profile_data": {
                 **data,
                 "source": "local" if degraded else "model",
-                # 指标来源与质性字段来源不同：metrics 恒为抽样实测（issue #279），
-                # 排查时不必再从 confidence 反推这组数字是不是模型说的。
                 "metrics_source": "measured",
             },
             "profile_version": int(data.get("version") or 1),
-            "ranges": list(sample.meta.get("ranges") or []),
+            "ranges": list(merged_sample.meta.get("ranges") or []),
         }
 
     @staticmethod

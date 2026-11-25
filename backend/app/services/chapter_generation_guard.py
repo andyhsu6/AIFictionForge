@@ -31,8 +31,10 @@ from app.models.chapter import Chapter
 
 logger = logging.getLogger(__name__)
 
-# 字数下限相对目标字数的比例（与提示词尾注同一口径，见 chapters._length_floor_note）
+# 字数下限相对目标字数的比例（用于长章节补写参考）
 LENGTH_FLOOR_RATIO = 0.93
+# 软提倡兜底阈值：只把明显短于 2500 字的正常收尾视作异常残章；3000–6000 字区间不再强迫补写凑字
+SOFT_TOP_UP_FLOOR_CAP = 2500
 # 低于这个长度不当作"可续写的草稿"：可能是失败的空壳，重写比接续更安全
 MIN_RESUMABLE_CHARS = 300
 # 断点写入节奏：写完这么多字，或距上次写入超过这么久且新增了不少于 200 字
@@ -66,15 +68,17 @@ def needs_top_up(
 ) -> bool:
     """正文是否需要在收尾后补写一轮。
 
-    只处理"模型自己写完了但偏短"这一种情况（``finish_reason == "stop"``）；
+    只处理"模型自己写完了但异常偏短"这一种情况（``finish_reason == "stop"``）；
     预算耗尽（``length``）与近乎空产出交给截断判定，不走补写。
+    若正文已达到 ``SOFT_TOP_UP_FLOOR_CAP``（2500 字），视为自然成章，不再强追更高目标字数凑字。
     """
     floor = length_floor_for(target_chars)
     if finish_reason != "stop" or floor <= 0:
         return False
     if content_chars < MIN_RESUMABLE_CHARS:
         return False
-    return content_chars < floor
+    effective_floor = min(SOFT_TOP_UP_FLOOR_CAP, floor)
+    return content_chars < effective_floor
 
 
 def build_resume_plan(
@@ -125,10 +129,12 @@ def build_continuation_block(
 ) -> str:
     """拼出"接续已有正文"的提示词尾块。
 
-    ``reason="resume"`` 用于中断后继续，``reason="top_up"`` 用于篇幅补足。
+    ``reason="resume"`` 用于中断后继续，``reason="top_up"`` 用于异常短章补足（上限受软提倡约束）。
     """
     existing = existing or ""
-    remaining = max(0, length_floor_for(target_chars) - len(existing))
+    floor = length_floor_for(target_chars)
+    effective_floor = floor if reason == "resume" else min(SOFT_TOP_UP_FLOOR_CAP, floor)
+    remaining = max(0, effective_floor - len(existing))
     tail = _tail(existing)
     resumed = reason == "resume"
     if _is_en(language):
@@ -158,7 +164,7 @@ def build_continuation_block(
 
 def top_up_max_tokens(content_chars: int, target_chars: Optional[int], ceiling: int) -> int:
     """补写轮次的输出预算：按还差多少字给，且不超过本轮计算的窗口上限。"""
-    floor = length_floor_for(target_chars)
+    floor = min(SOFT_TOP_UP_FLOOR_CAP, length_floor_for(target_chars))
     remaining = max(0, floor - int(content_chars or 0))
     wanted = remaining * 2 + 800
     return max(800, min(wanted, int(ceiling or wanted)))

@@ -198,14 +198,16 @@ def test_length_floor_note_zh():
     from app.api.chapters import _length_floor_note
 
     note = _length_floor_note(3000, "zh")
-    assert "不少于 2790 字" in note
-    assert "不得收尾" in note
+    assert "3000–6000" in note
+    assert "不做硬性限制" in note
 
 
 def test_length_floor_note_en():
     from app.api.chapters import _length_floor_note
 
-    assert "at least 2790 characters" in _length_floor_note(3000, "en")
+    note = _length_floor_note(3000, "en")
+    assert "3000–6000" in note
+    assert "not a hard limit" in note
 
 
 def test_length_floor_note_empty_without_target():
@@ -220,7 +222,7 @@ def test_append_style_tail_applies_floor_even_without_profile():
 
     prompt = _append_style_tail("BODY", "", 3000)
     assert prompt.startswith("BODY")
-    assert "不少于 2790 字" in prompt
+    assert "3000–6000" in prompt
 
 
 def test_append_style_tail_has_no_floor_when_target_missing():
@@ -365,11 +367,11 @@ def test_style_tail_copies_the_anchor_block_to_the_end():
 
 
 def test_length_floor_stays_after_the_anchor_sample():
-    """硬约束要在样本之后（最贴近生成点），否则模型会照着样本随手收尾。"""
+    """篇幅参考要在样本之后（最贴近生成点），避免模型照着样本长度随手收尾。"""
     from app.api.chapters import _append_style_tail
 
     prompt = _append_style_tail("BODY", _anchor_content(), 3000)
-    assert prompt.index("不少于 2790 字") > prompt.index("甲句")
+    assert prompt.index("3000–6000") > prompt.index("甲句")
 
 
 def test_style_tail_without_anchor_does_not_invent_one():

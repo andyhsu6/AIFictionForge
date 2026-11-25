@@ -647,3 +647,80 @@ def test_model_failure_metrics_stay_measured():
         assert profile["profile_data"]["metrics"] == expected
 
     _run(scenario)
+
+
+def test_v2_multi_scene_map_reduce_tolerates_partial_batch_filter():
+    """多场景分批抽取时，单批遇内容过滤失败不得拖垮整本；其余批次仍可汇总出 v2 画像。"""
+    large_chapters = [
+        SimpleNamespace(
+            chapter_number=idx,
+            title=f"第{idx}章",
+            content=(
+                ("「占位快对话。」" * 180)
+                if idx in (3, 4)
+                else (("虽然前路艰难，可是他不禁咬牙坚持，" + "占位长句铺陈" * 5 + "。") * 40)
+            ),
+        )
+        for idx in range(1, 13)
+    ]
+
+    batch_obs = {
+        "texture": "平实白话，偶有传统衔接词",
+        "rhythm": "长句铺陈为主，对话干脆",
+        "tone": "直白明快",
+        "scene_notes": ["高对话：对答直接推进情节"],
+        "rhetoric": ["白描"],
+        "do_hints": ["顺叙推进"],
+        "dont_hints": ["勿用破折号"],
+    }
+    v2_reduce_payload = {
+        "version": 2,
+        "confidence": 0.88,
+        "impression": "整体文笔平实直接，句子连贯，修辞克制白描，情绪外放，读起来像传统连载小说。",
+        "texture": "平实白话，传统衔接词自然",
+        "rhythm": "叙事连贯中长句，对话干脆",
+        "tone": "直白明快",
+        "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近人物"},
+        "dialogue": {"attribution": "动作神态引出", "tag_density": "中等"},
+        "rhetoric": ["白描直叙"],
+        "scene_shifts": ["高对话：短促交锋", "纯叙事：长句铺陈"],
+        "do": ["按因果顺叙展开", "动作引出对话", "保持连贯段落"],
+        "dont": ["避免滥用破折号", "避免碎片短段", "避免议论文对仗总结"],
+        "metrics": {
+            "avg_sentence_chars": 20,
+            "median_sentence_chars": 18,
+            "short_sentence_ratio": 0.2,
+            "dialogue_ratio": 0.2,
+            "paragraph_chars_p50": 40,
+        },
+        "evidence_chapters": [1, 3, 12],
+    }
+
+    calls = {"count": 0}
+
+    async def _side_effect(*, prompt, **kwargs):
+        calls["count"] += 1
+        # Map 阶段如果收到多场景批次模板：第 1 批模拟 content_filter 报错，其余批成功
+        if "多场景原文样本" in prompt or "本批原文样本" in prompt:
+            if calls["count"] == 1:
+                raise RuntimeError("content_filter blocked batch 1")
+            return dict(batch_obs)
+        return dict(v2_reduce_payload)
+
+    ai = AsyncMock()
+    ai.call_with_json_retry = AsyncMock(side_effect=_side_effect)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(project, db, ai=ai, chapters=large_chapters)
+
+        assert profile["degraded"] is False
+        assert profile["profile_version"] == 2
+        assert profile["profile_data"]["version"] == 2
+        assert "fingerprint" in profile["profile_data"]
+        assert "整体印象" in profile["prompt_content"]
+        assert "平实直接" in profile["prompt_content"]
+        # 至少经历了 2 次 Map + 1 次 Reduce
+        assert calls["count"] >= 3
+
+    _run(scenario)

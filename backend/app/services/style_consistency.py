@@ -371,8 +371,20 @@ async def build_style_check_for_project(
         if profile is None:
             return {"available": False}
 
+        effective_cliches = cliche_phrases
+        if effective_cliches is None:
+            fp = profile.get("fingerprint") if isinstance(profile, dict) else None
+            sig_words = (
+                fp.get("signature_words") if isinstance(fp, dict) else None
+            ) or []
+            if sig_words:
+                sig_set = {w for w in sig_words if isinstance(w, str)}
+                effective_cliches = [
+                    phrase for phrase in DEFAULT_CLICHE_PHRASES if phrase not in sig_set
+                ]
+
         result = check_text_against_profile(
-            text, profile, cliche_phrases=cliche_phrases
+            text, profile, cliche_phrases=effective_cliches
         )
         try:
             plot_baseline = await _load_plot_baseline(db, project_id)

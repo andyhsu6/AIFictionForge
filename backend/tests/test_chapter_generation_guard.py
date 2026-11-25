@@ -67,6 +67,25 @@ def test_needs_top_up_skips_budget_exhaustion_and_empty_output():
     assert needs_top_up(120, 3000, "stop") is False
     assert needs_top_up(3000, 3000, "stop") is False
     assert needs_top_up(2252, None, "stop") is False
+    # 3000-6000 软提倡下，达到 2500 字自然成章不再被 6000 目标强迫凑字补写
+    assert needs_top_up(3200, 6000, "stop") is False
+
+
+def test_generation_system_prompt_prioritizes_style_over_skill():
+    from app.api.chapters import _build_generation_system_prompt
+
+    prompt = _build_generation_system_prompt("本书文笔画像内容", "SKILL_STORY_DESLOP")
+    assert prompt is not None
+    assert "本书写作风格要求 - 最高优先级" in prompt
+    assert prompt.index("本书文笔画像内容") < prompt.index("Skill 辅助参考")
+    assert "严禁输出 Skill 自带的检测报告、统计表格或目录结构模板" in prompt
+
+
+def test_every_generation_path_uses_unified_style_skill_builder():
+    source = _CHAPTERS_PY.read_text(encoding="utf-8")
+    assert source.count("= _build_generation_system_prompt(") == 3, (
+        "SSE/后台/批量三条生成路径必须共用同一系统提示词构建器，避免优先级漂移"
+    )
 
 
 # ===== 接续提示词 =====
@@ -78,7 +97,12 @@ def test_continuation_block_carries_tail_and_remaining_budget():
     assert "至少再写" in block
     # 只带末尾 1200 字，避免把整章再灌一遍
     assert block.count("甲") == 1200
-    assert "790" in block  # 下限 2790，已写 2000
+    assert "500" in block  # 软兜底下限 2500，已写 2000
+
+    # 6000 目标且触发异常短章补写时，仍只按软兜底 2500 提示剩余字数，不逼写 3580 字
+    block_6k = build_continuation_block("甲" * 2000, 6000, "zh")
+    assert "500" in block_6k
+    assert "3580" not in block_6k
 
 
 def test_continuation_block_english_and_resume_wording():

@@ -46,7 +46,9 @@ from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
 from app.services.style_anchors import ANCHOR_HEADER, append_project_style_anchors
 from app.services.style_profile import (
+    extract_rendered_impression,
     extract_rendered_metrics,
+    extract_rendered_rare_markers,
     profile_preset_id,
     render_style_tail_block,
     style_content_language,
@@ -497,25 +499,77 @@ def _extract_anchor_block(text: str) -> str:
 
 
 def _length_floor_note(target_chars: Optional[int], language: str) -> str:
-    """生成「字数硬约束」尾注；无目标字数时返回空串。
-
-    实测（第 67 章、glm-5.3-flash、reasoning_effort=low）：不写下限时 3000 字目标
-    只写 2,200–2,600 字；补一条「不少于 93%」后回到 2,700–2,900 字，推理量仍在
-    500 token 以内（未加约束时 100–300），几十秒级，不是靠"多思考"换字数。
-    """
+    """生成「篇幅参考」软提倡尾注（3000–6000 字推荐，不做硬限）；无目标字数时返回空串。"""
     floor = length_floor_for(target_chars)
     if floor <= 0:
         return ""
     if (language or "").lower().startswith("en"):
         return (
-            f"\n\n【Length floor】This chapter must be at least {floor} characters. "
-            "Do not wrap up before reaching it; if the plot beats are done, extend with "
-            "concrete action, detail and dialogue — never with summary or mood writing."
+            "\n\n【Length guidance】A chapter length around 3000–6000 characters is encouraged "
+            "(soft guidance, not a hard limit). Let the scene and plot pace decide when to close; "
+            "never pad with summary/filler or cut off prematurely."
         )
     return (
-        f"\n\n【字数硬约束】本章正文不少于 {floor} 字。写到 {floor} 字之前不得收尾；"
-        "若情节已推进完毕，用细节、动作与对话扩展，不要用总结或抒情凑字。"
+        "\n\n【篇幅参考】建议本章正文在 3000–6000 字左右（仅作提倡，不做硬性限制）。"
+        "请以情节自然推进与完整收束为准，不要为凑字数注水，也不必因担心偏长而草草收尾。"
     )
+
+
+def _build_generation_system_prompt(
+    style_content: Optional[str],
+    skill_key: Optional[str],
+    *,
+    log_prefix: str = "",
+) -> Optional[str]:
+    """统一构建章节生成系统提示词：本书文笔画像/语感锚点优先级高于任何 Skill。"""
+    parts: list[str] = []
+    if style_content:
+        parts.append(
+            f"""【🎨 本书写作风格要求 - 最高优先级】
+
+{style_content}
+
+⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的语感指令！
+确保在整个章节创作过程中始终保持风格的一致性。"""
+        )
+        logger.info(f"{log_prefix}已将写作风格注入系统提示词（{len(style_content)}字符）")
+
+    if skill_key:
+        try:
+            from app.services.skill_loader import get_all_skills_cached
+
+            skills = get_all_skills_cached()
+            skill = next((s for s in skills if s["template_key"] == skill_key), None)
+            if skill:
+                skill_content = skill["content"]
+                skill_name = skill["template_name"]
+                if style_content:
+                    parts.append(
+                        f"""【⚡ Skill 辅助参考：{skill_name}】
+
+{skill_content}
+
+⚠️ 优先级与输出边界：
+1. 句式长短、段落呼吸感、语言质地、人称视角与本书语言指纹一律以上方「本书写作风格要求」为最高准则，严禁套用与本书文风冲突的短句拆段规则或删去原作者高频语感词。
+2. 只吸收其中有益的去 AI 腔或写作技法，严禁输出 Skill 自带的检测报告、统计表格或目录结构模板，只输出小说正文。"""
+                    )
+                else:
+                    parts.append(
+                        f"""【⚡ Skill 工作流：{skill_name}】
+
+{skill_content}
+
+⚠️ 请遵循上述 Skill 中的写作技法进行创作；只输出小说正文，严禁输出检测报告、统计表格或目录结构模板。"""
+                    )
+                logger.info(
+                    f"⚡ {log_prefix}已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）"
+                )
+            else:
+                logger.warning(f"⚠️ {log_prefix}未找到 Skill: {skill_key}")
+        except Exception as skill_err:
+            logger.warning(f"⚠️ {log_prefix}加载 Skill 失败: {skill_err}")
+
+    return "\n\n".join(parts) if parts else None
 
 
 def _append_style_tail(
@@ -523,19 +577,19 @@ def _append_style_tail(
     style_content: Optional[str],
     target_chars: Optional[int] = None,
 ) -> str:
-    """把实测「写作规格」+ 原文语感样本贴在用户提示词末尾（近因位置）。
-
-    实测依据：
-    - 风格块放 system 开头 + 12 万 token 全书上下文时，模型仍写 17 字短句；同一模型只给
-      106 字风格块（无上下文）能写到 28.1 字/句。关键约束必须贴近生成点。
-    - 仅靠量化指标仍与原文有句法差距（功能字指纹全部落在原文分布之外），所以把原文
-      锚点样本也复制到末尾：模型对紧贴生成点的示例模仿力最强。
-    """
+    """把实测「写作规格」+ 语感锚点贴在用户提示词末尾（近因位置）。"""
     text = style_content or ""
     metrics = extract_rendered_metrics(text)
     language = style_content_language(text)
-    block = render_style_tail_block(metrics, language=language)
-    if not block and ("文笔画像" in text or "Style profile" in text):
+    impression = extract_rendered_impression(text)
+    rare_markers = extract_rendered_rare_markers(text)
+    block = render_style_tail_block(
+        metrics,
+        language=language,
+        impression=impression,
+        rare_markers=rare_markers,
+    )
+    if not block and ("文笔画像" in text or "style profile" in text.lower()):
         # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
         # 原始缺陷）。这里必须留痕，不能静默退化。
         logger.warning("⚠️ 画像量化指标解析失败，写作规格尾块未注入（检查渲染措辞与正则是否一致）")
@@ -546,7 +600,7 @@ def _append_style_tail(
         block = f"{block}\n\n{sample_hint}\n{anchor}" if block else f"{sample_hint}\n{anchor}"
     floor_note = _length_floor_note(target_chars, language)
     if floor_note:
-        # 字数下限对"有没有画像"都成立：它约束的是篇幅，不是文风。
+        # 篇幅软提倡对"有没有画像"都成立：它参考的是篇幅，不是文风。
         block = f"{block}{floor_note}" if block else floor_note.strip()
     return f"{prompt}\n{block}" if block else prompt
 
@@ -2494,43 +2548,10 @@ async def generate_chapter_content_stream(
                 
                 logger.info(f"开始AI流式创作章节 {chapter_id}")
                 
-                # 🎨 方案一：将写作风格注入到系统提示词（最高优先级）
-                system_prompt_with_style = None
-                
-                # ⚡ Skill 支持：当指定 skill_key 时，将 Skill 工作流注入系统提示词
-                if skill_key:
-                    try:
-                        from app.services.skill_loader import get_all_skills_cached
-                        skills = get_all_skills_cached()
-                        skill = next((s for s in skills if s["template_key"] == skill_key), None)
-                        if skill:
-                            skill_content = skill["content"]
-                            skill_name = skill["template_name"]
-                            system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
-
-{skill_content}
-
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                            if style_content:
-                                system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                            logger.info(f"⚡ 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-                        else:
-                            logger.warning(f"⚠️ 未找到 Skill: {skill_key}")
-                    except Exception as skill_err:
-                        logger.warning(f"⚠️ 加载 Skill 失败: {skill_err}")
-                
-                if not system_prompt_with_style and style_content:
-                    system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-                    logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
+                # 🎨 统一注入写作风格与可选 Skill（文笔画像始终高于 Skill 默认习惯）
+                system_prompt_with_style = _build_generation_system_prompt(
+                    style_content, skill_key, log_prefix="✅ "
+                )
                 
                 # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
                 # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens。
@@ -3435,39 +3456,9 @@ async def _run_chapter_generation_bg(
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
 
-    system_prompt_with_style = None
-    if skill_key:
-        try:
-            from app.services.skill_loader import get_all_skills_cached
-            skills = get_all_skills_cached()
-            skill = next((s for s in skills if s["template_key"] == skill_key), None)
-            if skill:
-                skill_content = skill["content"]
-                skill_name = skill["template_name"]
-                system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
-
-{skill_content}
-
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                if style_content:
-                    system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                logger.info(f"⚡ 后台生成 - 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-            else:
-                logger.warning(f"⚠️ 后台生成 - 未找到 Skill: {skill_key}")
-        except Exception as skill_err:
-            logger.warning(f"⚠️ 后台生成 - 加载 Skill 失败: {skill_err}")
-
-    if not system_prompt_with_style and style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
+    system_prompt_with_style = _build_generation_system_prompt(
+        style_content, skill_key, log_prefix="后台生成 - "
+    )
 
     # 输出预算单一来源：按**实际探测到的**上下文窗口剩余给足上限（见 plan_output_budget）
     generated_model = custom_model or getattr(ai_service, "default_model", None)
@@ -5332,43 +5323,10 @@ async def generate_single_chapter_for_batch(
         prompt = base_prompt
     prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
     
-    # 🎨 将 Skill / 写作风格注入到系统提示词（批量生成）
-    system_prompt_with_style = None
-
-    # ⚡ Skill 支持
-    if skill_key:
-        try:
-            from app.services.skill_loader import get_all_skills_cached
-            skills = get_all_skills_cached()
-            skill = next((s for s in skills if s["template_key"] == skill_key), None)
-            if skill:
-                skill_content = skill["content"]
-                skill_name = skill["template_name"]
-                system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
-
-{skill_content}
-
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                if style_content:
-                    system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                logger.info(f"⚡ 批量生成 - 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-            else:
-                logger.warning(f"⚠️ 批量生成 - 未找到 Skill: {skill_key}")
-        except Exception as skill_err:
-            logger.warning(f"⚠️ 批量生成 - 加载 Skill 失败: {skill_err}")
-
-    if not system_prompt_with_style and style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-        logger.info(f"✅ 批量生成 - 已将写作风格注入系统提示词（{len(style_content)}字符）")
+    # 🎨 将写作风格 / Skill 注入到系统提示词（批量生成，文笔画像优先于 Skill）
+    system_prompt_with_style = _build_generation_system_prompt(
+        style_content, skill_key, log_prefix="批量生成 - "
+    )
     
     # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
     # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens
