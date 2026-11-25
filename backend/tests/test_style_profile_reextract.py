@@ -313,3 +313,285 @@ def test_insufficient_sample_skips_without_writing(monkeypatch):
         assert await default_style_id(db) == 1
 
     _run(scenario)
+
+
+def _valid_v2_profile(*, source: str = "model") -> dict:
+    return {
+        "version": 2,
+        "confidence": 0.85,
+        "source": source,
+        "impression": "冷峻克制、动作连贯，多以环境映衬心境",
+        "texture": "动词精准、名词偏向具象器物与声响",
+        "rhythm": "短句起手蓄势，长短交错推进冲突",
+        "tone": "冷静抽离中带有暗涌张力",
+        "scene_shifts": ["冲突升级时转用短拍推进", "对话间隙以景物切面收束"],
+        "metrics": {
+            "avg_sentence_chars": 24.5,
+            "median_sentence_chars": 22.0,
+            "short_sentence_ratio": 0.28,
+            "dialogue_ratio": 0.25,
+            "paragraph_chars_p50": 42,
+        },
+        "narrative": {"pov": "第三人称有限", "tense": "过去时质感", "distance": "近景偏中"},
+        "dialogue": {"attribution": "多省略提示词，动作承接话锋", "tag_density": "低"},
+        "rhetoric": ["动静对照", "白描细节"],
+        "do": [
+            "开场先落一个可触可感的环境细节",
+            "长短句交错推进，在冲突转折处用短句落锤",
+            "以动作神态接续对话，避免密集使用说道等直白标签",
+        ],
+        "dont": [
+            "避免直接点破人物情绪结论",
+            "避免一段话拆成满屏单行短句",
+            "避免在节奏紧张处插入长篇议论升华",
+        ],
+        "evidence_chapters": [1],
+    }
+
+
+def test_apply_preview_payload_skips_llm_reextraction(monkeypatch):
+    """前端应用已预览结果时应直接校验落库，不再重复调用 _extract_style_profile。"""
+    import pytest
+    from fastapi import HTTPException
+    from app.schemas.writing_style import ProfileReextractApplyPayload
+
+    calls = 0
+
+    async def _fail_if_called(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("应用已预览结果时不应再次调用 _extract_style_profile")
+
+    monkeypatch.setattr(BookImportService, "_extract_style_profile", _fail_if_called)
+
+    v2_data = _valid_v2_profile(source="model")
+
+    async def scenario(db):
+        project = await seed_project(db)
+
+        resp = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(
+                dry_run=False,
+                set_default=True,
+                apply_profile=ProfileReextractApplyPayload(
+                    new_prompt_content="【本书文笔画像 v2】冷峻克制",
+                    new_profile=v2_data,
+                    description="样本：第 1 章（全章采样）",
+                    confidence=0.85,
+                    degraded=False,
+                    profile_version=2,
+                    ranges=[{"chapter": 1, "start": 0, "end": 300}],
+                ),
+            ),
+        )
+        assert calls == 0
+        assert resp["updated"] is True
+        assert resp["degraded"] is False
+        assert resp["profile_version"] == 2
+        assert await default_style_id(db) == resp["style_id"]
+        assert await anchor_count(db) > 0
+        rows = await profile_rows(db)
+        assert len(rows) == 1
+        assert rows[0].prompt_content == "【本书文笔画像 v2】冷峻克制"
+        assert rows[0].profile_version == 2
+        assert json.loads(rows[0].profile_json) == v2_data
+
+        # 畸形预览载荷应返回 422，且不得污染已存画像
+        bad_profile = dict(v2_data)
+        bad_profile.pop("metrics")
+        with pytest.raises(HTTPException) as exc_info:
+            await reextract_project_profile(
+                project.id,
+                make_request(),
+                db,
+                ProfileReextractRequest(
+                    dry_run=False,
+                    apply_profile=ProfileReextractApplyPayload(
+                        new_prompt_content="被篡改的提示词",
+                        new_profile=bad_profile,
+                    ),
+                ),
+            )
+        assert exc_info.value.status_code == 422
+        rows_after = await profile_rows(db)
+        assert rows_after[0].prompt_content == "【本书文笔画像 v2】冷峻克制"
+
+    _run(scenario)
+
+
+def test_degraded_fallback_does_not_overwrite_existing_model_profile(monkeypatch):
+    """已有 AI 画像（source=model）时，降级本地统计结果不得覆盖原画像。"""
+    model_profile = {
+        "skipped": False,
+        "prompt_content": "【本书文笔画像 v2】高质量 AI 画像",
+        "description": "样本：第 1 章",
+        "degraded": False,
+        "confidence": 0.9,
+        "profile_data": _valid_v2_profile(source="model"),
+        "profile_version": 2,
+        "ranges": [{"chapter": 1, "start": 0, "end": 300}],
+    }
+    degraded_profile = {
+        "skipped": False,
+        "prompt_content": "【本地降级统计】未识别（以样本统计为准）",
+        "description": "样本：第 1 章",
+        "degraded": True,
+        "confidence": 0.3,
+        "profile_data": {
+            "version": 1,
+            "confidence": 0.3,
+            "source": "local",
+            "metrics": {"avg_sentence_chars": 20.0},
+        },
+        "profile_version": 1,
+        "ranges": [{"chapter": 1, "start": 0, "end": 300}],
+    }
+
+    async def scenario(db):
+        project = await seed_project(db)
+        patch_extract(monkeypatch, model_profile)
+        first = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(dry_run=False),
+        )
+        assert first["updated"] is True
+        assert first["ranges"] == [{"chapter": 1, "start": 0, "end": 300}]
+
+        # 再次抽取退化为本地兜底：预览和直接落库均须拦截覆盖
+        patch_extract(monkeypatch, degraded_profile)
+        preview = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(dry_run=True),
+        )
+        assert preview["degraded"] is True
+        assert preview["kept_reason"] == "degraded_fallback"
+
+        blocked = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(dry_run=False),
+        )
+        assert blocked["updated"] is False
+        assert blocked["style_id"] is None
+        assert blocked["kept_reason"] == "degraded_fallback"
+        rows = await profile_rows(db)
+        assert rows[0].prompt_content == "【本书文笔画像 v2】高质量 AI 画像"
+        assert rows[0].profile_version == 2
+
+    _run(scenario)
+
+
+def test_apply_profile_normalizes_source_validates_version_ranges_and_degraded_priority(monkeypatch):
+    """apply_profile 归一化 source、校验版本号与 ranges，且降级保护优先于手改保护。"""
+    import pytest
+    from fastapi import HTTPException
+    from pydantic import ValidationError
+    from app.schemas.writing_style import ProfileReextractApplyPayload
+
+    # 1. StyleProfileRange 拒绝 bool / 负数
+    with pytest.raises(ValidationError):
+        ProfileReextractApplyPayload(
+            new_prompt_content="提示词",
+            new_profile=_valid_v2_profile(),
+            ranges=[{"chapter": True, "start": 0, "end": 10}],
+        )
+
+    async def scenario(db):
+        project = await seed_project(db)
+        profile_no_source = _valid_v2_profile()
+        profile_no_source.pop("source")
+
+        # 2. profile_version 与 new_profile["version"] 不一致 -> 422
+        with pytest.raises(HTTPException) as exc_info:
+            await reextract_project_profile(
+                project.id,
+                make_request(),
+                db,
+                ProfileReextractRequest(
+                    dry_run=False,
+                    apply_profile=ProfileReextractApplyPayload(
+                        new_prompt_content="提示词",
+                        new_profile=profile_no_source,
+                        profile_version=1,
+                    ),
+                ),
+            )
+        assert exc_info.value.status_code == 422
+
+        # 3. 缺省 source 落库归一化为 "model"，从而后续降级抽取能命中保护
+        saved = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(
+                dry_run=False,
+                apply_profile=ProfileReextractApplyPayload(
+                    new_prompt_content="【AI 画像】无 source 字段测试",
+                    new_profile=profile_no_source,
+                    degraded=False,
+                    ranges=[{"chapter": 1, "start": 0, "end": 300}],
+                ),
+            ),
+        )
+        assert saved["updated"] is True
+        row = (await profile_rows(db))[0]
+        assert json.loads(row.profile_json)["source"] == "model"
+
+        # 标为手动编辑（仍含 source=model），再以 degraded=True 预览/应用：
+        # 降级保护须优先于 user_edited，阻止 overwrite_edited 覆盖
+        row.style_type = "profile_edited"
+        await db.commit()
+
+        patch_extract(
+            monkeypatch,
+            {
+                "skipped": False,
+                "prompt_content": "【降级】未识别",
+                "description": "样本：第 1 章",
+                "degraded": True,
+                "confidence": 0.3,
+                "profile_data": {
+                    "version": 1,
+                    "confidence": 0.3,
+                    "source": "local",
+                    "metrics": {"avg_sentence_chars": 20.0},
+                },
+                "profile_version": 1,
+                "ranges": [{"chapter": 1, "start": 0, "end": 300}],
+            },
+        )
+        preview = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(dry_run=True, overwrite_edited=False),
+        )
+        assert preview["kept_reason"] == "degraded_fallback"
+
+        degraded_apply = await reextract_project_profile(
+            project.id,
+            make_request(),
+            db,
+            ProfileReextractRequest(
+                dry_run=False,
+                overwrite_edited=True,
+                apply_profile=ProfileReextractApplyPayload(
+                    new_prompt_content="【伪装 AI 的降级载荷】",
+                    new_profile=_valid_v2_profile(source="model"),
+                    degraded=True,
+                ),
+            ),
+        )
+        assert degraded_apply["updated"] is False
+        assert degraded_apply["kept_reason"] == "degraded_fallback"
+        assert (await profile_rows(db))[0].prompt_content == "【AI 画像】无 source 字段测试"
+
+    _run(scenario)

@@ -33,6 +33,7 @@ from ..services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     is_profile_preset_id,
     profile_preset_id,
+    validate_style_profile,
 )
 from ..services.style_volumes import (
     list_project_volumes,
@@ -371,23 +372,63 @@ async def reextract_project_profile(
 
     # AI 服务/模板/语言解析都在方法内部按用户配置构建
     service = BookImportService()
-    profile = await service._extract_style_profile(
-        db=db,
-        user_id=user_id,
-        project=project,
-        chapters=chapters,
-        content_language=None,
-        extract_mode="full",
-    )
+    apply_payload = payload.apply_profile if not payload.dry_run else None
+    if apply_payload is not None:
+        new_profile = dict(apply_payload.new_profile)
+        try:
+            validate_style_profile(new_profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"预览画像数据不合法: {exc}") from exc
+        new_prompt_content = apply_payload.new_prompt_content.strip()
+        if not new_prompt_content:
+            raise HTTPException(status_code=422, detail="预览画像提示词不能为空")
+        model_version = int(new_profile["version"])
+        if (
+            apply_payload.profile_version is not None
+            and apply_payload.profile_version != model_version
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"预览画像版本号不一致（payload={apply_payload.profile_version}, "
+                    f"profile={model_version}）"
+                ),
+            )
+        description = apply_payload.description or ""
+        confidence = (
+            apply_payload.confidence
+            if apply_payload.confidence is not None
+            else new_profile.get("confidence")
+        )
+        degraded = bool(apply_payload.degraded) or (new_profile.get("source") == "local")
+        # 归一化 source，避免未带 source 或错带 model 的降级载荷破坏后续降级保护
+        new_profile["source"] = "local" if degraded else "model"
+        profile_version = model_version
+        ranges = (
+            [entry.model_dump() for entry in apply_payload.ranges]
+            if apply_payload.ranges is not None
+            else None
+        )
+    else:
+        profile = await service._extract_style_profile(
+            db=db,
+            user_id=user_id,
+            project=project,
+            chapters=chapters,
+            content_language=None,
+            extract_mode="full",
+        )
 
-    if profile.get("skipped"):
-        return {"skipped": True}
+        if profile.get("skipped"):
+            return {"skipped": True}
 
-    new_prompt_content = profile["prompt_content"]
-    new_profile = profile.get("profile_data")
-    description = profile.get("description") or ""
-    confidence = profile.get("confidence")
-    degraded = bool(profile.get("degraded"))
+        new_prompt_content = profile["prompt_content"]
+        new_profile = profile.get("profile_data")
+        description = profile.get("description") or ""
+        confidence = profile.get("confidence")
+        degraded = bool(profile.get("degraded"))
+        profile_version = profile.get("profile_version")
+        ranges = profile.get("ranges") or []
 
     # 现有画像行（如有）
     existing = (
@@ -407,14 +448,20 @@ async def reextract_project_profile(
             parsed = None
         old_profile = parsed if isinstance(parsed, dict) else None
 
-    # 手改保护在预览阶段也要可见：前端据此提示并禁用"应用"
-    kept_reason = (
-        "user_edited"
-        if existing is not None
+    has_model_profile = (
+        isinstance(old_profile, dict) and old_profile.get("source") == "model"
+    )
+    # 降级保护不可被 overwrite_edited 绕过，须先于手改保护判定，确保预览与落库一致
+    if degraded and has_model_profile:
+        kept_reason = "degraded_fallback"
+    elif (
+        existing is not None
         and existing.style_type == PROFILE_EDITED_STYLE_TYPE
         and not payload.overwrite_edited
-        else None
-    )
+    ):
+        kept_reason = "user_edited"
+    else:
+        kept_reason = None
 
     diff = {
         "skipped": False,
@@ -426,11 +473,16 @@ async def reextract_project_profile(
         "description": description,
         "confidence": confidence,
         "degraded": degraded,
+        "profile_version": profile_version,
+        "ranges": ranges,
         "kept_reason": kept_reason,
     }
 
     if payload.dry_run:
         return diff
+
+    if kept_reason is not None:
+        return {**diff, "updated": False, "style_id": None, "kept_reason": kept_reason}
 
     style_id = await service._upsert_project_profile_style(
         db=db,
@@ -441,23 +493,24 @@ async def reextract_project_profile(
         replace_default=payload.set_default,
         allow_overwrite_edited=payload.overwrite_edited,
         profile_data=new_profile,
-        profile_version=profile.get("profile_version"),
+        profile_version=profile_version,
     )
     if style_id is None:
         # 用户已手改画像（profile_edited），本次不覆盖，也不产生任何写入
         return {**diff, "updated": False, "style_id": None, "kept_reason": "user_edited"}
 
-    await create_project_style_anchors(
-        db,
-        project_id=project_id,
-        ranges=profile.get("ranges") or [],
-        chapter_contents={chapter.chapter_number: chapter.content or "" for chapter in db_chapters},
-    )
+    if ranges is not None:
+        await create_project_style_anchors(
+            db,
+            project_id=project_id,
+            ranges=ranges,
+            chapter_contents={chapter.chapter_number: chapter.content or "" for chapter in db_chapters},
+        )
     await db.commit()
 
     logger.info(
-        f"项目 {project_id} 文笔画像已重新抽取（降级={degraded}，"
-        f"默认={payload.set_default}，样本 {len(chapters)} 章）"
+        f"项目 {project_id} 文笔画像已{'应用预览' if apply_payload is not None else '重新抽取'}"
+        f"（降级={degraded}，默认={payload.set_default}，样本 {len(chapters)} 章）"
     )
     return {**diff, "updated": True, "style_id": style_id, "kept_reason": None}
 
