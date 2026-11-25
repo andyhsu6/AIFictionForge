@@ -390,9 +390,10 @@ def test_reconcile_advice_drops_model_numbers_and_keeps_measured():
     joined = " ".join(updated["do"])
     assert "12-20" not in joined and "35-45" not in joined
     assert "短句排比" not in joined, "实测句长 29.7 字时不得保留“连续短句”类建议"
-    # 实测 29.7 字 ⇒ 区间 28–32
-    assert any("28–32" in item for item in updated["do"]), f"应换成实测句长区间: {updated['do']}"
-    assert any("23%" in item for item in updated["do"]), "应带上实测对话占比"
+    # 实测 29.7 字 ⇒ 转为质性长句铺陈指导，不再输出机械数字配额
+    assert any("中长复句" in item for item in updated["do"]), f"应转为质性节奏指导: {updated['do']}"
+    assert not any("平均句长控制在" in item for item in updated["do"])
+    assert not any("偏离" in item for item in updated["dont"])
     assert "避免无标记地切换叙述人称或时态" in updated["dont"], "质性条目必须保留"
     assert 3 <= len(updated["do"]) <= 6
     assert 3 <= len(updated["dont"]) <= 6
@@ -649,8 +650,8 @@ def test_build_multi_scene_batches_covers_extremes_and_respects_volume_mode():
             text = ("占位常规句子内容。" * 6) * 40
         chapters.append(SimpleNamespace(chapter_number=idx, title=f"第{idx}章", content=text))
 
-    batches = build_multi_scene_batches(chapters, batch_char_budget=9000, max_batches=3)
-    assert 1 < len(batches) <= 3
+    batches = build_multi_scene_batches(chapters, batch_char_budget=11000, max_batches=2)
+    assert 1 < len(batches) <= 2
     picked = {ch for b in batches for ch in b.meta["chapter_numbers"]}
     # 必须同时抓到高对话与长句铺陈极端章以及开篇/尾声
     assert 1 in picked and 14 in picked
@@ -690,6 +691,8 @@ def test_render_v2_puts_impression_first_and_round_trips_tail_block():
 
     tail = render_style_tail_block(metrics, language="zh", impression=impression, rare_markers=rare)
     assert "语感总锚点" in tail
+    assert "行文节奏" in tail
+    assert "29.7 字" not in tail  # v2 尾块不向生成期 LLM 灌输小数指标
     assert "禁止滥用原文几乎不出现的 AI 惯用痕迹" in tail
     assert "议论文式对仗总结" in tail
     assert "优先级高于上文与通用 Skill 默认习惯" in tail

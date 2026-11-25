@@ -406,3 +406,42 @@ def test_extract_anchor_block_warns_when_the_header_drifted(caplog):
     with caplog.at_level(logging.WARNING):
         assert _extract_anchor_block("【本书原文语感锚点（措辞改过了）】\n样本") == ""
     assert any("无法按渲染头定位" in record.message for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_call_with_json_retry_forwards_reasoning_effort_and_retries_503(monkeypatch):
+    """瞬时 503 应退避重试且保留原 prompt（不混入 JSON 纠错提示），同时透传 reasoning_effort。"""
+    from unittest.mock import AsyncMock
+    from app.services import ai_service as ai_service_module
+
+    monkeypatch.setattr(ai_service_module.asyncio, "sleep", AsyncMock())
+    svc = ai_service_module.AIService(
+        api_provider="openai",
+        api_key="test-key",
+        api_base_url="https://example.com/v1",
+        default_model="test-model",
+    )
+    seen = []
+
+    async def _fake_stream(*, prompt, reasoning_effort=None, finish_sink=None, **kwargs):
+        seen.append({"prompt": prompt, "reasoning_effort": reasoning_effort})
+        if len(seen) == 1:
+            req = httpx.Request("POST", "https://example.com/v1/chat/completions")
+            resp = httpx.Response(503, request=req)
+            raise httpx.HTTPStatusError("503 Service Unavailable", request=req, response=resp)
+        if finish_sink is not None:
+            finish_sink["finish_reason"] = "stop"
+        yield '{"ok": true}'
+
+    svc.generate_text_stream = _fake_stream
+    result = await svc.call_with_json_retry(
+        prompt="原始任务",
+        max_retries=3,
+        auto_mcp=False,
+        reasoning_effort="low",
+    )
+    assert result == {"ok": True}
+    assert len(seen) == 2
+    assert seen[0]["reasoning_effort"] == "low"
+    assert seen[1]["reasoning_effort"] == "low"
+    assert seen[1]["prompt"] == "原始任务"

@@ -588,7 +588,7 @@ def test_model_metrics_are_overridden_by_measured_values(caplog):
 
 
 def test_profile_advice_uses_measured_metrics_not_model_claims():
-    """do/dont 里的量化条目必须换成实测值（模型声称的 13–19 字必须消失）。"""
+    """do/dont 里的模型自编数字条目必须被剔除，并转为质性节奏指导。"""
     chapters = measured_chapters()
 
     async def scenario(db):
@@ -598,7 +598,8 @@ def test_profile_advice_uses_measured_metrics_not_model_claims():
         )
         data = profile["profile_data"]
         assert "13–19" not in " ".join(data["do"])
-        assert any("20" in item for item in data["do"])  # 受控文本每句 20 字
+        assert "28%" not in " ".join(data["do"])
+        assert any("段落随情节" in item or "长短句" in item for item in data["do"])
         assert 3 <= len(data["do"]) <= 6
         assert 3 <= len(data["dont"]) <= 6
 
@@ -700,7 +701,7 @@ def test_v2_multi_scene_map_reduce_tolerates_partial_batch_filter():
 
     async def _side_effect(*, prompt, **kwargs):
         calls["count"] += 1
-        # Map 阶段如果收到多场景批次模板：第 1 批模拟 content_filter 报错，其余批成功
+        # Map 阶段如果收到多场景批次模板：第 1 批模拟 content_filter 报错，第 2 批成功
         if "多场景原文样本" in prompt or "本批原文样本" in prompt:
             if calls["count"] == 1:
                 raise RuntimeError("content_filter blocked batch 1")
