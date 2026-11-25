@@ -8,7 +8,7 @@
 - 不确定是否属于重大改动时，先询问用户确认。
 - **分支命名规范**：分支名必须**描述改动内容**，格式 `<type>/<简述>`（如 `fix/524-streaming-timeout`、`feat/chunk-first-principle`、`docs/issue-sync-convention`），type 用 `fix`/`feat`/`docs`/`refactor`/`chore` 等；**禁止**使用无信息量的通用名（如 `local-works`、`dev`、`test`、`work`）。
 - **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
-- **协作语言规范（国际化）**：issue 与 PR 的**标题默认英文**（面向国际贡献者），正文可中英双语（英文为主，中文作补充说明）。示例标题：`[Bug] 524 timeout when generating characters in book import`、`fix: streaming JSON generation in call_with_json_retry`。
+- **协作语言规范**：issue 与 PR 的标题与正文**直接使用中文**（示例：`[Bug] 拆书导入生成角色时 524 超时`、`fix: call_with_json_retry 流式 JSON 生成修复`）；前端页面文案与提示仍保持中英双语 i18n（见下方 `i18n 约定`）。
 
 ## Issues / PR 同步规范（四同步点，其余不额外同步）
 
@@ -35,7 +35,7 @@
 - 使用仓库内的 issue 模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
 
 ## 文档目录约定
-- **交付给人和 agent 的文档放 `docs/handoffs/`**（计划、需求、交接、方案）。该目录已在 `.gitignore` 里显式放行，所以能被 OpenCode 的 `@` 文件检索到；**放进 `.omo/` 的文档检索不到**（索引遵循 .gitignore），`.omo/` 只放原始证据与草稿（含书稿片段，必须保持忽略）。
+- **交付给人和 agent 的文档放 `docs/handoffs/`**（计划、需求、交接、方案）。该目录已在 `.gitignore` 里显式放行，可被文件检索工具直接索引；**放进 `.omo/` 的文档检索不到**（索引遵循 .gitignore），`.omo/` 只放原始证据与草稿（含书稿片段，必须保持忽略）。
 - `docs/handoffs/` 的文档**默认不入库**：`.githooks/pre-commit` 会拒绝提交该目录（脚本已入库，本地通过 `.git/hooks/pre-commit` 符号链接生效）。确需入库时 `ALLOW_HANDOFF_COMMIT=1 git commit`，且必须先脱敏（不得出现书名、角色名、原文片段）。
 - 文档文件名避免中文，使用英文或双语文件名，便于 CI/工具链/IDE 直接阅读。
 
@@ -46,18 +46,17 @@
 - 本规范为硬约束：任何 issue/PR/commit/文档中出现原文数据，视为违规，需立即脱敏修正。规范来源与历史处置见 issue #23（`docs: source-text data desensitization convention for public GitHub`）。
 
 ## 服务管理（aistoryforge.sh）
-项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）：
+项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）；**务必使用当前 checkout 的绝对路径调用**（避免工作目录漂移误操作其他 worktree）：
 
 ```bash
-cd /Users/andyhsu/codehouse/AIFictionForge
-
-./aistoryforge.sh status              # 查看两个服务状态（PID + 健康检查）
-./aistoryforge.sh start               # 启动全部（后端 + 前端）
-./aistoryforge.sh stop                # 停止全部
-./aistoryforge.sh restart             # 重启全部
-./aistoryforge.sh restart backend     # 仅重启后端
-./aistoryforge.sh start frontend      # 仅启动前端
-./aistoryforge.sh stop backend        # 仅停止后端
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh status           # 查看两个服务状态（PID + 代码身份 + 健康检查）
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh verify           # 验收前置检查：确认两端点跑的都是本 checkout 代码
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh start            # 启动全部（后端 + 前端）
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh stop             # 停止全部
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh restart          # 重启全部
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh restart backend  # 仅重启后端
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh start frontend   # 仅启动前端
+/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh logs backend     # 查看后端日志（或 frontend）
 ```
 
 - 日志：后端 `/tmp/aistoryforge-backend.log`、前端 `/tmp/aistoryforge-frontend.log`
@@ -70,32 +69,31 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 - **数据库**：SQLite `backend/data/mumuai_novel.db`（本地开发不用 PostgreSQL）
 - **后端启动**：必须从项目根目录以 `PYTHONPATH=backend` 启动（否则 pydantic 读不到根目录 `.env`）；venv 在 `backend/.venv`（Python 3.12）
 - **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008
-- **测试**：`cd backend && .venv/bin/python -m pytest tests/ -v`（pytest 仅装在 venv，不进 requirements.txt）
+- **测试**：`cd backend && ONNX_EMBEDDING_OFFLINE=1 PYTHONPATH=. .venv/bin/python -m pytest tests/<目标测试>.py -v`（pytest 仅装在 venv，不进 `requirements.txt`）。全量 `tests/` 含 130+ 文件且部分测试会触发 457MB embedding 加载（耗时 >15 分钟），开发期优先跑相关测试集及 `.github/workflows/backend-tests.yml` 中的核心子集。
+- **文档与配置守卫**：`backend/tests/test_docs_model_requirements.py` 强制校验 README、`.env.example` 与 `settings.json` tooltip——不得推荐具体模型名、不得保留未注释的 `DEFAULT_MODEL=`、900,000（`MIN_CONTEXT_WINDOW_TOKENS`）下限需与代码保持一致。
 - **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
 - **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
-- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse`（内核仍是 Playwright JS，驱动本机真实 Brave 的**后台标签组**，无 headless 模式，`page.bringToFront()` 被禁用）：agent 会话内优先用 MCP 工具 `browse.execute`（Code Mode 下为 `tools.browse.execute`，配套 `session_new`/`session_delete`/`status`），shell 场景用等价的 `browse execute` CLI；
-  - 截图落盘根：默认只允许 `/tmp` 与 opencode 临时目录；要直接写 `.omo/evidence/` 需设 `OPENCODE_BROWSER_FILE_ROOTS=<checkout>/.omo/evidence`，否则先写 `/tmp` 再 `cp`。
+- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse`（驱动本机 Brave 后台标签组，无 headless 模式，`page.bringToFront()` 被禁用）：优先使用当前环境提供的 `browse` 工具（MCP `browse.execute` 或 CLI `browse execute`）；
+  - 截图落盘根：默认允许 `/tmp` 与工具临时目录；如需直接写 `.omo/evidence/` 且客户端受限时，可设 `OPENCODE_BROWSER_FILE_ROOTS=<checkout>/.omo/evidence` 或先写 `/tmp` 再 `cp`。
   - 验收一律用 `--rm` 一次性 session；**不要** `session_adopt` 用户已登录的标签页，避免把真实账号与真实数据带进验收。
-  - 仅在 browse 不可用（扩展未配对 / relay 不通）时，才回退 `.omo/pw-tools/node_modules` 的 playwright-core 并指向本机 Brave。
+  - 仅在 `browse` 不可用（扩展未配对 / relay 不通）时，才回退 `.omo/pw-tools/node_modules` 的 `playwright-core` 并指向本机 Brave。
 
 ## 功能完成验证（硬约束）
 
 - **任何功能/修复在宣称完成或开 PR 前，必须实际运行验证**：至少覆盖相关单测 + 一条真实端到端路径（API 或 UI）。只改代码、只跑单测、只做静态断言都不算验证。
-- **UI 改动必须做浏览器端到端验证**：启动本 checkout 服务（先跑 `aistoryforge.sh verify`），用 `browse execute` **实际操作关键控件**并断言 URL/DOM 结果（不只是截首屏），截图与断言输出存 `.omo/evidence/`。
+- **UI 改动必须做浏览器端到端验证**：启动本 checkout 服务（先跑 `aistoryforge.sh verify`），用 `browse` **实际操作关键控件**并断言 URL/DOM 结果（不只是截首屏），截图与断言输出存 `.omo/evidence/`。
 - **不得用用户真实数据做验证**：需要书稿数据的验证一律新建临时项目/临时库，验证后删除；确需使用用户数据时必须先获得明确同意，并说明改动范围与回滚方式。
 - **PR 必须附验证证据**：命令、实际输出、截图路径；未验证的功能不得标 Ready，也不得用"测试通过"代替端到端结果。
 - **验证暴露的问题必须修复后重新验证**（含真实数据触发的校验误伤、降级、界面缺失），不能只记录。
 
 ## 视觉验证约定
-- **UI 改动/验收指引必须先做视觉渲染验证**（`browse execute` 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
-- **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
+- **UI 改动/验收指引必须先做视觉渲染验证**（`browse` 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
 
 ## 服务与测试身份约定（硬约束）
-- **宣称"可以测试"前必须先跑 `./aistoryforge.sh verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + /health 分支双核对）才允许开始测试/验收；verify 不通过禁止宣称就绪。
-- **服务脚本必须用绝对路径调用**（如 `/Users/andyhsu/codehouse/aff-i18n-internationalization/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
-- `start` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
-- **git 操作一律 `git -C <checkout绝对路径>`**：cwd 漂移会让相对路径的 add/commit 落到别的 checkout（本仓库挂多个 worktree）；提交后用 `git -C ... log --oneline -1` 复核落点。
-- **i18n 语言语义**：未登录启动顺序 = localStorage 手动选择 → navigator（浏览器语言，默认镜像操作系统语言，即"系统优先其次浏览器"的落地）；登录页切换器仅本地预览；**登录成功后服务器偏好覆盖本地**（无服务器值时才把本地选择种子化到服务器）；`syncLanguageWithServer()` 在跳转前必须 await（登录/回调所有路径），落地第一帧即服务器偏好语言。
+- **宣称"可以测试"前必须先跑 `verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + `/health` 分支双核对）才允许开始测试/验收；`verify` 不通过禁止宣称就绪。
+- **服务脚本必须用当前 checkout 的绝对路径调用**（如 `/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
+- `start` / `restart` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
+- **git 操作一律 `git -C <checkout绝对路径>`**：cwd 漂移会让相对路径的 add/commit 落到别的 checkout（本仓库可能挂多个 worktree）；提交后用 `git -C ... log --oneline -1` 复核落点。
 
 ## 工作偏好
 - **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
@@ -111,6 +109,8 @@ cd /Users/andyhsu/codehouse/AIFictionForge
 
 ## i18n 约定
 - **新增 UI 文案必须进 locale 文件**：`frontend/src/locales/{zh,en}/<ns>.json`（zh 是源语言，en 必须同步；空值会挂在 CI parity 门）。
+- **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
+- **i18n 语言语义**：未登录启动顺序 = localStorage 手动选择 → navigator（浏览器语言，默认镜像操作系统语言，即"系统优先其次浏览器"的落地）；登录页切换器仅本地预览；**登录成功后服务器偏好覆盖本地**（无服务器值时才把本地选择种子化到服务器）；`syncLanguageWithServer()` 在跳转前必须 await（登录/回调所有路径），落地第一帧即服务器偏好语言。
 - **后端用户可见文案用错误码**：`raise ApiError(code=...)`，注册表在 `backend/app/core/errors.py`；未知码前端回退本地化通用文案，原文只进调试通道（`raw`）。
 - **AI 生成语言**由 `content_language` 设置链控制：per-generation 覆盖 > 用户设置 > UI 语言 > zh（解析器 `backend/app/services/language_resolver.py`）。
 - **CI 门**：`.github/workflows/i18n-check.yml` 跑 extract / types / parity / `npm test` 四道检查，locale 与类型产物必须保持零 diff。

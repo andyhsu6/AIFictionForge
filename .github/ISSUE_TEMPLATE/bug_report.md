@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a bug to help us improve（报告一个 bug，帮助我们改进）
+about: 报告一个 Bug，帮助我们定位与修复
 title: '[Bug] '
 labels: bug
 assignees: ''
@@ -8,62 +8,18 @@ assignees: ''
 ---
 
 <!--
-Titles default to English (标题请尽量使用英文). Fill in either the English
-template below or the Chinese template (中文模板) at the bottom — you do not
-need to fill in both.
-
-IMPORTANT: Do not include original text from imported books, chapter excerpts,
-character names, or world-building proper nouns in this issue. Use descriptive
-wording instead (data desensitization policy — the repository is public).
+请直接使用中文填写标题与正文。
+重要提示：本仓库为公开仓库，禁止出现导入书籍原文、章节摘录、角色人名、世界观专名（请先脱敏处理）。
 -->
-
-### Description
-
-A clear and concise description of what the bug is.
-
-### Environment
-
-- OS: [e.g. macOS 14.5]
-- Browser: [e.g. Chrome 126]
-- Deployment: [e.g. single-port build on 8008 / Vite dev server on 5173]
-- Version: [e.g. 1.5.4]
-
-### Steps to reproduce
-
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See the error
-
-### Expected behavior
-
-What you expected to happen.
-
-### Actual behavior
-
-What actually happened (attach error messages if any).
-
-### Screenshots / Logs
-
-If applicable, add screenshots or logs to help explain the problem.
-(Please redact book titles, character names, and any excerpts before posting.)
-
-### Additional context
-
-Add any other context about the problem here.
-
----
-
-## 中文模板（可选，二选一）
 
 ### 问题描述
 
-清晰简洁地描述这个 bug 是什么。
+清晰简洁地描述这个 Bug 是什么。
 
 ### 环境信息
 
 - 操作系统：[如 macOS 14.5]
-- 浏览器：[如 Chrome 126]
+- 浏览器：[如 Brave / Chrome]
 - 部署方式：[如 8008 单端口构建 / 5173 开发服务器]
 - 版本：[如 1.5.4]
 

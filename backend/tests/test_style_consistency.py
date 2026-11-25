@@ -443,3 +443,44 @@ def test_plot_baseline_matches_latest_chapter_analysis():
         assert baseline["description_ratio"] == pytest.approx(0.28)
 
     _run(scenario)
+
+
+def test_v2_fingerprint_signature_words_exempted_from_cliche_penalty():
+    """v2 画像指纹里的作者高频语感词（如「不禁/仿佛」）不应被一致性检测计入套话密度。"""
+    async def scenario(db):
+        project = await _seed_project(db, project_id="project-sig")
+        sample_text = "虽然雨大了，可是他不禁停步，仿佛想起什么。"
+        metrics = compute_text_metrics(sample_text)
+        style = WritingStyle(
+            user_id=USER_ID,
+            name="文笔画像v2",
+            style_type="profile",
+            preset_id=profile_preset_id("project-sig"),
+            prompt_content="占位画像v2",
+            profile_json=json.dumps(
+                {
+                    "version": 2,
+                    "metrics": {
+                        "avg_sentence_chars": metrics["avg_sentence_chars"],
+                        "median_sentence_chars": metrics["median_sentence_chars"],
+                        "short_sentence_ratio": metrics["short_sentence_ratio"],
+                        "dialogue_ratio": metrics["dialogue_ratio"],
+                        "paragraph_chars_p50": metrics["paragraph_chars_p50"],
+                    },
+                    "fingerprint": {"signature_words": ["不禁", "仿佛"]},
+                },
+                ensure_ascii=False,
+            ),
+            profile_version=2,
+            order_index=0,
+        )
+        db.add(style)
+        await db.flush()
+        db.add(ProjectDefaultStyle(project_id="project-sig", style_id=style.id))
+        await db.commit()
+
+        result = await build_style_check_for_project(db, project, sample_text)
+        assert result["available"] is True
+        assert result["metrics"]["cliche_density"] == 0.0
+
+    _run(scenario)

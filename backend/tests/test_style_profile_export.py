@@ -570,3 +570,72 @@ def test_import_invalid_profile_block_degrades_to_prompt_content_only():
         assert rows[0].profile_json is None  # 非法结构被丢弃
 
     _run(scenario)
+
+
+def test_export_and_reimport_v2_profile_with_fingerprint_preserves_structure():
+    """v2 画像含较长正文与全书 fingerprint 时，导出再导入不应因附加指纹超 3500 字而被误拒。"""
+
+    async def scenario(db):
+        await _seed_source(db)
+        row = (await _profile_rows(db, "project-a"))[0]
+        v2_with_fp = {
+            "version": 2,
+            "confidence": 0.88,
+            "impression": "整体文笔质朴平实，句子以连贯中长句为主，修辞克制白描，情绪直白外放，读起来像传统连载小说。" * 3,
+            "texture": "平实白话为底，偶夹传统叙述套语。" * 10,
+            "rhythm": "以连贯复句顺叙推进，段落丰满。" * 10,
+            "tone": "爱憎分明、直白外放，喜怒直接流露。" * 10,
+            "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近人物内心与动作"},
+            "dialogue": {"attribution": "动作神态引出说话", "tag_density": "中等"},
+            "rhetoric": ["白描直叙", "朴素比喻"] * 3,
+            "scene_shifts": ["高对话：短促交锋", "纯叙事：长句铺陈"],
+            "do": ["保持连贯复句推进", "情绪直白自然流露", "用动作引出说话"],
+            "dont": ["避免碎片短段堆砌", "避免滥用破折号", "避免议论文对仗总结"],
+            "metrics": {
+                "avg_sentence_chars": 28.0,
+                "median_sentence_chars": 27.0,
+                "short_sentence_ratio": 0.22,
+                "dialogue_ratio": 0.25,
+                "paragraph_chars_p50": 42,
+            },
+            "evidence_chapters": [1, 2],
+            "source": "model",
+            "metrics_source": "measured",
+            "fingerprint": {
+                "language": "zh",
+                "chapter_count": 50,
+                "total_chars": 150000,
+                "chapter_chars": {"min": 2200, "median": 3000, "max": 3800},
+                "distribution": {
+                    "avg_sentence_chars": {"min": 18.0, "median": 29.0, "max": 41.0},
+                    "short_sentence_ratio": {"min": 0.1, "median": 0.25, "max": 0.6},
+                    "dialogue_ratio": {"min": 0.0, "median": 0.24, "max": 0.62},
+                    "paragraph_chars_p50": {"min": 28, "median": 40, "max": 48},
+                },
+                "punctuation": {"exclamation_per_1k": 8.0, "em_dash_total": 1, "em_dash_per_10k": 0.07, "ellipsis_per_10k": 20.0},
+                "endings": {"dialogue_ratio": 0.55, "exclamation_ratio": 0.58, "question_ratio": 0.1},
+                "signature_words": ["可是", "虽然", "不禁", "竟然", "居然", "顿时", "仿佛", "猛然"],
+                "rare_ai_markers": ["——", "顿了顿", "敲了", "一时寂静", "闪过一丝", "这意味着", "沉默了"],
+            },
+        }
+        # 确保完整 JSON 已接近/超过 2000+ 字符，但剥离服务端附加字段后合法
+        assert len(json.dumps(v2_with_fp, ensure_ascii=False)) > 1500
+        row.profile_json = json.dumps(v2_with_fp, ensure_ascii=False)
+        row.profile_version = 2
+        await db.commit()
+
+        exported = (
+            await ImportExportService.export_project(
+                "project-a", db, include_style_profile=True
+            )
+        ).model_dump()
+        result = await ImportExportService.import_project(exported, db, "user-2")
+        assert result.success, result.message
+        imported_rows = await _profile_rows(db, result.project_id)
+        assert len(imported_rows) == 1
+        assert imported_rows[0].profile_version == 2
+        parsed = json.loads(imported_rows[0].profile_json)
+        assert parsed["version"] == 2
+        assert parsed["fingerprint"]["signature_words"] == v2_with_fp["fingerprint"]["signature_words"]
+
+    _run(scenario)

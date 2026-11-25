@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing! AIFictionForge (灵创) is an AI-powered novel creation assistant built with a FastAPI backend (Python 3.12) and a React 18 + Vite frontend. This project is a derivative of [MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel), licensed under GPL-3.0.
 
-**Language policy (国际化):** issue and PR **titles default to English**; bodies may be bilingual (English primary, Chinese as a supplement). Documentation filenames should avoid Chinese characters so CI and tooling can read them. The UI itself supports two locales: `zh` (product default) and `en`.
+**Language policy:** issues and PRs use **Chinese** directly in both titles and bodies. Documentation filenames should avoid Chinese characters so CI and tooling can read them. The UI itself supports two locales: `zh` (product default) and `en`.
 
 ## Ways to contribute
 
@@ -115,7 +115,7 @@ The repository is public and user-imported books may be copyrighted. **Never pos
 ## PR etiquette
 
 - Keep PRs focused: one logical change per PR.
-- Title format: `<type>: <summary>` (English, e.g. `fix: streaming timeout in chapter generation`).
+- Title format: `<type>: <summary>` (Chinese, e.g. `fix: 章节生成流式超时修复`).
 - Fill in the PR template (summary, changes, test plan, checklist).
 - Link the related issue with a closing keyword in the PR body (`closes #N`) so it auto-closes on merge; describe how you tested the change.
 - Make sure no secrets, `.env` contents, or user/source text data appear in the diff.
