@@ -1,6 +1,6 @@
 """写作风格 Schema"""
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict, Optional
+from pydantic import BaseModel, Field, ConfigDict, StrictInt
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 
@@ -59,12 +59,38 @@ class WritingStyleListResponse(BaseModel):
     styles: list[WritingStyleResponse]
 
 
+class StyleProfileRange(BaseModel):
+    """抽样区间（1-based 章号与字符偏移）"""
+
+    chapter: StrictInt = Field(..., ge=1, description="章号（从 1 开始）")
+    start: StrictInt = Field(..., ge=0, description="起始字符偏移")
+    end: StrictInt = Field(..., ge=0, description="结束字符偏移")
+
+
+class ProfileReextractApplyPayload(BaseModel):
+    """前端预览后直接落库的载荷（避免点击应用时重复调用模型抽取）"""
+
+    new_prompt_content: str = Field(..., min_length=1, description="预览得到的提示词内容")
+    new_profile: Dict[str, Any] = Field(..., description="预览得到的结构化画像")
+    description: str = Field(default="", description="样本说明")
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    degraded: bool = Field(default=False, description="该预览结果是否为本地统计降级产物")
+    profile_version: Optional[int] = Field(default=None, ge=1, le=2)
+    ranges: Optional[List[StyleProfileRange]] = Field(
+        default=None, description="抽样区间（用于重建语感锚点）"
+    )
+
+
 class ProfileReextractRequest(BaseModel):
     """重新抽取项目文笔画像（issue #254 P1）"""
 
     dry_run: bool = Field(default=True, description="True 只返回 diff 预览，不写库")
     overwrite_edited: bool = Field(default=False, description="是否覆盖用户已编辑的画像")
     set_default: bool = Field(default=False, description="写库后是否将画像设为项目默认风格")
+    apply_profile: Optional[ProfileReextractApplyPayload] = Field(
+        default=None,
+        description="dry_run=False 时直接校验并应用前端已预览结果，不再重复调用模型",
+    )
 
 
 class ProfileReextractResponse(BaseModel):
@@ -79,10 +105,13 @@ class ProfileReextractResponse(BaseModel):
     description: Optional[str] = None
     confidence: Optional[float] = None
     degraded: bool = False
+    profile_version: Optional[int] = None
+    ranges: Optional[List[Dict[str, Any]]] = None
     updated: bool = Field(default=False, description="是否已写库")
     style_id: Optional[int] = None
     kept_reason: Optional[str] = Field(
-        default=None, description="未写库原因：user_edited=用户已手改且未授权覆盖"
+        default=None,
+        description="未写库原因：user_edited=用户已手改；degraded_fallback=抽取降级保留既有 AI 画像",
     )
 
 

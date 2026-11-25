@@ -8,6 +8,8 @@
 import asyncio
 from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable, Tuple
 
+import httpx
+
 from app.config import settings as app_settings
 from app.core.errors import ApiError
 from app.logger import get_logger
@@ -1275,7 +1277,10 @@ class AIService:
             for attempt in range(1, max_retries + 1):
                 current_prompt = (
                     prompt
-                    if (attempt == 1 or last_attempt_transient)
+                    if (
+                        attempt == 1
+                        or (last_attempt_transient and not (validator_error or json_error))
+                    )
                     else self._add_json_hint(
                         prompt, attempt, extra_error=validator_error, json_error=json_error
                     )
@@ -1324,11 +1329,17 @@ class AIService:
                             finish_sink.clear()
                             continue
                         status_code = getattr(getattr(e, "response", None), "status_code", None)
-                        if status_code in (429, 502, 503, 504) and attempt < max_retries:
+                        is_transient = status_code in (429, 502, 503, 504) or isinstance(
+                            e, httpx.TransportError
+                        )
+                        if is_transient and attempt < max_retries:
                             wait_sec = min(1.5 * attempt, 4.0)
+                            reason = (
+                                f"HTTP {status_code}" if status_code is not None else type(e).__name__
+                            )
                             logger.warning(
                                 "JSON 调用遇上游瞬时错误 %s，%.1fs 后进行第 %s 次重试",
-                                status_code,
+                                reason,
                                 wait_sec,
                                 attempt + 1,
                             )

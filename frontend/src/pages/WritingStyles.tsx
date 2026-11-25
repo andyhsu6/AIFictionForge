@@ -356,17 +356,44 @@ export default function WritingStyles() {
     if (!currentProject?.id) return;
     setReextractApplying(true);
     try {
+      const canReusePreview = Boolean(
+        reextractResult &&
+        !reextractResult.skipped &&
+        reextractResult.new_prompt_content &&
+        reextractResult.new_profile,
+      );
       const result = await writingStyleApi.reextractProfile(currentProject.id, {
         dry_run: false,
         overwrite_edited: overwriteEdited,
         set_default: setDefault,
+        ...(canReusePreview && reextractResult
+          ? {
+              apply_profile: {
+                new_prompt_content: reextractResult.new_prompt_content!,
+                new_profile: reextractResult.new_profile!,
+                description: reextractResult.description ?? '',
+                confidence: reextractResult.confidence ?? null,
+                degraded: Boolean(reextractResult.degraded),
+                profile_version: reextractResult.profile_version ?? null,
+                ranges: reextractResult.ranges ?? null,
+              },
+            }
+          : {}),
       });
       if (result.updated === false && result.kept_reason === 'user_edited') {
         message.warning(t('profile.keptByUser'));
+      } else if (result.updated === false && result.kept_reason === 'degraded_fallback') {
+        message.warning(t('profile.keptDegraded'));
+      } else if (result.updated === false) {
+        message.error(t('profile.applyFailed'));
       } else {
-        message.success(t('profile.applySuccess'));
+        if (result.degraded) {
+          message.warning(t('profile.degraded'));
+        } else {
+          message.success(t('profile.applySuccess'));
+        }
+        setReextractOpen(false);
       }
-      setReextractOpen(false);
       await loadStyles();
     } catch {
       message.error(t('profile.applyFailed'));
@@ -427,7 +454,19 @@ export default function WritingStyles() {
         message.warning(t('profile.skipped'));
         return;
       }
-      message.success(t('profile.generateFullSuccess'));
+      if (result.updated === false && result.kept_reason === 'degraded_fallback') {
+        message.warning(t('profile.keptDegraded'));
+        return;
+      }
+      if (result.updated === false && result.kept_reason === 'user_edited') {
+        message.warning(t('profile.keptByUser'));
+        return;
+      }
+      if (result.degraded) {
+        message.warning(t('profile.degraded'));
+      } else {
+        message.success(t('profile.generateFullSuccess'));
+      }
       await loadStyles();
     } catch {
       message.error(t('profile.generateFullFailed'));
@@ -1115,6 +1154,7 @@ export default function WritingStyles() {
                   disabled={
                     reextractLoading ||
                     !reextractResult ||
+                    reextractResult.kept_reason === 'degraded_fallback' ||
                     (reextractResult.kept_reason === 'user_edited' && !overwriteEdited)
                   }
                   onClick={handleApplyReextract}
@@ -1132,8 +1172,12 @@ export default function WritingStyles() {
           <Alert type="warning" showIcon message={t('profile.skipped')} />
         ) : reextractResult ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            {reextractResult.degraded && (
-              <Alert type="info" showIcon message={t('profile.degraded')} />
+            {reextractResult.kept_reason === 'degraded_fallback' ? (
+              <Alert type="warning" showIcon message={t('profile.keptDegraded')} />
+            ) : (
+              reextractResult.degraded && (
+                <Alert type="info" showIcon message={t('profile.degraded')} />
+              )
             )}
             {reextractResult.kept_reason === 'user_edited' && (
               <Alert type="warning" showIcon message={t('profile.keptByUser')} />
