@@ -1,42 +1,32 @@
 <!--
-  English is the default language for PR titles and bodies.
-  标题默认英文；正文可用英文或中英双语（English first, Chinese supplement below）。
-  Title format: `<type>: <summary>` — e.g. `fix: streaming timeout in chapter generation`
+  PR 标题与正文直接使用中文；标题格式：`<type>: <摘要>`，如 `fix: 章节生成流式超时修复`
 -->
 
-## Summary
+## 摘要
 
-<!-- One or two sentences: what does this PR do, and why? -->
+<!-- 一两句话说明这个 PR 做了什么、为什么改 -->
 
-## Changes
+## 主要改动
 
-<!-- Bullet list of the main changes -->
-
--
-
-## Related issues
-
-<!-- Before marking this PR ready, replace `refs #N` with a closing keyword (`closes #123`) so the
-     issue auto-closes on merge. Draft PRs may use `refs #N`; keep `refs` only for related issues
-     that should stay open (e.g. a tracking/epic issue). -->
-
-## Test plan
-
-<!-- How was this tested? Commands run, scenarios covered, screenshots if UI changed. -->
+<!-- 列出核心改动点 -->
 
 -
 
-## Checklist
+## 关联 Issue
 
-- [ ] Branch name follows `<type>/<short-description>`; commit messages are conventional and reference the issue (`refs #N`). The closing keyword (`closes #N`) lives in this PR body, not only in commits.
-- [ ] `pytest` passes locally (`cd backend && .venv/bin/python -m pytest tests/ -v`) for backend changes.
-- [ ] i18n: new UI strings have been added to **both** `frontend/src/locales/zh/` and `frontend/src/locales/en/` locale files (no hard-coded strings in components).
-- [ ] No source-text or user data in the diff: no imported book/document original text, chapter excerpts, character names, or world-building proper nouns; no secrets or `.env` contents.
-- [ ] Docs and `CHANGELOG.md` updated if this change affects users.
-- [ ] This is not a major change bypassing review (major = core architecture, DB schema, auth/security, cross-module interfaces, user data/UX).
+<!-- 转 Ready 前将 `refs #N` 替换为关闭关键词（如 `closes #123`），确保合并后自动关闭对应 issue；Draft PR 可先写 `refs #N`。 -->
 
----
+## 测试与验证
 
-## 中文补充（可选）
+<!-- 列出实际执行的命令、测试结果与验收截图路径（如有 UI 改动） -->
 
-<!-- 如需中文说明，可在此补充：改动背景、影响范围、测试情况。 -->
+-
+
+## 检查清单
+
+- [ ] 分支名遵循 `<type>/<简述>`，提交信息符合 Conventional Commits 并引用 issue（`refs #N`）；关闭关键词（`closes #N`）写在 PR 正文。
+- [ ] 后端改动已在本地通过对应 `pytest` 测试。
+- [ ] i18n：新增 UI 文案已同步写入 `frontend/src/locales/zh/` 与 `frontend/src/locales/en/`（无硬编码字符串）。
+- [ ] Diff 不含密钥、`.env` 内容、导入书稿原文、角色名或世界观专名。
+- [ ] 影响用户可见行为的改动已同步更新文档与 `CHANGELOG.md`。
+- [ ] 重大改动已走分支与 PR 评审，未直接推送主干。

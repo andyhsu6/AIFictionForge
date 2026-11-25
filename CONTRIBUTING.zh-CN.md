@@ -2,7 +2,7 @@
 
 感谢你有兴趣参与贡献！AIFictionForge（灵创）是一个 AI 辅助小说创作工具，后端为 FastAPI（Python 3.12），前端为 React 18 + Vite。本项目衍生自 [MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel)，采用 GPL-3.0 许可证。
 
-**协作语言规范（国际化）：** issue 与 PR 的**标题默认英文**；正文可中英双语（英文为主，中文作补充）。文档文件名避免使用中文，便于 CI 与工具链直接阅读。UI 支持两种语言：`zh`（产品默认语言）与 `en`。
+**协作语言规范：** issue 与 PR 的标题和正文**直接使用中文**；文档文件名避免使用中文，便于 CI 与工具链直接阅读。UI 界面仍支持 `zh`（产品默认语言）与 `en` 双语 i18n。
 
 ## 贡献方式
 
@@ -115,7 +115,7 @@ feat(skill-chat): skill management page refs #21
 ## PR 礼仪
 
 - 保持 PR 聚焦：一个 PR 一个逻辑改动。
-- 标题格式：`<type>: <摘要>`（英文，如 `fix: streaming timeout in chapter generation`）。
+- 标题格式：`<type>: <摘要>`（中文，如 `fix: 章节生成流式超时修复`）。
 - 填写 PR 模板（摘要、改动、测试计划、检查清单）。
 - 在 PR **正文**写 `closes #N` 关联 issue（合并自动关闭）；说明改动如何测试。
 - 确认 diff 中不含密钥、`.env` 内容或用户/原文数据。
