@@ -4380,6 +4380,7 @@ class BookImportService:
 
         degraded = False
         generation_language = "zh"
+        active_sample = merged_sample
         try:
             ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
             generation_language = await resolve_user_generation_language(
@@ -4388,6 +4389,7 @@ class BookImportService:
             fingerprint_json = json.dumps(fingerprint, ensure_ascii=False)
             if len(batches) == 1:
                 batch = batches[0]
+                active_sample = batch
                 template = await PromptService.get_template(
                     "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
                 )
@@ -4406,8 +4408,10 @@ class BookImportService:
                 data = await ai_service.call_with_json_retry(
                     prompt=prompt,
                     temperature=0.1,
-                    max_tokens=2500,
-                    max_retries=1,
+                    max_tokens=8192,
+                    max_retries=3,
+                    auto_mcp=False,
+                    reasoning_effort="low",
                     expected_type="object",
                     validator=lambda payload: validate_style_profile(
                         payload, sampled_text=batch.text
@@ -4418,7 +4422,11 @@ class BookImportService:
                     "BOOK_IMPORT_STYLE_PROFILE_BATCH", user_id, db
                 )
 
-                async def _observe_batch(batch_item: StyleSample) -> dict[str, Any]:
+                # 顺序错峰请求，避免并发瞬间触发上游 503 限流；给足 max_tokens 并设 low 思考预算防止推理吃光输出
+                observations: list[dict[str, Any]] = []
+                for idx, batch_item in enumerate(batches):
+                    if idx > 0:
+                        await asyncio.sleep(0.35)
                     batch_prompt = PromptService.format_prompt(
                         batch_template,
                         title=project.title or "",
@@ -4428,75 +4436,105 @@ class BookImportService:
                         sample_meta=json.dumps(batch_item.meta, ensure_ascii=False),
                         content_language=generation_language,
                     )
-                    return await ai_service.call_with_json_retry(
-                        prompt=batch_prompt,
-                        temperature=0.1,
-                        max_tokens=1500,
-                        max_retries=1,
-                        expected_type="object",
-                        validator=lambda payload, txt=batch_item.text: validate_batch_observation(
-                            payload, sampled_text=txt
-                        ),
-                    )
-
-                raw_observations = await asyncio.gather(
-                    *(_observe_batch(item) for item in batches),
-                    return_exceptions=True,
-                )
-                observations: list[dict[str, Any]] = []
-                for idx, obs in enumerate(raw_observations):
-                    if isinstance(obs, Exception):
+                    try:
+                        obs = await ai_service.call_with_json_retry(
+                            prompt=batch_prompt,
+                            temperature=0.1,
+                            max_tokens=8192,
+                            max_retries=3,
+                            auto_mcp=False,
+                            reasoning_effort="low",
+                            expected_type="object",
+                            validator=lambda payload, txt=batch_item.text: validate_batch_observation(
+                                payload, sampled_text=txt
+                            ),
+                        )
+                        if isinstance(obs, dict):
+                            observations.append(
+                                {
+                                    "chapters": (batch_item.meta or {}).get("chapter_numbers") or [],
+                                    **obs,
+                                }
+                            )
+                    except Exception as batch_exc:
+                        if isinstance(batch_exc, ApiError) and (
+                            getattr(batch_exc, "status", 0) in (401, 403)
+                            or str(getattr(batch_exc, "code", "")).startswith("validation.")
+                        ):
+                            raise
                         logger.warning(
                             "拆书导入：多场景文笔观察第 %s 批跳过（异常类型 %s，章节 %s）",
                             idx + 1,
-                            type(obs).__name__,
-                            (batches[idx].meta or {}).get("chapter_numbers") or "-",
+                            type(batch_exc).__name__,
+                            (batch_item.meta or {}).get("chapter_numbers") or "-",
                         )
-                        continue
-                    if isinstance(obs, dict):
-                        observations.append(
-                            {
-                                "chapters": (batches[idx].meta or {}).get("chapter_numbers") or [],
-                                **obs,
-                            }
-                        )
-                if not observations:
-                    raise RuntimeError("所有多场景文笔观察批次均失败")
 
                 reduce_template = await PromptService.get_template(
                     "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
                 )
-                reduce_prompt = PromptService.format_prompt(
-                    reduce_template,
-                    title=project.title or "",
-                    genre=project.genre or "",
-                    theme=project.theme or "",
-                    narrative_perspective=project.narrative_perspective or "",
-                    corpus_fingerprint=fingerprint_json,
-                    batch_observations=json.dumps(observations, ensure_ascii=False),
-                    sampled_text="（已由多场景分批观察汇总，请基于全书指纹与分批观察综合归纳）",
-                    sample_meta=json.dumps(merged_sample.meta, ensure_ascii=False),
-                    content_language=generation_language,
-                )
-                data = await ai_service.call_with_json_retry(
-                    prompt=reduce_prompt,
-                    temperature=0.1,
-                    max_tokens=2500,
-                    max_retries=1,
-                    expected_type="object",
-                    validator=lambda payload: validate_style_profile(
-                        payload, sampled_text=merged_sample.text
-                    ),
-                )
+                if not observations:
+                    # 极端情况全部批次跳过时，退回单批精简样本再尝试一次 Reduce，避免直接全量退化
+                    active_sample = sample
+                    fallback_prompt = PromptService.format_prompt(
+                        reduce_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        theme=project.theme or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        corpus_fingerprint=fingerprint_json,
+                        batch_observations="无（由单批代表样本直接归纳）",
+                        sampled_text=sample.text,
+                        sample_meta=json.dumps(sample.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    data = await ai_service.call_with_json_retry(
+                        prompt=fallback_prompt,
+                        temperature=0.1,
+                        max_tokens=8192,
+                        max_retries=3,
+                        auto_mcp=False,
+                        reasoning_effort="low",
+                        expected_type="object",
+                        validator=lambda payload: validate_style_profile(
+                            payload, sampled_text=sample.text
+                        ),
+                    )
+                else:
+                    reduce_prompt = PromptService.format_prompt(
+                        reduce_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        theme=project.theme or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        corpus_fingerprint=fingerprint_json,
+                        batch_observations=json.dumps(observations, ensure_ascii=False),
+                        sampled_text="（已由多场景分批观察汇总，请基于全书指纹与分批观察综合归纳）",
+                        sample_meta=json.dumps(merged_sample.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    data = await ai_service.call_with_json_retry(
+                        prompt=reduce_prompt,
+                        temperature=0.1,
+                        max_tokens=8192,
+                        max_retries=3,
+                        auto_mcp=False,
+                        reasoning_effort="low",
+                        expected_type="object",
+                        validator=lambda payload: validate_style_profile(
+                            payload, sampled_text=merged_sample.text
+                        ),
+                    )
         except Exception as exc:
+            active_sample = sample
             logger.warning(
                 "拆书导入：文笔画像抽取失败，改用本地统计兜底"
-                f"（异常类型 {type(exc).__name__}，章节 {merged_sample.meta.get('chapter_numbers') or '-'}）"
+                f"（异常类型 {type(exc).__name__}，章节 {active_sample.meta.get('chapter_numbers') or '-'}）"
             )
             data = local_profile
             degraded = True
 
         if not isinstance(data, dict):
+            active_sample = sample
             data = local_profile
             degraded = True
 
@@ -4517,25 +4555,26 @@ class BookImportService:
             merged_data["fingerprint"] = fingerprint
         data = reconcile_advice_with_metrics(merged_data, measured_metrics)
 
+        active_chars = int((active_sample.meta or {}).get("char_count") or 0) or sample_chars
         return {
             "skipped": False,
             "prompt_content": render_style_profile(
                 data,
-                merged_sample.meta,
+                active_sample.meta,
                 title=project.title or "",
                 language=generation_language or "zh",
             ),
-            "description": self._describe_style_sample(merged_sample, extract_mode),
+            "description": self._describe_style_sample(active_sample, extract_mode),
             "degraded": degraded,
             "confidence": data.get("confidence"),
-            "sample_chars": merged_chars or sample_chars,
+            "sample_chars": active_chars,
             "profile_data": {
                 **data,
                 "source": "local" if degraded else "model",
                 "metrics_source": "measured",
             },
             "profile_version": int(data.get("version") or 1),
-            "ranges": list(merged_sample.meta.get("ranges") or []),
+            "ranges": list(active_sample.meta.get("ranges") or []),
         }
 
     @staticmethod

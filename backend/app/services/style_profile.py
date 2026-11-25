@@ -36,9 +36,9 @@ SAMPLE_CHAR_BUDGET = 10000
 SAMPLE_PER_CHAPTER_BUDGET = 2000
 SAMPLE_MIN_CHAPTERS = 4
 SAMPLE_MAX_CHAPTERS = 6
-MULTI_SCENE_MAX_CHAPTERS = 12
-MULTI_SCENE_BATCH_CHAR_BUDGET = 9000
-MULTI_SCENE_MAX_BATCHES = 3
+MULTI_SCENE_MAX_CHAPTERS = 10
+MULTI_SCENE_BATCH_CHAR_BUDGET = 11000
+MULTI_SCENE_MAX_BATCHES = 2
 # 少于该字数视为样本不足：不生成画像（避免本地统计默认值顶掉项目默认风格）
 SAMPLE_MIN_CHARS = 200
 
@@ -936,12 +936,13 @@ def render_style_tail_block(
             if imp:
                 lines.append(f"Voice anchor: {imp}")
             if has_metrics:
-                parts = [f"average sentence length {avg:g} characters"]
-                if short is not None:
-                    parts.append(f"short sentences (<=15 chars) {short:g}%")
-                if dialogue is not None:
-                    parts.append(f"dialogue ratio {dialogue:g}%")
-                lines.append("; ".join(parts) + " (vary naturally by scene).")
+                if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+                    rhythm_desc = "connected medium-long narrative sentences with natural dialogue pacing"
+                elif avg <= 17.0:
+                    rhythm_desc = "crisp short-to-medium sentences with brisk pacing"
+                else:
+                    rhythm_desc = "varied sentence lengths flowing naturally between narration and dialogue"
+                lines.append(f"Prose rhythm: {rhythm_desc} (never count characters or force quotas).")
             hard = [
                 "let paragraph and sentence rhythm follow the scene; do not spam forced one-line paragraphs",
                 "avoid essay-like thesis/antithesis summaries or brooding-window endings",
@@ -979,12 +980,13 @@ def render_style_tail_block(
         if imp:
             lines.append(f"语感总锚点：{imp}")
         if has_metrics:
-            parts = [f"全书参考均句 {avg:g} 字"]
-            if short is not None:
-                parts.append(f"短句(≤15字)约 {short:g}%")
-            if dialogue is not None:
-                parts.append(f"对话约 {dialogue:g}%")
-            lines.append("；".join(parts) + "（随场景自然起伏，不机械凑数）。")
+            if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+                rhythm_line = "以连贯中长复句顺叙铺陈为主，随场景在叙述与对话间自如切换，不靠碎句堆砌节奏"
+            elif avg <= 17.0:
+                rhythm_line = "以短促利落句式快速推进，随场景灵活调节叙述与对话密度"
+            else:
+                rhythm_line = "长短句错落推进，叙述与对话均衡衔接，随情节起伏而不机械凑数"
+            lines.append(f"行文节奏：{rhythm_line}。")
         hard = [
             "段落长短以情节推进为准，不得刻意拆成满屏单句碎段",
             "禁止议论文式对仗总结（如“一半是…一半是…”“这意味着…”）",
@@ -1045,22 +1047,35 @@ def _is_quantitative_advice(item: str) -> bool:
 
 
 def measured_advice(metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """由实测指标生成 do/dont（与 ``local_stats_fallback`` 同口径）。"""
+    """由实测指标转为质性写作节奏建议（不再输出让 LLM 无法心算的机械字数/百分比配额）。"""
     avg = float(metrics.get("avg_sentence_chars") or 0)
-    median = float(metrics.get("median_sentence_chars") or 0)
-    short = float(metrics.get("short_sentence_ratio") or 0)
     dialogue = float(metrics.get("dialogue_ratio") or 0)
-    paragraph = float(metrics.get("paragraph_chars_p50") or 0)
-    low, high = max(1, round(avg) - 2), max(2, round(avg) + 2)
+
+    if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+        sentence_rule = "以连贯中长复句顺叙铺陈，少拆碎片短句"
+        anti_rhythm = "避免刻意拆成满屏一行一句的碎片短段"
+    elif avg <= 17.0:
+        sentence_rule = "句式短促利落，节奏明快，少用冗长从句"
+        anti_rhythm = "避免无节制堆砌冗长绕口的复句"
+    else:
+        sentence_rule = "长短句交错推进，叙述舒展连贯"
+        anti_rhythm = "避免句式单一或刻意拆碎段落"
+
+    if dialogue >= 0.4:
+        dialogue_rule = "对话密集，以人物交锋直接推动情节"
+    elif dialogue <= 0.15:
+        dialogue_rule = "以叙述与动作铺陈为主，对话凝练点题"
+    else:
+        dialogue_rule = "叙事与对话均衡穿插，保持场景推进感"
+
     do = [
-        f"平均句长控制在 {low}–{high} 字",
-        f"中位句长保持在 {round(median)} 字左右",
-        f"对话占比约 {round(dialogue * 100)}%",
-        f"短句（≤15 字）占比约 {round(short * 100)}%",
-        f"段落长度中位数约 {round(paragraph)} 字",
+        sentence_rule,
+        "段落随情节推进展开，不按固定字数硬凑",
+        dialogue_rule,
     ]
     dont = [
-        f"避免段落长度长期偏离 {round(paragraph)} 字",
+        anti_rhythm,
+        "避免机械凑字数或用议论排比强行升华",
         *_QUALITATIVE_ADVICE_FALLBACK,
     ]
     return do, dont
@@ -1556,19 +1571,19 @@ def local_stats_fallback(sample: StyleSample) -> dict[str, Any]:
         if isinstance(number, int) and not isinstance(number, bool)
     ]
 
-    avg_round = int(round(avg))
-    low, high = max(1, avg_round - 3), max(1, avg_round + 3)
+    metrics = {
+        "avg_sentence_chars": round(avg, 1),
+        "median_sentence_chars": round(median, 1),
+        "short_sentence_ratio": round(short_ratio, 2),
+        "dialogue_ratio": round(dialogue_ratio, 2),
+        "paragraph_chars_p50": int(round(paragraph_p50)),
+    }
+    do, dont = measured_advice(metrics)
 
     return {
         "version": 1,
         "confidence": 0.3,
-        "metrics": {
-            "avg_sentence_chars": round(avg, 1),
-            "median_sentence_chars": round(median, 1),
-            "short_sentence_ratio": round(short_ratio, 2),
-            "dialogue_ratio": round(dialogue_ratio, 2),
-            "paragraph_chars_p50": int(round(paragraph_p50)),
-        },
+        "metrics": metrics,
         "narrative": {"pov": _UNDETERMINED, "tense": _UNDETERMINED, "distance": _UNDETERMINED},
         "diction": {
             "register": _UNDETERMINED,
@@ -1577,16 +1592,7 @@ def local_stats_fallback(sample: StyleSample) -> dict[str, Any]:
         },
         "dialogue": {"attribution": _UNDETERMINED, "tag_density": _UNDETERMINED},
         "rhetoric": [],
-        "do": [
-            f"平均句长控制在 {low}–{high} 字",
-            f"中位句长保持在 {int(round(median))} 字左右",
-            f"对话占比约 {int(round(dialogue_ratio * 100))}%",
-            f"短句（≤15 字）占比约 {int(round(short_ratio * 100))}%",
-        ],
-        "dont": [
-            "避免连续出现超过 40 字的长句",
-            f"避免段落长度长期偏离 {int(round(paragraph_p50))} 字",
-            "避免无标记地切换叙述人称或时态",
-        ],
+        "do": do,
+        "dont": dont,
         "evidence_chapters": chapter_numbers,
     }

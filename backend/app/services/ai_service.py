@@ -5,6 +5,7 @@
 - 如果有启用的MCP插件且有可用工具，自动发送tools
 - 通过 auto_mcp 参数控制是否启用自动工具加载
 """
+import asyncio
 from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable, Tuple
 
 from app.config import settings as app_settings
@@ -1207,6 +1208,7 @@ class AIService:
         validator: Optional[Callable[[Any], None]] = None,
         validator_max_retries: int = 2,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Union[Dict, List]:
         """
         带重试的 JSON 调用（自动支持MCP工具）
@@ -1269,10 +1271,17 @@ class AIService:
             validator_retries = 0
             validator_error = None
             json_error = None
+            last_attempt_transient = False
             for attempt in range(1, max_retries + 1):
-                current_prompt = prompt if attempt == 1 else self._add_json_hint(
-                    prompt, attempt, extra_error=validator_error, json_error=json_error
+                current_prompt = (
+                    prompt
+                    if (attempt == 1 or last_attempt_transient)
+                    else self._add_json_hint(
+                        prompt, attempt, extra_error=validator_error, json_error=json_error
+                    )
                 )
+                last_attempt_transient = False
+                retrying_transient = False
                 
                 # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
                 # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
@@ -1292,6 +1301,7 @@ class AIService:
                             auto_mcp=auto_mcp,
                             response_format=response_format,
                             finish_sink=finish_sink,
+                            reasoning_effort=reasoning_effort,
                         ):
                             if isinstance(chunk, dict):
                                 if chunk.get("finish_reason"):
@@ -1313,7 +1323,25 @@ class AIService:
                             finish_reason = None
                             finish_sink.clear()
                             continue
+                        status_code = getattr(getattr(e, "response", None), "status_code", None)
+                        if status_code in (429, 502, 503, 504) and attempt < max_retries:
+                            wait_sec = min(1.5 * attempt, 4.0)
+                            logger.warning(
+                                "JSON 调用遇上游瞬时错误 %s，%.1fs 后进行第 %s 次重试",
+                                status_code,
+                                wait_sec,
+                                attempt + 1,
+                            )
+                            await asyncio.sleep(wait_sec)
+                            accumulated = []
+                            finish_reason = None
+                            finish_sink.clear()
+                            retrying_transient = True
+                            break
                         raise
+                if retrying_transient:
+                    last_attempt_transient = True
+                    continue
                 result = {
                     "content": "".join(accumulated),
                     # yield 契约只吐字符串，dict 分支基本走不到；结束原因以出参
