@@ -125,6 +125,15 @@ class ChapterGenerateRequest(BaseModel):
     narrative_perspective: Optional[str] = Field(None, description="临时人称视角：first_person/third_person/omniscient，不提供则使用项目默认")
     skill_key: Optional[str] = Field(None, description="Skill 标识，指定后以该 Skill 的工作流指导创作")
     content_language: ContentLanguage
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        "medium",
+        description=(
+            "思考强度档位（OpenAI 兼容网关的 reasoning_effort）。"
+            "实测同一提示词下 low 档把推理量从 1.9-3.6 万 token 降到 100-300，"
+            "整章耗时从 5-8 分钟降到 1 分钟以内；medium 输出更长、更接近目标字数。"
+            "不传或传 null 时按网关默认（不注入该字段）。"
+        ),
+    )
     # issue #254 P1：本次生成锚点覆盖（不传则沿用项目设置）
     style_anchor_enabled: Optional[bool] = Field(None, description="本次生成是否注入本书原文语感锚点，不传沿用项目设置")
     style_anchor_chars: Optional[int] = Field(
@@ -163,6 +172,15 @@ class BatchGenerateRequest(BaseModel):
     narrative_perspective: Optional[str] = Field(None, description="临时指定叙事人称，不提供则使用项目默认")
     skill_key: Optional[str] = Field(None, description="Skill 标识，指定后以该 Skill 的工作流指导创作")
     content_language: ContentLanguage
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        "medium",
+        description=(
+            "思考强度档位（OpenAI 兼容网关的 reasoning_effort）。"
+            "实测同一提示词下 low 档把推理量从 1.9-3.6 万 token 降到 100-300，"
+            "整章耗时从 5-8 分钟降到 1 分钟以内；medium 输出更长、更接近目标字数。"
+            "不传或传 null 时按网关默认（不注入该字段）。"
+        ),
+    )
 
 
 class BatchGenerateResponse(BaseModel):

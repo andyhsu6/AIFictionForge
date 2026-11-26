@@ -12,24 +12,53 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .style_cliche_lexicon import (
+    AUTHOR_LEXICON_CANDIDATES,
+    STRUCTURAL_AI_MARKERS,
+)
+
 # ---- 项目归属标记（API/导出/清理统一使用，勿在别处硬编码前缀） ----
 PROFILE_PRESET_PREFIX = "profile:"
 PROFILE_STYLE_TYPE = "profile"
 PROFILE_EDITED_STYLE_TYPE = "profile_edited"
 
 # 输出约束（与提示词模板、校验器保持一致）
+PROFILE_SCHEMA_VERSION = 2
 PROFILE_JSON_MAX_CHARS = 1500
+PROFILE_V2_JSON_MAX_CHARS = 3500
 DO_DONT_MIN = 3
 DO_DONT_MAX = 6
 DO_DONT_ITEM_MAX_CHARS = 40
+DO_DONT_V2_ITEM_MAX_CHARS = 65
 
 # 抽样预算
 SAMPLE_CHAR_BUDGET = 10000
 SAMPLE_PER_CHAPTER_BUDGET = 2000
 SAMPLE_MIN_CHAPTERS = 4
 SAMPLE_MAX_CHAPTERS = 6
+MULTI_SCENE_MAX_CHAPTERS = 10
+MULTI_SCENE_BATCH_CHAR_BUDGET = 11000
+MULTI_SCENE_MAX_BATCHES = 2
 # 少于该字数视为样本不足：不生成画像（避免本地统计默认值顶掉项目默认风格）
 SAMPLE_MIN_CHARS = 200
+
+# v2 空洞评价词黑名单：仅拦截真正无信息量的夸奖，放行「质朴/克制/细腻/华丽/流畅/冷峻/温情」等正常文笔描述词
+V2_EMPTY_PRAISE_WORDS = (
+    "文笔好",
+    "语言功底好",
+    "很好看",
+    "好看",
+    "漂亮",
+    "高级",
+    "精彩",
+    "出色",
+    "吸引人",
+    "引人入胜",
+    "有感染力",
+    "富有感染力",
+)
+
+_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
 
 # 空泛形容词黑名单：命中且不含任何量化信息时判为不可观察要求
 VAGUE_ADJECTIVES = (
@@ -63,11 +92,6 @@ VAGUE_ADJECTIVES = (
     "鲜明",
 )
 _QUANTIFIER_RE = re.compile(r"\d|[≤≥><=%]|每|不超|至少|至多|最多|最少|约|倍|控制在")
-# 操作动词：do/dont 条目必须可执行（有量化标记或操作动词，二者皆无则失败）
-_ACTION_VERB_RE = re.compile(
-    r"保持|控制|使用|避免|删去|替换|限制|压缩|展开|穿插|跟随|铺垫|收束|采用|优先|"
-    r"禁用|交替|省略|保留|围绕|聚焦|减少|增加|缩短|拉长|多用|少用|多写|少写|不要|不用"
-)
 
 # 原文复述检测：N 字滑窗（去空白/标点后比较），窗口越短越易误报
 SOURCE_OVERLAP_MIN_WINDOW = 24
@@ -172,6 +196,44 @@ def _chapter_windows(content: str, per_chapter_budget: int) -> list[tuple[int, i
     return merged
 
 
+def build_corpus_sample(chapters: list[Any]) -> StyleSample:
+    """把传入章节的**全部正文**拼成一份样本，只用于本地统计（不送给模型）。
+
+    抽样（`build_style_sample`）的意义是控制模型输入的 token 成本；统计口径没有
+    这个约束。用 5 章抽样算出的句长/对话占比会被样本的偶然分布放大——实测同一本书
+    抽样得对话占比 0.45，全书实测 0.23——所以 `metrics` 一律按全量正文统计，
+    抽样只服务于模型的质性字段（issue #279 后续）。
+    """
+    valid = [
+        chapter
+        for chapter in (chapters or [])
+        if str(getattr(chapter, "content", None) or "").strip()
+    ]
+    valid.sort(key=lambda chapter: getattr(chapter, "chapter_number", 0))
+    parts: list[str] = []
+    numbers: list[int] = []
+    used = 0
+    for chapter in valid:
+        content = str(getattr(chapter, "content") or "")
+        parts.append(content)
+        used += len(content)
+        try:
+            numbers.append(int(getattr(chapter, "chapter_number", 0)))
+        except (TypeError, ValueError):
+            continue
+    return StyleSample(
+        text="\n\n".join(parts),
+        meta={
+            "chapter_numbers": numbers,
+            "ranges": [],
+            "char_count": used,
+            "strategy": "corpus",
+            "tail": False,
+            "truncated": False,
+        },
+    )
+
+
 def build_style_sample(
     chapters: list[Any],
     *,
@@ -250,6 +312,290 @@ def build_style_sample(
     )
 
 
+def is_cjk_dominant(text: str) -> bool:
+    """判断样本是否以中文为主（轻量语种保护，避免中文词表污染英文作品）。"""
+    plain = re.sub(r"\s+", "", text or "")
+    if not plain:
+        return False
+    cjk_count = len(_CJK_CHAR_RE.findall(plain))
+    return (cjk_count / len(plain)) >= 0.2
+
+
+def _chapter_quick_metrics(text: str) -> dict[str, float]:
+    """单章轻量统计（与 ``local_stats_fallback`` 同口径，供全书分布与多场景选章复用）。"""
+    plain = re.sub(r"\s+", "", text or "")
+    sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text or "") if part.strip()]
+    lengths = [len(re.sub(r"\s+", "", part)) for part in sentences]
+    lengths = [length for length in lengths if length > 0]
+    if lengths:
+        avg = sum(lengths) / len(lengths)
+        median = float(statistics.median(lengths))
+        short_ratio = sum(1 for length in lengths if length <= 15) / len(lengths)
+    else:
+        avg, median, short_ratio = 20.0, 19.0, 0.0
+    dialogue_chars = sum(
+        len(re.sub(r"\s+", "", match)) for match in _DIALOGUE_RE.findall(text or "")
+    )
+    dialogue_ratio = min(1.0, dialogue_chars / len(plain)) if plain else 0.0
+    paragraphs = [
+        re.sub(r"\s+", "", part)
+        for part in re.split(r"\n\s*\n|\n", text or "")
+        if part.strip()
+    ]
+    paragraph_p50 = _median([len(part) for part in paragraphs], 40.0) if paragraphs else 40.0
+    return {
+        "chars": float(len(text or "")),
+        "avg_sentence_chars": round(avg, 1),
+        "median_sentence_chars": round(median, 1),
+        "short_sentence_ratio": round(short_ratio, 2),
+        "dialogue_ratio": round(dialogue_ratio, 2),
+        "paragraph_chars_p50": float(int(round(paragraph_p50))),
+    }
+
+
+def _range_summary(values: list[float], *, digits: int = 1) -> dict[str, float]:
+    if not values:
+        return {"min": 0.0, "median": 0.0, "max": 0.0}
+    return {
+        "min": round(min(values), digits),
+        "median": round(float(statistics.median(values)), digits),
+        "max": round(max(values), digits),
+    }
+
+
+def analyze_corpus_fingerprint(chapters: list[Any]) -> dict[str, Any]:
+    """零 Token 全书语言指纹扫描：覆盖全部章节的跨章分布、标点/收尾习惯与动态词表。"""
+    valid = [
+        chapter
+        for chapter in (chapters or [])
+        if str(getattr(chapter, "content", None) or "").strip()
+    ]
+    valid.sort(key=lambda chapter: getattr(chapter, "chapter_number", None) or 0)
+    if not valid:
+        return {}
+
+    chapter_lens: list[float] = []
+    avgs: list[float] = []
+    shorts: list[float] = []
+    dlgs: list[float] = []
+    paras: list[float] = []
+    excl_rates: list[float] = []
+    dlg_endings = 0
+    excl_endings = 0
+    question_endings = 0
+    full_parts: list[str] = []
+
+    for chapter in valid:
+        txt = str(getattr(chapter, "content") or "")
+        full_parts.append(txt)
+        m = _chapter_quick_metrics(txt)
+        chapter_lens.append(m["chars"])
+        avgs.append(m["avg_sentence_chars"])
+        shorts.append(m["short_sentence_ratio"])
+        dlgs.append(m["dialogue_ratio"])
+        paras.append(m["paragraph_chars_p50"])
+        excl_rates.append((txt.count("！") + txt.count("!")) / max(1, len(txt)) * 1000.0)
+        lines = [line.strip() for line in txt.splitlines() if line.strip()]
+        if lines:
+            last = lines[-1]
+            if last.endswith(("”", "」", "\"")):
+                dlg_endings += 1
+            if last.endswith(("！", "！”", "！」", "!")):
+                excl_endings += 1
+            if last.endswith(("？", "？”", "？」", "?")):
+                question_endings += 1
+
+    full_text = "\n".join(full_parts)
+    total_chars = max(1, len(full_text))
+    n = len(valid)
+    em_dash_total = full_text.count("——")
+    em_dash_per_10k = round(em_dash_total / total_chars * 10000.0, 2)
+    ellipsis_per_10k = round(
+        (full_text.count("……") + full_text.count("...")) / total_chars * 10000.0, 2
+    )
+
+    cjk = is_cjk_dominant(full_text)
+    if cjk:
+        # 长词优先匹配并抹除已命中片段，防止「不由得」同时计入「不由」
+        lexicon_rates: dict[str, float] = {}
+        remaining_lex = full_text
+        for word in sorted(AUTHOR_LEXICON_CANDIDATES, key=len, reverse=True):
+            cnt = remaining_lex.count(word)
+            lexicon_rates[word] = round(cnt / total_chars * 10000.0, 1)
+            if cnt:
+                remaining_lex = remaining_lex.replace(word, "\0" * len(word))
+        signature_words = [
+            word
+            for word, rate in sorted(lexicon_rates.items(), key=lambda item: -item[1])
+            if rate >= 2.5
+        ][:8]
+        rare_ai_markers = [
+            marker
+            for marker in STRUCTURAL_AI_MARKERS
+            if (full_text.count(marker) / total_chars * 10000.0) <= 0.3
+        ]
+    else:
+        signature_words = []
+        rare_ai_markers = []
+
+    return {
+        "language": "zh" if cjk else "other",
+        "chapter_count": n,
+        "total_chars": sum(int(x) for x in chapter_lens),
+        "chapter_chars": _range_summary(chapter_lens, digits=0),
+        "distribution": {
+            "avg_sentence_chars": _range_summary(avgs, digits=1),
+            "short_sentence_ratio": _range_summary(shorts, digits=2),
+            "dialogue_ratio": _range_summary(dlgs, digits=2),
+            "paragraph_chars_p50": _range_summary(paras, digits=0),
+        },
+        "punctuation": {
+            "exclamation_per_1k": round(float(statistics.median(excl_rates)), 1),
+            "em_dash_total": em_dash_total,
+            "em_dash_per_10k": em_dash_per_10k,
+            "ellipsis_per_10k": ellipsis_per_10k,
+        },
+        "endings": {
+            "dialogue_ratio": round(dlg_endings / n, 2),
+            "exclamation_ratio": round(excl_endings / n, 2),
+            "question_ratio": round(question_endings / n, 2),
+        },
+        "signature_words": signature_words,
+        "rare_ai_markers": rare_ai_markers,
+    }
+
+
+def build_multi_scene_batches(
+    chapters: list[Any],
+    *,
+    mode: str = "full",
+    max_chapters: int = MULTI_SCENE_MAX_CHAPTERS,
+    batch_char_budget: int = MULTI_SCENE_BATCH_CHAR_BUDGET,
+    per_chapter_budget: int = SAMPLE_PER_CHAPTER_BUDGET,
+    max_batches: int = MULTI_SCENE_MAX_BATCHES,
+) -> list[StyleSample]:
+    """多场景分批抽样（遵循拆分优先原则）：覆盖前/中/后期与极端场景光谱。
+
+    - 章节数 ≤ 6 或 ``mode == "volume"`` 时走单批，防止分卷重抽同步循环超时；
+    - 章节数 > 6 时自动选出最多 ``max_chapters`` 个代表章，按预算切分为最多 ``max_batches`` 批，
+      供模型并发 Map 观察后再综合归纳，避免只看 4–6 章导致分场景失真。
+    """
+    valid = [
+        chapter
+        for chapter in (chapters or [])
+        if str(getattr(chapter, "content", None) or "").strip()
+    ]
+    valid.sort(key=lambda chapter: getattr(chapter, "chapter_number", None) or 0)
+    total = len(valid)
+    if total == 0:
+        return []
+    if total <= SAMPLE_MAX_CHAPTERS or mode == "volume":
+        single = build_style_sample(
+            valid,
+            mode=mode,
+            char_budget=max(batch_char_budget, SAMPLE_CHAR_BUDGET),
+            per_chapter_budget=per_chapter_budget,
+        )
+        return [single] if single.text.strip() else []
+
+    scored: list[tuple[int, Any, dict[str, float]]] = [
+        (idx, ch, _chapter_quick_metrics(str(getattr(ch, "content") or "")))
+        for idx, ch in enumerate(valid)
+    ]
+
+    picked_indices: list[int] = []
+    tags_by_idx: dict[int, list[str]] = {}
+
+    def _add(idx: int, tag: str) -> None:
+        if 0 <= idx < total:
+            if idx not in picked_indices:
+                picked_indices.append(idx)
+            tags_by_idx.setdefault(idx, [])
+            if tag not in tags_by_idx[idx]:
+                tags_by_idx[idx].append(tag)
+
+    _add(0, "开篇")
+    if total > 1:
+        _add(1, "前期")
+    _add(total // 2, "中段")
+    _add(total - 1, "近期/尾声")
+
+    by_dlg = sorted(scored, key=lambda item: item[2]["dialogue_ratio"])
+    for item in by_dlg[:2]:
+        _add(item[0], "纯叙事/低对话")
+    for item in by_dlg[-2:]:
+        _add(item[0], "高对话")
+
+    by_sent = sorted(scored, key=lambda item: item[2]["avg_sentence_chars"])
+    for item in by_sent[:2]:
+        _add(item[0], "快节奏/短句")
+    for item in by_sent[-2:]:
+        _add(item[0], "长句铺陈")
+
+    selected_indices = sorted(picked_indices[:max_chapters])
+
+    batches: list[StyleSample] = []
+    cur_parts: list[str] = []
+    cur_ranges: list[dict[str, int]] = []
+    cur_numbers: list[int] = []
+    cur_tags: dict[int, list[str]] = {}
+    cur_used = 0
+    cur_truncated = False
+
+    def _flush() -> None:
+        nonlocal cur_parts, cur_ranges, cur_numbers, cur_tags, cur_used, cur_truncated
+        if not cur_parts:
+            return
+        batches.append(
+            StyleSample(
+                text="\n\n".join(cur_parts),
+                meta={
+                    "chapter_numbers": list(cur_numbers),
+                    "ranges": list(cur_ranges),
+                    "char_count": cur_used,
+                    "strategy": "multi_scene",
+                    "scene_tags": {str(k): v for k, v in cur_tags.items()},
+                    "tail": mode == "tail",
+                    "truncated": cur_truncated,
+                },
+            )
+        )
+        cur_parts, cur_ranges, cur_numbers, cur_tags, cur_used, cur_truncated = (
+            [],
+            [],
+            [],
+            {},
+            0,
+            False,
+        )
+
+    for idx in selected_indices:
+        chapter = valid[idx]
+        content = str(getattr(chapter, "content") or "")
+        number = int(getattr(chapter, "chapter_number", None) or 0)
+        windows = _chapter_windows(content, per_chapter_budget)
+        chapter_chunks = [(s, e, content[s:e]) for s, e in windows if content[s:e].strip()]
+        chapter_chars = sum(len(c) for _, _, c in chapter_chunks)
+        if cur_parts and cur_used + chapter_chars > batch_char_budget and len(batches) + 1 < max_batches:
+            _flush()
+        if cur_parts and len(batches) + 1 >= max_batches and cur_used + chapter_chars > batch_char_budget:
+            continue
+        if len(content) > per_chapter_budget:
+            cur_truncated = True
+        header = f"【第{number}章｜{'/'.join(tags_by_idx.get(idx, ['样本']))}】\n"
+        for chunk_idx, (start, end, chunk) in enumerate(chapter_chunks):
+            piece = (header + chunk) if chunk_idx == 0 else chunk
+            cur_parts.append(piece)
+            cur_used += len(chunk)
+            cur_ranges.append({"chapter": number, "start": start, "end": end, "chars": len(chunk)})
+        if number not in cur_numbers:
+            cur_numbers.append(number)
+        cur_tags[number] = tags_by_idx.get(idx, [])
+
+    _flush()
+    return batches
+
+
 def _require_dict(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{name} 必须是对象")
@@ -277,7 +623,13 @@ def _require_number(value: Any, name: str, low: float, high: Optional[float] = N
     return float(value)
 
 
-def _check_do_dont(items: Any, name: str) -> list[str]:
+def _check_do_dont(
+    items: Any,
+    name: str,
+    *,
+    max_chars: int = DO_DONT_ITEM_MAX_CHARS,
+    vague_words: tuple[str, ...] = VAGUE_ADJECTIVES,
+) -> list[str]:
     if not isinstance(items, list):
         raise ValueError(f"{name} 必须是数组")
     if not DO_DONT_MIN <= len(items) <= DO_DONT_MAX:
@@ -287,14 +639,12 @@ def _check_do_dont(items: Any, name: str) -> list[str]:
         if not isinstance(item, str) or not item.strip():
             raise ValueError(f"{name} 的条目必须是非空字符串")
         text = item.strip()
-        if len(text) > DO_DONT_ITEM_MAX_CHARS:
-            raise ValueError(f"{name} 的条目不得超过 {DO_DONT_ITEM_MAX_CHARS} 字：{text}")
-        if any(word in text for word in VAGUE_ADJECTIVES) and not _QUANTIFIER_RE.search(text):
+        if len(text) > max_chars:
+            raise ValueError(f"{name} 的条目不得超过 {max_chars} 字：{text}")
+        if any(word in text for word in vague_words) and not _QUANTIFIER_RE.search(text):
             raise ValueError(f"{name} 的条目不可观察（只有空泛形容词）：{text}")
-        if not (_QUANTIFIER_RE.search(text) or _ACTION_VERB_RE.search(text)):
-            raise ValueError(
-                f"{name} 的条目需要可执行约束（量化标记或操作动词）：{text}"
-            )
+        # 只硬拒"空泛形容词且无量化"；具体写作指导（如"情绪用动作外化：攥拳"）
+        # 不应因不在动词白名单而被判失败（真实输出验证发现的持续误伤）。
         cleaned.append(text)
     return cleaned
 
@@ -385,8 +735,8 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         raise ValueError(f"source 只能是 {'/'.join(PROFILE_SOURCES)}")
 
     version = data.get("version")
-    if not isinstance(version, int) or isinstance(version, bool) or version != 1:
-        raise ValueError("version 必须为整数 1")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in (1, 2):
+        raise ValueError("version 必须为整数 1 或 2")
 
     _require_number(data.get("confidence"), "confidence", 0, 1)
 
@@ -409,10 +759,6 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
     for key in ("pov", "tense", "distance"):
         _require_text(narrative, key, "narrative")
 
-    diction = _require_dict(data.get("diction"), "diction")
-    for key in ("register", "concreteness", "idiom_density"):
-        _require_text(diction, key, "diction")
-
     dialogue = _require_dict(data.get("dialogue"), "dialogue")
     for key in ("attribution", "tag_density"):
         _require_text(dialogue, key, "dialogue")
@@ -426,8 +772,40 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         if not isinstance(item, str) or not item.strip():
             raise ValueError("rhetoric 的条目必须是非空字符串")
 
-    _check_do_dont(data.get("do"), "do")
-    _check_do_dont(data.get("dont"), "dont")
+    if version == 2:
+        _require_text(data, "impression", "root")
+        _require_text(data, "texture", "root")
+        _require_text(data, "rhythm", "root")
+        _require_text(data, "tone", "root")
+        scene_shifts = data.get("scene_shifts")
+        if scene_shifts is not None:
+            if not isinstance(scene_shifts, list):
+                raise ValueError("scene_shifts 必须是数组")
+            if len(scene_shifts) > 6:
+                raise ValueError("scene_shifts 不得超过 6 条")
+            for item in scene_shifts:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("scene_shifts 的条目必须是非空字符串")
+        _check_do_dont(
+            data.get("do"),
+            "do",
+            max_chars=DO_DONT_V2_ITEM_MAX_CHARS,
+            vague_words=V2_EMPTY_PRAISE_WORDS,
+        )
+        _check_do_dont(
+            data.get("dont"),
+            "dont",
+            max_chars=DO_DONT_V2_ITEM_MAX_CHARS,
+            vague_words=V2_EMPTY_PRAISE_WORDS,
+        )
+        max_json_chars = PROFILE_V2_JSON_MAX_CHARS
+    else:
+        diction = _require_dict(data.get("diction"), "diction")
+        for key in ("register", "concreteness", "idiom_density"):
+            _require_text(diction, key, "diction")
+        _check_do_dont(data.get("do"), "do")
+        _check_do_dont(data.get("dont"), "dont")
+        max_json_chars = PROFILE_JSON_MAX_CHARS
 
     evidence = data.get("evidence_chapters")
     if not isinstance(evidence, list):
@@ -436,6 +814,10 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         if not isinstance(item, int) or isinstance(item, bool):
             raise ValueError("evidence_chapters 只能包含整数章号")
 
+    fingerprint = data.get("fingerprint")
+    if fingerprint is not None and not isinstance(fingerprint, dict):
+        raise ValueError("fingerprint 必须是对象")
+
     _check_no_quotes(data)
 
     if sampled_text:
@@ -443,9 +825,385 @@ def validate_style_profile(data: Any, *, sampled_text: Optional[str] = None) -> 
         if overlap_paths:
             raise ValueError(f"疑似复述原文：{', '.join(overlap_paths)}")
 
-    serialized = json.dumps(data, ensure_ascii=False)
-    if len(serialized) > PROFILE_JSON_MAX_CHARS:
-        raise ValueError(f"画像 JSON 不得超过 {PROFILE_JSON_MAX_CHARS} 字")
+    # 剥离服务端后置附加的元字段（fingerprint / source / metrics_source），
+    # 避免导出后再导入时因附加指纹导致超过模型 JSON 字数上限
+    core_payload = {
+        key: value
+        for key, value in data.items()
+        if key not in ("fingerprint", "source", "metrics_source")
+    }
+    serialized = json.dumps(core_payload, ensure_ascii=False)
+    if len(serialized) > max_json_chars:
+        raise ValueError(f"画像 JSON 不得超过 {max_json_chars} 字")
+
+
+# ========== 生成期「写作规格」尾块（issue #279 后续） ==========
+# 实测发现：把风格要求放在 system 开头、同时塞进 12 万 token 的全书上下文时，
+# 模型仍按自己的默认腔调写短句。同一模型给一个 106 字的风格块（无上下文）却能
+# 写到 28.1 字/句（目标 29.4）。所以关键约束必须**贴着生成点**再讲一遍。
+_RENDERED_METRIC_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "avg_sentence_chars": (
+        re.compile(r"平均句长[：:]\s*([\d.]+)\s*字"),
+        re.compile(r"[Aa]verage sentence length[：:]\s*([\d.]+)"),
+    ),
+    "short_sentence_ratio": (
+        re.compile(r"短句占比[：:]\s*([\d.]+)\s*%"),
+        re.compile(r"[Ss]hort-sentence ratio[：:]\s*([\d.]+)\s*%"),
+    ),
+    "dialogue_ratio": (
+        re.compile(r"对话占比[：:]\s*([\d.]+)\s*%"),
+        re.compile(r"[Dd]ialogue ratio[：:]\s*([\d.]+)\s*%"),
+    ),
+    "paragraph_chars_p50": (
+        re.compile(r"段落长度中位[：:]\s*([\d.]+)\s*字"),
+        re.compile(r"[Mm]edian paragraph length[：:]\s*([\d.]+)"),
+    ),
+}
+
+
+def extract_rendered_metrics(style_content: str) -> dict[str, float]:
+    """从渲染好的画像正文里取回量化指标（取不到返回空 dict）。
+
+    为什么不重新查库：调用点已经拿到了渲染后的风格文本，而它由本模块的渲染器生成、
+    行格式固定；再查一次库反而会与「本次实际注入的风格」不一致（卷画像/项目默认）。
+    """
+    text = style_content or ""
+    metrics: dict[str, float] = {}
+    for key, patterns in _RENDERED_METRIC_PATTERNS.items():
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match:
+                try:
+                    metrics[key] = float(match.group(1))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return metrics
+
+
+_RENDERED_IMPRESSION_RE = re.compile(
+    r"(?:##\s*(?:整体印象|Overall impression)\s*\n+)(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_RARE_AI_RE = re.compile(
+    r"(?:原文极少/几乎不出现（切勿滥用）|Rare/absent in original \(avoid overusing\))[：:]\s*(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_SIGNATURE_WORDS_RE = re.compile(
+    r"作者高频语感词[^：:]*[：:]\s*(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_ENDING_HABITS_RE = re.compile(
+    r"(?:标点与章尾习惯|Punctuation & endings)[：:]\s*(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_DO_SECTION_RE = re.compile(
+    r"##\s*(?:必须做到|Must do)\s*\n(.*?)(?=\n##\s|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_rendered_impression(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「整体印象」一句话（未命中返回空串）。"""
+    match = _RENDERED_IMPRESSION_RE.search(style_content or "")
+    if not match:
+        return ""
+    return match.group(1).strip().lstrip(">").strip()
+
+
+def extract_rendered_rare_markers(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「原文极少/几乎不出现的 AI 异物」行。"""
+    match = _RENDERED_RARE_AI_RE.search(style_content or "")
+    return match.group(1).strip() if match else ""
+
+
+def extract_rendered_signature_words(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「作者高频语感词」行（未命中返回空串）。"""
+    match = _RENDERED_SIGNATURE_WORDS_RE.search(style_content or "")
+    return match.group(1).strip() if match else ""
+
+
+def extract_rendered_ending_habits(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「标点与章尾习惯」行（未命中返回空串）。"""
+    match = _RENDERED_ENDING_HABITS_RE.search(style_content or "")
+    return match.group(1).strip() if match else ""
+
+
+def extract_rendered_do_items(style_content: str, limit: int = 4) -> list[str]:
+    """从渲染后的画像正文中提取「必须做到」条目（用于近因尾块强化）。"""
+    match = _RENDERED_DO_SECTION_RE.search(style_content or "")
+    if not match:
+        return []
+    items: list[str] = []
+    for raw_line in match.group(1).splitlines():
+        line = re.sub(r"^\s*(?:\d+[.、)）]|[-*•])\s*", "", raw_line).strip()
+        if line:
+            items.append(line)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def style_content_language(style_content: str) -> str:
+    """画像正文用的语言（渲染器只有 zh/en 两套措辞，据此判定尾块语言）。"""
+    text = style_content or ""
+    return "en" if ("Average sentence length" in text or "## Overall impression" in text) else "zh"
+
+
+def render_style_tail_block(
+    metrics: dict[str, float],
+    language: str = "zh",
+    *,
+    impression: str = "",
+    rare_markers: str = "",
+    signature_words: str = "",
+    do_items: Optional[list[str]] = None,
+    ending_habits: str = "",
+) -> str:
+    """生成贴在用户提示词末尾的「写作规格」块；无指标且无印象时返回空串。"""
+    avg = metrics.get("avg_sentence_chars")
+    has_metrics = bool(avg and avg > 0)
+    imp = (impression or "").strip()
+    rare = (rare_markers or "").strip()
+    sig = (signature_words or "").strip()
+    dos = [item.strip().rstrip("。.") for item in (do_items or []) if isinstance(item, str) and item.strip()]
+    endings = (ending_habits or "").strip()
+    if not has_metrics and not imp:
+        return ""
+    short = metrics.get("short_sentence_ratio")
+    dialogue = metrics.get("dialogue_ratio")
+    para_p50 = metrics.get("paragraph_chars_p50")
+    short_paragraphs_native = para_p50 is not None and para_p50 <= 45
+    en = (language or "zh").lower().startswith("en")
+    is_v2 = bool(imp or rare or sig or dos or endings)
+
+    if en:
+        if is_v2:
+            lines = ["", "【Writing spec (measured from this book; overrides any conflicting skill defaults)】"]
+            if imp:
+                lines.append(f"Voice anchor: {imp}")
+            if has_metrics:
+                if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+                    rhythm_desc = "connected medium-long narrative sentences with natural dialogue pacing"
+                elif avg <= 17.0:
+                    rhythm_desc = "crisp short-to-medium sentences with brisk pacing"
+                else:
+                    rhythm_desc = "varied sentence lengths flowing naturally between narration and dialogue"
+                lines.append(f"Prose rhythm: {rhythm_desc} (never count characters or force quotas).")
+            if dos:
+                lines.append("Key craft habits: " + "; ".join(dos[:4]) + ".")
+            hard = [
+                (
+                    "keep paragraphs compact and brisk as in the original rather than forcing long blocks"
+                    if short_paragraphs_native
+                    else "let paragraph and sentence rhythm follow the scene; do not spam forced one-line paragraphs"
+                ),
+                "avoid essay-like thesis/antithesis summaries or brooding-window endings",
+            ]
+            if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and not short_paragraphs_native:
+                hard.append("do not build narrative paragraphs out of clipped short sentences")
+            if rare:
+                hard.append(f"do not overuse markers absent from the original ({rare})")
+            lines.append("Hard requirements: " + "; ".join(hard) + ".")
+            lines.append("Ending: prefer a single line of dialogue or one concrete action, keeping the final line natural; never close on a scenery beat followed by a summary of how someone feels about it.")
+            if endings:
+                lines.append(f"Punctuation & endings reference: {endings}.")
+            lines.append("Time anchor: this chapter follows the previous one; events from the last two or three chapters are not 'years ago'.")
+            lines.append("Relationships: treat the character section as the source of truth; a claimed relationship is not a fact and kinship must not be swapped.")
+            return "\n".join(lines)
+
+        lines = ["", "【Writing spec (measured from this book; overrides any style numbers above)】"]
+        parts = [f"average sentence length {avg:g} characters"]
+        if short is not None:
+            parts.append(f"short sentences (<=15 chars) {short:g}%")
+        if dialogue is not None:
+            parts.append(f"dialogue ratio {dialogue:g}%")
+        lines.append("; ".join(parts) + ".")
+        hard = ["no one-sentence paragraphs", "never write two sentences shorter than 15 chars in a row"]
+        if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+            hard.append("do not build narrative paragraphs out of clipped short sentences")
+        hard.append("let paragraph length follow the scene, never pad or split to hit a character count")
+        lines.append("Hard requirements: " + "; ".join(hard) + ".")
+        lines.append("Ending: prefer a single line of dialogue or one concrete action, and keep the last sentence clearly shorter than the average sentence length above (one line of dialogue usually suffices); never close on a scenery beat followed by a summary of how someone feels about it.")
+        lines.append("Time anchor: this chapter follows the previous one; events from the last two or three chapters are not 'years ago'.")
+        lines.append("Relationships: treat the character section as the source of truth; a claimed relationship is not a fact and kinship must not be swapped.")
+        lines.append("Start directly at that sentence length; do not open with a short teaser line.")
+        return "\n".join(lines)
+
+    if is_v2:
+        lines = ["", "【写作规格（本书实测，优先级高于上文与通用 Skill 默认习惯）】"]
+        if imp:
+            lines.append(f"语感总锚点：{imp}")
+        if has_metrics:
+            if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and short_paragraphs_native:
+                rhythm_line = "段落切分紧凑短促（单句或两三句成段），句式随情境在逻辑长复句推演与短促动作/对话间弹性切换"
+            elif avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+                rhythm_line = "以连贯中长复句顺叙铺陈为主，随场景在叙述与对话间自如切换，不靠碎句堆砌节奏"
+            elif avg <= 17.0:
+                rhythm_line = "以短促利落句式快速推进，随场景灵活调节叙述与对话密度"
+            else:
+                rhythm_line = "长短句错落推进，叙述与对话均衡衔接，随情节起伏而不机械凑数"
+            lines.append(f"行文节奏：{rhythm_line}。")
+        if sig:
+            lines.append(f"保留语感词：自然保留本书高频语感词（{sig}），切勿因去 AI 味而刻意删改。")
+        if dos:
+            lines.append("写作要点：" + "；".join(dos[:4]) + "。")
+        hard = [
+            (
+                "遵循原著短促紧凑的分段习惯，不强行合并成大段说教"
+                if short_paragraphs_native
+                else "段落长短以情节推进为准，不得刻意拆成满屏单句碎段"
+            ),
+            "禁止议论文式对仗总结（如“一半是…一半是…”“这意味着…”）",
+        ]
+        if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and not short_paragraphs_native:
+            hard.append("叙事段落以连贯复句推进，不得靠短句堆砌装深沉")
+        if rare:
+            hard.append(f"禁止滥用原文几乎不出现的 AI 惯用痕迹（{rare}）")
+        lines.append("核心底线：" + "；".join(hard) + "。")
+        ending_line = (
+            "结尾：优先用一句自然对话、具体动作或情节悬念收束；"
+            "不要用“熄灯独坐/回头远望 + 哲理感慨/装酷台词”的电影分镜式收尾。"
+        )
+        if endings:
+            ending_line += f"（全书习惯参考：{endings}）"
+        lines.append(ending_line)
+        lines.append("时间锚点：本章紧接上一章；最近两三章内发生的事不得写成“当年”“多年前”。")
+        lines.append("人物关系：以「角色信息」为准；文中“自称/声称”的关系不得当作事实，亲属关系不得调换。")
+        return "\n".join(lines)
+
+    lines = ["", "【写作规格（本书实测，优先级高于上文出现的任何风格数字）】"]
+    parts = [f"平均句长 {avg:g} 字"]
+    if short is not None:
+        parts.append(f"短句(≤15字)占比 {short:g}%")
+    if dialogue is not None:
+        parts.append(f"对话占比 {dialogue:g}%")
+    lines.append("；".join(parts) + "。")
+    hard = ["不得单句成段", "不得连续两句都短于 15 字"]
+    if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+        hard.append("叙事段落不得靠短句堆砌节奏")
+    # 段落只给原则、不给字数区间：实测按区间写会变成「为凑字数而断段/并段」，
+    # 反而伤情节连贯（用户明确要求「段落长短以情节通顺为准」）。
+    hard.append("段落长短以情节推进为准，不按字数硬凑")
+    lines.append("硬性要求：" + "；".join(hard) + "。")
+    lines.append(
+        "结尾：优先用一句对话或一个具体动作收束，尾句要明显短于上述平均句长"
+        "（一句对话通常就够了）；不要用“景物特写 + 一句主观情绪总结”的方式收尾。"
+    )
+    lines.append("时间锚点：本章紧接上一章；最近两三章内发生的事不得写成“当年”“多年前”。")
+    lines.append("人物关系：以「角色信息」为准；文中“自称/声称”的关系不得当作事实，亲属关系不得调换。")
+    lines.append("开篇即按上述句长落笔，不要先写一句短句“铺垫”。")
+    return "\n".join(lines)
+
+
+# 量化建议（含数字的 do/dont 条目）在实测覆盖 metrics 后会与基线自相矛盾：
+# 实测句长 29.7 字，而模型写的 "平均句长控制在 12-20 字" 仍是显式命令（比渲染层的
+# "以量化指标为准" 更强），照着写就必然回到短句腔。这里统一把量化条目换成实测值。
+_QUANTITATIVE_ADVICE_RE = re.compile(r"\d")
+_QUANTITATIVE_UNITS = ("字", "%", "％")
+# 实测句长偏长时（≥ 26 字），"短句/断句/短促" 类条目同样与基线相反。
+SHORT_SENTENCE_ADVICE_AVG_THRESHOLD = 26.0
+_SHORT_SENTENCE_HINTS = ("短句", "断句", "短促", "碎句")
+
+_QUALITATIVE_ADVICE_FALLBACK = ("避免无标记地切换叙述人称或时态",)
+
+
+def _is_quantitative_advice(item: str) -> bool:
+    return bool(_QUANTITATIVE_ADVICE_RE.search(item)) and any(
+        unit in item for unit in _QUANTITATIVE_UNITS
+    )
+
+
+def measured_advice(metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """由实测指标转为质性写作节奏建议（不再输出让 LLM 无法心算的机械字数/百分比配额）。"""
+    avg = float(metrics.get("avg_sentence_chars") or 0)
+    dialogue = float(metrics.get("dialogue_ratio") or 0)
+
+    if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+        sentence_rule = "以连贯中长复句顺叙铺陈，少拆碎片短句"
+        anti_rhythm = "避免刻意拆成满屏一行一句的碎片短段"
+    elif avg <= 17.0:
+        sentence_rule = "句式短促利落，节奏明快，少用冗长从句"
+        anti_rhythm = "避免无节制堆砌冗长绕口的复句"
+    else:
+        sentence_rule = "长短句交错推进，叙述舒展连贯"
+        anti_rhythm = "避免句式单一或刻意拆碎段落"
+
+    if dialogue >= 0.4:
+        dialogue_rule = "对话密集，以人物交锋直接推动情节"
+    elif dialogue <= 0.15:
+        dialogue_rule = "以叙述与动作铺陈为主，对话凝练点题"
+    else:
+        dialogue_rule = "叙事与对话均衡穿插，保持场景推进感"
+
+    do = [
+        sentence_rule,
+        "段落随情节推进展开，不按固定字数硬凑",
+        dialogue_rule,
+    ]
+    dont = [
+        anti_rhythm,
+        "避免机械凑字数或用议论排比强行升华",
+        *_QUALITATIVE_ADVICE_FALLBACK,
+    ]
+    return do, dont
+
+
+def reconcile_advice_with_metrics(data: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    """把 do/dont 与实测指标对齐：
+
+    - v2（文学画像）：保留模型产出的全部质性 do/dont，不再用 5 条纯数字挤占名额；
+      仅剔除模型自编的错误数字条目，以及 do 中与长句基线矛盾的“短句堆砌”建议（dont 中的反短句禁令保留）；
+    - v1（旧版兼容）：保持原有行为，用实测条目补齐 do/dont。
+    """
+    avg = float(metrics.get("avg_sentence_chars") or 0)
+    prefer_long = avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD
+
+    def _keep(item: Any, *, filter_short_hints: bool) -> bool:
+        if not isinstance(item, str) or not item.strip():
+            return False
+        if _is_quantitative_advice(item):
+            return False
+        if filter_short_hints and prefer_long and any(hint in item for hint in _SHORT_SENTENCE_HINTS):
+            return False
+        return True
+
+    if int(data.get("version") or 1) >= 2:
+        kept_do = [
+            item.strip()
+            for item in (data.get("do") or [])
+            if _keep(item, filter_short_hints=True)
+        ][:DO_DONT_MAX]
+        kept_dont = [
+            item.strip()
+            for item in (data.get("dont") or [])
+            if _keep(item, filter_short_hints=False)
+        ][:DO_DONT_MAX]
+        measured_do, measured_dont = measured_advice(metrics)
+        if len(kept_do) < DO_DONT_MIN:
+            kept_do = (kept_do + [item for item in measured_do if item not in kept_do])[:DO_DONT_MIN]
+        if len(kept_dont) < DO_DONT_MIN:
+            kept_dont = (kept_dont + [item for item in measured_dont if item not in kept_dont])[:DO_DONT_MIN]
+        return {**data, "do": kept_do, "dont": kept_dont}
+
+    measured_do, measured_dont = measured_advice(metrics)
+    kept_do = [
+        item.strip()
+        for item in (data.get("do") or [])
+        if _keep(item, filter_short_hints=True)
+    ][: max(0, DO_DONT_MAX - len(measured_do))]
+    kept_dont = [
+        item.strip()
+        for item in (data.get("dont") or [])
+        if _keep(item, filter_short_hints=False)
+    ][: max(0, DO_DONT_MAX - len(measured_dont))]
+    do = (measured_do + kept_do)[:DO_DONT_MAX]
+    dont = (measured_dont + kept_dont)[:DO_DONT_MAX]
+    if len(do) < DO_DONT_MIN:
+        do = (do + [item for item in measured_do if item not in do])[:DO_DONT_MAX]
+    if len(dont) < DO_DONT_MIN:
+        dont = (dont + [item for item in measured_dont if item not in dont])[:DO_DONT_MAX]
+    return {**data, "do": do, "dont": dont}
 
 
 def _fmt_number(value: float) -> str:
@@ -525,6 +1283,7 @@ def _render_zh(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str)
         f"- 说话人标注：{dialogue.get('attribution', '')}",
         f"- 对话标签密度：{dialogue.get('tag_density', '')}",
         f"- 对话占比：{_fmt_percent(metrics.get('dialogue_ratio', 0))}",
+        "- 以上量化指标为抽样实测值；若与下方条目中的数字冲突，以量化指标为准。",
         "",
         "## 必须做到",
     ]
@@ -588,9 +1347,232 @@ def _render_en(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str)
         f"- Speaker attribution: {dialogue.get('attribution', '')}",
         f"- Dialogue tag density: {dialogue.get('tag_density', '')}",
         f"- Dialogue ratio: {_fmt_percent(metrics.get('dialogue_ratio', 0))}",
+        "- The metrics above are measured from the sample; if a number below conflicts with them, the measured value wins.",
         "",
         "## Must do",
     ]
+    lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("do") or [], 1))
+    lines.extend(["", "## Avoid"])
+    lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("dont") or [], 1))
+    lines.extend(
+        [
+            "",
+            "Imitate the voice above; do not reproduce or quote any sentence, name, or title from the sample.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def validate_batch_observation(data: Any, *, sampled_text: Optional[str] = None) -> None:
+    """校验多场景 Map 阶段单批观察 JSON；不合法抛 ValueError。"""
+    if not isinstance(data, dict):
+        raise ValueError("批次观察必须是 JSON 对象")
+    for key in ("texture", "rhythm", "tone"):
+        _require_text(data, key, "batch")
+    for list_key in ("scene_notes", "rhetoric", "do_hints", "dont_hints"):
+        value = data.get(list_key)
+        if not isinstance(value, list):
+            raise ValueError(f"{list_key} 必须是数组")
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"{list_key} 的条目必须是非空字符串")
+    _check_no_quotes(data)
+    if sampled_text:
+        overlap_paths = detect_source_overlap(data, sampled_text)
+        if overlap_paths:
+            raise ValueError(f"疑似复述原文：{', '.join(overlap_paths)}")
+
+
+def _render_v2_zh(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str) -> str:
+    metrics = data.get("metrics") or {}
+    narrative = data.get("narrative") or {}
+    dialogue = data.get("dialogue") or {}
+    rhetoric = data.get("rhetoric") or []
+    scene_shifts = data.get("scene_shifts") or []
+    fp = data.get("fingerprint") or {}
+
+    heading = f"本书文笔画像（{title.strip()}）" if title.strip() else "本书文笔画像"
+    span = _chapter_span(meta)
+    char_count = (meta or {}).get("char_count")
+    total_chapters = fp.get("chapter_count")
+    if total_chapters and span:
+        basis = f"依据全书 {total_chapters} 章语言指纹与多场景抽样（第{span}章，样本{char_count or 0}字）归纳"
+    elif span and isinstance(char_count, int):
+        basis = f"依据本书多场景原文样本归纳，样本范围：第{span}章（共{char_count}字）"
+    else:
+        basis = "依据本书原文样本归纳"
+
+    # 首屏友好：整体印象置顶，保证风格卡片前 3 行直接展现真实文风描述
+    impression_text = str(data.get("impression") or "").strip()
+    lines = [
+        heading,
+        "",
+        "## 整体印象",
+        f"> {impression_text}",
+        "",
+        basis,
+        "",
+        "## 语言质地与情绪基调",
+        f"- 语言质地：{data.get('texture') or ''}",
+        f"- 情绪基调：{data.get('tone') or ''}",
+        "",
+        "## 句式节奏与场景切换",
+        f"- 整体节奏：{data.get('rhythm') or ''}",
+    ]
+    for item in scene_shifts:
+        lines.append(f"- 场景切换：{item.strip()}")
+
+    dist = fp.get("distribution") or {}
+    sent_dist = dist.get("avg_sentence_chars") or {}
+    dlg_dist = dist.get("dialogue_ratio") or {}
+    sent_range = (
+        f"（各章跨度 {_fmt_number(sent_dist.get('min', 0))}–{_fmt_number(sent_dist['max'])} 字）"
+        if sent_dist.get("max")
+        else ""
+    )
+    dlg_range = (
+        f"（各章跨度 {_fmt_percent(dlg_dist.get('min', 0))}–{_fmt_percent(dlg_dist['max'])}）"
+        if dlg_dist.get("max")
+        else ""
+    )
+    lines.extend(
+        [
+            (
+                f"- 全书统计参考：平均句长：{_fmt_number(metrics.get('avg_sentence_chars', 0))} 字{sent_range}，"
+                f"短句占比：{_fmt_percent(metrics.get('short_sentence_ratio', 0))}，"
+                f"对话占比：{_fmt_percent(metrics.get('dialogue_ratio', 0))}{dlg_range}，"
+                f"段落长度中位：{_fmt_number(metrics.get('paragraph_chars_p50', 0))} 字"
+            ),
+            "",
+            "## 修辞与叙事视角",
+            f"- 修辞与描写：{'、'.join(item.strip() for item in rhetoric) if rhetoric else '白描直叙为主'}",
+            f"- 叙事视角：{narrative.get('pov', '')}（{narrative.get('tense', '')}）",
+            f"- 叙述距离：{narrative.get('distance', '')}",
+            "",
+            "## 对话特征",
+            f"- 说话人标注：{dialogue.get('attribution', '')}",
+            f"- 对话密度与口语感：{dialogue.get('tag_density', '')}",
+        ]
+    )
+
+    if fp:
+        punct = fp.get("punctuation") or {}
+        endings = fp.get("endings") or {}
+        sig_words = fp.get("signature_words") or []
+        rare_ai = fp.get("rare_ai_markers") or []
+        lines.extend(["", "## 本书语言指纹（全书实测）"])
+        if sig_words:
+            lines.append(
+                f"- 作者高频语感词（请保留自然使用，勿被去AI味误删）：{'、'.join(sig_words)}"
+            )
+        if rare_ai:
+            lines.append(
+                f"- 原文极少/几乎不出现（切勿滥用）：{'、'.join(rare_ai)}"
+            )
+        lines.append(
+            f"- 标点与章尾习惯：感叹号约 {_fmt_number(punct.get('exclamation_per_1k', 0))} 次/千字，"
+            f"破折号全书共 {int(punct.get('em_dash_total', 0))} 次；"
+            f"章尾对话收尾占比 {_fmt_percent(endings.get('dialogue_ratio', 0))}，"
+            f"感叹号收尾占比 {_fmt_percent(endings.get('exclamation_ratio', 0))}"
+        )
+
+    lines.extend(["", "## 必须做到"])
+    lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("do") or [], 1))
+    lines.extend(["", "## 避免（含反 AI 腔定制）"])
+    lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("dont") or [], 1))
+    lines.extend(
+        [
+            "",
+            "模仿上述文风与语感，不得复述或引用样本中的任何句子、人名或书名。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_v2_en(data: dict[str, Any], meta: Optional[dict[str, Any]], title: str) -> str:
+    metrics = data.get("metrics") or {}
+    narrative = data.get("narrative") or {}
+    dialogue = data.get("dialogue") or {}
+    rhetoric = data.get("rhetoric") or []
+    scene_shifts = data.get("scene_shifts") or []
+    fp = data.get("fingerprint") or {}
+
+    heading = f"Book Style Profile ({title.strip()})" if title.strip() else "Book Style Profile"
+    span = _chapter_span(meta)
+    total_chapters = fp.get("chapter_count")
+    if total_chapters and span:
+        basis = f"Derived from {total_chapters}-chapter fingerprint and multi-scene samples (chapters {span})"
+    elif span:
+        basis = f"Derived from multi-scene samples (chapters {span})"
+    else:
+        basis = "Derived from book samples"
+
+    impression_text = str(data.get("impression") or "").strip()
+    lines = [
+        heading,
+        "",
+        "## Overall impression",
+        f"> {impression_text}",
+        "",
+        basis,
+        "",
+        "## Language texture and emotional tone",
+        f"- Texture: {data.get('texture') or ''}",
+        f"- Emotional tone: {data.get('tone') or ''}",
+        "",
+        "## Rhythm and scene shifts",
+        f"- Overall rhythm: {data.get('rhythm') or ''}",
+    ]
+    for item in scene_shifts:
+        lines.append(f"- Scene shift: {item.strip()}")
+
+    dist = fp.get("distribution") or {}
+    sent_dist = dist.get("avg_sentence_chars") or {}
+    dlg_dist = dist.get("dialogue_ratio") or {}
+    sent_range = (
+        f" (chapter span {_fmt_number(sent_dist.get('min', 0))}–{_fmt_number(sent_dist['max'])})"
+        if sent_dist.get("max")
+        else ""
+    )
+    dlg_range = (
+        f" (chapter span {_fmt_percent(dlg_dist.get('min', 0))}–{_fmt_percent(dlg_dist['max'])})"
+        if dlg_dist.get("max")
+        else ""
+    )
+    lines.extend(
+        [
+            (
+                f"- Reference stats: Average sentence length: {_fmt_number(metrics.get('avg_sentence_chars', 0))} characters{sent_range}, "
+                f"Short-sentence ratio: {_fmt_percent(metrics.get('short_sentence_ratio', 0))}, "
+                f"Dialogue ratio: {_fmt_percent(metrics.get('dialogue_ratio', 0))}{dlg_range}, "
+                f"Median paragraph length: {_fmt_number(metrics.get('paragraph_chars_p50', 0))} chars"
+            ),
+            "",
+            "## Rhetoric and perspective",
+            f"- Rhetoric: {'; '.join(item.strip() for item in rhetoric) if rhetoric else 'plain direct prose'}",
+            f"- POV: {narrative.get('pov', '')} ({narrative.get('tense', '')})",
+            f"- Narrative distance: {narrative.get('distance', '')}",
+            "",
+            "## Dialogue",
+            f"- Speaker attribution: {dialogue.get('attribution', '')}",
+            f"- Dialogue tag density: {dialogue.get('tag_density', '')}",
+        ]
+    )
+    if fp:
+        punct = fp.get("punctuation") or {}
+        endings = fp.get("endings") or {}
+        rare_ai = fp.get("rare_ai_markers") or []
+        lines.extend(["", "## Book fingerprint"])
+        if rare_ai:
+            lines.append(
+                f"- Rare/absent in original (avoid overusing): {', '.join(rare_ai)}"
+            )
+        lines.append(
+            f"- Punctuation & endings: exclamation ~{_fmt_number(punct.get('exclamation_per_1k', 0))}/1k chars, "
+            f"dialogue-ending chapters {_fmt_percent(endings.get('dialogue_ratio', 0))}, "
+            f"exclamation-ending chapters {_fmt_percent(endings.get('exclamation_ratio', 0))}"
+        )
+    lines.extend(["", "## Must do"])
     lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("do") or [], 1))
     lines.extend(["", "## Avoid"])
     lines.extend(f"{index}. {item}" for index, item in enumerate(data.get("dont") or [], 1))
@@ -611,6 +1593,10 @@ def render_style_profile(
     language: str = "zh",
 ) -> str:
     """把结构化画像确定性渲染为 prompt_content（不直接使用模型自由文本）。"""
+    if int(data.get("version") or 1) >= 2:
+        if language == "en":
+            return _render_v2_en(data, meta, title)
+        return _render_v2_zh(data, meta, title)
     if language == "en":
         return _render_en(data, meta, title)
     return _render_zh(data, meta, title)
@@ -653,19 +1639,19 @@ def local_stats_fallback(sample: StyleSample) -> dict[str, Any]:
         if isinstance(number, int) and not isinstance(number, bool)
     ]
 
-    avg_round = int(round(avg))
-    low, high = max(1, avg_round - 3), max(1, avg_round + 3)
+    metrics = {
+        "avg_sentence_chars": round(avg, 1),
+        "median_sentence_chars": round(median, 1),
+        "short_sentence_ratio": round(short_ratio, 2),
+        "dialogue_ratio": round(dialogue_ratio, 2),
+        "paragraph_chars_p50": int(round(paragraph_p50)),
+    }
+    do, dont = measured_advice(metrics)
 
     return {
         "version": 1,
         "confidence": 0.3,
-        "metrics": {
-            "avg_sentence_chars": round(avg, 1),
-            "median_sentence_chars": round(median, 1),
-            "short_sentence_ratio": round(short_ratio, 2),
-            "dialogue_ratio": round(dialogue_ratio, 2),
-            "paragraph_chars_p50": int(round(paragraph_p50)),
-        },
+        "metrics": metrics,
         "narrative": {"pov": _UNDETERMINED, "tense": _UNDETERMINED, "distance": _UNDETERMINED},
         "diction": {
             "register": _UNDETERMINED,
@@ -674,16 +1660,7 @@ def local_stats_fallback(sample: StyleSample) -> dict[str, Any]:
         },
         "dialogue": {"attribution": _UNDETERMINED, "tag_density": _UNDETERMINED},
         "rhetoric": [],
-        "do": [
-            f"平均句长控制在 {low}–{high} 字",
-            f"中位句长保持在 {int(round(median))} 字左右",
-            f"对话占比约 {int(round(dialogue_ratio * 100))}%",
-            f"短句（≤15 字）占比约 {int(round(short_ratio * 100))}%",
-        ],
-        "dont": [
-            "避免连续出现超过 40 字的长句",
-            f"避免段落长度长期偏离 {int(round(paragraph_p50))} 字",
-            "避免无标记地切换叙述人称或时态",
-        ],
+        "do": do,
+        "dont": dont,
         "evidence_chapters": chapter_numbers,
     }

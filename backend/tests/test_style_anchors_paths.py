@@ -3,7 +3,7 @@
 覆盖范围（计划 §6.2）：
 
 1. 主生成流式 `chapters.generate_chapter_content_stream`（POST /{id}/generate-stream）
-2. 后台生成 `chapters._run_chapter_generation_bg`（文件内两份同名定义，后一份生效）
+2. 后台生成 `chapters._run_chapter_generation_bg`（当前仅一份生效定义）
 3. 批量生成 `chapters.generate_single_chapter_for_batch`
 4. 重生成 `chapter_regenerator.ChapterRegenerator.regenerate_with_feedback`
 5. 局部重写 `chapters.partial_regenerate_stream` / `_stream_partial_generate` —— 断言**不注入**
@@ -283,7 +283,10 @@ def seed(env: _Env, *, chapter_2_content: str = "") -> int:
 def _assert_generation_injected(system_prompt: str | None) -> None:
     """生成路径公共断言：风格包装仍在，锚点块追加在风格正文之后。"""
     assert system_prompt, "system_prompt 未注入（style_content 可能为空）"
-    assert STYLE_SYSTEM_HEADER in system_prompt
+    assert (
+        STYLE_SYSTEM_HEADER in system_prompt
+        or "【🎨 本书写作风格要求 - 最高优先级】" in system_prompt
+    )
     assert STYLE_CONTENT in system_prompt
     assert ANCHOR_HEADER in system_prompt
     assert MARKER_A in system_prompt
@@ -452,7 +455,7 @@ def test_anchor_wiring_is_static_contract():
     for name, func in wired.items():
         assert "append_project_style_anchors(" in inspect.getsource(func), name
 
-    # 文件内有两份同名 _run_chapter_generation_bg，模块属性是后一份（生效定义）
+    # _run_chapter_generation_bg 目前只有一份生效定义
     assert "append_project_style_anchors(" in inspect.getsource(
         _run_chapter_generation_bg
     )

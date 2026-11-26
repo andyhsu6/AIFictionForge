@@ -32,6 +32,7 @@ class BaseAIProvider(ABC):
         tool_choice: Optional[str] = None,
         user_id: Optional[str] = None,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """流式生成"""
         pass

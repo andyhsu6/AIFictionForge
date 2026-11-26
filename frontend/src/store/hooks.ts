@@ -7,6 +7,8 @@ import { useCallback } from 'react';
 import { App } from 'antd';
 import { useStore } from './index';
 import { projectApi, outlineApi, characterApi, chapterApi } from '../services/api';
+import { mapErrorPayload, mapSSEError } from '../services/errorMapper';
+import { maybeShowModelGateGuidance } from '../services/modelGateGuidance';
 import type { ContentLanguage } from '../utils/languageSync';
 import type {
   PaginationResponse,
@@ -317,7 +319,22 @@ export function useChapterSync() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let body: { detail?: string; code?: string; params?: Record<string, unknown>; raw?: string } | null = null;
+        try {
+          body = await response.json();
+        } catch {
+          // 响应非 JSON 时按状态码兜底
+        }
+        maybeShowModelGateGuidance(body?.code);
+        throw new Error(
+          mapErrorPayload({
+            detail: typeof body?.detail === 'string' ? body.detail : null,
+            code: typeof body?.code === 'string' ? body.code : null,
+            params: body?.params && typeof body.params === 'object' ? body.params : null,
+            raw: typeof body?.raw === 'string' ? body.raw : null,
+            status: response.status,
+          })
+        );
       }
 
       const reader = response.body?.getReader();
@@ -331,80 +348,92 @@ export function useChapterSync() {
       let fullContent = '';
       let analysisTaskId: string | undefined;
       let styleCheck: StyleCheckResult | undefined;
+      let hasResult = false;
+
+      const processSSEBlock = async (line: string) => {
+        if (line.trim() === '' || line.startsWith(':')) {
+          return;
+        }
+
+        const dataMatch = line.match(/^data:\s*(.+)$/m);
+        if (!dataMatch) {
+          return;
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let message: any;
+        try {
+          message = JSON.parse(dataMatch[1]);
+        } catch (parseError) {
+          console.error('解析SSE消息失败:', parseError);
+          return;
+        }
+
+        if (message.type === 'start') {
+          if (onProgressUpdate) {
+            onProgressUpdate(message.message || '开始生成...', 0);
+          }
+        } else if (message.type === 'progress') {
+          if (onProgressUpdate) {
+            onProgressUpdate(
+              message.message || '生成中...',
+              message.progress || 0
+            );
+          }
+        } else if ((message.type === 'content' || message.type === 'chunk') && message.content) {
+          fullContent += message.content;
+          if (onProgress) {
+            onProgress(fullContent);
+          }
+        } else if (message.type === 'error') {
+          maybeShowModelGateGuidance(message.error_code);
+          throw new Error(mapSSEError(message));
+        } else if (message.type === 'result') {
+          hasResult = true;
+          if (message.data?.analysis_task_id) {
+            analysisTaskId = message.data.analysis_task_id;
+          }
+          if (message.data?.style_check) {
+            styleCheck = message.data.style_check;
+          }
+          if (onProgressUpdate) {
+            onProgressUpdate('生成完成', 100);
+          }
+        } else if (message.type === 'done') {
+          await refreshChapters();
+        } else if (message.type === 'analysis_started') {
+          analysisTaskId = message.task_id;
+          if (onProgressUpdate) {
+            onProgressUpdate('章节分析已开始...', 100);
+          }
+        } else if (message.type === 'analysis_queued') {
+          analysisTaskId = message.task_id;
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
 
         if (done) {
+          if (buffer.trim()) {
+            await processSSEBlock(buffer);
+          }
           break;
         }
 
         buffer += decoder.decode(value, { stream: true });
-        
+
         // 处理缓冲区中的完整消息
         const lines = buffer.split('\n\n');
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.trim() === '' || line.startsWith(':')) {
-            continue;
-          }
-
-          try {
-            const dataMatch = line.match(/^data: (.+)$/m);
-            if (dataMatch) {
-              const message = JSON.parse(dataMatch[1]);
-              
-              if (message.type === 'start') {
-                // 开始生成
-                if (onProgressUpdate) {
-                  onProgressUpdate(message.message || '开始生成...', 0);
-                }
-              } else if (message.type === 'progress') {
-                // 进度更新
-                if (onProgressUpdate) {
-                  onProgressUpdate(
-                    message.message || '生成中...',
-                    message.progress || 0
-                  );
-                }
-              } else if ((message.type === 'content' || message.type === 'chunk') && message.content) {
-                fullContent += message.content;
-                if (onProgress) {
-                  onProgress(fullContent);
-                }
-              } else if (message.type === 'error') {
-                throw new Error(message.error || '生成失败');
-              } else if (message.type === 'result') {
-                // 结果消息，包含分析任务ID
-                if (message.data?.analysis_task_id) {
-                  analysisTaskId = message.data.analysis_task_id;
-                }
-                // issue #254 P2：文笔画像一致性自检结果（可选字段）
-                if (message.data?.style_check) {
-                  styleCheck = message.data.style_check;
-                }
-                if (onProgressUpdate) {
-                  onProgressUpdate('生成完成', 100);
-                }
-              } else if (message.type === 'done') {
-                // 生成完成，刷新章节数据
-                await refreshChapters();
-              } else if (message.type === 'analysis_started') {
-                // 分析已开始
-                analysisTaskId = message.task_id;
-                if (onProgressUpdate) {
-                  onProgressUpdate('章节分析已开始...', 100);
-                }
-              } else if (message.type === 'analysis_queued') {
-                // 分析任务已加入队列
-                analysisTaskId = message.task_id;
-              }
-            }
-          } catch (error) {
-            console.error('解析SSE消息失败:', error);
-          }
+          await processSSEBlock(line);
         }
+      }
+
+      if (!hasResult && !fullContent.trim()) {
+        throw new Error(mapErrorPayload({ status: null }));
       }
 
       return {

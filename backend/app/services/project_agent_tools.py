@@ -22,9 +22,12 @@ from app.services.relationship_service import relationship_display_names
 from app.services.profile_facts import drop_org_personality_field
 from app.services.project_agent_extended_tools import (
     EXTENDED_TOOL_SPECS,
+    OUTLINE_METADATA_FIELDS,
+    OUTLINE_METADATA_PROPERTIES,
     READ_TOOL_NAMES,
     WRITE_TOOL_NAMES,
     ProjectAgentExtendedTools,
+    normalize_outline_metadata,
 )
 from app.services.project_agent_operational_tools import (
     OPERATIONAL_READ_TOOL_NAMES,
@@ -130,6 +133,8 @@ class ProjectAgentToolRegistry:
         "chapter_count", "narrative_perspective", "character_count",
     }
     OUTLINE_FIELDS = {"title", "content"}
+    # 大纲结构化元数据走 outline.structure（JSON 合并），不映射到 Outline 模型属性。
+    OUTLINE_STRUCTURE_FIELDS = set(OUTLINE_METADATA_FIELDS)
     CHARACTER_FIELDS = {
         "name", "age", "gender", "role_type", "personality", "background",
         "appearance", "status", "traits", "organization_type",
@@ -256,12 +261,15 @@ class ProjectAgentToolRegistry:
             ),
             ProjectAgentTool(
                 "update_outline",
-                "按ID或序号修改当前项目的大纲标题和内容。调用后必须等待用户确认。",
+                "按ID或序号修改当前项目的大纲标题、内容和结构化元数据。"
+                "结构化元数据（scenes/characters/key_points/key_events/emotion/goal）是顶层扁平字段，"
+                "只覆盖传入的键，未传的键保持不变；不是必填。调用后必须等待用户确认。",
                 _selector_schema({
                     "outline_id": identifier,
                     "order_index": {"type": "integer", "minimum": 1},
                     "title": required_text,
                     "content": text,
+                    **OUTLINE_METADATA_PROPERTIES,
                 }, "outline_id", "order_index"),
                 risk_level=2,
                 resources=("outlines", "chapters"),
@@ -343,6 +351,8 @@ class ProjectAgentToolRegistry:
             for field, value in fields.items()
             if getattr(entity, field) != value
         }
+        if isinstance(entity, Outline):
+            changes.update(self._outline_metadata_changes(entity, arguments))
         if not changes:
             raise ValueError("没有检测到需要修改的字段")
         return {
@@ -375,11 +385,21 @@ class ProjectAgentToolRegistry:
             return await self.operational.execute(name, arguments)
         if tool.requires_confirmation:
             entity, fields, label = await self._resolve_update(name, arguments)
+            metadata: dict[str, Any] = {}
+            structure_before: dict[str, Any] = {}
+            if isinstance(entity, Outline):
+                metadata = normalize_outline_metadata(arguments)
+                structure_before = self._outline_structure(entity)
             before = {field: _json_value(getattr(entity, field)) for field in fields}
+            before.update({field: structure_before.get(field) for field in metadata})
             for field, value in fields.items():
                 setattr(entity, field, value)
 
             if isinstance(entity, Outline):
+                if metadata:
+                    structure = dict(structure_before)
+                    structure.update(metadata)
+                    entity.structure = json.dumps(structure, ensure_ascii=False)
                 self._sync_outline_structure(entity)
                 if self.project.outline_mode == "one-to-one":
                     chapter_result = await self.db.execute(
@@ -407,6 +427,7 @@ class ProjectAgentToolRegistry:
 
             await self.db.flush()
             after = {field: _json_value(getattr(entity, field)) for field in fields}
+            after.update({field: metadata[field] for field in metadata})
             return {
                 "message": f"已更新{self._entity_label(entity)}",
                 "entity_id": entity.id,
@@ -435,7 +456,18 @@ class ProjectAgentToolRegistry:
             return self.project, fields, self._entity_label(self.project)
         if name == "update_outline":
             entity = await self._find_outline(arguments)
-            fields = self._pick_fields(arguments, self.OUTLINE_FIELDS)
+            # 结构字段不进模型属性（Outline 没有这些列），只挑普通字段；
+            # 结构字段由 preview/execute 合并进 outline.structure。
+            fields = {
+                key: value for key, value in arguments.items()
+                if key in self.OUTLINE_FIELDS and value is not None
+            }
+            has_structure = any(
+                arguments.get(field) is not None
+                for field in self.OUTLINE_STRUCTURE_FIELDS
+            )
+            if not fields and not has_structure:
+                raise ValueError("缺少可修改字段")
             self._validate_update_fields(name, fields)
             return entity, fields, self._entity_label(entity)
         if name == "update_character":
@@ -549,6 +581,29 @@ class ProjectAgentToolRegistry:
             )
         )
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _outline_structure(outline: Outline) -> dict[str, Any]:
+        try:
+            structure = json.loads(outline.structure) if outline.structure else {}
+        except json.JSONDecodeError:
+            structure = {}
+        return structure if isinstance(structure, dict) else {}
+
+    @classmethod
+    def _outline_metadata_changes(
+        cls,
+        outline: Outline,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """结构字段逐键对比（不显示整段 structure JSON）。"""
+        metadata = normalize_outline_metadata(arguments)
+        current = cls._outline_structure(outline)
+        return {
+            field: {"before": current.get(field), "after": value}
+            for field, value in metadata.items()
+            if current.get(field) != value
+        }
 
     @staticmethod
     def _sync_outline_structure(outline: Outline) -> None:

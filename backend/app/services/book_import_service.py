@@ -75,10 +75,16 @@ from app.services.style_profile import (
     PROFILE_EDITED_STYLE_TYPE,
     PROFILE_STYLE_TYPE,
     SAMPLE_MIN_CHARS,
+    analyze_corpus_fingerprint,
+    build_corpus_sample,
+    build_multi_scene_batches,
+    reconcile_advice_with_metrics,
     build_style_sample,
     local_stats_fallback,
     profile_preset_id,
     render_style_profile,
+    StyleSample,
+    validate_batch_observation,
     validate_style_profile,
 )
 from app.services.style_anchors import create_project_style_anchors
@@ -211,6 +217,90 @@ _GENERIC_PERSON_NAMES = frozenset({
     "师父", "师娘", "师叔", "师伯", "师兄", "师姐", "师弟", "师妹", "徒弟", "弟子",
     "叔叔", "阿姨", "舅舅", "舅母", "姑姑", "姑父", "爷爷", "奶奶", "外公", "外婆",
 })
+
+# 关系抽取防裂变：无名泛称/临时伪装称谓精确集合与正则（保守匹配，不误伤 2-4 字正常中文人名）
+_GENERIC_EPITHET_EXACT = frozenset({
+    "黑衣人", "白衣人", "灰衣人", "蓝衣人", "红衣人", "紫衣人", "青衣人", "黄衣人",
+    "蒙面人", "神秘人", "黑衣客", "神秘客", "来人", "那人", "此人", "来者",
+    "黑影", "人影", "身影", "无名氏", "路人甲", "路人乙", "某甲", "某乙",
+    "店小二", "小二", "掌柜", "老掌柜", "老板", "老板娘", "伙计",
+    "侍卫", "护卫", "家丁", "丫鬟", "婆子", "差役", "衙役", "捕快", "官差",
+    "老者", "老头", "老头儿", "老汉", "老妪", "老妇", "老妇人",
+    "中年汉子", "中年大汉", "壮汉", "大汉", "汉子", "刀客", "剑客", "刺客", "杀手",
+    "书生", "道士", "和尚", "尼姑", "车夫", "船夫", "渔夫", "樵夫", "猎户", "摊贩", "小贩",
+})
+
+_GENERIC_EPITHET_RE = re.compile(
+    r"^(?:"
+    r"(?:[黑白色灰蓝红紫青绿黄锦布粗麻]衣|蒙面|神秘|领头|为首|独眼|矮胖|瘦高|枯瘦|虬髯|白发|银发|光头|持刀|持剑|带头|那名|一名|几个|数名|两名|三名)"
+    r"(?:人|客|者|老者|老人|男子|女子|男人|女人|汉子|大汉|壮汉|少年|少女|青年|书生|道士|和尚|刺客|杀手|侍卫|护卫|差役|捕快|身影|黑影)"
+    r"|(?:路人|杂兵|甲|乙|丙|丁|炮灰|龙套)[甲乙丙丁戊己庚辛0-9一二三四五六七八九十]*"
+    r"|第[一二三四五六七八九十0-9]+[号名个位](?:人|杀手|刺客|护卫|侍卫)?"
+    r")$"
+)
+
+
+def _is_generic_epithet(name: str) -> bool:
+    """判断名称是否为无名泛称/临时伪装代称，防止关系抽取将其建为独立角色。"""
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return True
+    if cleaned in _GENERIC_PERSON_NAMES or cleaned in _GENERIC_EPITHET_EXACT:
+        return True
+    return bool(_GENERIC_EPITHET_RE.match(cleaned))
+
+
+def _slice_chapter_head_tail(content: str, max_chars: int) -> str:
+    """按 60% 开头 + 40% 结尾截取长章节，避免单章后半段内容被硬截断丢弃。"""
+    text = content or ""
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    sep = "\n……（中段略）……\n"
+    if max_chars <= len(sep) + 10:
+        return text[:max_chars]
+    avail = max_chars - len(sep)
+    head_len = int(avail * 0.6)
+    tail_len = avail - head_len
+    if tail_len <= 0:
+        return text[:head_len]
+    return text[:head_len] + sep + text[-tail_len:]
+
+
+def _merge_chapter_relationship_note(existing: Optional[str], chapter_number: Any, description: str) -> str:
+    """幂等合并关系描述中的 `[第N章] ...` 行：同章号覆盖替换，不重复追加。"""
+    prefix = f"[第{chapter_number}章]"
+    desc_text = str(description or "").strip()
+    note = f"{prefix} {desc_text}".strip()
+    lines = [line for line in (existing or "").splitlines() if line.strip()]
+    replaced = False
+    new_lines: list[str] = []
+    for line in lines:
+        if line.strip().startswith(prefix):
+            if not replaced:
+                new_lines.append(note)
+                replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        new_lines.append(note)
+    return "\n".join(new_lines).strip()
+
+
+def _format_known_characters(chars: Sequence[Character]) -> str:
+    """格式化已知角色/组织名单（规范名（别名：...））供关系抽取提示词对齐。"""
+    if not chars:
+        return "（暂无）"
+    parts: list[str] = []
+    for c in chars:
+        aliases = _parse_character_aliases(getattr(c, "aliases", None))
+        if aliases:
+            parts.append(f"{c.name}（别名：{'、'.join(aliases)}）")
+        else:
+            parts.append(c.name)
+    return "、".join(parts) if parts else "（暂无）"
+
 
 # 自动补角色的存在度门禁（issue #184）：名字需要在至少这么多章的正文里出现。
 # 只出现 1-2 章的角色是"两句领盒饭"的散角，建行会占满
@@ -462,6 +552,25 @@ def _finalize_skipped_chapters(skipped: Optional[list[dict[str, Any]]]) -> list[
     return sorted(unique.values(), key=lambda e: (e.get("chapter_number") or 0, e.get("scope") or ""))
 
 
+def _metric_override_note(key: str, model_value: Any, measured_value: Any) -> Optional[str]:
+    """返回偏差 >30% 的指标对比串（``key 模型值->实测值``）；不满足时返回 None。
+
+    只做数值比较与格式化，调用方写日志时不会带入原文（issue #279）。
+    """
+    if not isinstance(model_value, (int, float)) or isinstance(model_value, bool):
+        return None
+    model = float(model_value)
+    measured = float(measured_value)
+    if measured == 0:
+        # 实测为 0 时相对偏差无定义：模型给出非零值按 100% 计入
+        deviation = 0.0 if model == 0 else float("inf")
+    else:
+        deviation = abs(model - measured) / abs(measured)
+    if deviation <= 0.3:
+        return None
+    return f"{key} {model_value}->{measured_value}"
+
+
 @dataclass
 class _StepFailure:
     """记录某个生成步骤的失败信息"""
@@ -510,6 +619,8 @@ class _BookImportTask:
     error_params: Optional[dict] = None
     # 已成功落库标记：活动任务查询据此过滤，避免把已应用的导入当成可恢复任务
     applied: bool = False
+    # 职业体系生成模式（auto/skip/force），供重试时沿用
+    career_system_mode: str = "auto"
     # issue #254：进入文笔画像步骤前项目是否原本没有默认风格（覆盖导入判定用；
     # _ensure_project_default_style 会先插入首预设，因此必须提前记录）。
     default_style_was_missing: bool = True
@@ -696,6 +807,7 @@ class BookImportService:
                 content_language=task.content_language,
                 skipped_chapters=skipped,
                 merge_existing_world=(payload.import_mode == "append"),
+                career_system_mode=payload.career_system_mode,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -884,38 +996,47 @@ class BookImportService:
                 )
 
             # -- 步骤5: 生成职业体系 (40-65%)
-            await _notify("💼 正在生成职业体系...", 42, code="import.progress.generatingCareers")
-            try:
-                generated_careers = await self._generate_career_system_from_project(
-                    db=db,
-                    user_id=user_id,
-                    project=project,
-                    ai_service=ai_service,
-                    progress_callback=progress_callback,
-                    progress_range=(42, 65),
-                    chapters=chapters_to_import,
-                    content_language=task.content_language,
-                )
-                statistics["generated_careers"] = generated_careers
-                await _notify(
-                    f"💼 职业体系生成完成（{generated_careers}个）", 65,
-                    code="import.progress.careersDone",
-                    params={"careers": generated_careers},
-                )
-            except Exception as exc:
-                logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
-                failed_steps.append(_StepFailure(
-                    step_name="career_system",
-                    step_label="职业体系生成",
-                    error_message=str(exc),
-                    error_code=getattr(exc, "code", None),
-                    error_params=getattr(exc, "params", None) or None,
-                ))
-                await _notify(
-                    f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
-                    code="import.progress.careersFailed",
-                    params={"error": str(exc)[:80]},
-                )
+            task.career_system_mode = payload.career_system_mode
+            if payload.career_system_mode == "skip":
+                statistics["generated_careers"] = 0
+                await _notify("💼 已跳过职业体系生成", 65, code="import.progress.careersSkipped")
+            else:
+                await _notify("💼 正在生成职业体系...", 42, code="import.progress.generatingCareers")
+                try:
+                    generated_careers = await self._generate_career_system_from_project(
+                        db=db,
+                        user_id=user_id,
+                        project=project,
+                        ai_service=ai_service,
+                        progress_callback=progress_callback,
+                        progress_range=(42, 65),
+                        chapters=chapters_to_import,
+                        content_language=task.content_language,
+                        career_system_mode=payload.career_system_mode,
+                    )
+                    statistics["generated_careers"] = generated_careers
+                    if generated_careers == 0:
+                        await _notify("💼 本作品无需职业体系，已跳过", 65, code="import.progress.careersSkipped")
+                    else:
+                        await _notify(
+                            f"💼 职业体系生成完成（{generated_careers}个）", 65,
+                            code="import.progress.careersDone",
+                            params={"careers": generated_careers},
+                        )
+                except Exception as exc:
+                    logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
+                    failed_steps.append(_StepFailure(
+                        step_name="career_system",
+                        step_label="职业体系生成",
+                        error_message=str(exc),
+                        error_code=getattr(exc, "code", None),
+                        error_params=getattr(exc, "params", None) or None,
+                    ))
+                    await _notify(
+                        f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
+                        code="import.progress.careersFailed",
+                        params={"error": str(exc)[:80]},
+                    )
 
             # -- 步骤6: 生成角色/组织 (65-92%)
             character_count_target = max(project.character_count or 0, 5)
@@ -1306,6 +1427,7 @@ class BookImportService:
                             progress_range=(step_start_pct, step_end_pct),
                             chapters=chapters_for_retry,
                             content_language=task.content_language,
+                            career_system_mode=task.career_system_mode,
                         )
                         retry_results["generated_careers"] = result
                         await _notify(
@@ -2405,15 +2527,15 @@ class BookImportService:
     def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = _DEFAULT_EXCERPT_CHARS) -> str:
         """把章节原文构建为 excerpt 文本（Tier2 拆书喂全文）。
 
-        与关系抽取对齐：每章截取前 per_chapter_chars 字符，按章节号正序
-        拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
+        与关系抽取对齐：每章按首尾比例（60% 开头 + 40% 结尾）截取 per_chapter_chars 字符，
+        按章节号正序拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
         """
         parts = []
         for c in sorted(chapters, key=lambda x: x.chapter_number):
             content = (c.content or "").strip()
             if not content:
                 continue
-            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
+            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{_slice_chapter_head_tail(content, per_chapter_chars)}")
         return "\n\n".join(parts)
 
     def _build_import_fulltext(
@@ -2744,6 +2866,7 @@ class BookImportService:
         content_language: Optional[str] = None,
         skipped_chapters: Optional[list[dict[str, Any]]] = None,
         merge_existing_world: bool = False,
+        career_system_mode: str = "auto",
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -2770,6 +2893,7 @@ class BookImportService:
             chapters=chapters,
             model_name=model_name,
             content_language=content_language,
+            career_system_mode=career_system_mode,
         )
 
         generated_entities = await self._generate_characters_and_organizations_from_project(
@@ -2946,12 +3070,15 @@ class BookImportService:
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
         content_language: Optional[str] = None,
+        career_system_mode: str = "auto",
     ) -> int:
-        """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
+        """根据项目世界观生成职业体系（auto: 0-3 主职业；force: 1-3 主职业；skip: 跳过）。
 
         拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
         让职业体系基于真实正文生成（预算来自实发模型实测/声明的上下文窗口）。
         """
+        if career_system_mode == "skip":
+            return 0
 
         async def _notify(
             msg: str,
@@ -2992,13 +3119,15 @@ class BookImportService:
             full_book_context=full_book_context,
             content_language=generation_language,
         )
+        if career_system_mode == "force":
+            prompt += "\n\n【强制生成要求】用户已明确要求为本项目生成职业体系，请务必设计至少 1 个主职业（main_careers 不可为空）。"
 
         await _notify("💼 AI正在生成职业体系...", 0.3, code="import.progress.careersAiGenerating")
         career_data = await ai_service.call_with_json_retry(
             prompt=prompt,
             max_retries=3,
             expected_type="object",
-            validator=validate_career_system,
+            validator=lambda d: validate_career_system(d, allow_empty=(career_system_mode != "force")),
         )
 
         await _notify("💼 正在解析职业数据...", 0.7, code="import.progress.careersParsing")
@@ -4004,7 +4133,8 @@ class BookImportService:
         ai_service: AIService,
         generation_language: Optional[str],
         skipped: list[dict[str, Any]],
-        per_chapter_chars: int = 1800,
+        known_characters: str = "（暂无）",
+        per_chapter_chars: int = 3600,
     ) -> list[Any]:
         """批量关系抽取；命中内容审核时按章二分降级（issue #168）。
 
@@ -4014,13 +4144,14 @@ class BookImportService:
         - 其他异常一律向上抛（非审核类错误不得被降级逻辑吞掉）。
         """
         chapters_text = "\n\n".join(
-            f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')[:per_chapter_chars]}"
+            f"【第{c.chapter_number}章 {c.title}】\n{_slice_chapter_head_tail(c.content or '', per_chapter_chars)}"
             for c in batch
         )
         prompt = PromptService.format_prompt(
             template,
             title=project.title or "未命名",
             genre=project.genre or "通用",
+            known_characters=known_characters,
             chapters_text=chapters_text,
             content_language=generation_language,
         )
@@ -4050,6 +4181,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters,
                 per_chapter_chars=per_chapter_chars,
             )
             right = await self._extract_relationship_batch(
@@ -4059,6 +4191,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters,
                 per_chapter_chars=per_chapter_chars,
             )
             return left + right
@@ -4093,14 +4226,15 @@ class BookImportService:
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
 
         # 名称来源约束：自动补角色名必须出现在原文中，否则标记 AI 补充。
-        # 与模型所见一致：每批喂 1800 字符/章，这里用同一 excerpt 口径做匹配源。
-        source_text = self._build_chapter_excerpt(chapters)
+        # 与模型所见一致：每批喂 3600 字符/章（首尾切片），这里用同一 excerpt 口径做匹配源。
+        source_text = self._build_chapter_excerpt(chapters, per_chapter_chars=3600)
 
         # 预加载角色与关系，便于名称匹配与去重
         chars = (
             await db.execute(select(Character).where(Character.project_id == project.id))
         ).scalars().all()
         char_by_name: dict[str, Character] = {c.name: c for c in chars}
+        known_characters_text = _format_known_characters(chars)
         # 别名→角色 精确映射：AI 关系输出用别名（"姐姐"/"小妍"）指代角色时，
         # 解析到既有角色，而不是新建一个重复角色
         alias_to_char: dict[str, Character] = _build_alias_to_char_map(chars)
@@ -4156,6 +4290,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters_text,
             )
             for item in items:
                 if not isinstance(item, dict):
@@ -4198,7 +4333,7 @@ class BookImportService:
                         name not in char_by_name
                         and name not in alias_to_char
                         and not _is_first_person_alias_name(name)
-                        and name not in _GENERIC_PERSON_NAMES
+                        and not _is_generic_epithet(name)
                         and _chapter_mentions(name) >= _MIN_CHAPTERS_FOR_AUTO_CHARACTER
                         and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
                     ):
@@ -4252,9 +4387,11 @@ class BookImportService:
                     merged_type_ids = [tid for tid in {matched.relationship_type_id, *type_ids} if tid is not None]
                     await sync_relationship_links(db, matched, merged_type_ids)
                     if matched.source != "manual":
-                        note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
-                        if note:
-                            matched.description = (matched.description + "\n" + note).strip()
+                        matched.description = _merge_chapter_relationship_note(
+                            matched.description,
+                            item.get("chapter_number", "?"),
+                            item.get("description") or "",
+                        )
                     merged = True
                     extracted_count += 1
                 else:
@@ -4317,66 +4454,239 @@ class BookImportService:
                 "confidence": None,
             }
 
+        # 本地统计只算一次：模型失败兜底与「实测覆盖 metrics」共用同一份结果
+        local_profile = local_stats_fallback(sample)
+        metrics_sample = build_corpus_sample(chapters)
+        measured_metrics = (
+            local_profile["metrics"]
+            if not metrics_sample.text.strip()
+            else local_stats_fallback(metrics_sample)["metrics"]
+        )
+        fingerprint = analyze_corpus_fingerprint(chapters)
+
+        batches = build_multi_scene_batches(chapters, mode=extract_mode)
+        if not batches:
+            batches = [sample]
+
+        merged_numbers: list[int] = []
+        merged_ranges: list[dict[str, int]] = []
+        merged_chars = 0
+        for batch in batches:
+            for ch_no in (batch.meta or {}).get("chapter_numbers") or []:
+                if ch_no not in merged_numbers:
+                    merged_numbers.append(ch_no)
+            merged_ranges.extend((batch.meta or {}).get("ranges") or [])
+            merged_chars += int((batch.meta or {}).get("char_count") or 0)
+        merged_numbers.sort()
+        merged_sample = StyleSample(
+            text="\n\n".join(batch.text for batch in batches),
+            meta={
+                "chapter_numbers": merged_numbers,
+                "ranges": merged_ranges,
+                "char_count": merged_chars,
+                "strategy": (batches[0].meta or {}).get("strategy") or "layered",
+                "tail": extract_mode == "tail",
+                "truncated": any(bool((b.meta or {}).get("truncated")) for b in batches),
+            },
+        )
+
         degraded = False
         generation_language = "zh"
+        active_sample = merged_sample
         try:
-            # AI 服务构建/语言解析/模板获取同属"抽取链路"：任一失败都走本地统计
-            # 兜底（degraded），不产生失败步骤（计划 §5.5）。
             ai_service = ai_service or await self._build_user_ai_service(db=db, user_id=user_id)
-            # 解析最终生成语言：任务级 per-gen override > 用户偏好 > UI 语言 > zh
             generation_language = await resolve_user_generation_language(
                 db, user_id, content_language
             )
-            template = await PromptService.get_template("BOOK_IMPORT_STYLE_PROFILE", user_id, db)
-            prompt = PromptService.format_prompt(
-                template,
-                title=project.title or "",
-                genre=project.genre or "",
-                theme=project.theme or "",
-                narrative_perspective=project.narrative_perspective or "",
-                sampled_text=sample.text,
-                sample_meta=json.dumps(sample.meta, ensure_ascii=False),
-                content_language=generation_language,
-            )
-            data = await ai_service.call_with_json_retry(
-                prompt=prompt,
-                temperature=0.2,
-                max_tokens=2000,
-                max_retries=1,
-                expected_type="object",
-                validator=lambda payload: validate_style_profile(
-                    payload, sampled_text=sample.text
-                ),
-            )
+            fingerprint_json = json.dumps(fingerprint, ensure_ascii=False)
+            if len(batches) == 1:
+                batch = batches[0]
+                active_sample = batch
+                template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
+                )
+                prompt = PromptService.format_prompt(
+                    template,
+                    title=project.title or "",
+                    genre=project.genre or "",
+                    theme=project.theme or "",
+                    narrative_perspective=project.narrative_perspective or "",
+                    corpus_fingerprint=fingerprint_json,
+                    batch_observations="无（单批完整样本）",
+                    sampled_text=batch.text,
+                    sample_meta=json.dumps(batch.meta, ensure_ascii=False),
+                    content_language=generation_language,
+                )
+                data = await ai_service.call_with_json_retry(
+                    prompt=prompt,
+                    temperature=0.1,
+                    max_tokens=8192,
+                    max_retries=3,
+                    auto_mcp=False,
+                    reasoning_effort="low",
+                    expected_type="object",
+                    validator=lambda payload: validate_style_profile(
+                        payload, sampled_text=batch.text
+                    ),
+                )
+            else:
+                batch_template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_BATCH", user_id, db
+                )
+
+                # 顺序错峰请求，避免并发瞬间触发上游 503 限流；给足 max_tokens 并设 low 思考预算防止推理吃光输出
+                observations: list[dict[str, Any]] = []
+                for idx, batch_item in enumerate(batches):
+                    if idx > 0:
+                        await asyncio.sleep(0.35)
+                    batch_prompt = PromptService.format_prompt(
+                        batch_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        sampled_text=batch_item.text,
+                        sample_meta=json.dumps(batch_item.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    try:
+                        obs = await ai_service.call_with_json_retry(
+                            prompt=batch_prompt,
+                            temperature=0.1,
+                            max_tokens=8192,
+                            max_retries=3,
+                            auto_mcp=False,
+                            reasoning_effort="low",
+                            expected_type="object",
+                            validator=lambda payload, txt=batch_item.text: validate_batch_observation(
+                                payload, sampled_text=txt
+                            ),
+                        )
+                        if isinstance(obs, dict):
+                            observations.append(
+                                {
+                                    "chapters": (batch_item.meta or {}).get("chapter_numbers") or [],
+                                    **obs,
+                                }
+                            )
+                    except Exception as batch_exc:
+                        if isinstance(batch_exc, ApiError) and (
+                            getattr(batch_exc, "status", 0) in (401, 403)
+                            or str(getattr(batch_exc, "code", "")).startswith("validation.")
+                        ):
+                            raise
+                        logger.warning(
+                            "拆书导入：多场景文笔观察第 %s 批跳过（异常类型 %s，章节 %s）",
+                            idx + 1,
+                            type(batch_exc).__name__,
+                            (batch_item.meta or {}).get("chapter_numbers") or "-",
+                        )
+
+                reduce_template = await PromptService.get_template(
+                    "BOOK_IMPORT_STYLE_PROFILE_V2", user_id, db
+                )
+                if not observations:
+                    # 极端情况全部批次跳过时，退回单批精简样本再尝试一次 Reduce，避免直接全量退化
+                    active_sample = sample
+                    fallback_prompt = PromptService.format_prompt(
+                        reduce_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        theme=project.theme or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        corpus_fingerprint=fingerprint_json,
+                        batch_observations="无（由单批代表样本直接归纳）",
+                        sampled_text=sample.text,
+                        sample_meta=json.dumps(sample.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    data = await ai_service.call_with_json_retry(
+                        prompt=fallback_prompt,
+                        temperature=0.1,
+                        max_tokens=8192,
+                        max_retries=3,
+                        auto_mcp=False,
+                        reasoning_effort="low",
+                        expected_type="object",
+                        validator=lambda payload: validate_style_profile(
+                            payload, sampled_text=sample.text
+                        ),
+                    )
+                else:
+                    reduce_prompt = PromptService.format_prompt(
+                        reduce_template,
+                        title=project.title or "",
+                        genre=project.genre or "",
+                        theme=project.theme or "",
+                        narrative_perspective=project.narrative_perspective or "",
+                        corpus_fingerprint=fingerprint_json,
+                        batch_observations=json.dumps(observations, ensure_ascii=False),
+                        sampled_text="（已由多场景分批观察汇总，请基于全书指纹与分批观察综合归纳）",
+                        sample_meta=json.dumps(merged_sample.meta, ensure_ascii=False),
+                        content_language=generation_language,
+                    )
+                    data = await ai_service.call_with_json_retry(
+                        prompt=reduce_prompt,
+                        temperature=0.1,
+                        max_tokens=8192,
+                        max_retries=3,
+                        auto_mcp=False,
+                        reasoning_effort="low",
+                        expected_type="object",
+                        validator=lambda payload: validate_style_profile(
+                            payload, sampled_text=merged_sample.text
+                        ),
+                    )
         except Exception as exc:
-            # 日志安全：只记录异常类型与章号，不打印提示词/原文
+            active_sample = sample
             logger.warning(
                 "拆书导入：文笔画像抽取失败，改用本地统计兜底"
-                f"（异常类型 {type(exc).__name__}，章节 {sample.meta.get('chapter_numbers') or '-'}）"
+                f"（异常类型 {type(exc).__name__}，章节 {active_sample.meta.get('chapter_numbers') or '-'}）"
             )
-            data = local_stats_fallback(sample)
+            data = local_profile
             degraded = True
 
         if not isinstance(data, dict):
-            # 兜底产物也可能被异常路径污染，保证后续 .get 安全
-            data = local_stats_fallback(sample)
+            active_sample = sample
+            data = local_profile
             degraded = True
 
+        model_metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+        deviations = [
+            note
+            for key, value in measured_metrics.items()
+            for note in (_metric_override_note(key, model_metrics.get(key), value),)
+            if note
+        ]
+        if deviations:
+            logger.info(
+                "文笔画像：metrics 以实测覆盖模型估计（偏差>30%%: %s）",
+                ", ".join(deviations),
+            )
+        merged_data: dict[str, Any] = {**data, "metrics": measured_metrics}
+        if int(merged_data.get("version") or 1) >= 2 and fingerprint:
+            merged_data["fingerprint"] = fingerprint
+        data = reconcile_advice_with_metrics(merged_data, measured_metrics)
+
+        active_chars = int((active_sample.meta or {}).get("char_count") or 0) or sample_chars
         return {
             "skipped": False,
             "prompt_content": render_style_profile(
                 data,
-                sample.meta,
+                active_sample.meta,
                 title=project.title or "",
                 language=generation_language or "zh",
             ),
-            "description": self._describe_style_sample(sample, extract_mode),
+            "description": self._describe_style_sample(active_sample, extract_mode),
             "degraded": degraded,
             "confidence": data.get("confidence"),
-            "sample_chars": sample_chars,
-            "profile_data": {**data, "source": "local" if degraded else "model"},
+            "sample_chars": active_chars,
+            "profile_data": {
+                **data,
+                "source": "local" if degraded else "model",
+                "metrics_source": "measured",
+            },
             "profile_version": int(data.get("version") or 1),
-            "ranges": list(sample.meta.get("ranges") or []),
+            "ranges": list(active_sample.meta.get("ranges") or []),
         }
 
     @staticmethod

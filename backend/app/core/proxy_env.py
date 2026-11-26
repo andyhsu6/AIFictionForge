@@ -8,7 +8,9 @@
 `all://*[::1]` 这种非法挂载。于是任何走 httpx 的功能（AI 对话、模型探测、
 封面生成……）在「创建客户端」这一步直接 500，错误信息与业务完全无关。
 
-NO_PROXY 规范里 IPv6 写不写方括号语义相同，因此启动时去掉方括号即可，行为不变。
+NO_PROXY 规范里 IPv6 写不写方括号语义相同，因此启动时归一化即可：无端口条目
+去掉方括号（httpx 会重新加回），带端口条目改写成 httpx 接受且无歧义的
+`all://[ipv6]:port` 形式（issue #259 复审）。
 放在 `app/__init__` 里执行：无论 uvicorn 从哪个 shell（带不带代理环境）启动，
 也无论测试如何导入 `app.*`，都会先归一化一次。
 """
@@ -19,18 +21,35 @@ import os
 _NO_PROXY_KEYS = ("NO_PROXY", "no_proxy")
 
 
+def _normalize_entry(host: str) -> str:
+    """归一化单个 NO_PROXY 条目里的方括号 IPv6。
+
+    - `[::1]` -> `::1`：httpx 会重新加方括号并生成合法挂载；
+    - `[::1]:8080` -> `all://[::1]:8080`：带端口的方括号条目**不能**简单去括号，
+      否则 `::1:8080` 会被当成另一个合法 IPv6 地址（端口被吞、目标也会变）。
+      httpx 对含 `://` 的条目原样采用，这是唯一无歧义的表示。
+    """
+    if not host.startswith("["):
+        return host
+    end = host.find("]")
+    if end == -1:
+        return host
+    inner = host[1:end]
+    rest = host[end + 1:]
+    if not rest:
+        return inner
+    if rest.startswith(":"):
+        return f"all://[{inner}]{rest}"
+    return inner + rest
+
+
 def normalize_no_proxy(value: str) -> str:
-    """把 NO_PROXY 列表里形如 `[::1]` / `[::1]:8080` 的 IPv6 条目去掉方括号。"""
+    """把 NO_PROXY 列表里的方括号 IPv6 条目归一化为 httpx 可接受的写法。"""
     hosts: list[str] = []
     for raw in value.split(","):
         host = raw.strip()
-        if not host:
-            continue
-        if host.startswith("["):
-            end = host.find("]")
-            if end != -1:
-                host = host[1:end] + host[end + 1:]
-        hosts.append(host)
+        if host:
+            hosts.append(_normalize_entry(host))
     return ",".join(hosts)
 
 

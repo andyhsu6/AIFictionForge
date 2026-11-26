@@ -8,6 +8,7 @@ from app.logger import get_logger, summarize_log_value
 from app.services.ai_clients.output_caps import (
     clamp_to_known_ceiling,
     learn_output_ceiling,
+    remember_output_ceiling,
 )
 from app.services.ai_config import AIClientConfig
 from app.utils.reasoning_text import (
@@ -19,6 +20,63 @@ from app.utils.reasoning_text import (
 from .base_client import BaseAIClient, _enrich_http_status_error
 
 logger = get_logger(__name__)
+
+# 已知不接受 `stream_options.include_usage` 的网关（按 base_url 归一化后缓存）。
+# 目的：第一次撞 400 后学习一次，后续请求不再重复「先失败一次」。
+_STREAM_USAGE_UNSUPPORTED_BASE_URLS: set = set()
+
+
+def _stream_usage_cache_key(base_url: Optional[str]) -> str:
+    return (base_url or "").strip().rstrip("/").lower()
+
+
+def stream_usage_supported(base_url: Optional[str]) -> bool:
+    """该网关是否还没被证明「不支持 stream_options.include_usage」。"""
+    return _stream_usage_cache_key(base_url) not in _STREAM_USAGE_UNSUPPORTED_BASE_URLS
+
+
+def mark_stream_usage_unsupported(base_url: Optional[str]) -> None:
+    _STREAM_USAGE_UNSUPPORTED_BASE_URLS.add(_stream_usage_cache_key(base_url))
+
+
+# 已知不接受顶层 `reasoning_effort` 的网关（按 base_url 归一化后缓存）。
+# 该字段现在默认随每次章节生成发出，若某网关对未知字段回 400 而这里不降级，
+# 整章生成会直接失败且用户无法关闭 —— 与 stream_options 同一类风险，同一套处置。
+_REASONING_EFFORT_UNSUPPORTED_BASE_URLS: set = set()
+
+
+def reasoning_effort_supported(base_url: Optional[str]) -> bool:
+    """该网关是否还没被证明「不接受 reasoning_effort」。"""
+    return _stream_usage_cache_key(base_url) not in _REASONING_EFFORT_UNSUPPORTED_BASE_URLS
+
+
+def mark_reasoning_effort_unsupported(base_url: Optional[str]) -> None:
+    _REASONING_EFFORT_UNSUPPORTED_BASE_URLS.add(_stream_usage_cache_key(base_url))
+
+
+def _mentions_reasoning_effort(error_text: str) -> bool:
+    """400 的 body 是否在抱怨 reasoning_effort 字段。"""
+    text = (error_text or "").lower()
+    return "reasoning_effort" in text or "reasoning effort" in text
+
+
+# 网关拒绝 max_tokens 但不报具体上限时（实测 gpt-6-luna：
+# "The value of 'max_tokens' is above this model's limit. Lower it and retry."），
+# 没有数字可学，只能退到一个保守预算再试一次，否则整章生成直接失败。
+_MAX_TOKENS_REJECTION_FALLBACK = 64000
+
+
+def _mentions_max_tokens_limit(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    return "max_tokens" in text and any(
+        hint in text for hint in ("limit", "above", "exceed", "too large", "too long")
+    )
+
+
+def _mentions_stream_options(error_text: str) -> bool:
+    """400 的 body 是否在抱怨 stream_options / include_usage 这两个字段。"""
+    text = (error_text or "").lower()
+    return "stream_options" in text or "include_usage" in text
 
 
 def _message_content_length(content: Any) -> int:
@@ -113,6 +171,10 @@ class OpenAIClient(BaseAIClient):
             payload.update(self.extra_body)
         if stream:
             payload["stream"] = True
+            # 流式 usage（含 completion_tokens_details.reasoning_tokens）默认不返回，
+            # 必须显式开启；不支持该字段的网关在下面按 400 降级并记忆。
+            if stream_usage_supported(self.base_url):
+                payload["stream_options"] = {"include_usage": True}
         if uses_minimax_api(model, self.base_url):
             # MiniMax otherwise embeds <think> in the visible chapter text.
             # extra_body is the SDK name; the HTTP JSON body uses the raw field.
@@ -173,6 +235,7 @@ class OpenAIClient(BaseAIClient):
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_tokens": usage.get("total_tokens"),
+                "completion_tokens_details": usage.get("completion_tokens_details"),
             },
         }
 
@@ -185,6 +248,7 @@ class OpenAIClient(BaseAIClient):
         tools: Optional[list] = None,
         tool_choice: Optional[str] = None,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         流式生成，支持工具调用
@@ -196,6 +260,11 @@ class OpenAIClient(BaseAIClient):
             - done: bool - 是否结束
         """
         payload = self._build_payload(messages, model, temperature, max_tokens, tools, tool_choice, stream=True, response_format=response_format)
+        # 思考强度档位（OpenAI 兼容网关透传）：实测同一提示词下 low 档推理量从
+        # 1.9-3.6 万 token 降到 100-300，是本项目章节生成延迟的主控变量。
+        # 该网关已被证明不接受此字段时不再发（否则每次生成都要先吃一次 400）。
+        if reasoning_effort and reasoning_effort_supported(self.base_url):
+            payload["reasoning_effort"] = reasoning_effort
         
         tool_calls_buffer = {}  # 收集工具调用块
         content_chars = 0
@@ -209,14 +278,122 @@ class OpenAIClient(BaseAIClient):
                 except httpx.HTTPStatusError as e:
                     # 必须在流上下文内 await 读取 body，退出 async with 后将无法再读取
                     enriched = await _enrich_http_status_error(e)
-                    # 流已经打开，本次无法原地重发；但学到的上限会让下一次调用
-                    # （含 call_with_json_retry 自带重试）直接落在网关接受的预算内。
-                    learn_output_ceiling(
+                    # 兼容不支持 stream_options.include_usage 的网关：去掉该字段重试一次。
+                    # 先记忆 base_url 再递归，嵌套调用的 _build_payload 就不会再加回来，
+                    # 因此不会无限递归；该 base_url 后续请求也不再先撞一次 400。
+                    if "stream_options" in payload and _mentions_stream_options(str(enriched)):
+                        mark_stream_usage_unsupported(self.base_url)
+                        logger.warning(
+                            "网关不接受 stream_options.include_usage，去掉该字段重试一次: "
+                            "model=%s, status=%s, body=%s",
+                            model,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=reasoning_effort,
+                        ):
+                            yield retry_chunk
+                        return
+                    if reasoning_effort and _mentions_reasoning_effort(str(enriched)):
+                        # 网关不认这个字段：记忆到 base_url，去掉字段原地重试一次。
+                        # 递归有界：重试时 reasoning_effort=None，不再进入本分支。
+                        mark_reasoning_effort_unsupported(self.base_url)
+                        logger.warning(
+                            "网关不接受 reasoning_effort，去掉该字段重试一次: "
+                            "model=%s, effort=%s, status=%s, body=%s",
+                            model,
+                            reasoning_effort,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=None,
+                        ):
+                            yield retry_chunk
+                        return
+                    # 网关报出了更低的上限（issue #147）：预算给足后第一次撞上就在这里
+                    # 原地重发，不让这次生成白失败。`clamp_to_known_ceiling` 保证下一次
+                    # payload 的 max_tokens <= learned；学到同值不会再次变小（learn 只在
+                    # value < requested 时记录），故递归有界。
+                    learned = learn_output_ceiling(
                         base_url=self.base_url,
                         model=model,
                         body=str(enriched),
                         requested_max_tokens=payload["max_tokens"],
                     )
+                    if (
+                        learned is None
+                        and payload["max_tokens"] > _MAX_TOKENS_REJECTION_FALLBACK
+                        and _mentions_max_tokens_limit(str(enriched))
+                    ):
+                        # 报错没给数字（学不到上限）：退到保守预算原地重试一次。
+                        # 递归有界：退到 64000 后再被拒时该分支不再成立，直接抛错。
+                        # 下界：请求值本身 ≤ 64000 时不走这条（否则等于空试一次），
+                        # 这类模型维持原来的"拒绝即失败"行为。
+                        logger.warning(
+                            "网关拒绝 max_tokens 但未报出上限，退到保守预算重试一次: "
+                            "model=%s, max_tokens=%s -> %s, body=%s",
+                            model,
+                            payload["max_tokens"],
+                            _MAX_TOKENS_REJECTION_FALLBACK,
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=_MAX_TOKENS_REJECTION_FALLBACK,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=reasoning_effort,
+                        ):
+                            yield retry_chunk
+                        # 重试成功才记：该 (网关, 模型) 下次直接用已验证的预算，
+                        # 不再固定多付一次注定失败的 400。
+                        remember_output_ceiling(
+                            base_url=self.base_url,
+                            model=model,
+                            ceiling=_MAX_TOKENS_REJECTION_FALLBACK,
+                        )
+                        return
+                    if learned is not None and learned < payload["max_tokens"]:
+                        logger.warning(
+                            "网关报出更低的输出上限，按该上限原地重试一次: "
+                            "model=%s, max_tokens=%s -> %s, status=%s, body=%s",
+                            model,
+                            payload["max_tokens"],
+                            learned,
+                            getattr(e.response, "status_code", None),
+                            str(enriched)[:200],
+                        )
+                        async for retry_chunk in self.chat_completion_stream(
+                            messages=messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=learned,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            response_format=response_format,
+                            reasoning_effort=reasoning_effort,
+                        ):
+                            yield retry_chunk
+                        return
                     raise enriched from e
                 try:
                     async for line in response.aiter_lines():
@@ -239,6 +416,19 @@ class OpenAIClient(BaseAIClient):
                         try:
                             data = json.loads(data_str)
                             choices = data.get("choices", [])
+                            # usage 必须在 choices 之外解析：开启 include_usage 后，
+                            # 携带 usage 的最后一个 chunk 是 `choices: []`（实测 glm 网关），
+                            # 放在 if choices 里会把它整个丢掉 → reasoning_tokens 永远拿不到。
+                            usage = data.get("usage")
+                            if usage:
+                                yield {
+                                    "usage": {
+                                        "prompt_tokens": usage.get("prompt_tokens"),
+                                        "completion_tokens": usage.get("completion_tokens"),
+                                        "total_tokens": usage.get("total_tokens"),
+                                        "completion_tokens_details": usage.get("completion_tokens_details"),
+                                    }
+                                }
                             if choices and len(choices) > 0:
                                 choice = choices[0]
                                 finish_reason = choice.get("finish_reason") or finish_reason
@@ -263,16 +453,6 @@ class OpenAIClient(BaseAIClient):
                                                         existing["function"].get("arguments", "") +
                                                         tc["function"]["arguments"]
                                                     )
-
-                                usage = data.get("usage")
-                                if usage:
-                                    yield {
-                                        "usage": {
-                                            "prompt_tokens": usage.get("prompt_tokens"),
-                                            "completion_tokens": usage.get("completion_tokens"),
-                                            "total_tokens": usage.get("total_tokens"),
-                                        }
-                                    }
 
                                 if reasoning:
                                     reasoning_chars += len(reasoning)

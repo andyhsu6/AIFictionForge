@@ -123,6 +123,20 @@ class CharacterStateUpdateService:
                 # 死亡/失踪后不再更新心理状态等，直接跳到下一个角色
                 continue
 
+            # 0.5 失踪/退场角色在后续章节重新正常出场时，自动恢复 active（死亡不自动复活）
+            if character.status in ('missing', 'retired'):
+                old_changed_ch = character.status_changed_chapter
+                if old_changed_ch is None or chapter_number > old_changed_ch:
+                    await CharacterStateUpdateService._restore_active_status(
+                        db=db,
+                        project_id=project_id,
+                        character=character,
+                        old_changed_chapter=old_changed_ch,
+                        chapter_number=chapter_number,
+                        changes=result["changes"],
+                    )
+                    result["state_updated_count"] += 1
+
             # 1. 更新心理状态
             state_updated = await CharacterStateUpdateService._update_psychological_state(
                 character=character,
@@ -267,6 +281,54 @@ class CharacterStateUpdateService:
             logger.info(f"  📋 {character.name} {status_desc}，{len(active_members)}个组织身份标记为{member_status}")
 
     @staticmethod
+    async def _restore_active_status(
+        db: AsyncSession,
+        project_id: str,
+        character: Character,
+        old_changed_chapter: Optional[int],
+        chapter_number: int,
+        changes: List[str],
+    ) -> None:
+        """失踪/退场角色在后续章节正常出场时恢复为 active，并恢复当时连带置为 past/retired 的关系与成员身份。"""
+        old_status = character.status
+        character.status = 'active'
+        character.status_changed_chapter = None
+        changes.append(f"✨ {character.name} 重新出场，状态由 {old_status} 恢复为 active")
+        logger.info(f"  ✨ {character.name} 状态恢复: {old_status} → active（第{chapter_number}章）")
+
+        if old_changed_chapter is not None:
+            ended_marker = f"第{old_changed_chapter}章"
+            rels_result = await db.execute(
+                select(CharacterRelationship).where(
+                    and_(
+                        CharacterRelationship.project_id == project_id,
+                        CharacterRelationship.status == 'past',
+                        CharacterRelationship.ended_at == ended_marker,
+                        or_(
+                            CharacterRelationship.character_from_id == character.id,
+                            CharacterRelationship.character_to_id == character.id,
+                        ),
+                    )
+                )
+            )
+            for rel in rels_result.scalars().all():
+                rel.status = 'active'
+                rel.ended_at = None
+
+            members_result = await db.execute(
+                select(OrganizationMember).where(
+                    and_(
+                        OrganizationMember.character_id == character.id,
+                        OrganizationMember.status == 'retired',
+                        OrganizationMember.left_at == ended_marker,
+                    )
+                )
+            )
+            for member in members_result.scalars().all():
+                member.status = 'active'
+                member.left_at = None
+
+    @staticmethod
     async def _update_psychological_state(
         character: Character,
         char_state: Dict[str, Any],
@@ -393,15 +455,22 @@ class CharacterStateUpdateService:
                 intimacy_delta = CharacterStateUpdateService._calculate_intimacy_delta(change_desc)
 
                 if existing_rel:
-                    # 不覆盖原关系名称；只追加章节变化描述
-                    chapter_note = f"[第{chapter_number}章] {change_desc}"
-                    if existing_rel.description:
-                        existing_rel.description = f"{existing_rel.description}\n{chapter_note}"
+                    # 不覆盖原关系名称；按章号幂等替换，避免重跑分析时无限叠加同章记录
+                    chapter_prefix = f"[第{chapter_number}章]"
+                    chapter_note = f"{chapter_prefix} {change_desc}"
+                    lines = (existing_rel.description or "").splitlines()
+                    had_chapter_line = any(line.lstrip().startswith(chapter_prefix) for line in lines)
+                    if had_chapter_line:
+                        new_lines = [
+                            chapter_note if line.lstrip().startswith(chapter_prefix) else line
+                            for line in lines
+                        ]
                     else:
-                        existing_rel.description = chapter_note
+                        new_lines = lines + [chapter_note]
+                    existing_rel.description = "\n".join(line for line in new_lines if line)
 
-                    # 调整亲密度
-                    if intimacy_delta != 0:
+                    # 仅在该章首次写入时调整亲密度，保证重跑分析幂等
+                    if intimacy_delta != 0 and not had_chapter_line:
                         old_intimacy = existing_rel.intimacy_level or 0
                         new_intimacy = max(-100, min(100, old_intimacy + intimacy_delta))
                         existing_rel.intimacy_level = new_intimacy
@@ -707,6 +776,15 @@ class CharacterStateUpdateService:
                     logger.warning(f"  ⚠️ 组织 {org_name} 无详情记录，跳过状态更新")
                     continue
                 
+                # 章节号校验：防止低章节重跑覆盖高章节组织状态
+                if (org_char.state_updated_chapter is not None
+                        and chapter_number < org_char.state_updated_chapter):
+                    logger.info(
+                        f"  ⏭️ 组织 {org_name} 状态已在第{org_char.state_updated_chapter}章更新，"
+                        f"跳过第{chapter_number}章更新"
+                    )
+                    continue
+
                 updated = False
                 change_parts = []
                 
@@ -781,6 +859,7 @@ class CharacterStateUpdateService:
                     updated = True
                 
                 if updated:
+                    org_char.state_updated_chapter = chapter_number
                     result["updated_count"] += 1
                     key_event = org_state.get('key_event', '')
                     change_summary = f"🏛️ {org_name} 状态变化: {', '.join(change_parts)}"

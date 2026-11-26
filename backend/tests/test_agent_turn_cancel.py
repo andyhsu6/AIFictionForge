@@ -79,17 +79,22 @@ def _make_service(db) -> ProjectAgentService:
     )
 
 
-def _slow_model(svc: ProjectAgentService, seconds: float = 30.0) -> None:
+def _slow_model(svc: ProjectAgentService, seconds: float = 30.0) -> asyncio.Event:
+    entered = asyncio.Event()
+
     async def fake_generate_text(**kwargs):
+        entered.set()
         await asyncio.sleep(seconds)
         return {"content": "迟到的回答", "tool_calls": [], "usage": {}}
 
     async def fake_stream_full(**kwargs):
+        entered.set()
         await asyncio.sleep(seconds)
         return {"content": "迟到的回答", "tool_calls": [], "usage": {}}
 
     svc.ai_service.generate_text = fake_generate_text
     svc.ai_service.generate_text_stream_full = fake_stream_full
+    return entered
 
 
 async def _drain(svc: ProjectAgentService, conversation_id: str) -> None:
@@ -125,16 +130,11 @@ async def test_cancel_interrupts_inflight_model_call_and_finalizes(db_session):
     """取消必须中断在飞的模型 await，收尾后不留 running 步骤。"""
     conversation = await _make_conversation(db_session)
     svc = _make_service(db_session)
-    _slow_model(svc, seconds=30)
+    entered = _slow_model(svc, seconds=30)
 
     task = asyncio.create_task(_drain(svc, conversation.id))
-    # 等回合登记并进入模型调用（thought 步骤已 commit，故 running 行可见）。
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if agent_turn_registry.is_active(conversation.id) and await _running_steps(
-            db_session, conversation.id
-        ):
-            break
+    # 等回合真正进入在飞的模型 await（此时 thought 步骤已 commit，不会与同一 AsyncSession 并发冲突）。
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert agent_turn_registry.is_active(conversation.id), "回合未登记 ⇒ 取消接口找不到目标"
     assert await _running_steps(db_session, conversation.id), "前置数据未落出 running 步骤"
 

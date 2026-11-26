@@ -1,6 +1,6 @@
 """写作风格 Schema"""
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict, Optional
+from pydantic import BaseModel, Field, ConfigDict, StrictInt
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 
@@ -59,12 +59,38 @@ class WritingStyleListResponse(BaseModel):
     styles: list[WritingStyleResponse]
 
 
+class StyleProfileRange(BaseModel):
+    """抽样区间（1-based 章号与字符偏移）"""
+
+    chapter: StrictInt = Field(..., ge=1, description="章号（从 1 开始）")
+    start: StrictInt = Field(..., ge=0, description="起始字符偏移")
+    end: StrictInt = Field(..., ge=0, description="结束字符偏移")
+
+
+class ProfileReextractApplyPayload(BaseModel):
+    """前端预览后直接落库的载荷（避免点击应用时重复调用模型抽取）"""
+
+    new_prompt_content: str = Field(..., min_length=1, description="预览得到的提示词内容")
+    new_profile: Dict[str, Any] = Field(..., description="预览得到的结构化画像")
+    description: str = Field(default="", description="样本说明")
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    degraded: bool = Field(default=False, description="该预览结果是否为本地统计降级产物")
+    profile_version: Optional[int] = Field(default=None, ge=1, le=2)
+    ranges: Optional[List[StyleProfileRange]] = Field(
+        default=None, description="抽样区间（用于重建语感锚点）"
+    )
+
+
 class ProfileReextractRequest(BaseModel):
     """重新抽取项目文笔画像（issue #254 P1）"""
 
     dry_run: bool = Field(default=True, description="True 只返回 diff 预览，不写库")
     overwrite_edited: bool = Field(default=False, description="是否覆盖用户已编辑的画像")
     set_default: bool = Field(default=False, description="写库后是否将画像设为项目默认风格")
+    apply_profile: Optional[ProfileReextractApplyPayload] = Field(
+        default=None,
+        description="dry_run=False 时直接校验并应用前端已预览结果，不再重复调用模型",
+    )
 
 
 class ProfileReextractResponse(BaseModel):
@@ -79,8 +105,90 @@ class ProfileReextractResponse(BaseModel):
     description: Optional[str] = None
     confidence: Optional[float] = None
     degraded: bool = False
+    profile_version: Optional[int] = None
+    ranges: Optional[List[Dict[str, Any]]] = None
     updated: bool = Field(default=False, description="是否已写库")
     style_id: Optional[int] = None
     kept_reason: Optional[str] = Field(
-        default=None, description="未写库原因：user_edited=用户已手改且未授权覆盖"
+        default=None,
+        description="未写库原因：user_edited=用户已手改；degraded_fallback=抽取降级保留既有 AI 画像",
     )
+
+
+class VolumeRange(BaseModel):
+    """单卷章节区间（1-based，含端点）"""
+
+    start_chapter: int = Field(..., ge=1, description="起始章号（含）")
+    end_chapter: int = Field(..., ge=1, description="结束章号（含）")
+
+
+class VolumeProfileGenerateRequest(BaseModel):
+    """生成分卷画像（计划 §13-3）：卷序号按列表顺序从 1 开始。"""
+
+    volumes: list[VolumeRange] = Field(..., min_length=1, description="卷区间列表")
+    overwrite_edited: bool = Field(
+        default=False, description="是否覆盖用户已编辑的卷画像（profile_edited）"
+    )
+    dry_run: bool = Field(default=False, description="True 只返回抽取摘要，不写库")
+
+
+class VolumeProfileItem(BaseModel):
+    """单卷抽取/写入结果摘要（不含原文与画像正文）"""
+
+    index: int
+    start_chapter: int
+    end_chapter: int
+    confidence: Optional[float] = None
+    degraded: bool = False
+    skipped: bool = False
+    skip_reason: Optional[str] = Field(
+        default=None, description="insufficient_sample=样本不足；user_edited=手改保护"
+    )
+    style_id: Optional[int] = None
+
+
+class VolumeProfileGenerateResponse(BaseModel):
+    """分卷画像生成结果；锚点沿用全书画像导入时建立的项目级锚点池"""
+
+    volumes: list[VolumeProfileItem]
+    total: int
+    dry_run: bool = False
+    anchors_reused: bool = Field(
+        default=True, description="卷画像不重建锚点，沿用项目级锚点池"
+    )
+    full_profile_created: bool = Field(
+        default=False, description="本次是否补生成了全书画像并设为项目默认"
+    )
+    full_profile_error: bool = Field(
+        default=False, description="全书画像补生成失败（分卷画像仍照常生成）"
+    )
+    full_profile_skipped: bool = Field(
+        default=False, description="全书画像样本不足，未补生成"
+    )
+    full_profile_degraded: bool = Field(
+        default=False, description="全书画像使用本地统计降级结果（未设为默认）"
+    )
+    full_profile_default_kept: bool = Field(
+        default=False, description="全书画像已生成，保留用户手动选择的默认风格"
+    )
+    needs_full_profile: bool = Field(
+        default=False, description="dry_run 预览：项目当前还没有全书画像"
+    )
+
+
+class VolumeProfileInfo(BaseModel):
+    """已存在的卷画像信息"""
+
+    index: int
+    start_chapter: int
+    end_chapter: int
+    style_id: int
+    confidence: Optional[float] = None
+    updated_at: Optional[datetime] = None
+
+
+class VolumeProfileListResponse(BaseModel):
+    """卷画像列表"""
+
+    total: int
+    volumes: list[VolumeProfileInfo]

@@ -26,6 +26,10 @@ class AgentConversation(Base):
         index=True,
     )
     title = Column(String(200), nullable=False, default="新对话")
+    # issue #262：用户显式重命名后为 true，自动标题生成不再覆盖。
+    title_user_edited = Column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     summary = Column(Text)
     status = Column(String(20), nullable=False, default="active")
     last_message_at = Column(DateTime, server_default=func.now(), nullable=False)

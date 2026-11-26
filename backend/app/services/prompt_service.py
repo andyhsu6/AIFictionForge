@@ -1,6 +1,7 @@
 """提示词管理服务"""
 from typing import Dict, Any, Optional
 import json
+import re
 from app.services.language_resolver import (
     GenerationLanguage,
     append_language_instruction,
@@ -697,9 +698,16 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
  }}
 ]
 
-【characters字段说明】
-- type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等
-- 必须区分角色和组织，不要把组织当作角色
+【字段定义】
+- key_points：本章必须发生的关键事件，可验证（谁做了什么、导致什么结果）
+- scenes：具体地点与场景功能（该场景承担什么叙事作用）
+- characters：出场角色与组织；type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等，必须区分，不要把组织当作角色
+- emotion：本章情绪起点→终点（如"戒备→信任"）
+- goal：本章结束时主角/读者状态发生的变化
+
+【取值规范】
+- 禁止使用"未设定""未知""待定"等占位值填充任何字段
+- 无法确定某字段时，省略该字段，不要编造占位内容
 
 【格式规范】
 - 纯JSON数组输出，无markdown标记
@@ -818,9 +826,16 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
  }}
 ]
 
-【characters字段说明】
-- type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等
-- 必须区分角色和组织，不要把组织当作角色
+【字段定义】
+- key_points：本章必须发生的关键事件，可验证（谁做了什么、导致什么结果）
+- scenes：具体地点与场景功能（该场景承担什么叙事作用）
+- characters：出场角色与组织；type为"character"表示个人角色，type为"organization"表示组织/势力/门派/帮派等，必须区分，不要把组织当作角色
+- emotion：本章情绪起点→终点（如"戒备→信任"）
+- goal：本章结束时主角/读者状态发生的变化
+
+【取值规范】
+- 禁止使用"未设定""未知""待定"等占位值填充任何字段
+- 无法确定某字段时，省略该字段，不要编造占位内容
 
 【格式规范】
 - 纯JSON数组输出，无markdown标记
@@ -853,7 +868,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
     
     # 章节生成 - 1-N模式（第1章）
     CHAPTER_GENERATION_ONE_TO_MANY = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task>
@@ -861,7 +876,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 撰写第{chapter_number}章《{chapter_title}》的完整正文。
 
 【基本要求】
-- 目标字数：{target_word_count}字（允许±200字浮动）
+- 建议字数：3000–6000字（仅作参考提倡，不做硬性限制；若本次传入参考目标 {target_word_count} 字，同样以情节自然推进与完整收束为准）
 - 叙事视角：{narrative_perspective}
 </task>
 
@@ -901,7 +916,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ✅ 保持角色性格、说话方式一致
 ✅ 角色互动须符合关系设定（师徒、朋友、敌对等）
 ✅ 组织相关情节须体现成员身份和职位层级
-✅ 字数控制在目标范围内
+✅ 篇幅按情节推进自然收束（提倡 3000–6000 字，不强行凑字或硬性截断）
 ✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
 
 【禁止事项】
@@ -910,6 +925,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ❌ 在结尾处使用开放式反问
 ❌ 添加作者注释或创作说明
 ❌ 角色行为超出其职业阶段的能力范围
+❌ 为凑足字数而注水，或在情节未完时生硬截断
 </constraints>
 
 <output>
@@ -922,7 +938,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-1模式（第1章）
     CHAPTER_GENERATION_ONE_TO_ONE = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task priority="P0">
@@ -930,7 +946,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 撰写第{chapter_number}章《{chapter_title}》的完整正文。
 
 【基本要求】
-- 目标字数：{target_word_count}字（允许±200字浮动）
+- 建议字数：3000–6000字（仅作参考提倡，不做硬性限制；若本次传入参考目标 {target_word_count} 字，同样以情节自然推进与完整收束为准）
 - 叙事视角：{narrative_perspective}
 </task>
 
@@ -963,14 +979,14 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 【必须遵守】
 ✅ 严格按照大纲推进情节
 ✅ 保持角色性格、说话方式一致
-✅ 字数需要严格控制在目标字数内
+✅ 篇幅按情节推进自然收束（提倡 3000–6000 字，不强行凑字或硬性截断）
 ✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
 
 【禁止事项】
 ❌ 输出章节标题、序号等元信息
 ❌ 使用"总之"、"综上所述"等AI常见总结语
 ❌ 添加作者注释或创作说明
-❌ 生成字数禁止超过目标字数
+❌ 为凑足字数而注水，或在情节未完时生硬截断
 </constraints>
 
 <output>
@@ -983,7 +999,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-1模式（第2章及以后）
     CHAPTER_GENERATION_ONE_TO_ONE_NEXT = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task priority="P0">
@@ -991,7 +1007,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 撰写第{chapter_number}章《{chapter_title}》的完整正文。
 
 【基本要求】
-- 目标字数：{target_word_count}字（允许±200字浮动）
+- 建议字数：3000–6000字（仅作参考提倡，不做硬性限制；若本次传入参考目标 {target_word_count} 字，同样以情节自然推进与完整收束为准）
 - 叙事视角：{narrative_perspective}
 </task>
 
@@ -1040,7 +1056,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ✅ 严格按照大纲推进情节
 ✅ 自然承接上一章末尾内容，保持连贯性
 ✅ 保持角色性格、说话方式一致
-✅ 字数需要严格控制在目标字数内
+✅ 篇幅按情节推进自然收束（提倡 3000–6000 字，不强行凑字或硬性截断）
 ✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
 
 【禁止事项】
@@ -1049,7 +1065,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ❌ 在结尾处使用开放式反问
 ❌ 添加作者注释或创作说明
 ❌ 重复上一章已发生的事件
-❌ 生成字数禁止超过目标字数
+❌ 为凑足字数而注水，或在情节未完时生硬截断
 </constraints>
 
 <output>
@@ -1062,7 +1078,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-N模式（第2章及以后）
     CHAPTER_GENERATION_ONE_TO_MANY_NEXT = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task>
@@ -1070,7 +1086,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 撰写第{chapter_number}章《{chapter_title}》的完整正文。
 
 【基本要求】
-- 目标字数：{target_word_count}字（允许±200字浮动）
+- 建议字数：3000–6000字（仅作参考提倡，不做硬性限制；若本次传入参考目标 {target_word_count} 字，同样以情节自然推进与完整收束为准）
 - 叙事视角：{narrative_perspective}
 </task>
 
@@ -1131,7 +1147,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ✅ 保持角色性格、说话方式一致
 ✅ 角色互动须符合关系设定（师徒、朋友、敌对等）
 ✅ 组织相关情节须体现成员身份和职位层级
-✅ 字数控制在目标范围内
+✅ 篇幅按情节推进自然收束（提倡 3000–6000 字，不强行凑字或硬性截断）
 ✅ 如有伏笔提醒，请在本章中适当埋入或回收相应伏笔
 
 【🔴 反重复特别指令】
@@ -1147,6 +1163,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 ❌ 重复叙述上一章已发生的事件（包括环境描写、心理活动）
 ❌ 在开篇使用"接上回"、"书接上文"等套话
 ❌ 角色行为超出其职业阶段的能力范围
+❌ 为凑足字数而注水，或在情节未完时生硬截断
 </constraints>
 
 <output>
@@ -2600,11 +2617,13 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
 <task>
 【设计任务】
-根据世界观信息和项目简介，设计一个完整且合理的职业体系。
-职业体系必须与项目简介中的故事背景和角色设定高度契合。
+首先判断该作品是否属于需要“明确职业/境界/升级阶梯”的题材（如玄幻、仙侠、西幻冒险、网游系统、异能分级等）。
+- 若作品属于传统武侠、悬疑推理、都市写实、言情、历史权谋等**无职业升级体系**的题材，请直接输出空数组：`{{"main_careers": [], "sub_careers": []}}`。
+- ⚠️ 严禁将门派职责、官府差役（如县衙捕快、护院）、日常生计技能（如撑船、验尸、行商）强行包装成 8-12 阶升级职业。
+- 仅当作品确实存在明确的职业分工与阶段晋升体系时，才根据世界观、简介与原文设计契合的职业体系。
 
 【数量要求】
-- 主职业：1-3 个（根据世界观与剧情需要生成，1 到 3 个均可）
+- 主职业：0-3 个（无升级体系题材返回 0 个；有体系题材生成 1 到 3 个）
 - 副职业：0-2 个（可生成 0 到 2 个，没有合适的副职业可不生成）
 </task>
 
@@ -2633,7 +2652,8 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）- 生成 1 到 3 个**
+**1. 主职业（main_careers）- 生成 0 到 3 个**
+- 若作品无明确职业/境界升级体系，main_careers 与 sub_careers 均必须返回空数组 []
 - 主职业是角色的核心发展方向
 - 必须严格符合世界观规则和简介中的故事背景
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
@@ -2918,6 +2938,9 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 书名：{title}
 类型：{genre}
 
+【已知角色与组织名单】
+{known_characters}
+
 【章节内容】
 {chapters_text}
 </input>
@@ -2931,10 +2954,15 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
   "relationship_types": ["泛化关系类型1", "泛化关系类型2"],
   "intimacy_level": 50,
   "status": "active",
-  "description": "关系描述（可包含具体门派、姓名、情节）",
+  "description": "关系描述（可包含具体门派、姓名、情节；若涉及易容伪装或主观误判请明确标注）",
   "chapter_number": 1,
   "evidence": "原文证据片段"
 }}
+
+【角色名规范与防裂变要求】
+1) 优先使用【已知角色与组织名单】中的规范名；若原文出现别名、外号或化名，请对齐到对应规范名。
+2) 严禁把易容伪装、尊称官职、或无名泛称（如“黑衣人”、“蒙面人”、“神秘人”、“灰衣老者”、“店小二”等）拆分为独立角色。
+3) 若正文中存在易容、冒充、化名行事，或角色间的主观误判/误会，必须在 description 中显式标注（例如“【伪装/冒充】……”或“【主观误判】……”），切勿将临时伪装或主观误判写为客观既成事实。
 
 【关系类型泛化要求】
 1) relationship_types 必须是可复用的泛化标签，禁止把具体专名放入类型。
@@ -2948,7 +2976,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 <constraints>
 【必须遵守】
 ✅ 只输出 JSON 数组
-✅ character_a 与 character_b 必须是正文中出现的角色名
+✅ character_a 与 character_b 必须是正文中出现的具名角色（优先对齐已知名单）
 ✅ relationship_types 至少1个，最多4个
 ✅ intimacy_level 为 -100 到 100 整数
 ✅ status 只能是 active/broken/past/complicated
@@ -2957,6 +2985,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 【禁止事项】
 ❌ 输出JSON以外的任何文字
 ❌ 把具体专名作为关系类型
+❌ 把易容伪装、尊称或“黑衣人/蒙面人/老者”等泛称拆成独立角色
 ❌ 臆造原文不存在的角色关系
 </constraints>"""
 
@@ -3049,7 +3078,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 <rules>
 1. 只归纳样本中反复出现的特征：不评价好坏、不设计情节、不补全样本里没有出现过的写法。
 2. 严禁输出原文引文、角色名、书名、地名或任何专有名词；证据只允许写章号。
-3. do/dont 各 3-6 条，每条不超过 40 字，必须可观察可执行（含数字、比例或明确操作）；禁止只写「优美/生动/流畅/细腻/华丽」这类空泛形容词。
+3. do/dont **各必须 3-6 条（少于 3 条视为不合格）**，每条不超过 40 字，必须可观察可执行（含数字、比例或明确操作）；禁止只写「优美/生动/流畅/细腻/华丽」这类空泛形容词。
 4. rhetoric 0-8 条，每条 8 字以内，只写修辞手法的名称与用法。
 5. 比例字段用 0-1 的小数；句长与段落长度用字符数；不确定的数值按样本统计估计，不要填 0。
 6. 用 confidence（0-1）反映样本对全书的代表性。
@@ -3078,8 +3107,103 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
   "diction": {{"register": "语体（书面/口语/文白夹杂）", "concreteness": "具象程度", "idiom_density": "成语与套语密度"}},
   "dialogue": {{"attribution": "说话人标注方式", "tag_density": "对话标签密度"}},
   "rhetoric": ["修辞手法"],
-  "do": ["可量化的写作要求"],
-  "dont": ["可量化的禁止项"],
+  "do": ["平均句长控制在 12-18 字", "对话占比约 30%", "每段不超过 150 字"],
+  "dont": ["避免连续 3 句以上超过 40 字", "避免全知视角插入评论", "避免成语堆砌"],
+  "evidence_chapters": [1]
+}}
+</output>"""
+
+    # 拆书导入 v2 Map 阶段：多场景单批文笔观察（只归纳该批样本在不同场景下的写法，不输出全书总评）
+    BOOK_IMPORT_STYLE_PROFILE_BATCH = """<system>
+你是资深的小说文笔分析师。你的任务是从本批次多场景原文样本中提取质性文笔特征，只归纳、不创作。
+</system>
+
+<task>
+阅读下方标注了场景类型的章节样本，提炼本批次呈现出的语言质地、句式节奏、情绪基调及不同场景下的笔法差异，供后续汇总全书 v2 文笔画像。
+</task>
+
+<rules>
+1. 只归纳样本中真实反复出现的写法，重点留意不同场景（高对话/纯叙事/打斗/情感/铺陈）的笔法变化。
+2. 严禁输出原文引文、角色名、书名、地名或任何专有名词。
+3. 允许并鼓励使用精准的文学风格描述词（如质朴、白描、华丽、克制、直白、古雅、现代口语、舒缓、短促、冷峻、温情等），禁止只写“文笔好/精彩/高级”等空洞夸奖。
+4. 只输出一个 JSON 对象，不要输出 markdown、代码块或任何解释文字。
+</rules>
+
+<input>
+【项目信息】
+书名：{title}
+类型：{genre}
+叙事视角：{narrative_perspective}
+【本批样本范围】
+{sample_meta}
+【本批原文样本】
+{sampled_text}
+</input>
+
+<output>
+只输出下面的 JSON 对象：
+{{
+  "texture": "本批样本的语言质地（文白比例、口语/书面、具体用词风格）",
+  "rhythm": "句式长短与段落呼吸感",
+  "tone": "情绪基调与情感流露方式",
+  "scene_notes": ["场景类型：该场景下的具体笔法特征"],
+  "rhetoric": ["高频修辞或描写习惯"],
+  "do_hints": ["2-4条值得模仿的具体写法"],
+  "dont_hints": ["2-4条与本批文风违背的写法/AI腔"]
+}}
+</output>"""
+
+    # 拆书导入 v2 主模板：基于全书语言指纹与多场景观察归纳文学化文笔画像
+    BOOK_IMPORT_STYLE_PROFILE_V2 = """<system>
+你是资深的小说文笔分析师。你的任务是从原文样本、多场景观察与全书语言指纹中归纳一份精准、可模仿的文学风格画像，只归纳、不创作。
+</system>
+
+<task>
+综合下方全书语言指纹与样本/多场景观察，生成 v2 结构化文笔画像。
+描述写作风格时，必须从「整体印象、语言质地、节奏、修辞、情绪基调、叙事视角」六个维度切入，写出真正能指导 AI 写出原作味道的文字描述，而不是只罗列统计数字。
+</task>
+
+<rules>
+1. impression 必须使用「整体文笔……，句子……，修辞上……，情绪基调……，读起来像……。」的清晰句式（40-120字），一句话抓住全书神韵与题材底色。
+2. 允许且鼓励使用准确的文学风格词汇（质朴/华丽、口语化/书面化、白描/浓烈、克制/直白、冷峻/温情/戏谑等），禁止“文笔好/精彩/出色/高级”等空泛夸奖。
+3. do 与 dont 各必须 3-6 条，每条不超过 60 字，只写质性可执行的写法与题材专属反 AI 腔禁令（不要写平均句长/对话占比等纯数字要求，统计数据会由系统另行附上）。
+4. dont 必须结合全书语言指纹里的「rare_ai_markers」与题材习惯，点名本书不该出现的 AI 套路（如滥用破折号、碎片短段、敲桌/顿了顿等填充动作、议论文对仗总结、装深沉收尾等，仅写符合本书实际违和点的条目）。
+5. 严禁输出任何原文引文、角色名、书名、地名或专有名词；evidence_chapters 只填整数章号。
+6. 整个 JSON 不超过 3000 字；只输出一个 JSON 对象，不要输出 markdown 或解释文字。
+</rules>
+
+<input>
+【项目信息】
+书名：{title}
+类型：{genre}
+主题：{theme}
+叙事视角：{narrative_perspective}
+【全书零Token语言指纹（覆盖全书真实分布）】
+{corpus_fingerprint}
+【多场景分批观察汇总】
+{batch_observations}
+【抽样范围】
+{sample_meta}
+【代表原文样本】
+{sampled_text}
+</input>
+
+<output>
+只输出下面的 JSON 对象，字段名与结构必须完全一致：
+{{
+  "version": 2,
+  "confidence": 0.85,
+  "impression": "整体文笔……，句子……，修辞上……，情绪基调……，读起来像……。",
+  "texture": "语言质地（文白比例、口语/书面程度、用词特点）",
+  "rhythm": "句式与节奏（以长句铺陈还是短句推进，段落是否连贯，不填纯数字口号）",
+  "tone": "情绪基调（冷峻/温情/直白/克制/戏谑等及情绪表达方式）",
+  "narrative": {{"pov": "视角与人称", "tense": "时态", "distance": "叙述距离与补叙习惯"}},
+  "dialogue": {{"attribution": "说话人标注与动作神态引出习惯", "tag_density": "对话标签密度与口语感"}},
+  "rhetoric": ["修辞与描写习惯（如：白描直叙为主、朴素比喻等）"],
+  "scene_shifts": ["高对话/交锋场景：……", "纯叙事/动作/情感场景：……"],
+  "do": ["3-6条质性写法要求"],
+  "dont": ["3-6条违背本书风格的禁令与定制反AI腔规则"],
+  "metrics": {{"avg_sentence_chars": 20, "median_sentence_chars": 18, "short_sentence_ratio": 0.3, "dialogue_ratio": 0.3, "paragraph_chars_p50": 45}},
   "evidence_chapters": [1]
 }}
 </output>"""
@@ -3104,6 +3228,8 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
         Returns:
             格式化后的提示词
         """
+        if "{known_characters}" in template and "known_characters" not in kwargs:
+            kwargs["known_characters"] = "（暂无）"
         try:
             rendered = template.format(**kwargs)
         except KeyError as e:
@@ -3111,6 +3237,20 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
         if content_language in ("zh", "en"):
             rendered = append_language_instruction(rendered, content_language)
         return rendered
+
+    @staticmethod
+    def strip_empty_career_section(prompt: str) -> str:
+        """当项目未启用职业体系时，移除章节生成提示词中的空 <careers> 区块及职业阶段约束。"""
+        if not prompt:
+            return prompt
+        cleaned = re.sub(
+            r"\n*<careers(?:\s+[^>]*)?>\s*【本章职业】\s*(?:暂无职业信息)?\s*</careers>\s*",
+            "\n\n",
+            prompt,
+        )
+        cleaned = re.sub(r"^[ \t]*[-•]?\s*角色的能力表现须符合其职业和阶段设定\s*\n?", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"^[ \t]*❌\s*角色行为超出其职业阶段的能力范围\s*\n?", "", cleaned, flags=re.MULTILINE)
+        return cleaned
     
 
     @classmethod
@@ -3397,7 +3537,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
                 "name": "拆书导入-原文关系抽取",
                 "category": "拆书导入",
                 "description": "从章节正文抽取人物关系并泛化关系类型",
-                "parameters": ["title", "genre", "chapters_text"]
+                "parameters": ["title", "genre", "chapters_text", "known_characters"]
             },
             "BOOK_IMPORT_REVERSE_OUTLINES": {
                 "name": "拆书导入-反向章节大纲",
@@ -3409,12 +3549,30 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
                 ]
             },
             "BOOK_IMPORT_STYLE_PROFILE": {
-                "name": "拆书导入-文笔画像抽取",
+                "name": "拆书导入-文笔画像抽取（v1兼容）",
                 "category": "拆书导入",
                 "description": "从分层抽样的原文样本归纳可量化的文笔画像（只归纳不创作，禁止引文与专名）",
                 "parameters": [
                     "title", "genre", "theme", "narrative_perspective",
                     "sampled_text", "sample_meta"
+                ]
+            },
+            "BOOK_IMPORT_STYLE_PROFILE_BATCH": {
+                "name": "拆书导入-多场景批次文笔观察",
+                "category": "拆书导入",
+                "description": "v2 Map阶段：从单批多场景样本提炼语言质地、节奏、情绪与场景笔法差异",
+                "parameters": [
+                    "title", "genre", "narrative_perspective",
+                    "sampled_text", "sample_meta"
+                ]
+            },
+            "BOOK_IMPORT_STYLE_PROFILE_V2": {
+                "name": "拆书导入-文笔画像抽取v2",
+                "category": "拆书导入",
+                "description": "结合全书语言指纹与多场景观察，归纳六维度文学风格画像与定制反AI腔约束",
+                "parameters": [
+                    "title", "genre", "theme", "narrative_perspective",
+                    "corpus_fingerprint", "batch_observations", "sampled_text", "sample_meta"
                 ]
             },
             "CHARACTERS_BATCH_GENERATION": {

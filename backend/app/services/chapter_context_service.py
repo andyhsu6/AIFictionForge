@@ -15,6 +15,11 @@ from app.models.memory import StoryMemory, PlotAnalysis
 from app.models.foreshadow import Foreshadow
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
 from app.services.relationship_service import relationship_display_name
+from app.services.outline_plan_adapter import (
+    from_expansion_plan,
+    render_plan_text,
+    resolve_plan,
+)
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,20 +34,39 @@ STATUS_LABELS = {
 }
 
 
-def _append_current_state_lines(info_lines: List[str], character: Character) -> None:
-    """向角色上下文注入分析系统维护的最新状态。"""
+def _append_current_state_lines(
+    info_lines: List[str],
+    character: Character,
+    *,
+    target_chapter: Optional[int] = None,
+) -> None:
+    """向角色上下文注入分析系统维护的最新状态。
+
+    `target_chapter` 是本次要写的章号：状态/状态变更如果是**在这之后**推进的
+    （删章后残留、或同步超前），一律不注入——否则模型会把尚未发生的剧情当已知
+    （issue #288）。不传则保持旧行为。
+    """
     status = character.status or "active"
     status_label = STATUS_LABELS.get(status, status)
+    status_chapter = character.status_changed_chapter
+    if target_chapter is not None and status_chapter and int(status_chapter) > int(target_chapter):
+        status_chapter = None
     status_line = f"  当前状态: {status_label}"
-    if character.status_changed_chapter:
-        status_line += f"（第{character.status_changed_chapter}章变更）"
+    if status_chapter:
+        status_line += f"（第{status_chapter}章变更）"
     info_lines.append(status_line)
 
-    if character.current_state:
+    state_chapter = character.state_updated_chapter
+    future_state = (
+        target_chapter is not None
+        and state_chapter is not None
+        and int(state_chapter) > int(target_chapter)
+    )
+    if character.current_state and not future_state:
         current_state = character.current_state[:150] if len(character.current_state) > 150 else character.current_state
         state_line = f"  当前心理/处境: {current_state}"
-        if character.state_updated_chapter:
-            state_line += f"（第{character.state_updated_chapter}章更新）"
+        if state_chapter:
+            state_line += f"（第{state_chapter}章更新）"
         info_lines.append(state_line)
 
 
@@ -117,6 +141,7 @@ class OneToManyContext:
     chapter_outline: str = ""           # 本章大纲（从expansion_plan构建）
     recent_chapters_context: Optional[str] = None  # 最近10章expansion_plan摘要
     full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
+    world_context: Optional[str] = None      # 世界观与力量体系硬边界
     continuation_point: Optional[str] = None  # 衔接锚点（上一章完整正文）
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     previous_chapter_events: Optional[List[str]] = None  # 上一章关键事件
@@ -150,7 +175,7 @@ class OneToManyContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point',
-                          'full_book_context', 'chapter_characters', 'chapter_careers',
+                          'full_book_context', 'world_context', 'chapter_characters', 'chapter_careers',
                           'relevant_memories', 'foreshadow_reminders',
                           'previous_chapter_summary']:
             value = getattr(self, field_name, None)
@@ -189,6 +214,7 @@ class OneToOneContext:
     # === P1-重要信息 ===
     recent_chapters_context: Optional[str] = None  # 最近N章剧情摘要
     full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
+    world_context: Optional[str] = None      # 世界观与力量体系硬边界
     continuation_point: Optional[str] = None  # 上一章完整正文
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     chapter_characters: str = ""        # 从structure.characters获取
@@ -205,7 +231,7 @@ class OneToOneContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point', 'previous_chapter_summary',
-                          'full_book_context', 'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
+                          'full_book_context', 'world_context', 'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
                           'relevant_memories']:
             value = getattr(self, field_name, None)
             if value:
@@ -231,6 +257,32 @@ def _require_full_book_budget_chars(value: Any) -> int:
             f"full_book_budget_chars 必须是正整数（0 不再是「禁用全书注入」语义），收到 {value!r}"
         )
     return value
+
+
+def _build_world_context(
+    project: Project,
+    *,
+    max_rules_chars: int = 1200,
+    max_extra_chars: int = 240,
+) -> Optional[str]:
+    """构建精简版世界观与力量边界上下文（供章节正文生成近因注入，防止题材越界）。"""
+    parts: List[str] = []
+    rules = (getattr(project, "world_rules", None) or "").strip()
+    if rules:
+        parts.append(f"世界规则与力量体系：{rules[:max_rules_chars]}")
+    atmosphere = (getattr(project, "world_atmosphere", None) or "").strip()
+    if atmosphere:
+        parts.append(f"氛围基调：{atmosphere[:max_extra_chars]}")
+    location = (getattr(project, "world_location", None) or "").strip()
+    if location:
+        parts.append(f"主要地理：{location[:max_extra_chars]}")
+    time_period = (getattr(project, "world_time_period", None) or "").strip()
+    if time_period:
+        parts.append(f"时代背景：{time_period[:max_extra_chars]}")
+    if not parts:
+        return None
+    parts.append("硬边界：所有武学、异象与冲突必须严格落在上述世界规则与体系内，严禁引入超出本世界观的设定或跨题材词汇。")
+    return "\n".join(parts)
 
 
 def _build_full_book_context(
@@ -312,22 +364,15 @@ def _build_full_book_context(
 def _render_summary_entry(c: Any) -> str:
     """单章一行摘要（复用最近章节构建器的摘要模式，纯存量字段，零 LLM 调用）。"""
     title = c.title or ""
-    summary = (getattr(c, "summary", None) or "").strip()
-    expansion_plan = getattr(c, "expansion_plan", None)
-    if expansion_plan:
-        try:
-            plan = json.loads(expansion_plan)
-            plot_summary = (plan.get("plot_summary") or summary or "").strip()
-            key_events = [str(e) for e in (plan.get("key_events") or []) if e][:3]
-            line = f"第{c.chapter_number}章《{title}》：{plot_summary[:180]}"
-            if key_events:
-                line += f"（关键事件：{'；'.join(key_events)}）"
-            return line
-        except json.JSONDecodeError:
-            pass
-    if summary:
-        return f"第{c.chapter_number}章《{title}》：{summary[:180]}"
-    return f"第{c.chapter_number}章《{title}》"
+    plan = resolve_plan(c)
+    plot_summary = plan.get("plot_summary") or ""
+    key_events = plan.get("key_events") or []
+    line = f"第{c.chapter_number}章《{title}》"
+    if plot_summary:
+        line += f"：{plot_summary[:180]}"
+    if key_events:
+        line += f"（关键事件：{'；'.join(key_events[:3])}）"
+    return line
 
 
 def _build_summary_chain(
@@ -451,7 +496,9 @@ class OneToManyContextBuilder:
         )
         
         # === P0-核心信息（始终构建）===
-        context.chapter_outline = self._build_chapter_outline_1n(chapter, outline)
+        context.chapter_outline = self._build_chapter_outline_1n(
+            chapter, outline, target_word_count
+        )
         
         # === 最近10章expansion_plan摘要 ===
         if chapter_number > 1:
@@ -474,6 +521,9 @@ class OneToManyContextBuilder:
             budget_chars=self.full_book_budget_chars,
         )
         logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        context.world_context = _build_world_context(project)
+        if context.world_context:
+            logger.info(f"  ✅ 世界观规则: {len(context.world_context)}字符")
         
         # === 衔接锚点（上一章完整正文 + 摘要）===
         if chapter_number == 1:
@@ -539,29 +589,15 @@ class OneToManyContextBuilder:
     def _build_chapter_outline_1n(
         self,
         chapter: Chapter,
-        outline: Optional[Outline]
+        outline: Optional[Outline],
+        target_word_count: int = 0,
     ) -> str:
-        """构建1-N模式的章节大纲"""
-        # 优先使用 expansion_plan 的详细规划
-        if chapter.expansion_plan:
-            try:
-                plan = json.loads(chapter.expansion_plan)
-                # expansion_plan没有plot_summary这个键，
-                outline_content = f"""剧情摘要：{plan.get('plot_summary') or chapter.summary or '无'}
-
-关键事件：
-{chr(10).join(f'- {event}' for event in plan.get('key_events', []))}
-
-角色焦点：{', '.join(plan.get('character_focus', []))}
-情感基调：{plan.get('emotional_tone', '未设定')}
-叙事目标：{plan.get('narrative_goal', '未设定')}
-冲突类型：{plan.get('conflict_type', '未设定')}"""
-                return outline_content
-            except json.JSONDecodeError:
-                pass
-        
-        # 回退到大纲内容
-        return outline.content if outline else chapter.summary or '暂无大纲'
+        """构建1-N模式的章节大纲（统一经适配层读取 expansion_plan / outline.structure）"""
+        plan = resolve_plan(chapter, outline, target_word_count)
+        rendered = render_plan_text(plan)
+        if rendered:
+            return rendered
+        return outline.content if outline and outline.content else '暂无大纲'
     
     async def _build_chapter_characters_1n(
         self,
@@ -585,14 +621,8 @@ class OneToManyContextBuilder:
         # 构建全局角色名称映射（用于关系查询）
         all_char_map = {c.id: c.name for c in all_characters}
         
-        # 从expansion_plan中提取角色焦点
-        filter_character_names = None
-        if chapter.expansion_plan:
-            try:
-                plan = json.loads(chapter.expansion_plan)
-                filter_character_names = plan.get('character_focus', [])
-            except json.JSONDecodeError:
-                pass
+        # 从规划中提取角色焦点（expansion_plan 优先，其次 outline.structure）
+        filter_character_names = resolve_plan(chapter, outline).get('character_focus') or None
         
         # 筛选角色
         characters = all_characters
@@ -728,7 +758,9 @@ class OneToManyContextBuilder:
             if c.background:
                 background_preview = c.background[:150] if len(c.background) > 150 else c.background
                 info_lines.append(f"  背景: {background_preview}")
-            _append_current_state_lines(info_lines, c)
+            _append_current_state_lines(
+                info_lines, c, target_chapter=getattr(chapter, "chapter_number", None)
+            )
             
             # 职业信息
             if c.id in char_career_relations:
@@ -898,9 +930,9 @@ class OneToManyContextBuilder:
                     lines.append(line)
                 elif expansion_plan:
                     try:
-                        plan = json.loads(expansion_plan)
-                        plot_summary = plan.get('plot_summary', '')
-                        key_events = plan.get('key_events', [])
+                        plan = from_expansion_plan(json.loads(expansion_plan), summary=summary or "")
+                        plot_summary = plan.get('plot_summary') or ''
+                        key_events = plan.get('key_events') or []
                         events_str = '；'.join(key_events[:3]) if key_events else ''
                         line = f"第{ch_num}章《{ch_title}》：{plot_summary}"
                         if events_str:
@@ -976,17 +1008,14 @@ class OneToManyContextBuilder:
         """从1-N章节扩展计划构建高信号记忆检索query。"""
         sections = []
         if chapter.expansion_plan:
-            try:
-                plan = json.loads(chapter.expansion_plan)
-                sections.extend(filter(None, [
-                    _format_memory_query_section("人物", _stringify_list_items(plan.get("character_focus"), limit=8)),
-                    _format_memory_query_section("关键事件", _stringify_list_items(plan.get("key_events"), limit=6)),
-                    _format_memory_query_section("叙事目标", _stringify_list_items(plan.get("narrative_goal"), limit=1)),
-                    _format_memory_query_section("冲突", _stringify_list_items(plan.get("conflict_type"), limit=1)),
-                    _format_memory_query_section("情绪", _stringify_list_items(plan.get("emotional_tone"), limit=1)),
-                ]))
-            except json.JSONDecodeError:
-                logger.warning(f"  ⚠️ [1-N] expansion_plan解析失败，使用章节大纲兜底: chapter={chapter.id}")
+            plan = resolve_plan(chapter)
+            sections.extend(filter(None, [
+                _format_memory_query_section("人物", _stringify_list_items(plan.get("character_focus"), limit=8)),
+                _format_memory_query_section("关键事件", _stringify_list_items(plan.get("key_events"), limit=6)),
+                _format_memory_query_section("叙事目标", _stringify_list_items(plan.get("narrative_goal"), limit=1)),
+                _format_memory_query_section("冲突", _stringify_list_items(plan.get("conflict_type"), limit=1)),
+                _format_memory_query_section("情绪", _stringify_list_items(plan.get("emotional_tone"), limit=1)),
+            ]))
 
         if sections:
             return "\n".join(sections)[:800]
@@ -1040,26 +1069,18 @@ class OneToManyContextBuilder:
         )
         summary_mem = summary_result.scalar_one_or_none()
         
+        plan = resolve_plan(prev_chapter)
         if summary_mem:
             result_info['summary'] = summary_mem[:300]
         elif prev_chapter.summary:
             result_info['summary'] = prev_chapter.summary[:300]
-        elif prev_chapter.expansion_plan:
-            try:
-                plan = json.loads(prev_chapter.expansion_plan)
-                result_info['summary'] = plan.get('plot_summary', '')[:300]
-            except json.JSONDecodeError:
-                pass
+        elif plan.get('plot_summary'):
+            result_info['summary'] = plan['plot_summary'][:300]
         
         # 3. 提取上一章关键事件
-        if prev_chapter.expansion_plan:
-            try:
-                plan = json.loads(prev_chapter.expansion_plan)
-                key_events = plan.get('key_events', [])
-                if key_events:
-                    result_info['key_events'] = key_events[:5]
-            except json.JSONDecodeError:
-                pass
+        key_events = plan.get('key_events') or []
+        if key_events:
+            result_info['key_events'] = key_events[:5]
         
         return result_info
     
@@ -1068,26 +1089,8 @@ class OneToManyContextBuilder:
         chapter: Chapter,
         outline: Optional[Outline]
     ) -> str:
-        """提取本章情感基调"""
-        if chapter.expansion_plan:
-            try:
-                plan = json.loads(chapter.expansion_plan)
-                tone = plan.get('emotional_tone')
-                if tone:
-                    return tone
-            except json.JSONDecodeError:
-                pass
-        
-        if outline and outline.structure:
-            try:
-                structure = json.loads(outline.structure)
-                tone = structure.get('emotion') or structure.get('emotional_tone')
-                if tone:
-                    return tone
-            except json.JSONDecodeError:
-                pass
-        
-        return "未设定"
+        """提取本章情感基调（expansion_plan 优先，其次 outline.structure）"""
+        return resolve_plan(chapter, outline).get("emotional_tone") or "未设定"
     
     def _summarize_style(self, style_content: str) -> str:
         """将风格描述压缩为关键要点"""
@@ -1391,6 +1394,9 @@ class OneToOneContextBuilder:
             budget_chars=self.full_book_budget_chars,
         )
         logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        context.world_context = _build_world_context(project)
+        if context.world_context:
+            logger.info(f"  ✅ 世界观规则: {len(context.world_context)}字符")
 
         # 1. 获取上一章完整正文和上一章摘要
         if chapter_number > 1:
@@ -1437,22 +1443,11 @@ class OneToOneContextBuilder:
             context.previous_chapter_summary = None
             logger.info(f"  ✅ P1-第1章无需上一章内容")
         
-        # 2. 根据structure中的characters获取角色信息（含职业）
-        character_names = []
-        if outline and outline.structure:
-            try:
-                structure = json.loads(outline.structure)
-                raw_characters = structure.get('characters', [])
-                # characters可能是字符串列表或字典列表，统一提取为名称字符串列表
-                character_names = [
-                    c['name'] if isinstance(c, dict) else c
-                    for c in raw_characters
-                ]
-                logger.info(f"  📋 从structure提取角色: {character_names}")
-            except json.JSONDecodeError:
-                pass
-        
+        # 2. 根据规划中的角色焦点获取角色信息（含职业）
+        character_names = resolve_plan(chapter, outline).get('character_focus') or []
+
         if character_names:
+            logger.info(f"  📋 从规划提取角色: {character_names}")
             # 获取角色基本信息
             characters_result = await db.execute(
                 select(Character)
@@ -1467,7 +1462,8 @@ class OneToOneContextBuilder:
                     db=db,
                     project_id=project.id,
                     characters=characters,
-                    filter_character_names=character_names
+                    filter_character_names=character_names,
+                    target_chapter=chapter_number,
                 )
                 context.chapter_characters = characters_info
                 context.chapter_careers = careers_info
@@ -1496,7 +1492,9 @@ class OneToOneContextBuilder:
         # 2. 根据大纲内容检索相关记忆（相关度>0.4）
         if self.memory_service and context.chapter_outline:
             try:
-                query_text = self._build_memory_query_from_outline_structure(outline, context.chapter_outline)
+                query_text = self._build_memory_query_from_outline_structure(
+                    outline, context.chapter_outline, chapter
+                )
                 logger.info(f"  🔍 [1-1] 结构化记忆查询: {query_text[:180]}...")
                 
                 relevant_memories = await self.memory_service.search_memories(
@@ -1625,41 +1623,20 @@ class OneToOneContextBuilder:
     def _build_memory_query_from_outline_structure(
         self,
         outline: Optional[Outline],
-        chapter_outline: str
+        chapter_outline: str,
+        chapter: Optional[Chapter] = None,
     ) -> str:
-        """从1-1大纲structure构建高信号记忆检索query。"""
+        """从1-1大纲规划构建高信号记忆检索query（expansion_plan 存在时同样生效）。"""
         sections = []
-        if outline and outline.structure:
-            try:
-                structure = json.loads(outline.structure)
-                raw_characters = structure.get("characters", [])
-                character_names = []
-                organization_names = []
-                for item in raw_characters:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "").strip()
-                        if not name:
-                            continue
-                        if item.get("type") == "organization":
-                            organization_names.append(name)
-                        else:
-                            character_names.append(name)
-                    elif isinstance(item, str) and item.strip():
-                        character_names.append(item.strip())
-
-                sections.extend(filter(None, [
-                    _format_memory_query_section("人物", character_names[:8]),
-                    _format_memory_query_section("组织", organization_names[:5]),
-                    _format_memory_query_section("关键事件", _stringify_list_items(structure.get("key_points"), limit=6)),
-                    _format_memory_query_section("叙事目标", _stringify_list_items(structure.get("goal"), limit=1)),
-                    _format_memory_query_section("场景", _stringify_list_items(structure.get("scenes"), limit=2)),
-                    _format_memory_query_section("情绪", _stringify_list_items(structure.get("emotion"), limit=1)),
-                ]))
-
-                if not sections and structure.get("summary"):
-                    sections.append(f"概要：{str(structure['summary'])[:200]}")
-            except json.JSONDecodeError:
-                logger.warning(f"  ⚠️ [1-1] outline.structure解析失败，使用章节大纲兜底: outline={outline.id}")
+        plan = resolve_plan(chapter, outline)
+        sections.extend(filter(None, [
+            _format_memory_query_section("人物", _stringify_list_items(plan.get("character_focus"), limit=8)),
+            _format_memory_query_section("组织", _stringify_list_items(plan.get("organization_focus"), limit=5)),
+            _format_memory_query_section("关键事件", _stringify_list_items(plan.get("key_events"), limit=6)),
+            _format_memory_query_section("叙事目标", _stringify_list_items(plan.get("narrative_goal"), limit=1)),
+            _format_memory_query_section("场景", _stringify_list_items(plan.get("scenes"), limit=2)),
+            _format_memory_query_section("情绪", _stringify_list_items(plan.get("emotional_tone"), limit=1)),
+        ]))
 
         if sections:
             return "\n".join(sections)[:900]
@@ -1671,44 +1648,19 @@ class OneToOneContextBuilder:
         outline: Optional[Outline],
         chapter: Chapter
     ) -> str:
-        """从outline.structure提取大纲信息（1-1模式专用）"""
-        if outline and outline.structure:
-            try:
-                structure = json.loads(outline.structure)
-                
-                outline_parts = []
-                
-                if structure.get('summary'):
-                    outline_parts.append(f"【章节概要】\n{structure['summary']}")
-                
-                if structure.get('scenes'):
-                    scenes_text = "\n".join([f"- {scene}" for scene in structure['scenes']])
-                    outline_parts.append(f"【场景设定】\n{scenes_text}")
-                
-                if structure.get('key_points'):
-                    points_text = "\n".join([f"- {point}" for point in structure['key_points']])
-                    outline_parts.append(f"【情节要点】\n{points_text}")
-                
-                if structure.get('emotion'):
-                    outline_parts.append(f"【情感基调】\n{structure['emotion']}")
-                
-                if structure.get('goal'):
-                    outline_parts.append(f"【叙事目标】\n{structure['goal']}")
-                
-                return "\n\n".join(outline_parts)
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"  ❌ 解析outline.structure失败: {e}")
-                return outline.content if outline else "暂无大纲"
-        else:
-            return outline.content if outline else "暂无大纲"
+        """从规划构建大纲文本（1-1模式专用，同样消费 expansion_plan）"""
+        rendered = render_plan_text(resolve_plan(chapter, outline))
+        if rendered:
+            return rendered
+        return outline.content if outline and outline.content else "暂无大纲"
     
     async def _build_characters_and_careers(
         self,
         db: AsyncSession,
         project_id: str,
         characters: list,
-        filter_character_names: Optional[list] = None
+        filter_character_names: Optional[list] = None,
+        target_chapter: Optional[int] = None,
     ) -> tuple[str, Optional[str]]:
         """
         构建角色信息和职业信息（1-1模式专用）
@@ -1813,6 +1765,9 @@ class OneToOneContextBuilder:
             if c.background:
                 background_preview = c.background[:150] if len(c.background) > 150 else c.background
                 info_lines.append(f"  背景: {background_preview}")
+            _append_current_state_lines(
+                info_lines, c, target_chapter=target_chapter
+            )
             
             # === 职业信息（完整数据）===
             if char_id in char_career_relations:

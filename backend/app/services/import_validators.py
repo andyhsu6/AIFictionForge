@@ -18,8 +18,8 @@ from typing import Any
 ROLE_TYPE_ENUM = {"protagonist", "supporting", "antagonist"}
 # 关系 status 枚举（对应 RELATIONSHIP_EXTRACTION 模板 constraints）
 RELATIONSHIP_STATUS_ENUM = {"active", "broken", "past", "complicated"}
-# 主/副职业数量口径（对应 CAREER_SYSTEM_GENERATION 模板）
-MAIN_CAREERS_RANGE = (1, 3)
+# 主/副职业数量口径（对应 CAREER_SYSTEM_GENERATION 模板；非升级流题材允许返回空数组）
+MAIN_CAREERS_RANGE = (0, 3)
 SUB_CAREERS_RANGE = (0, 2)
 # 关系类型数量：至少 1 个，最多 4 个（对应 RELATIONSHIP_EXTRACTION 模板）
 RELATIONSHIP_TYPES_RANGE = (1, 4)
@@ -123,13 +123,14 @@ def _validate_career_item(item: Any, career_type: str, idx: int) -> None:
         )
 
 
-def validate_career_system(data: Any) -> None:
-    """职业体系：dict 且 main_careers 1-3 个、sub_careers 0-2 个；每个职业必须有非空 name。"""
+def validate_career_system(data: Any, *, allow_empty: bool = True) -> None:
+    """职业体系：dict 且 main_careers 0-3 个（allow_empty=False 时至少 1 个）、sub_careers 0-2 个；每个职业必须有非空 name。"""
     if not isinstance(data, dict):
         raise ValueError("字段 career_data 必须是对象（JSON object），实际为 " + type(data).__name__)
 
+    main_min = 0 if allow_empty else 1
     for key, (min_count, max_count), label, singular in (
-        ("main_careers", MAIN_CAREERS_RANGE, "主职业", "main"),
+        ("main_careers", (main_min, MAIN_CAREERS_RANGE[1]), "主职业", "main"),
         ("sub_careers", SUB_CAREERS_RANGE, "副职业", "sub"),
     ):
         items = data.get(key)

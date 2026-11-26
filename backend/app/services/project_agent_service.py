@@ -310,6 +310,24 @@ async def resolve_provider_tool_call_id(
     return tool_call.id
 
 
+DEFAULT_CONVERSATION_TITLE = "新对话"
+
+
+def derive_conversation_title(first_message: str | None) -> str:
+    """会话标题 = 首条用户消息第一行（去掉列表/引用符号）的空白归一化前 40 字。
+
+    预创建会话（前端「+」按钮）与隐式会话共用同一口径；空消息回退默认标题。
+    取第一行而不是整段，是为了避免用户粘贴整份文档时标题变成一大串正文
+    （issue #260 的回填实测场景）。
+    """
+    for raw_line in (first_message or "").splitlines():
+        line = raw_line.strip().lstrip("#>-* ").strip().rstrip("*#").strip()
+        normalized = " ".join(line.split())
+        if normalized:
+            return normalized[:40]
+    return DEFAULT_CONVERSATION_TITLE
+
+
 class ProjectAgentService:
     MAX_TOOL_ROUNDS = 4
     #: 一轮模型调用至少需要这么多剩余预算才值得发起；不足即按单回合超时收口，
@@ -399,9 +417,25 @@ class ProjectAgentService:
             conversation = result.scalar_one_or_none()
             if conversation is None:
                 raise ValueError("对话不存在或不属于当前项目")
+            # issue #260：预创建会话（前端「+」）建行时是默认标题，首条消息必须
+            # 补出标题；历史默认标题会话也在这里用「已存的第一条用户消息」自愈。
+            if not (conversation.title or "").strip() or conversation.title == DEFAULT_CONVERSATION_TITLE:
+                first_user_message = await self.db.scalar(
+                    select(AgentMessage.content)
+                    .where(
+                        AgentMessage.conversation_id == conversation.id,
+                        AgentMessage.role == "user",
+                    )
+                    .order_by(AgentMessage.created_at.asc(), AgentMessage.id.asc())
+                    .limit(1)
+                )
+                conversation.title = derive_conversation_title(
+                    first_user_message or first_message
+                )
+                await self.db.flush()
             return conversation
 
-        title = " ".join(first_message.strip().split())[:40] or "新对话"
+        title = derive_conversation_title(first_message)
         conversation = AgentConversation(
             user_id=self.user_id,
             project_id=self.project.id,
@@ -653,6 +687,9 @@ class ProjectAgentService:
         self.db.add(user_message)
         conversation.last_message_at = _naive_utc_now()
         await self.db.commit()
+
+        # issue #262：首轮结束后异步生成摘要标题（规则标题先占位，失败不阻塞）。
+        await self._maybe_schedule_title(conversation, message)
 
         # 主键先抄下来（收尾可能在 session 已坏的情况下执行，不能再碰 ORM 属性），
         # 再登记本回合：取消接口从这一刻起就能找到它。
@@ -1922,6 +1959,35 @@ class ProjectAgentService:
                 return
         except Exception:  # noqa: BLE001 —— 补生成失败不得影响对话
             logger.warning("补生成上一会话结论失败", exc_info=True)
+
+    async def _maybe_schedule_title(
+        self, conversation: AgentConversation, first_message: str
+    ) -> None:
+        """首轮（尚无 assistant 消息）时调度一次模型标题生成；用户已重命名则跳过。"""
+        try:
+            if conversation.title_user_edited:
+                return
+            assistant_count = (
+                await self.db.execute(
+                    select(func.count())
+                    .select_from(AgentMessage)
+                    .where(
+                        AgentMessage.conversation_id == conversation.id,
+                        AgentMessage.role == "assistant",
+                    )
+                )
+            ).scalar_one()
+            if assistant_count:
+                return
+            from app.services.agent_conversation_title import (
+                schedule_conversation_title,
+            )
+
+            schedule_conversation_title(
+                conversation.id, self.user_id, first_message=first_message
+            )
+        except Exception:  # noqa: BLE001 —— 标题调度失败不得影响对话
+            logger.warning("调度会话标题生成失败", exc_info=True)
 
     async def _maybe_schedule_own_summary(self, conversation_id: str) -> None:
         """本会话聊得够久时补一次结论，覆盖「用户从不新开会话」的路径。

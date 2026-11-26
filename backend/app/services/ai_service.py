@@ -5,7 +5,10 @@
 - 如果有启用的MCP插件且有可用工具，自动发送tools
 - 通过 auto_mcp 参数控制是否启用自动工具加载
 """
+import asyncio
 from typing import Optional, AsyncGenerator, List, Dict, Any, Union, Callable, Tuple
+
+import httpx
 
 from app.config import settings as app_settings
 from app.core.errors import ApiError
@@ -22,6 +25,10 @@ from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
 from app.services.ai_clients.output_caps import resolve_output_ceiling
+# 字符↔token 换算的唯一来源（`CHARS_PER_TOKEN = 1.0`，中文≈1 字符/token）。
+# 可直接顶层导入，不存在循环依赖：agent_prompt_budget 只在 TYPE_CHECKING 分支里
+# 引用本模块（`from app.services.ai_service import AIService`），运行期不引入。
+from app.services.agent_prompt_budget import CHARS_PER_TOKEN
 from app.services.model_capability_probe import (
     TRIGGER_DISPATCH,
     ensure_model_allowed,
@@ -69,6 +76,12 @@ def is_thinking_model(model: Optional[str], base_url: Optional[str] = None) -> b
 
     - 模型名含 deepseek / r1 / reasoning / think 视为思考型；
     - 网关域名含 commandcode.ai 视为思考型（Command Code 通道）。
+
+    **本判定已不参与章节生成 / 章内续写 / 局部重写的预算判定**（issue #276）：
+    那三条路径改走实测能力（`AIService.resolve_output_budget` ⇒ 窗口剩余 + 网关报过的
+    输出上限），预算里不再有任何按模型名分支的逻辑。这里只剩**通用路径的默认值兜底**
+    （`resolve_effective_max_tokens`：调用方没显式传 max_tokens 时才抬同一模型的下限）。
+    别把新预算需求接回本函数 —— 名字猜出来的能力必然过期。
     """
     model_name = (model or "").lower()
     url = (base_url or "").lower()
@@ -101,27 +114,6 @@ def resolve_effective_max_tokens(
     ):
         return THINKING_MODEL_DEFAULT_MAX_TOKENS
     return default
-
-
-def ensure_thinking_model_min_tokens(
-    max_tokens: int,
-    model: Optional[str],
-    base_url: Optional[str] = None,
-    floor: int = THINKING_MODEL_DEFAULT_MAX_TOKENS,
-) -> int:
-    """为思考型模型显式传入的 max_tokens 兜底抬升到下限（修复 #45）。
-
-    与 resolve_effective_max_tokens 不同：后者对显式传入的 requested 原样返回
-    （该契约被 test_ai_token_budget.py 钉死，不能改）。部分调用点会显式传入一个
-    很小的预算（例如局部重写按选区字数算出的下限 500），思考型模型的推理过程会
-    把预算耗尽，导致正文为空、finish_reason=length。本函数只用于这类调用点，
-    在不改变全局契约的前提下把预算抬到安全下限。
-
-    max_tokens 是上限而非目标，模型遇到 EOS 会自然停止，抬高下限不会强制变长。
-    """
-    if is_thinking_model(model, base_url):
-        return max(max_tokens, floor)
-    return max_tokens
 
 
 # 已知模型上下文窗口。**需求 #55 步骤 3 起降级为「提示」**：只用来决定探测
@@ -169,59 +161,100 @@ def detect_context_window(model: Optional[str]) -> Optional[int]:
     return None
 
 
-# 保守默认输出上限（章内续写 B0：未登记模型按此值推导输出预算）
-_DEFAULT_MAX_OUTPUT_TOKENS = 8192
-
-# 已知模型最大输出 token。**与 #55 对窗口登记表的处理同一条路子：这是「提示」不是
-# 判据** —— 网关自己报过的上限（#147 的 output_caps 记忆）优先于本表，两个方向都优先
-# （见 detect_max_output_tokens）。未登记且未测过的模型才按保守值处理。
-# 思考/推理模型条目不得低于 THINKING_MODEL_DEFAULT_MAX_TOKENS：推理与正文
-# 共享输出预算，登记过低会让续写段正文为空，与修复 #13 的语义一致。
-_KNOWN_OUTPUT_LIMITS: Dict[str, int] = {
-    "deepseek-v4": 64000,
-    "deepseek-v3": 64000,
-    "deepseek-r1": 64000,
-    "gpt-5": 128000,
-    "gpt-4o": 16384,
-    "gpt-4.1": 32768,
-    "gpt-4-turbo": 16384,
-    "gpt-4": 8192,
-    "gpt-3.5": 4096,
-    "claude-3": 8192,
-    "claude-2": 4096,
-    "gemini-1.5": 8192,
-    "gemini-2": 65536,
-    "qwen": 8192,
-    "glm": 8192,
-    "minimax": 16384,
-}
+# ========== 章节输出预算（单一来源） ==========
+# 为什么存在：调用点曾各自 `max(2000, min(target*3, 16000))` 硬算 max_tokens 并**显式**
+# 传入，而 `resolve_effective_max_tokens` 对显式值原样放行 —— 思考型模型的升级、
+# 网关实测上限、上下文剩余全部被这处本地计算废掉（2026-11-08 批量第 58 章：
+# 6000 字目标、181068 字符输入、思考型 glm，预算被钉在 16000，推理吃掉全部
+# 37678 字符后正文 0 字、finish_reason=length）。
+#
+# 预算下限：低于它没有任何一章能写完，再小只会制造空正文。
+_OUTPUT_BUDGET_MIN_TOKENS = 1024
+# 上下文余量：留给模板收尾/工具结果拼装等不可预见的追加。
+_OUTPUT_BUDGET_CONTEXT_MARGIN = 2048
 
 
-def detect_max_output_tokens(model: Optional[str], base_url: Optional[str] = None) -> int:
-    """检测模型最大输出 token 数：实测优先，登记表只当提示（issue #152）。
+def _coerce_int(value: Any) -> Optional[int]:
+    """把任意输入尽力转成 int；不可转返回 None（预算计算必须对脏输入健壮）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-    顺序：
-    1. **网关为这个 (base_url, model) 报过的上限**（#147 学到并存进进程内记忆）——
-       两个方向都优先：实测比登记表小，按登记表规划分段会被上游拒；实测比登记表大，
-       按登记表规划就是白腰斩容量（实测：未登记的 LongCat 报 131072，却被按保守值
-       8192 规划，长续写容量只剩登记模型的一半）。
-    2. 登记表提示（谁还没被测过时用）。
-    3. 保守默认值。
 
-    返回值恒 > 0。`base_url` 省略时不去查记忆（记忆的键含网关，缺一半就没法归属），
-    退化成「提示 → 默认」；对 None/空 model 健壮。
+def plan_output_budget(
+    *,
+    target_chars: int,
+    model: Optional[str],
+    base_url: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    context_window: Optional[int] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    """按**实测能力**规划 max_tokens：预算 = 窗口剩余空间，不按目标字数预测。
+
+    契约：``(max_tokens, breakdown)``，breakdown 的键用于日志归因：
+
+    - ``content``：目标正文字数 = max(1024, target_chars)。中文约 1 字符 ≈ 1 token，
+      口径同 `_FULL_BOOK_BUDGET_RATIO` 附近注释；它只作为**信息**（目标长度、重试
+      升级基准），**不再参与** max_tokens 计算 —— 按目标字数预测预算正是 2026-11-08
+      批量第 58 章空正文的成因（6000 字目标被钉在 16000，推理吃光后正文 0 字）。
+    - ``measured_cap``：网关自己报过的输出上限（`resolve_output_ceiling`，issue #147
+      学到并存进进程内记忆）。有则优先：它是唯一被上游确认过的数字。
+    - ``context_room``：``context_window - input_tokens - 2048``。<= 0 表示
+      **输入已超窗**（含 2048 余量），此时预算被下限钳住，日志里看到非正数即可判定
+      「这段 prompt 塞不进窗口」，而不是当成「无此约束」放行。
+    - ``cap``：本次生效的预算上限 = 实测输出上限 > 窗口剩余 > ``THINKING_MODEL_DEFAULT_MAX_TOKENS``。
+    - ``window`` / ``input_tokens``：本次参与计算的原始输入（None 表示未探测）。
+
+    规则：``max_tokens = max(1024, min(cap, context_room))``（context_room 仅在探测到
+    正整数窗口与输入时参与）。
+
+    为什么按窗口给足而不按目标字数预测：
+    1. **能力无关模型名**：任何模型（全新的、未登记的、无名字的）只要探测到的窗口大，
+       预算就自动给足；预算判定里没有一条 "glm"/"gpt-4o" 之类的名字分支。
+    2. **思考与正文共享预算**：推理开销随任务难度变化而非随输入线性变化（实测同一模型
+       简单续写 88 reasoning_tokens，失败章 37678），预测必然偏；给足上限后由模型自己
+       在推理与正文间分配，无需再预留。
+    3. **max_tokens 是上限不是花费**：给足不增加成本，只避免推理吃光预算后的空正文；
+       真正的花费由实际生成的 token 决定。
+    4. **实测优先于任何登记表**：两个方向都对 —— 实测比登记表小，按登记表规划会被上游
+       400；实测比登记表大，按登记表规划就是白腰斩容量。
     """
-    if base_url and model:
-        measured = resolve_output_ceiling(base_url, model)
-        if measured is not None and measured > 0:
-            return measured
-    name = (model or "").lower()
-    for key, limit in sorted(
-        _KNOWN_OUTPUT_LIMITS.items(), key=lambda kv: len(kv[0]), reverse=True
-    ):
-        if key in name and limit > 0:
-            return limit
-    return _DEFAULT_MAX_OUTPUT_TOKENS
+    content = _coerce_int(target_chars)
+    if content is None or content < _OUTPUT_BUDGET_MIN_TOKENS:
+        content = _OUTPUT_BUDGET_MIN_TOKENS
+
+    window = _coerce_int(context_window)
+    used = _coerce_int(input_tokens)
+    context_room: Optional[int] = None
+    if window is not None and used is not None and window > 0 and used > 0:
+        # 剩余 <= 0 也要保留：它是「输入已超窗」的信号，不是「无约束」。
+        context_room = window - used - _OUTPUT_BUDGET_CONTEXT_MARGIN
+
+    measured = resolve_output_ceiling(base_url, model)
+    if measured:
+        cap = measured
+    elif context_room is not None:
+        cap = context_room
+    else:
+        cap = THINKING_MODEL_DEFAULT_MAX_TOKENS
+
+    limits = [cap]
+    if context_room is not None:
+        limits.append(context_room)
+    max_tokens = max(_OUTPUT_BUDGET_MIN_TOKENS, min(limits))
+
+    breakdown: Dict[str, Any] = {
+        "content": content,
+        "cap": cap,
+        "measured_cap": measured,
+        "context_room": context_room,
+        "window": window,
+        "input_tokens": used,
+    }
+    return max_tokens, breakdown
 
 
 # 中文约 1 字符 ≈ 1 token（1M 字符 ≈ 1M token），预算按字符计算
@@ -598,6 +631,49 @@ class AIService:
             )
         return budget
 
+    async def resolve_output_budget(
+        self,
+        *,
+        target_chars: int,
+        prompt_chars: int,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """按**实测能力**规划本次请求的输出预算：`(max_tokens, breakdown)`。
+
+        统一入口：章节生成 / 章内续写分段 / 局部重写等所有按能力取输出预算的调用点都走这里
+        （issue #276）：先取本次实发模型**实测/显式声明的上下文窗口**
+        （`resolve_effective_window_tokens`，含派发门禁的补测顺序），把 prompt 字符数
+        按 `CHARS_PER_TOKEN` 折成输入 token，再交给 `plan_output_budget` 求
+        `min(窗口剩余, 网关报过的输出上限)`。
+
+        为什么预算必须走窗口而不是模型名：2026-11-08 批量第 58 章的空正文与 #152 的
+        「未登记的 LongCat 被按 8192 规划」是同一个病 —— 预算按名字从静态登记表/名字
+        判定推出来，名字错了或表过期了，预算就悄悄腰斩（短则白扔容量，长则推理吃光
+        预算、正文 0 字）。实测窗口是唯一被上游确认过的数字，换任何模型名都不改变
+        结论；名字表已随之删除。
+
+        **失败契约（故意抛异常，不返回猜测值）**：窗口拿不到时原样抛
+        `ApiError`（未配置 → `validation.ai_model_not_configured`；补测后仍无合格结论
+        → `validation.ai_model_below_minimum` / `CAPABILITY_INCOMPLETE_CODE`），
+        非门禁异常（DB 抖动等）同样上抛。降级策略由**调用方**决定（例如续写退回保守
+        分段上限并记 WARNING），本方法不替调用方把「不知道」渲染成某个具体预算 ——
+        那正是静默降级。
+
+        `target_chars` 只作为 breakdown 里的目标信息（不参与 max_tokens 计算），
+        `prompt_chars` 是本次真正会送出的输入规模（字符）。`provider` 与派发路径
+        同源的覆盖值：请求体允许 per-call provider 覆盖时，调用方必须传同一个值。
+        """
+        window = await self.resolve_effective_window_tokens(model, provider)
+        input_tokens = int(max(0, prompt_chars) / CHARS_PER_TOKEN)
+        return plan_output_budget(
+            target_chars=target_chars,
+            model=model or self.default_model,
+            base_url=self.base_url,
+            input_tokens=input_tokens,
+            context_window=window,
+        )
+
     def _build_call_metrics(
         self,
         *,
@@ -930,6 +1006,7 @@ class AIService:
         mcp_max_rounds: Optional[int] = None,
         response_format: Optional[Dict[str, str]] = None,
         finish_sink: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         流式生成文本（自动支持MCP工具）
@@ -948,8 +1025,10 @@ class AIService:
             mcp_max_rounds: 最大工具调用轮数（None使用默认值3）
             response_format: OpenAI 兼容的响应格式约束（如 {"type": "json_object"}）
             finish_sink: 可选出参字典。生成结束（成功或被关闭/异常）后写入
-                ``finish_sink["finish_reason"]``。仅影响出参，不改变 yield 契约
-                （仍然只 yield 文本块），供调用方拿到真实结束原因。
+                ``finish_sink["finish_reason"]`` 与 ``finish_sink["usage"]``
+                （`TokenUsage`，用于区分「正文少」是内容短还是推理吃掉了预算）。
+                仅影响出参，不改变 yield 契约（仍然只 yield 文本块），
+                供调用方拿到真实结束原因。
             
         Yields:
             生成的文本块（str），永远不会是 dict
@@ -1004,6 +1083,7 @@ class AIService:
                 tool_choice=tool_choice,
                 user_id=self.user_id,
                 response_format=response_format,
+                reasoning_effort=reasoning_effort,
             ):
                 if isinstance(chunk, dict):
                     if chunk.get("usage"):
@@ -1017,6 +1097,20 @@ class AIService:
                     metrics.chunk_count += 1
                     response_parts.append(chunk)
                 yield chunk
+
+            # 网关没回 completion_tokens_details 时，用「完成 token - 正文字符」
+            # 估算推理用量（中文口径 1 字符 ≈ 1 token），并标记为估算值。
+            # 只影响日志/预算归因，不改变 yield 契约。
+            if (
+                latest_usage.reasoning_tokens is None
+                and latest_usage.completion_tokens is not None
+            ):
+                estimated_reasoning = int(latest_usage.completion_tokens) - len(
+                    "".join(response_parts)
+                )
+                if estimated_reasoning > 0:
+                    latest_usage.reasoning_tokens = estimated_reasoning
+                    latest_usage.reasoning_estimated = True
 
             metrics.finish(
                 success=True,
@@ -1040,6 +1134,7 @@ class AIService:
             # 统一在 finally 写回出参，避免「被拦截」的失败只能从 metrics 日志里猜。
             if finish_sink is not None:
                 finish_sink["finish_reason"] = finish_reason
+                finish_sink["usage"] = latest_usage
 
     async def generate_text_stream_full(
         self,
@@ -1115,6 +1210,7 @@ class AIService:
         validator: Optional[Callable[[Any], None]] = None,
         validator_max_retries: int = 2,
         response_format: Optional[Dict[str, str]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Union[Dict, List]:
         """
         带重试的 JSON 调用（自动支持MCP工具）
@@ -1177,10 +1273,20 @@ class AIService:
             validator_retries = 0
             validator_error = None
             json_error = None
+            last_attempt_transient = False
             for attempt in range(1, max_retries + 1):
-                current_prompt = prompt if attempt == 1 else self._add_json_hint(
-                    prompt, attempt, extra_error=validator_error, json_error=json_error
+                current_prompt = (
+                    prompt
+                    if (
+                        attempt == 1
+                        or (last_attempt_transient and not (validator_error or json_error))
+                    )
+                    else self._add_json_hint(
+                        prompt, attempt, extra_error=validator_error, json_error=json_error
+                    )
                 )
+                last_attempt_transient = False
+                retrying_transient = False
                 
                 # 流式累积：思考型模型长 JSON 输出时，推理增量随块送达，
                 # 避免非流式单次响应超过网关时长上限（Cloudflare 524，#13）
@@ -1200,6 +1306,7 @@ class AIService:
                             auto_mcp=auto_mcp,
                             response_format=response_format,
                             finish_sink=finish_sink,
+                            reasoning_effort=reasoning_effort,
                         ):
                             if isinstance(chunk, dict):
                                 if chunk.get("finish_reason"):
@@ -1221,7 +1328,31 @@ class AIService:
                             finish_reason = None
                             finish_sink.clear()
                             continue
+                        status_code = getattr(getattr(e, "response", None), "status_code", None)
+                        is_transient = status_code in (429, 502, 503, 504) or isinstance(
+                            e, httpx.TransportError
+                        )
+                        if is_transient and attempt < max_retries:
+                            wait_sec = min(1.5 * attempt, 4.0)
+                            reason = (
+                                f"HTTP {status_code}" if status_code is not None else type(e).__name__
+                            )
+                            logger.warning(
+                                "JSON 调用遇上游瞬时错误 %s，%.1fs 后进行第 %s 次重试",
+                                reason,
+                                wait_sec,
+                                attempt + 1,
+                            )
+                            await asyncio.sleep(wait_sec)
+                            accumulated = []
+                            finish_reason = None
+                            finish_sink.clear()
+                            retrying_transient = True
+                            break
                         raise
+                if retrying_transient:
+                    last_attempt_transient = True
+                    continue
                 result = {
                     "content": "".join(accumulated),
                     # yield 契约只吐字符串，dict 分支基本走不到；结束原因以出参

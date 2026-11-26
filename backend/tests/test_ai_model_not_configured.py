@@ -37,7 +37,10 @@ FRONTEND_LOCALES = REPO_BACKEND.parent / "frontend/src/locales"
 # 「用户自己配置的默认模型」读取点：逐个保留（计划 §1 点名 14 处 = chapters 11 +
 # characters/organizations/outlines 各 1；实测另有 5 处同语义站点，见下方注释）。
 USER_DEFAULT_MODEL_SITES = {
-    "app/api/chapters.py": 11,
+    # 2026-11-08 输出预算单一来源修复：SSE / 后台 / 批量三条生成路径各新增 1 处
+    # （另 SSE 原有两处合并为一处重复预算块，净 +4）；同日删除 2419 行起那份被
+    # 后者覆盖的死代码 `_run_chapter_generation_bg`（内含 3 处读取点），净回落 3 处。
+    "app/api/chapters.py": 12,
     "app/api/characters.py": 1,
     "app/api/organizations.py": 1,
     "app/api/outlines.py": 1,
@@ -254,7 +257,7 @@ def test_user_default_model_call_sites_are_preserved():
             "——这些不是兜底，不得删除"
         )
         total += expected
-    assert total == 19, "读取点总数与实测不符，说明有站点被增删"  # PR-0c 曾抬到 20，评审后回到基线 19
+    assert total == 20, "读取点总数与实测不符，说明有站点被增删"  # PR-0c 曾抬到 20，评审后回到基线 19；2026-11-08 预算修复 +4 → 23，删死代码 -3 → 20
 
 
 # ========== i18n：错误码必须有 zh/en 文案 ==========

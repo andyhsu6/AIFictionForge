@@ -76,7 +76,12 @@ _CLAUSE_BREAKS = frozenset('.;!?\n\r{}[]()"')
 # 边界只排除**数字/逗号/点号**相邻（挡住版本号、小数、千分位碎片）。刻意不用 `\w`：
 # Python 的 `\w` 含中日韩字符，`最大输出131072` 这种中文措辞就会读不出上限，而本仓库
 # 实测的那个网关正是中文报错。`\uXXXX` 转义里的伪数字由「对比短语」判据挡住。
-_NUMBER_PATTERN = re.compile(r"(?<![\d,.])(?P<number>\d{1,3}(?:,\d{3})+|\d+)(?![\d,.])")
+# 尾部三个否定前瞻：紧跟数字（连写）、紧跟千分位组（12,000）、紧跟小数位（1.5）。
+# 句号收尾（"limit of 131072."）必须能匹配 —— 网关最常见的措辞就是这个形态，
+# 早先的 `(?![\d,.])` 把它连带拒掉，导致"报错里明明有上限却学不到"。
+_NUMBER_PATTERN = re.compile(
+    r"(?<![\d,.])(?P<number>\d{1,3}(?:,\d{3})+|\d+)(?!\d)(?!,\d{3})(?!\.\d)"
+)
 # 「这个数字是上限」的措辞。数字必须紧跟在对比/限额短语**之后**：网关的报错会同时
 # 回显它收到的值（`/max_tokens: 900000 is not less or equal to 131072`），把回显值当成
 # 上限就等于学到一个仍然会被拒的数字，白钳预算还修不好。
@@ -174,6 +179,17 @@ def learn_output_ceiling(
         return None
     _output_ceilings[_memo_key(base_url, model)] = ceiling
     return ceiling
+
+
+def remember_output_ceiling(
+    *, base_url: Optional[str], model: Optional[str], ceiling: int
+) -> None:
+    """记住一个**已验证可用**的上限（例如常量兜底重试成功后）。
+
+    与 `learn_output_ceiling` 共用同一份记忆、同样只降不升；区别是不解析报错文本。
+    """
+    if ceiling and ceiling > 0:
+        _output_ceilings[_memo_key(base_url, model)] = int(ceiling)
 
 
 def resolve_output_ceiling(base_url: Optional[str], model: Optional[str]) -> Optional[int]:

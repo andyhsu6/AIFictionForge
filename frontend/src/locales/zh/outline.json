@@ -239,6 +239,20 @@
     "keyEventsLabel": "⚡ 关键事件",
     "keyPointsLabel": "💡 情节要点",
     "manualCreate": "手动创建",
+    "metadataComplete": "补全元数据",
+    "metadataCompleteBatch": "批量补全元数据",
+    "metadataCompleting": "正在补全…",
+    "metadataField": {
+      "characters": "角色",
+      "emotion": "情感",
+      "goal": "目标",
+      "key_points": "情节要点",
+      "scenes": "场景"
+    },
+    "metadataFieldsSeparator": "、",
+    "metadataMissing": "结构化元数据缺失",
+    "metadataMissingFields": "缺少：{{fields}}",
+    "metadataMissingHint": "将为当前项目中 {{n}} 个缺少结构化元数据的大纲创建后台补全任务。",
     "modeOneToMany": "细化模式 (1→N)",
     "modeOneToOne": "传统模式 (1→1)",
     "noContent": "暂无内容",
@@ -264,6 +278,8 @@
     "createSuccess": "大纲创建成功",
     "deleteFailed": "删除失败",
     "deleteSuccess": "删除成功",
+    "metadataTaskFailed": "补全元数据任务失败",
+    "metadataTaskSubmitted": "补全元数据任务已提交，可在右下角任务面板查看进度",
     "updateFailed": "更新失败",
     "updateSuccess": "大纲更新成功"
   }

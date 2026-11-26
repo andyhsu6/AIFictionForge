@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest a new feature or improvement（提出一个新功能或改进建议）
+about: 提出一个新功能需求或改进方案
 title: '[Feature] '
 labels: enhancement
 assignees: ''
@@ -8,35 +8,9 @@ assignees: ''
 ---
 
 <!--
-Titles default to English (标题请尽量使用英文). Fill in either the English
-template below or the Chinese template (中文模板) at the bottom — you do not
-need to fill in both.
+请直接使用中文填写标题与正文。
+重要提示：本仓库为公开仓库，禁止出现导入书籍原文、章节摘录、角色人名、世界观专名（请先脱敏处理）。
 -->
-
-### Problem / use case
-
-What problem does this feature solve? What is the use case?
-
-### Expected behavior
-
-A clear and concise description of the feature or improvement you would like.
-
-### Implementation ideas (optional)
-
-If you have ideas about how to implement it, or references to similar features elsewhere, describe them here.
-
-### Alternatives considered (optional)
-
-Any alternative solutions or features you have considered.
-
-### Additional context
-
-Add any other context or screenshots here.
-(Do not include original text from imported books, character names, or excerpts — data desensitization policy.)
-
----
-
-## 中文模板（可选，二选一）
 
 ### 需求背景
 
@@ -46,9 +20,9 @@ Add any other context or screenshots here.
 
 清晰描述你希望添加的功能或改进。
 
-### 实现思路（可选）
+### 实现思路与验收标准
 
-如果你有实现方面的想法或参考，可以写在这里。
+如果有实现想法请写在这里，并列出可核对的验收标准。
 
 ### 备选方案（可选）
 

@@ -84,6 +84,12 @@
   "preparingToolCalls_other": "🔧 Preparing to call {{count}} tools...",
   "processChangeFailed": "Failed to process the change",
   "processLabel": "Thinking and calling process",
+  "renameCancel": "Cancel",
+  "renameConversation": "Rename conversation",
+  "renameFailed": "Rename failed, please retry",
+  "renamePlaceholder": "Enter a new conversation title",
+  "renameSave": "Save",
+  "renameSuccess": "Title updated",
   "requestFailed": "Request failed: {{message}}",
   "riskReason": {
     "analysis_probe_failed": "Existing analysis results for this chapter could not be verified, so confirmation is required.",

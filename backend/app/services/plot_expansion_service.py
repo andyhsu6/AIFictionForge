@@ -10,6 +10,7 @@ from app.models.character import Character
 from app.models.chapter import Chapter
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.outline_plan_adapter import to_storage_plan
 from app.services.prompt_service import prompt_service, PromptService
 from app.logger import get_logger, safe_preview
 
@@ -441,16 +442,11 @@ class PlotExpansionService:
         
         chapters = []
         for idx, plan in enumerate(chapter_plans):
-            # 保存完整的展开规划数据（JSON格式）
-            expansion_plan_json = json.dumps({
-                "key_events": plan.get("key_events", []),
-                "character_focus": plan.get("character_focus", []),
-                "emotional_tone": plan.get("emotional_tone", ""),
-                "narrative_goal": plan.get("narrative_goal", ""),
-                "conflict_type": plan.get("conflict_type", ""),
-                "estimated_words": plan.get("estimated_words", 3000),
-                "scenes": plan.get("scenes", []) if plan.get("scenes") else None
-            }, ensure_ascii=False)
+            # 保存归一后的展开规划数据（JSON格式，键名统一经适配层）
+            expansion_plan_json = json.dumps(
+                to_storage_plan(plan, keep_unknown=False),
+                ensure_ascii=False,
+            )
             
             chapter = Chapter(
                 project_id=project_id,

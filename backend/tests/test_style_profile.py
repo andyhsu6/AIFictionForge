@@ -203,6 +203,20 @@ def test_render_does_not_leak_sample_text():
         assert line.strip() not in rendered
 
 
+def test_render_declares_measured_metrics_priority_in_both_languages():
+    """量化块声明实测优先，避免与 do/dont 里的模型估计数字冲突时被误读（#279）。"""
+    zh = render_style_profile(_profile())
+    en = render_style_profile(_profile(), None, language="en")
+
+    assert (
+        "- 以上量化指标为抽样实测值；若与下方条目中的数字冲突，以量化指标为准。" in zh
+    )
+    assert (
+        "- The metrics above are measured from the sample; "
+        "if a number below conflicts with them, the measured value wins." in en
+    )
+
+
 def test_local_stats_fallback_passes_validation():
     text = (
         "占位短句一。"
@@ -314,10 +328,21 @@ def test_validate_accepts_quantified_item_with_vague_word():
     validate_style_profile(data)
 
 
-def test_validate_rejects_item_without_quantifier_or_action_verb():
+def test_validate_allows_specific_craft_guidance_without_quantifier():
+    """具体写作指导（无数字、无白名单动词）不应被硬拒。"""
     data = _profile()
     data["do"][2] = "白描手法为主"
-    with pytest.raises(ValueError, match="可执行约束"):
+    validate_style_profile(data)
+
+    data = _profile()
+    data["do"][2] = "情绪用动作外化：攥拳、挠头、戳胸口"
+    validate_style_profile(data)
+
+
+def test_validate_rejects_vague_adjective_without_quantifier():
+    data = _profile()
+    data["do"][2] = "语言要优美"
+    with pytest.raises(ValueError, match="空泛形容词"):
         validate_style_profile(data)
 
 
@@ -342,3 +367,332 @@ def test_validate_rejects_nested_source_free_text():
     data = _profile()
     data["diction"]["source"] = "model"
     validate_style_profile(data)
+
+
+# ---- issue #279 后续：do/dont 里的量化条目必须与实测 metrics 一致 ----
+
+def test_reconcile_advice_drops_model_numbers_and_keeps_measured():
+    from app.services.style_profile import reconcile_advice_with_metrics
+
+    metrics = {
+        "avg_sentence_chars": 29.7,
+        "median_sentence_chars": 28.0,
+        "short_sentence_ratio": 0.28,
+        "dialogue_ratio": 0.23,
+        "paragraph_chars_p50": 38,
+    }
+    data = {
+        "do": ["平均句长控制在 12-20 字", "对话占比保持 35-45%", "心理疑问用连续短句排比"],
+        "dont": ["避免连续 3 句超过 40 字", "避免无标记地切换叙述人称或时态"],
+    }
+    updated = reconcile_advice_with_metrics(data, metrics)
+
+    joined = " ".join(updated["do"])
+    assert "12-20" not in joined and "35-45" not in joined
+    assert "短句排比" not in joined, "实测句长 29.7 字时不得保留“连续短句”类建议"
+    # 实测 29.7 字 ⇒ 转为质性长句铺陈指导，不再输出机械数字配额
+    assert any("中长复句" in item for item in updated["do"]), f"应转为质性节奏指导: {updated['do']}"
+    assert not any("平均句长控制在" in item for item in updated["do"])
+    assert not any("偏离" in item for item in updated["dont"])
+    assert "避免无标记地切换叙述人称或时态" in updated["dont"], "质性条目必须保留"
+    assert 3 <= len(updated["do"]) <= 6
+    assert 3 <= len(updated["dont"]) <= 6
+
+
+def test_reconcile_advice_keeps_short_sentence_hint_for_a_short_sentence_book():
+    from app.services.style_profile import reconcile_advice_with_metrics
+
+    metrics = {
+        "avg_sentence_chars": 16.0,
+        "median_sentence_chars": 15.0,
+        "short_sentence_ratio": 0.55,
+        "dialogue_ratio": 0.35,
+        "paragraph_chars_p50": 60,
+    }
+    updated = reconcile_advice_with_metrics(
+        {"do": ["心理疑问用连续短句推进"], "dont": ["避免长句堆叠"]}, metrics
+    )
+    assert "心理疑问用连续短句推进" in updated["do"]
+
+
+# ---- 生成期「写作规格」尾块：把实测指标贴到用户提示词末尾 ----
+
+def test_render_style_tail_block_carries_measured_numbers():
+    from app.services.style_profile import render_style_tail_block
+
+    block = render_style_tail_block(
+        {
+            "avg_sentence_chars": 29.7,
+            "short_sentence_ratio": 28,
+            "dialogue_ratio": 23,
+            "paragraph_chars_p50": 38,
+        }
+    )
+    assert "平均句长 29.7 字" in block
+    assert "短句(≤15字)占比 28%" in block
+    assert "对话占比 23%" in block
+    assert "不得单句成段" in block
+    # 段落不再给字数区间（用户要求：段落长短以情节通顺为准）
+    assert "常规段落" not in block
+    assert "段落长短以情节推进为准" in block
+    assert "时间锚点" in block
+    assert "结尾：优先用一句对话" in block
+    # 尾句长度用相对规则（相对平均句长），不写死只对某一本书成立的数字
+    assert "明显短于上述平均句长" in block
+    assert "20 字左右" not in block
+    assert "自称" in block and "亲属关系不得调换" in block
+    assert "优先级高于上文" in block
+
+
+def test_render_style_tail_block_is_empty_without_avg_sentence():
+    from app.services.style_profile import render_style_tail_block
+
+    assert render_style_tail_block({}) == ""
+    assert render_style_tail_block({"dialogue_ratio": 23}) == ""
+
+
+def test_extract_rendered_metrics_round_trips_the_renderer():
+    from app.services.style_profile import (
+        extract_rendered_metrics,
+        render_style_profile,
+    )
+
+    profile = {
+        "version": 1,
+        "confidence": 0.8,
+        "metrics": {
+            "avg_sentence_chars": 29.7,
+            "median_sentence_chars": 28,
+            "short_sentence_ratio": 0.28,
+            "dialogue_ratio": 0.23,
+            "paragraph_chars_p50": 38,
+        },
+        "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近"},
+        "diction": {"register": "书面", "concreteness": "高", "idiom_density": "中"},
+        "dialogue": {"attribution": "动作引出", "tag_density": "中"},
+        "rhetoric": ["白描"],
+        "do": ["保持信息密度"],
+        "dont": ["避免抒情"],
+        "evidence_chapters": [1],
+    }
+    rendered = render_style_profile(profile, {"chapter_numbers": [1], "char_count": 3000}, title="t", language="zh")
+    metrics = extract_rendered_metrics(rendered)
+    assert metrics["avg_sentence_chars"] == 29.7
+    assert metrics["paragraph_chars_p50"] == 38
+    # 渲染层把比例写成百分数
+    assert metrics["dialogue_ratio"] == 23
+    assert metrics["short_sentence_ratio"] == 28
+
+
+def test_extract_rendered_metrics_ignores_unrelated_text():
+    from app.services.style_profile import extract_rendered_metrics
+
+    assert extract_rendered_metrics("") == {}
+    assert extract_rendered_metrics("没有任何指标的一段文字") == {}
+
+
+def test_render_style_tail_block_english_variant():
+    from app.services.style_profile import render_style_tail_block
+
+    block = render_style_tail_block(
+        {"avg_sentence_chars": 29.7, "dialogue_ratio": 23, "paragraph_chars_p50": 38},
+        language="en",
+    )
+    assert "Writing spec" in block
+    assert "average sentence length 29.7 characters" in block
+    assert "dialogue ratio 23%" in block
+    assert "regular paragraphs" not in block
+    assert "Time anchor" in block
+    assert "clearly shorter than the average sentence length" in block
+    assert "56%" not in block
+    assert "claimed relationship is not a fact" in block
+    assert "不得单句成段" not in block
+
+
+def test_style_content_language_detects_english_rendering():
+    from app.services.style_profile import style_content_language
+
+    assert style_content_language("【本书文笔画像】平均句长：29.7 字") == "zh"
+    assert style_content_language("Book style profile: Average sentence length: 29.7") == "en"
+    assert style_content_language("") == "zh"
+
+
+# ---- v2 文学画像、全书指纹扫描与多场景分批抽样 ----
+
+
+def _v2_profile():
+    return {
+        "version": 2,
+        "confidence": 0.86,
+        "impression": "整体文笔质朴平实，句子以连贯中长句为主，修辞克制白描，情绪直白外放，读起来像老派连载故事。",
+        "texture": "平实白话为底，偶夹传统叙述套语，用词接地气",
+        "rhythm": "以连贯复句顺叙推进，段落丰满，极少刻意碎段",
+        "tone": "爱憎分明、直白外放，喜怒直接流露",
+        "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近人物心理与动作"},
+        "dialogue": {"attribution": "动作神态引出说话，少用机械说道", "tag_density": "中等"},
+        "rhetoric": ["白描直叙", "朴素比喻"],
+        "scene_shifts": ["高对话场景：对答密集、动作简练", "纯叙事场景：长句铺陈细节与因果"],
+        "do": [
+            "保持平实流畅的白话铺陈，按因果顺叙把事讲透",
+            "情绪直白自然流露，不故意装作冷漠克制",
+            "段落连贯丰满，用完整复句承载心理与动作衔接",
+        ],
+        "dont": [
+            "避免刻意拆成满屏一行一句的碎片短段",
+            "避免滥用破折号制造悬疑停顿",
+            "避免议论文式对仗总结与独坐望夜收尾",
+        ],
+        "metrics": {
+            "avg_sentence_chars": 29.5,
+            "median_sentence_chars": 28.0,
+            "short_sentence_ratio": 0.25,
+            "dialogue_ratio": 0.24,
+            "paragraph_chars_p50": 42,
+        },
+        "evidence_chapters": [1, 4, 8],
+    }
+
+
+def test_validate_v2_allows_literary_terms_and_rejects_empty_praise():
+    data = _v2_profile()
+    validate_style_profile(data)
+
+    # 放行正常文笔描述词（质朴/克制/细腻/冷峻）
+    data["do"][0] = "语言质朴克制，保持细腻白描与冷峻底色"
+    validate_style_profile(data)
+
+    # 拦截无信息量空话
+    bad = _v2_profile()
+    bad["do"][0] = "文笔好，非常精彩"
+    with pytest.raises(ValueError, match="空泛形容词"):
+        validate_style_profile(bad)
+
+    # 缺失 v2 必填文学维度时拒绝
+    missing_imp = _v2_profile()
+    missing_imp["impression"] = "  "
+    with pytest.raises(ValueError, match="impression"):
+        validate_style_profile(missing_imp)
+
+
+def test_reconcile_v2_preserves_qualitative_advice_without_numeric_overwrite():
+    from app.services.style_profile import reconcile_advice_with_metrics
+
+    data = _v2_profile()
+    data["do"].append("平均句长控制在 12-16 字")  # 模型误编的冲突数字应被剔除
+    data["dont"].append("避免连续短句堆砌")  # 长句书的反短句禁令必须保留
+    updated = reconcile_advice_with_metrics(data, data["metrics"])
+
+    assert "保持平实流畅的白话铺陈，按因果顺叙把事讲透" in updated["do"]
+    assert "情绪直白自然流露，不故意装作冷漠克制" in updated["do"]
+    assert "避免连续短句堆砌" in updated["dont"]
+    assert not any("12-16" in item for item in updated["do"])
+    assert not any("平均句长控制在" in item for item in updated["do"])
+
+
+def test_analyze_corpus_fingerprint_does_not_double_count_substrings():
+    from app.services.style_profile import analyze_corpus_fingerprint
+
+    ch = SimpleNamespace(
+        chapter_number=None,
+        content="他不由得停下脚步，心里想着这件事。" * 80,
+    )
+    fp = analyze_corpus_fingerprint([ch])
+    assert "不由得" in fp["signature_words"]
+    assert "不由" not in fp["signature_words"]
+
+
+def test_analyze_corpus_fingerprint_captures_distribution_and_language_isolation():
+    from app.services.style_profile import analyze_corpus_fingerprint
+
+    ch1 = SimpleNamespace(
+        chapter_number=1,
+        content=("虽然他心里有些犹豫，可是动作却丝毫没有停下，不禁叹了口气。" * 4) + "\n\n「真的吗？」",
+    )
+    ch2 = SimpleNamespace(
+        chapter_number=2,
+        content=("虽然如此，可是前路依然漫长，不禁令人感慨！" * 4) + "\n\n「走吧！」",
+    )
+    fp = analyze_corpus_fingerprint([ch1, ch2])
+    assert fp["language"] == "zh"
+    assert fp["chapter_count"] == 2
+    assert fp["distribution"]["dialogue_ratio"]["max"] >= fp["distribution"]["dialogue_ratio"]["min"]
+    assert "可是" in fp["signature_words"]
+    assert "虽然" in fp["signature_words"]
+    assert "不禁" in fp["signature_words"]
+    assert "——" in fp["rare_ai_markers"]
+    assert "顿了顿" in fp["rare_ai_markers"]
+    assert fp["endings"]["dialogue_ratio"] == pytest.approx(1.0)
+    assert fp["endings"]["exclamation_ratio"] == pytest.approx(0.5)
+
+    # 英文正文不得运行中文词表，防止中文 AI 异物污染英文画像
+    en_ch = SimpleNamespace(
+        chapter_number=1,
+        content="He walked down the narrow street. She waited near the gate. \"Ready?\" she asked!",
+    )
+    en_fp = analyze_corpus_fingerprint([en_ch])
+    assert en_fp["language"] == "other"
+    assert en_fp["signature_words"] == []
+    assert en_fp["rare_ai_markers"] == []
+
+
+def test_build_multi_scene_batches_covers_extremes_and_respects_volume_mode():
+    from app.services.style_profile import build_multi_scene_batches
+
+    chapters = []
+    for idx in range(1, 15):
+        if idx in (3, 4):
+            # 高对话短句章
+            text = ("「走。」" + "「好。」" + "「快点！」") * 80
+        elif idx in (7, 8):
+            # 纯叙事长句章
+            text = ("占位长句" * 10 + "。") * 70
+        else:
+            text = ("占位常规句子内容。" * 6) * 40
+        chapters.append(SimpleNamespace(chapter_number=idx, title=f"第{idx}章", content=text))
+
+    batches = build_multi_scene_batches(chapters, batch_char_budget=11000, max_batches=2)
+    assert 1 < len(batches) <= 2
+    picked = {ch for b in batches for ch in b.meta["chapter_numbers"]}
+    # 必须同时抓到高对话与长句铺陈极端章以及开篇/尾声
+    assert 1 in picked and 14 in picked
+    assert 3 in picked or 4 in picked
+    assert 7 in picked or 8 in picked
+
+    # 分卷模式固定走单批
+    vol_batches = build_multi_scene_batches(chapters, mode="volume")
+    assert len(vol_batches) == 1
+
+
+def test_render_v2_puts_impression_first_and_round_trips_tail_block():
+    from app.services.style_profile import (
+        analyze_corpus_fingerprint,
+        extract_rendered_impression,
+        extract_rendered_metrics,
+        extract_rendered_rare_markers,
+        render_style_tail_block,
+    )
+
+    ch1 = SimpleNamespace(chapter_number=1, content="虽然天色已晚，可是他仍未歇息，不禁眉头微皱！" * 6)
+    data = {**_v2_profile(), "fingerprint": analyze_corpus_fingerprint([ch1])}
+    rendered = render_style_profile(data, {"chapter_numbers": [1], "char_count": 3000}, title="示例书")
+
+    # 整体印象必须出现在正文前部，让前端前 3 行卡片预览一眼可见
+    assert rendered.index("## 整体印象") < rendered.index("## 语言质地与情绪基调")
+    assert rendered.index("老派连载故事") < 180
+    assert "作者高频语感词" in rendered
+    assert "原文极少/几乎不出现（切勿滥用）" in rendered
+
+    metrics = extract_rendered_metrics(rendered)
+    assert metrics["avg_sentence_chars"] == 29.5
+    impression = extract_rendered_impression(rendered)
+    assert "整体文笔质朴平实" in impression
+    rare = extract_rendered_rare_markers(rendered)
+    assert "——" in rare and "顿了顿" in rare
+
+    tail = render_style_tail_block(metrics, language="zh", impression=impression, rare_markers=rare)
+    assert "语感总锚点" in tail
+    assert "行文节奏" in tail
+    assert "29.7 字" not in tail  # v2 尾块不向生成期 LLM 灌输小数指标
+    assert "禁止滥用原文几乎不出现的 AI 惯用痕迹" in tail
+    assert "议论文式对仗总结" in tail
+    assert "优先级高于上文与通用 Skill 默认习惯" in tail

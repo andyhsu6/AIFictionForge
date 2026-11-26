@@ -239,6 +239,20 @@
     "keyEventsLabel": "⚡ Key Events",
     "keyPointsLabel": "💡 Key Points",
     "manualCreate": "New Outline",
+    "metadataComplete": "Complete Metadata",
+    "metadataCompleteBatch": "Batch Complete Metadata",
+    "metadataCompleting": "Completing…",
+    "metadataField": {
+      "characters": "characters",
+      "emotion": "emotion",
+      "goal": "goal",
+      "key_points": "plot points",
+      "scenes": "scenes"
+    },
+    "metadataFieldsSeparator": ", ",
+    "metadataMissing": "Structured metadata missing",
+    "metadataMissingFields": "Missing: {{fields}}",
+    "metadataMissingHint": "A background completion task will be created for {{n}} outlines with missing structured metadata in this project.",
     "modeOneToMany": "Detailed mode (1→N)",
     "modeOneToOne": "Classic mode (1→1)",
     "noContent": "No content yet",
@@ -264,6 +278,8 @@
     "createSuccess": "Outline created",
     "deleteFailed": "Delete failed",
     "deleteSuccess": "Deleted successfully",
+    "metadataTaskFailed": "Metadata completion task failed",
+    "metadataTaskSubmitted": "Metadata completion task submitted; progress in the bottom-right task panel",
     "updateFailed": "Update failed",
     "updateSuccess": "Outline updated"
   }

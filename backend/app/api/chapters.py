@@ -6,7 +6,8 @@ from sqlalchemy.orm import selectinload
 import json
 import asyncio
 import hashlib
-from typing import Awaitable, Callable, Optional
+import re
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timedelta
 from asyncio import Queue, Lock
 from math import ceil
@@ -15,6 +16,15 @@ from app.database import get_db, get_engine
 from app.api.common import verify_project_access
 from app.core.errors import ApiError, DYNAMIC_DETAIL_CODE
 from app.core.db_write_lock import get_db_write_lock
+from app.services.chapter_generation_guard import (
+    ChapterCheckpointer,
+    build_continuation_block,
+    build_resume_plan,
+    length_floor_for,
+    needs_top_up,
+    restore_before_top_up,
+    top_up_max_tokens,
+)
 from app.services.chapter_context_service import (
     OneToManyContextBuilder,
     OneToOneContextBuilder,
@@ -34,7 +44,19 @@ from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
 from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
-from app.services.style_anchors import append_project_style_anchors
+from app.services.style_anchors import ANCHOR_HEADER, append_project_style_anchors
+from app.services.style_profile import (
+    extract_rendered_do_items,
+    extract_rendered_ending_habits,
+    extract_rendered_impression,
+    extract_rendered_metrics,
+    extract_rendered_rare_markers,
+    extract_rendered_signature_words,
+    profile_preset_id,
+    render_style_tail_block,
+    style_content_language,
+)
+from app.services.style_volumes import parse_volume_preset_id, resolve_volume_for_chapter
 from app.schemas.chapter import (
     ChapterCreate,
     ChapterUpdate,
@@ -57,15 +79,23 @@ from app.schemas.regeneration import (
     RegenerationTaskResponse,
     RegenerationTaskStatus
 )
+from app.services.agent_prompt_budget import CHARS_PER_TOKEN
+from app.services.model_capability_probe import CAPABILITY_INCOMPLETE_CODE
 from app.services.ai_service import (
     AIService,
-    detect_max_output_tokens,
-    ensure_thinking_model_min_tokens,
+    THINKING_MODEL_DEFAULT_MAX_TOKENS,
+    plan_output_budget,
 )
 from app.services.prompt_service import prompt_service, PromptService, WritingStyleManager
 from app.services.plot_analyzer import PlotAnalyzer
+from app.services.outline_plan_adapter import to_storage_plan
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
+from app.services.derived_state import (
+    clamp_derived_state_after_delete,
+    find_stale_derived_state,
+)
+from app.services.prompt_names import build_established_names_block
 from app.services.chapter_regenerator import (
     ChapterRegenerator,
     STYLE_CHECK_UNAVAILABLE,
@@ -80,9 +110,20 @@ router = APIRouter(prefix="/chapters", tags=["章节管理"])
 logger = get_logger(__name__)
 
 analysis_background_tasks: set[asyncio.Task] = set()
+batch_background_tasks: set[asyncio.Task] = set()
 
 ANALYSIS_TASK_TIMEOUT_SECONDS = 600
 ANALYSIS_TASK_STALE_SECONDS = 720
+
+# 批量生成任务心跳超时阈值（分钟）。注意：该阈值在心跳 ticker 正常工作的前提下生效
+# —— ticker（_batch_heartbeat_loop）每 60s 独立刷新心跳，协程长时间执行也不会窒息；
+# 只有 worker 整体消失（重启/被杀）时心跳才会停止。模块常量便于测试 monkeypatch。
+BATCH_STALE_MINUTES = 10
+# 心跳 ticker 间隔（秒）。单章可能包含 600s 同步分析 + 生成 + 退避，必须远小于阈值。
+BATCH_HEARTBEAT_INTERVAL_SECONDS = 60
+# 心跳 ticker 连续失败上限：瞬时 DB 抖动（database is locked）不应让 ticker 永久退出，
+# 连续失败达到该次数才放弃（放弃后由陈旧回收兜底）。
+BATCH_HEARTBEAT_MAX_FAILURES = 3
 
 # 章内 AI 续写（continue 模式）分段/能力参数（W5 冻结契约；字数即 len(str)）
 SINGLE_REQUEST_MAX_CHARS = 12000
@@ -124,6 +165,19 @@ def _append_full_book_context(prompt: str, full_book_context: Optional[str]) -> 
     )
 
 
+def _append_world_context(prompt: str, world_context: Optional[str]) -> str:
+    """把世界观规则与力量体系硬边界追加到生成 prompt（近因位置，防跨题材越界）。"""
+    if not world_context:
+        return prompt
+    return (
+        prompt
+        + "\n\n<world_rules priority=\"P0\">\n"
+        + "【世界规则与力量边界 - 必须严格遵守】\n"
+        + world_context
+        + "\n</world_rules>"
+    )
+
+
 def _build_style_anchor_override(
     *,
     enabled: Optional[bool] = None,
@@ -149,12 +203,473 @@ def _schedule_analysis_background(coroutine) -> asyncio.Task:
     return task
 
 
+async def _mark_batch_failed_after_crash(
+    batch_id: str,
+    user_id: str,
+    exc: BaseException,
+) -> None:
+    """用独立会话把异常退出的批量任务置为 failed（请求级会话可能已关闭）。"""
+    from app.database import get_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+    try:
+        engine = await get_engine(user_id)
+        session_factory = async_sessionmaker(
+            engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        async with session_factory() as session:
+            await session.execute(
+                update(BatchGenerationTask)
+                .where(
+                    BatchGenerationTask.id == batch_id,
+                    # 幂等条件：只有仍 running 才改，避免覆盖陈旧回收/已结案的结果
+                    BatchGenerationTask.status == "running",
+                )
+                .values(
+                    status="failed",
+                    completed_at=datetime.now(),
+                    error_message=(
+                        f"批量生成异常中断：{type(exc).__name__}: {exc}"
+                    )[:500],
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+    except Exception as cleanup_error:
+        logger.error(
+            f"❌ 兜底标记批量生成任务失败时出错: {batch_id}: {cleanup_error}"
+        )
+
+
+def _on_batch_generation_task_done(
+    task: asyncio.Task,
+    *,
+    batch_id: str,
+    user_id: str,
+) -> None:
+    """后台批量协程结束回调：取走异常并兜底标记失败。"""
+    batch_background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()  # 必须取走，否则 Task exception was never retrieved
+    if exc is None:
+        return
+    logger.error(f"❌ 批量生成后台任务异常退出: {batch_id}", exc_info=exc)
+    cleanup_task = asyncio.create_task(
+        _mark_batch_failed_after_crash(batch_id, user_id, exc)
+    )
+    batch_background_tasks.add(cleanup_task)
+    cleanup_task.add_done_callback(batch_background_tasks.discard)
+
+
+async def _make_heartbeat_session(user_id: str):
+    """构造 ticker 的独立会话工厂与写锁（初始化放在循环内，失败可重试）。"""
+    from app.database import get_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+    engine = await get_engine(user_id)
+    session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    write_lock = await get_db_write_lock(user_id)
+    return session_factory, write_lock
+
+
+async def _batch_heartbeat_loop(
+    batch_id: str,
+    user_id: str,
+    interval: float = BATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> None:
+    """独立心跳 ticker：每 interval 秒刷新一次 heartbeat_at。
+
+    不用打点频率保证存活：单章可能内联 600s 同步分析 + 生成 + 退避，打点间隔
+    会超过 BATCH_STALE_MINUTES。单次 DB 抖动不得让 ticker 永久退出（否则 10 分钟后
+    正常协程会被误杀）；连续失败 BATCH_HEARTBEAT_MAX_FAILURES 次才放弃。
+    rowcount==0（任务已不在 running）即自行退出。
+    """
+    consecutive_failures = 0
+    # 惰性初始化：get_engine / 建工厂 / 取写锁都放在循环内，启动瞬间 DB 忙也能重试
+    session_factory = None
+    write_lock = None
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if session_factory is None or write_lock is None:
+                session_factory, write_lock = await _make_heartbeat_session(user_id)
+            async with write_lock:
+                async with session_factory() as session:
+                    result = await session.execute(
+                        update(BatchGenerationTask)
+                        .where(
+                            BatchGenerationTask.id == batch_id,
+                            BatchGenerationTask.status == "running",
+                        )
+                        .values(heartbeat_at=datetime.now())
+                        .execution_options(synchronize_session=False)
+                    )
+                    await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            consecutive_failures += 1
+            logger.warning(
+                f"⚠️ 批量任务心跳失败（连续 {consecutive_failures}/{BATCH_HEARTBEAT_MAX_FAILURES}）"
+                f": {batch_id}: {exc}"
+            )
+            if consecutive_failures >= BATCH_HEARTBEAT_MAX_FAILURES:
+                logger.error(
+                    f"❌ 批量任务心跳连续失败 {consecutive_failures} 次，ticker 退出: {batch_id}"
+                )
+                return
+            continue
+        consecutive_failures = 0
+        if not result.rowcount:
+            # 任务已终态（完成/失败/取消/被回收）：ticker 自行退出，不再写库
+            return
+
+
+def _spawn_batch_generation(
+    coroutine,
+    *,
+    batch_id: str,
+    user_id: str,
+    heartbeat_interval: float = BATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> asyncio.Task:
+    """启动批量生成协程与心跳 ticker，并持有引用直到主任务结束。"""
+
+    async def _run_with_heartbeat():
+        ticker = asyncio.create_task(
+            _batch_heartbeat_loop(batch_id, user_id, heartbeat_interval)
+        )
+        try:
+            return await coroutine
+        finally:
+            # 主任务正常结束 / 抛异常 / 被取消，都必须停掉 ticker，避免泄漏与幽灵写库
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # ticker 自身异常不得掩盖主任务结果
+                logger.warning(
+                    f"⚠️ 批量任务心跳 ticker 结束异常: {batch_id}: {exc}"
+                )
+
+    task = asyncio.create_task(_run_with_heartbeat())
+    batch_background_tasks.add(task)
+    task.add_done_callback(
+        lambda finished: _on_batch_generation_task_done(
+            finished, batch_id=batch_id, user_id=user_id
+        )
+    )
+    return task
+
+
 def _build_lightweight_chapter_summary(content: str, max_length: int = 300) -> str:
     """生成可立即用于下一章衔接的轻量摘要兜底。"""
     if not content:
         return ""
     normalized = " ".join(content.split())
     return normalized[:max_length]
+
+
+# 「疑似空转」阈值：只在 finish_reason=stop 且正文明显偏短时用。
+_TRUNCATION_MIN_RATIO = 0.5
+
+
+def _is_truncated_chapter_content(
+    content: str,
+    target_word_count: int,
+    finish_reason: Optional[str],
+    chapter_label: Optional[str] = None,
+) -> bool:
+    """判断这一章是否算「没写完」：空正文 / 被上限切断。
+
+    - 空正文（含纯空白）：一律失败 —— 0 字章节不得冒充成功。
+    - ``finish_reason == "length"``：**一律**算截断，与目标字数占比无关。该值的
+      语义就是「被输出上限切断、还想继续写」，50%~100% 的半截章节同样是残稿。
+    - 其它结束原因（含 ``stop``）：正文非空即视为成功。正文明显偏短（不足目标一半）
+      只打 WARNING 做可观测性统计（「模型偷懒」频率），**不走失败路径** ——
+      「短但完整」是写作质量问题，不是数据完整性问题。
+
+    ``target_word_count`` 在该函数里**只用于那条告警**；告警阈值（0.5）仅在中文口径
+    （1 字符 ≈ 1 字，见 ai_service `_FULL_BOOK_BUDGET_RATIO` 注释）下有意义。
+    """
+    text = content or ""
+    label = chapter_label or "章节"
+    if not text.strip():
+        return True
+    if finish_reason == "length":
+        return True
+    try:
+        target = int(target_word_count or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if target > 0 and len(text) < target * _TRUNCATION_MIN_RATIO:
+        logger.warning(
+            f"⚠️ {label}偏短但已自然收尾（finish_reason={finish_reason or '未知'}）："
+            f"正文 {len(text)} 字 / 目标 {target} 字，按成功处理"
+        )
+    return False
+
+
+def _reasoning_chars_from_usage(usage: Any, content_chars: int) -> Optional[int]:
+    """推理字符的估算值：completion_tokens - 正文字符（无 usage 时返回 None）。
+
+    OpenAI 兼容客户端目前只把 reasoning 计入日志、不单独回传，因此这里只能给
+    估算值；消息里必须标 `≈`，不得冒充精确读数。
+    """
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if completion_tokens is None:
+        return None
+    try:
+        estimated = int(completion_tokens) - int(content_chars)
+    except (TypeError, ValueError):
+        return None
+    return estimated if estimated > 0 else None
+
+
+# 截断即失败：预算已按窗口剩余一次给足（不再抬预算重试，见
+# `AIService.resolve_effective_window_tokens` + `plan_output_budget`）。
+#
+# 但「预算给足」不等于「截断必然复现」：思考型模型的推理量随运行波动，偶发一次
+# 吃满上限是可能的。所以截断类仍保留 **1 次**外层重试（首发生成 + 1 次 = 2 次调用），
+# 而不是跟着 max_retries 跑满 4 次全额生成——抬预算已经无意义，多跑只会多烧钱。
+_TRUNCATION_OUTER_RETRIES = 1
+
+
+class ChapterGenerationTruncatedError(RuntimeError):
+    """截断类失败：预算已按窗口剩余一次给足；外层最多重试 `_TRUNCATION_OUTER_RETRIES` 次。"""
+
+
+class NonRetryableChapterGenerationError(ChapterGenerationTruncatedError):
+    """不可重试的生成失败（外层批量重试 0 次）。
+
+    预算已按窗口剩余一次给足，截断不再走预算阶梯；该类型保留给「已证明
+    再怎么重放也写不出来」的失败，避免整段重放只多烧全额调用。
+
+    注意：当前生产代码**没有抛出点**（预算重试已删除后不再有「重放必然同样失败」
+    的判定处）。保留它是为了让 `_retry_allowance` 仍有一个表达「allowance=0」的
+    语义位，并维持 `tests/test_batch_retry_control_flow.py` 的既有契约；
+    不要据此以为某个真实失败路径仍在生效。
+    """
+
+
+def _retry_allowance(exc: BaseException, task_max_retries: int) -> int:
+    """外层对该异常允许的重试次数（批量 max_retries 的有效值）。"""
+    if isinstance(exc, NonRetryableChapterGenerationError):
+        return 0
+    if isinstance(exc, ChapterGenerationTruncatedError):
+        # 截断类固定 1 次（覆盖推理量偶发波动），不受任务 max_retries 放大。
+        return min(_TRUNCATION_OUTER_RETRIES, task_max_retries)
+    return task_max_retries
+
+
+def _log_budget_capability_failure(exc: BaseException, *, model: Optional[str], scope: str) -> None:
+    """能力预算降级时的日志分级（续写/重写与三条章节主路径同口径）。
+
+    - `CAPABILITY_INCOMPLETE`（门禁判合格但缓存窗口数值缺失）：门禁在派发处**不会**重抛，
+      所以这里必须 ERROR —— 否则本次会带着保守上限静默跑完，没人知道预算退化了；
+    - 其它门禁类 `ApiError`：派发处会按同一三元组重抛真实错误，WARNING 足够；
+    - 未知异常（DB 抖动、解析 bug）：同样不会被重抛，ERROR 并带上异常类型。
+    """
+    code = getattr(exc, "code", None)
+    if code == CAPABILITY_INCOMPLETE_CODE:
+        logger.error(f"❌ {scope}上下文窗口结论缺失有效数值，预算退化: model={model}, code={code}")
+    elif isinstance(exc, ApiError):
+        logger.warning(f"⚠️ {scope}上下文窗口不可得，预算退回保守上限: model={model}, code={code}")
+    else:
+        logger.error(
+            f"❌ {scope}读取上下文窗口异常，预算退化: "
+            f"model={model}, {type(exc).__name__}: {exc}"
+        )
+
+
+def _extract_anchor_block(text: str) -> str:
+    """从风格内容里取出「原文语感锚点」段（没有则空串）。
+
+    匹配的是 `style_anchors.ANCHOR_HEADER`（标题的唯一来源，全串匹配）。定位不到却
+    见到"语感锚点"字样时留 warning：那说明渲染头被改过而这里没同步，锚点会静默消失。
+    """
+    body = text or ""
+    index = body.find(ANCHOR_HEADER)
+    if index < 0:
+        if "语感锚点" in body:
+            logger.warning(
+                "⚠️ 风格内容里出现「语感锚点」但无法按渲染头定位，原文样本未注入"
+                "（检查 style_anchors.ANCHOR_HEADER 是否被改过而这里没同步）"
+            )
+        return ""
+    block = body[index:].strip()
+    if "\n【" in block:
+        logger.warning(
+            "⚠️ 原文锚点段之后还有其它【…】小节，已被一并当作样本复制进尾块"
+            "（锚点应为 style_content 的最后一块）"
+        )
+    return block
+
+
+def _length_floor_note(target_chars: Optional[int], language: str) -> str:
+    """生成「篇幅参考」软提倡尾注（3000–6000 字推荐，不做硬限）；无目标字数时返回空串。"""
+    floor = length_floor_for(target_chars)
+    if floor <= 0:
+        return ""
+    if (language or "").lower().startswith("en"):
+        return (
+            "\n\n【Length guidance】A chapter length around 3000–6000 characters is encouraged "
+            "(soft guidance, not a hard limit). Let the scene and plot pace decide when to close; "
+            "never pad with summary/filler or cut off prematurely."
+        )
+    return (
+        "\n\n【篇幅参考】建议本章正文在 3000–6000 字左右（仅作提倡，不做硬性限制）。"
+        "请以情节自然推进与完整收束为准，不要为凑字数注水，也不必因担心偏长而草草收尾。"
+    )
+
+
+def _build_generation_system_prompt(
+    style_content: Optional[str],
+    skill_key: Optional[str],
+    *,
+    log_prefix: str = "",
+) -> Optional[str]:
+    """统一构建章节生成系统提示词：本书文笔画像/语感锚点优先级高于任何 Skill。"""
+    parts: list[str] = []
+    if style_content:
+        parts.append(
+            f"""【🎨 本书写作风格要求 - 最高优先级】
+
+{style_content}
+
+⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的语感指令！
+确保在整个章节创作过程中始终保持风格的一致性。"""
+        )
+        logger.info(f"{log_prefix}已将写作风格注入系统提示词（{len(style_content)}字符）")
+
+    if skill_key:
+        try:
+            from app.services.skill_loader import get_all_skills_cached
+
+            skills = get_all_skills_cached()
+            skill = next((s for s in skills if s["template_key"] == skill_key), None)
+            if skill:
+                skill_content = skill["content"]
+                skill_name = skill["template_name"]
+                if style_content:
+                    parts.append(
+                        f"""【⚡ Skill 辅助参考：{skill_name}】
+
+{skill_content}
+
+⚠️ 优先级与输出边界：
+1. 句式长短、段落呼吸感、语言质地、人称视角与本书语言指纹一律以上方「本书写作风格要求」为最高准则，严禁套用与本书文风冲突的短句拆段规则或删去原作者高频语感词。
+2. 只吸收其中有益的去 AI 腔或写作技法，严禁输出 Skill 自带的检测报告、统计表格或目录结构模板，只输出小说正文。"""
+                    )
+                else:
+                    parts.append(
+                        f"""【⚡ Skill 工作流：{skill_name}】
+
+{skill_content}
+
+⚠️ 请遵循上述 Skill 中的写作技法进行创作；只输出小说正文，严禁输出检测报告、统计表格或目录结构模板。"""
+                    )
+                logger.info(
+                    f"⚡ {log_prefix}已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）"
+                )
+            else:
+                logger.warning(f"⚠️ {log_prefix}未找到 Skill: {skill_key}")
+        except Exception as skill_err:
+            logger.warning(f"⚠️ {log_prefix}加载 Skill 失败: {skill_err}")
+
+    return "\n\n".join(parts) if parts else None
+
+
+def _append_style_tail(
+    prompt: str,
+    style_content: Optional[str],
+    target_chars: Optional[int] = None,
+) -> str:
+    """把实测「写作规格」+ 语感锚点贴在用户提示词末尾（近因位置）。"""
+    text = style_content or ""
+    metrics = extract_rendered_metrics(text)
+    language = style_content_language(text)
+    impression = extract_rendered_impression(text)
+    rare_markers = extract_rendered_rare_markers(text)
+    signature_words = extract_rendered_signature_words(text)
+    do_items = extract_rendered_do_items(text)
+    ending_habits = extract_rendered_ending_habits(text)
+    block = render_style_tail_block(
+        metrics,
+        language=language,
+        impression=impression,
+        rare_markers=rare_markers,
+        signature_words=signature_words,
+        do_items=do_items,
+        ending_habits=ending_habits,
+    )
+    if not block and ("文笔画像" in text or "style profile" in text.lower()):
+        # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
+        # 原始缺陷）。这里必须留痕，不能静默退化。
+        logger.warning("⚠️ 画像量化指标解析失败，写作规格尾块未注入（检查渲染措辞与正则是否一致）")
+
+    anchor = _extract_anchor_block(text)
+    if anchor and anchor not in block:
+        sample_hint = "以下为本书原文语感样本：只模仿句法与叙述节奏，禁止复述、改写或引用其中内容。"
+        block = f"{block}\n\n{sample_hint}\n{anchor}" if block else f"{sample_hint}\n{anchor}"
+    floor_note = _length_floor_note(target_chars, language)
+    if floor_note:
+        # 篇幅软提倡对"有没有画像"都成立：它参考的是篇幅，不是文风。
+        block = f"{block}{floor_note}" if block else floor_note.strip()
+    return f"{prompt}\n{block}" if block else prompt
+
+
+def _extract_chapter_numbers(message: str) -> set[int]:
+    """从错误文案里提取「第 N 章」的章号（兼容「第 57, 58 章」合写）。"""
+    numbers: set[int] = set()
+    for group in re.findall(r"第\s*([\d,，\s]+?)\s*章", message or ""):
+        for part in re.split(r"[,，\s]+", group):
+            if part.isdigit():
+                numbers.add(int(part))
+    return numbers
+
+
+def _truncation_error_message(
+    *,
+    chapter_label: str,
+    content_chars: int,
+    target_word_count: int,
+    finish_reason: Optional[str],
+    reasoning_tokens: Optional[int],
+    reasoning_chars: Optional[int],
+    breakdown: Dict[str, Any],
+    budget_attempts: List[int],
+    reasoning_estimated: bool = False,
+) -> str:
+    """截断失败的诊断信息（含推理用量、结束原因与每次尝试的预算）。"""
+    if reasoning_tokens is None:
+        reasoning_field = "reasoning_tokens=未知（客户端未回传）"
+    elif reasoning_estimated:
+        reasoning_field = f"reasoning_tokens≈{reasoning_tokens}（估算）"
+    else:
+        reasoning_field = f"reasoning_tokens={reasoning_tokens}"
+    reasoning_chars_text = f"≈{reasoning_chars}" if reasoning_chars is not None else "未知"
+    return (
+        f"{chapter_label}生成被截断（预算已按窗口剩余给足，截断即失败）"
+        f"（正文 {content_chars} 字 / 目标 {target_word_count} 字，"
+        f"finish_reason={finish_reason or '未知'}，"
+        f"{reasoning_field}，"
+        f"reasoning_chars={reasoning_chars_text}，"
+        f"尝试预算={budget_attempts}，最终 max_tokens={budget_attempts[-1]}，"
+        f"content={breakdown.get('content')}，cap={breakdown.get('cap')}，"
+        f"measured_cap={breakdown.get('measured_cap')}，"
+        f"context_room={breakdown.get('context_room')}，"
+        f"window={breakdown.get('window')}，"
+        f"input_tokens={breakdown.get('input_tokens')}）"
+    )
 
 
 async def _set_analysis_task_terminal_state(
@@ -224,6 +739,135 @@ async def create_chapter(
     await db.commit()
     await db.refresh(db_chapter)
     return db_chapter
+
+
+@router.get("/project/{project_id}/stats", summary="项目章节统计（轻量）")
+async def get_project_chapter_stats(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """章节统计：数量、最大章号，以及「有大纲但还没有章节」的数量。
+
+    最后一项是为了让前端能区分「全部写完」与「大纲还有几章没建」——只扫章节行时，
+    被删过章节的项目会被误判成「所有章节都已生成」（issue #290）。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+    row = (
+        await db.execute(
+            select(func.count(Chapter.id), func.max(Chapter.chapter_number)).where(
+                Chapter.project_id == project_id
+            )
+        )
+    ).one()
+    outline_row = (
+        await db.execute(
+            select(func.count(Outline.id), func.max(Outline.order_index)).where(
+                Outline.project_id == project_id
+            )
+        )
+    ).one()
+    outline_total = int(outline_row[0] or 0)
+    chapter_numbers = set(
+        (
+            await db.execute(
+                select(Chapter.chapter_number).where(Chapter.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+    outline_numbers = set(
+        (
+            await db.execute(
+                select(Outline.order_index).where(
+                    Outline.project_id == project_id, Outline.order_index.is_not(None)
+                )
+            )
+        ).scalars().all()
+    )
+    missing = sorted(n for n in outline_numbers if int(n) > 0 and int(n) not in chapter_numbers)
+    return {
+        "total": int(row[0] or 0),
+        "max_chapter_number": int(row[1] or 0),
+        "outline_total": outline_total,
+        "max_outline_number": int(outline_row[1] or 0),
+        "missing_from_outlines": len(missing),
+    }
+
+
+@router.post("/project/{project_id}/materialize-outlines", summary="按大纲补齐缺失章节")
+async def materialize_chapters_from_outlines(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """把「有大纲但没有章节行」的章节建出来（幂等，不覆盖已有章节）。
+
+    章节被删除后大纲仍然保留（大纲是计划，章节是稿子），但没有任何路径能把稿子位
+    重新建出来，批量生成于是只看得到已有章节（issue #290）。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    outlines = (
+        await db.execute(
+            select(Outline)
+            .where(Outline.project_id == project_id)
+            .order_by(Outline.order_index)
+        )
+    ).scalars().all()
+    existing = set(
+        int(n)
+        for n in (
+            await db.execute(
+                select(Chapter.chapter_number).where(Chapter.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+
+    created: list[int] = []
+    for outline in outlines:
+        number = int(outline.order_index or 0)
+        if number <= 0 or number in existing:
+            continue
+        try:
+            structure = json.loads(outline.structure or "{}")
+        except ValueError:
+            structure = {}
+        title = str(structure.get("title") or outline.title or f"第{number}章")[:200]
+        db.add(
+            Chapter(
+                project_id=project_id,
+                chapter_number=number,
+                title=title,
+                content=None,
+                summary=None,
+                word_count=0,
+                status="draft",
+                outline_id=outline.id,
+            )
+        )
+        created.append(number)
+
+    if created:
+        await db.commit()
+        logger.info(f"📄 按大纲补齐章节: project={project_id[:8]} 新建 {len(created)} 章")
+    return {"created": created, "count": len(created)}
+
+
+@router.get("/project/{project_id}/consistency", summary="派生状态一致性自检")
+async def check_derived_state_consistency(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """报告仍引用「不存在的章节」的角色事实/状态标记（只读，issue #288）。
+
+    这类偏差不会报错，只会让生成链路悄悄用上已删内容，所以需要能主动查出来。
+    """
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+    return await find_stale_derived_state(db, project_id)
 
 
 @router.get("/project/{project_id}", response_model=ChapterListResponse, summary="获取项目的所有章节")
@@ -450,7 +1094,8 @@ async def update_chapter(
                 except Exception as e:
                     logger.warning(f"⚠️ 清理伏笔数据失败: {str(e)}")
                 
-                logger.info(f"🗑️ 章节 {chapter_id[:8]} 内容已清空，已清理分析、记忆和伏笔数据")
+                await clamp_derived_state_after_delete(db, chapter.project_id)
+                logger.info(f"🗑️ 章节 {chapter_id[:8]} 内容已清空，已清理分析、记忆、伏笔及派生状态数据")
     
     await db.commit()
     await db.refresh(chapter)
@@ -547,6 +1192,15 @@ async def delete_chapter(
     # 删除章节
     await db.delete(chapter)
     await db.commit()
+
+    # 派生状态按章节号推进，删章不会自动回退（issue #288）：钳到当前最大存活章，
+    # 否则 profile_facts / current_state 会继续引用已经不存在的章节，并被注入提示词。
+    try:
+        await clamp_derived_state_after_delete(db, chapter.project_id)
+        await db.commit()
+    except Exception as exc:  # 清理失败不应阻断删除本身
+        await db.rollback()
+        logger.warning(f"⚠️ 派生状态回滚失败（章节已删除）: {exc}")
     
     return {"message": "章节删除成功"}
 
@@ -616,6 +1270,14 @@ async def check_previous_analysis_ready(db: AsyncSession, chapter: Chapter) -> t
     if analysis_task and analysis_task.status == 'completed':
         return True, ""
 
+    # 断点草稿（status=writing）意味着上一章的生成中断了：它永远不会有分析任务，
+    # 这时让用户"等待分析完成"是死胡同，必须指向真正的恢复动作。
+    if (prev_chapter.status or "") == "writing":
+        return False, (
+            f"上一章（第{prev_chapter.chapter_number}章）的生成被中断，只写了部分正文。"
+            "请先重新生成该章（会从断点继续），完成后再生成下一章"
+        )
+
     return False, f"上一章（第{prev_chapter.chapter_number}章）内容分析尚未完成，请等待分析完成后再生成下一章，以保证角色状态、记忆和伏笔连贯"
 
 
@@ -623,7 +1285,8 @@ async def build_characters_info_with_careers(
     db: AsyncSession,
     project_id: str,
     characters: list[Character],
-    filter_character_names: Optional[list[str]] = None
+    filter_character_names: Optional[list[str]] = None,
+    target_chapter: Optional[int] = None
 ) -> str:
     """
     构建包含职业信息的角色上下文
@@ -759,6 +1422,9 @@ async def build_characters_info_with_careers(
         entity_type = '组织' if c.is_organization else '角色'
         status_marker = ""
         char_status = getattr(c, 'status', None) or 'active'
+        status_changed_ch = getattr(c, 'status_changed_chapter', None)
+        if target_chapter is not None and status_changed_ch is not None and status_changed_ch > target_chapter:
+            char_status = 'active'
         if char_status != 'active':
             STATUS_MARKERS = {
                 'deceased': '💀已死亡',
@@ -823,7 +1489,11 @@ async def build_characters_info_with_careers(
         
         # 心理状态（由章节分析自动更新）
         state_str = ""
-        if c.current_state:
+        if c.current_state and (
+            target_chapter is None
+            or c.state_updated_chapter is None
+            or c.state_updated_chapter <= target_chapter
+        ):
             state_preview = c.current_state[:50] if len(c.current_state) > 50 else c.current_state
             state_str = f" | 当前状态: {state_preview}"
             if c.state_updated_chapter:
@@ -1144,7 +1814,8 @@ async def _analyze_chapter_background_impl(
             db=db_session,
             project_id=project_id,
             characters=project_characters,
-            filter_character_names=filter_character_names
+            filter_character_names=filter_character_names,
+            target_chapter=chapter.chapter_number
         )
         logger.info(f"📋 后台分析 - 已获取{len(project_characters)}个角色信息用于分析")
         
@@ -1500,6 +2171,89 @@ async def _analyze_chapter_background_impl(
             await db_session.close()
 
 
+async def _resolve_project_style_content(
+    db: AsyncSession,
+    project: Optional[Project],
+    chapter_number: Optional[int],
+    style_id: Optional[int],
+    user_id: str,
+    *,
+    use_project_default: bool = False,
+) -> str:
+    """解析生成用的写作风格内容（计划 §13-3：按目标章节自动选卷）。
+
+    优先级：
+    1. ``style_id`` 指向本项目的卷画像 → 直接用该卷内容（用户显式选择）；
+    2. ``style_id`` 为空或指向本项目全书画像（``profile:<project_id>``）→ 按章号
+       匹配卷画像，命中则用卷画像；
+    3. 其余保留原有语义：显式普通风格直接用，``use_project_default`` 时回退项目默认风格。
+
+    显式选择普通风格时不会被卷画像覆盖。
+    """
+    style: Optional[WritingStyle] = None
+    if style_id:
+        style = (
+            await db.execute(select(WritingStyle).where(WritingStyle.id == style_id))
+        ).scalar_one_or_none()
+        # 全局预设（user_id 为 NULL）或本人风格可用；其他用户的风格忽略
+        if style is not None and style.user_id is not None and style.user_id != user_id:
+            logger.warning(f"风格 {style_id} 不属于当前用户，跳过")
+            style = None
+        if style is None:
+            logger.warning(f"未找到风格 {style_id}")
+
+    if style is not None:
+        volume_ref = parse_volume_preset_id(style.preset_id)
+        if volume_ref is not None:
+            if project is None or volume_ref[0] != project.id:
+                logger.warning(f"风格 {style_id} 属于其他项目的卷画像，跳过")
+                return ""
+            logger.info(f"使用指定卷画像: {style.name}（第 {volume_ref[1]} 卷）")
+            return style.prompt_content or ""
+        # 非画像风格（用户显式选择）：尊重用户选择，不参与选卷
+        if project is None or style.preset_id != profile_preset_id(project.id):
+            return style.prompt_content or ""
+
+    # 未指定风格 / 指向本项目全书画像：按目标章节匹配卷画像
+    if project is not None and chapter_number:
+        volume = await resolve_volume_for_chapter(db, project.id, chapter_number)
+        if volume is not None:
+            volume_ref = parse_volume_preset_id(volume.preset_id)
+            index_label = volume_ref[1] if volume_ref else "?"
+            logger.info(
+                f"按第 {chapter_number} 章匹配到卷画像（第 {index_label} 卷）: {volume.name}"
+            )
+            return volume.prompt_content or ""
+
+    if style is not None:
+        # 全书画像：无卷画像命中时沿用原逻辑
+        return style.prompt_content or ""
+
+    if use_project_default and project is not None:
+        from app.models.project_default_style import ProjectDefaultStyle
+
+        default_style_id = (
+            await db.execute(
+                select(ProjectDefaultStyle.style_id).where(
+                    ProjectDefaultStyle.project_id == project.id
+                )
+            )
+        ).scalar_one_or_none()
+        if default_style_id:
+            default_style = (
+                await db.execute(
+                    select(WritingStyle).where(WritingStyle.id == default_style_id)
+                )
+            ).scalar_one_or_none()
+            if default_style is not None and (
+                default_style.user_id is None or default_style.user_id == user_id
+            ):
+                logger.info(f"使用项目默认写作风格: {default_style_id}")
+                return default_style.prompt_content or ""
+
+    return ""
+
+
 @router.post("/{chapter_id}/generate-stream", summary="AI创作章节内容（流式）")
 async def generate_chapter_content_stream(
     chapter_id: str,
@@ -1617,25 +2371,15 @@ async def generate_chapter_content_stream(
                     )
                 outline = outline_result.scalar_one_or_none()
                 
-                # 获取写作风格
-                style_content = ""
-                if style_id:
-                    # 使用指定的风格
-                    style_result = await db_session.execute(
-                        select(WritingStyle).where(WritingStyle.id == style_id)
-                    )
-                    style = style_result.scalar_one_or_none()
-                    if style:
-                        # 验证风格是否可用：全局预设风格（user_id为NULL）或者当前用户的自定义风格
-                        if style.user_id is None or style.user_id == current_user_id:
-                            style_content = style.prompt_content or ""
-                            style_type = "全局预设" if style.user_id is None else "用户自定义"
-                            logger.info(f"使用指定风格: {style.name} ({style_type})")
-                        else:
-                            logger.warning(f"风格 {style_id} 不属于当前项目，无法使用")
-                    else:
-                        logger.warning(f"未找到风格 {style_id}")
-                else:
+                # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+                style_content = await _resolve_project_style_content(
+                    db_session,
+                    project,
+                    current_chapter.chapter_number,
+                    style_id,
+                    current_user_id,
+                )
+                if not style_content:
                     logger.info("未指定写作风格，使用原始提示词")
 
                 # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
@@ -1747,7 +2491,7 @@ async def generate_chapter_content_stream(
                             previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
                             recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
@@ -1766,7 +2510,7 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
@@ -1795,7 +2539,7 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             previous_chapter_summary=previous_summary,
                             recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -1817,84 +2561,110 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 
+                if not chapter_context.chapter_careers:
+                    base_prompt = PromptService.strip_empty_career_section(base_prompt)
+
                 # 应用写作风格
                 if style_content:
                     prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
                 else:
                     prompt = base_prompt
                 prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+                prompt = _append_world_context(prompt, chapter_context.world_context)
                 
                 # === 准备阶段 ===
                 yield await tracker.preparing("准备AI提示词...")
                 
                 logger.info(f"开始AI流式创作章节 {chapter_id}")
                 
-                # 🎨 方案一：将写作风格注入到系统提示词（最高优先级）
-                system_prompt_with_style = None
+                # 🎨 统一注入写作风格与可选 Skill（文笔画像始终高于 Skill 默认习惯）
+                system_prompt_with_style = _build_generation_system_prompt(
+                    style_content, skill_key, log_prefix="✅ "
+                )
                 
-                # ⚡ Skill 支持：当指定 skill_key 时，将 Skill 工作流注入系统提示词
-                if skill_key:
-                    try:
-                        from app.services.skill_loader import get_all_skills_cached
-                        skills = get_all_skills_cached()
-                        skill = next((s for s in skills if s["template_key"] == skill_key), None)
-                        if skill:
-                            skill_content = skill["content"]
-                            skill_name = skill["template_name"]
-                            system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
-
-{skill_content}
-
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                            if style_content:
-                                system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                            logger.info(f"⚡ 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-                        else:
-                            logger.warning(f"⚠️ 未找到 Skill: {skill_key}")
-                    except Exception as skill_err:
-                        logger.warning(f"⚠️ 加载 Skill 失败: {skill_err}")
-                
-                if not system_prompt_with_style and style_content:
-                    system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-                    logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
-                
-                # 🔢 计算 max_tokens 限制
-                # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-                # 同时设置上限防止过长，下限确保基本可用
-                calculated_max_tokens = int(target_word_count * 3)
-                calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-                logger.info(f"📊 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
-                
-                # 🔢 计算 max_tokens 限制
-                # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-                # 同时设置上限防止过长，下限确保基本可用
-                calculated_max_tokens = int(target_word_count * 3)
-                calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-                logger.info(f"📊 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
+                # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
+                # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens。
+                generated_model = custom_model or getattr(user_ai_service, "default_model", None)
+                input_tokens_est = int(
+                    (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+                )
+                window_tokens = None
+                window_note: Optional[str] = None
+                try:
+                    window_tokens = await user_ai_service.resolve_effective_window_tokens(
+                        generated_model
+                    )
+                except ApiError as exc:
+                    window_note = exc.code
+                    if exc.code == CAPABILITY_INCOMPLETE_CODE:
+                        # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+                        # 本次预算退化了。必须 ERROR 级。
+                        logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+                    else:
+                        # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+                        # 这里退回保守上限不会掩盖失败。
+                        logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+                except Exception as exc:
+                    # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+                    window_note = type(exc).__name__
+                    logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
+                calculated_max_tokens, budget_breakdown = plan_output_budget(
+                    target_chars=target_word_count,
+                    model=generated_model,
+                    base_url=getattr(user_ai_service, "base_url", None),
+                    input_tokens=input_tokens_est,
+                    context_window=window_tokens,
+                )
+                logger.info(
+                    f"📊 输出预算: 目标 {target_word_count} 字 → "
+                    f"content={budget_breakdown.get('content')} "
+                    f"cap={budget_breakdown.get('cap')} "
+                    f"measured_cap={budget_breakdown.get('measured_cap')} "
+                    f"context_room={budget_breakdown.get('context_room')} "
+                    f"window={budget_breakdown.get('window')} "
+                    f"input_tokens={budget_breakdown.get('input_tokens')} "
+                    f"window_note={window_note or 'ok'} "
+                    f"→ max_tokens={calculated_max_tokens}"
+                )
                 
                 # 准备生成参数
+                finish_sink: Dict[str, Any] = {}
+                established_names = await build_established_names_block(
+                    db_session, project=project, chapter_number=current_chapter.chapter_number
+                )
+                if established_names:
+                    prompt = f"{prompt}\n{established_names}"
+                prompt = _append_style_tail(prompt, style_content, target_word_count)
+                resume_language = getattr(generate_request, "content_language", None) or "zh"
+                # 补写轮次用"未注入续写块"的提示词，避免两份尾块叠加导致模型复述
+                prompt_without_resume = prompt
+                resume_block, resume_content = build_resume_plan(
+                    current_chapter.status,
+                    current_chapter.content,
+                    target_word_count,
+                    resume_language,
+                )
+                if resume_block:
+                    logger.info(
+                        f"♻️ 第{current_chapter.chapter_number}章发现中断草稿"
+                        f"（{len(resume_content)} 字），从断点续写"
+                    )
+                    prompt = f"{prompt}\n{resume_block}"
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
                     "tool_choice": "required",
                     "max_tokens": calculated_max_tokens,
-                    "auto_mcp": bool(generate_request.enable_mcp)
+                    "auto_mcp": bool(generate_request.enable_mcp),
+                    "finish_sink": finish_sink,
+                    "reasoning_effort": generate_request.reasoning_effort,
                 }
                 if custom_model:
                     logger.info(f"  使用自定义模型: {custom_model}")
@@ -1903,17 +2673,25 @@ async def generate_chapter_content_stream(
                     # 如果需要切换provider，需要在前端传递provider参数
                 
                 # === 生成阶段 ===
-                full_content = ""
+                # 上次被中断（status=writing）且草稿够长时接着写，否则从头生成
+                full_content = resume_content
                 chunk_count = 0
+                checkpointer = ChapterCheckpointer(db_session, current_chapter)
                 
                 yield await tracker.generating(
-                    current_chars=0,
+                    current_chars=len(full_content),
                     estimated_total=target_word_count
                 )
                 
                 async for chunk in user_ai_service.generate_text_stream(**generate_kwargs):
                     full_content += chunk
                     chunk_count += 1
+                    if await checkpointer.maybe_checkpoint(full_content):
+                        yield await tracker.generating(
+                            current_chars=len(full_content),
+                            estimated_total=target_word_count,
+                            message=f'已写 {len(full_content)} 字，草稿已保存'
+                        )
                     
                     # 发送内容块
                     yield await tracker.generating_chunk(chunk)
@@ -1931,6 +2709,75 @@ async def generate_chapter_content_stream(
                         yield await tracker.heartbeat()
                     
                     await asyncio.sleep(0)  # 让出控制权
+
+                # 截断判定：空正文/预算耗尽不得冒充成功（流已发给客户端，无法原地重生成，
+                # 因此这里明确报错而不是写一张 0 字章节）
+                finish_reason = finish_sink.get("finish_reason")
+                if _is_truncated_chapter_content(
+                    full_content,
+                    target_word_count,
+                    finish_reason,
+                    f"第{current_chapter.chapter_number}章",
+                ):
+                    usage = finish_sink.get("usage")
+                    budget_error = _truncation_error_message(
+                        chapter_label=f"第{current_chapter.chapter_number}章",
+                        content_chars=len(full_content),
+                        target_word_count=target_word_count,
+                        finish_reason=finish_reason,
+                        reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+                        reasoning_estimated=getattr(usage, "reasoning_estimated", False),
+                        reasoning_chars=_reasoning_chars_from_usage(
+                            usage, len(full_content)
+                        ),
+                        breakdown=budget_breakdown,
+                        budget_attempts=[calculated_max_tokens],
+                    )
+                    logger.error(f"❌ {budget_error}")
+                    if finish_reason == "content_filter" and not full_content.strip():
+                        yield await tracker.error(
+                            budget_error,
+                            error_code="ai.content_filtered",
+                            params={"finish_reason": finish_reason},
+                        )
+                    else:
+                        yield await tracker.error(budget_error, error_code="task.failed")
+                    return
+                
+                # 篇幅补足：模型正常收尾但没写够（低/中档位常见），补一轮再落库
+                if needs_top_up(len(full_content), target_word_count, finish_reason):
+                    logger.info(
+                        f"📏 第{current_chapter.chapter_number}章正文 {len(full_content)} 字"
+                        f"低于下限，补写一轮"
+                    )
+                    yield await tracker.generating(
+                        current_chars=len(full_content),
+                        estimated_total=target_word_count,
+                        message='正文偏短，正在补写...'
+                    )
+                    topup_snapshot = len(full_content)
+                    topup_kwargs = dict(generate_kwargs)
+                    topup_kwargs["prompt"] = (
+                        f"{prompt_without_resume}\n"
+                        f"{build_continuation_block(full_content, target_word_count, resume_language)}"
+                    )
+                    topup_kwargs["max_tokens"] = top_up_max_tokens(
+                        len(full_content), target_word_count, calculated_max_tokens
+                    )
+                    topup_kwargs["auto_mcp"] = False
+                    try:
+                        async for chunk in user_ai_service.generate_text_stream(**topup_kwargs):
+                            full_content += chunk
+                            yield await tracker.generating_chunk(chunk)
+                            await checkpointer.maybe_checkpoint(full_content)
+                    except Exception as exc:
+                        # 补写是逐块 append 的：中途失败必须截回快照点，
+                        # 否则半截续写会在章尾留下断句垃圾并被落库成成稿
+                        full_content = restore_before_top_up(full_content, topup_snapshot)
+                        logger.warning(
+                            f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 
                 # === 保存阶段 ===
                 yield await tracker.saving("正在保存章节...", 0.3)
@@ -2036,15 +2883,8 @@ async def generate_chapter_content_stream(
                 break  # 退出async for db_session循环
         
         except GeneratorExit:
-            # SSE连接断开
+            # SSE连接断开（get_db 生成器的 finally 会负责回滚与关闭会话）
             logger.warning("章节生成器被提前关闭（SSE断开）")
-            if db_session and not db_committed:
-                try:
-                    if db_session.in_transaction():
-                        await db_session.rollback()
-                        logger.info("章节生成事务已回滚（GeneratorExit）")
-                except Exception as e:
-                    logger.error(f"GeneratorExit回滚失败: {str(e)}")
         except Exception as e:
             logger.error(f"流式创作章节失败: {str(e)}")
             if db_session and not db_committed:
@@ -2055,24 +2895,6 @@ async def generate_chapter_content_stream(
                 except Exception as rollback_error:
                     logger.error(f"回滚失败: {str(rollback_error)}")
             yield await tracker.error_from_exception(e, str(e))
-        finally:
-            # 确保数据库会话被正确关闭
-            if db_session:
-                try:
-                    # 最后检查：确保没有未提交的事务
-                    if not db_committed and db_session.in_transaction():
-                        await db_session.rollback()
-                        logger.warning("在finally中发现未提交事务，已回滚")
-                    
-                    await db_session.close()
-                    logger.info("数据库会话已关闭")
-                except Exception as close_error:
-                    logger.error(f"关闭数据库会话失败: {str(close_error)}")
-                    # 强制关闭
-                    try:
-                        await db_session.close()
-                    except Exception:
-                        pass
     
     return create_sse_response(event_generator())
 
@@ -2130,6 +2952,7 @@ async def generate_chapter_content_background(
             "style_anchor_enabled": generate_request.style_anchor_enabled,
             "style_anchor_chars": generate_request.style_anchor_chars,
             "style_anchor_count": generate_request.style_anchor_count,
+            "reasoning_effort": generate_request.reasoning_effort,
         },
         db=db
     )
@@ -2164,6 +2987,7 @@ async def generate_chapter_content_background(
                         "style_anchor_enabled": generate_request.style_anchor_enabled,
                         "style_anchor_chars": generate_request.style_anchor_chars,
                         "style_anchor_count": generate_request.style_anchor_count,
+                        "reasoning_effort": generate_request.reasoning_effort,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2186,376 +3010,6 @@ async def generate_chapter_content_background(
         "status": "pending",
         "message": "任务已创建，请通过 GET /api/tasks/{task_id} 查询进度"
     }
-
-
-async def _run_chapter_generation_bg(
-    task_input: dict,
-    db: AsyncSession,
-    ai_service: AIService,
-    tracker,
-    user_id: str,
-    task_id: str,
-):
-    """后台执行章节生成（不使用SSE，直接生成并保存）"""
-    from app.services.chapter_context_service import (
-        OneToManyContextBuilder,
-        OneToOneContextBuilder
-    )
-
-    chapter_id = task_input["chapter_id"]
-    style_id = task_input.get("style_id")
-    target_word_count = task_input.get("target_word_count", 3000)
-    custom_model = task_input.get("model")
-    temp_narrative_perspective = task_input.get("narrative_perspective")
-    enable_mcp = task_input.get("enable_mcp", True)
-    write_lock = await get_db_write_lock(user_id)
-
-    # === 加载阶段 ===
-    await tracker.loading("加载章节信息...", 0.2)
-
-    chapter_result = await db.execute(
-        select(Chapter).where(Chapter.id == chapter_id)
-    )
-    current_chapter = chapter_result.scalar_one_or_none()
-    if not current_chapter:
-        await tracker.error("章节不存在", error_code="not_found.chapter")
-        return
-
-    await tracker.loading("加载项目信息...", 0.4)
-
-    project_result = await db.execute(
-        select(Project).where(Project.id == current_chapter.project_id)
-    )
-    project = project_result.scalar_one_or_none()
-    if not project:
-        await tracker.error("项目不存在", error_code="not_found.project")
-        return
-
-    outline_mode = project.outline_mode if project else 'one-to-many'
-
-    # 获取大纲
-    if current_chapter.outline_id:
-        outline_result = await db.execute(
-            select(Outline).where(Outline.id == current_chapter.outline_id)
-        )
-    else:
-        outline_result = await db.execute(
-            select(Outline)
-            .where(Outline.project_id == current_chapter.project_id)
-            .where(Outline.order_index == current_chapter.chapter_number)
-        )
-    outline = outline_result.scalar_one_or_none()
-
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style and (style.user_id is None or style.user_id == user_id):
-            style_content = style.prompt_content or ""
-
-    # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
-    style_content = await append_project_style_anchors(
-        db,
-        project=project,
-        style_content=style_content,
-        before_chapter_number=current_chapter.chapter_number,
-        override=_build_style_anchor_override(
-            enabled=task_input.get("style_anchor_enabled"),
-            chars=task_input.get("style_anchor_chars"),
-            count=task_input.get("style_anchor_count"),
-        ),
-    )
-
-    # === 构建上下文 ===
-    if outline_mode == 'one-to-one':
-        context_builder = OneToOneContextBuilder(
-            memory_service=memory_service,
-            foreshadow_service=foreshadow_service,
-            full_book_budget_chars=await _resolve_full_book_budget(
-                ai_service,
-                custom_model or getattr(ai_service, "default_model", None),
-            ),
-        )
-        chapter_context = await context_builder.build(
-            chapter=current_chapter,
-            project=project,
-            outline=outline,
-            user_id=user_id,
-            db=db,
-            target_word_count=target_word_count
-        )
-    else:
-        context_builder = OneToManyContextBuilder(
-            memory_service=memory_service,
-            foreshadow_service=foreshadow_service,
-            full_book_budget_chars=await _resolve_full_book_budget(
-                ai_service,
-                custom_model or getattr(ai_service, "default_model", None),
-            ),
-        )
-        chapter_context = await context_builder.build(
-            chapter=current_chapter,
-            project=project,
-            outline=outline,
-            user_id=user_id,
-            db=db,
-            style_content=style_content,
-            target_word_count=target_word_count,
-            temp_narrative_perspective=temp_narrative_perspective
-        )
-
-    await tracker.loading("上下文构建完成", 0.8)
-
-    # 确定叙事人称
-    chapter_perspective = (
-        temp_narrative_perspective or
-        project.narrative_perspective or
-        '第三人称'
-    )
-
-    # 解析最终生成语言：per-gen override > 用户偏好 > UI 语言 > zh（todo 17）
-    generation_language = await resolve_user_generation_language(
-        db, user_id, task_input.get("content_language")
-    )
-
-    # === 准备提示词 ===
-    if outline_mode == 'one-to-one':
-        if chapter_context.continuation_point:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE_NEXT", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                previous_chapter_content=chapter_context.continuation_point,
-                previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
-                recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-        else:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_ONE", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-    else:
-        if chapter_context.continuation_point:
-            previous_summary = chapter_context.previous_chapter_summary or "（无上一章摘要，请根据锚点续写）"
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY_NEXT", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                continuation_point=chapter_context.continuation_point,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                previous_chapter_summary=previous_summary,
-                recent_chapters_context=chapter_context.recent_chapters_context or '',
-                relevant_memories=chapter_context.relevant_memories or '',
-                content_language=generation_language
-            )
-        else:
-            template = await PromptService.get_template("CHAPTER_GENERATION_ONE_TO_MANY", user_id, db)
-            base_prompt = PromptService.format_prompt(
-                template,
-                project_title=project.title,
-                chapter_number=current_chapter.chapter_number,
-                chapter_title=current_chapter.title,
-                chapter_outline=chapter_context.chapter_outline,
-                target_word_count=target_word_count,
-                genre=project.genre or '未设定',
-                narrative_perspective=chapter_perspective,
-                characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
-                foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
-                relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
-                content_language=generation_language
-            )
-
-    # 应用写作风格
-    if style_content:
-        prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
-    else:
-        prompt = base_prompt
-    prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
-
-    # === 准备阶段 ===
-    await tracker.preparing("准备AI提示词...")
-
-    system_prompt_with_style = None
-    if style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))
-
-    generate_kwargs = {
-        "prompt": prompt,
-        "system_prompt": system_prompt_with_style,
-        "tool_choice": "required",
-        "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
-    }
-    if custom_model:
-        generate_kwargs["model"] = custom_model
-
-    # === 生成阶段 ===
-    full_content = ""
-    chunk_count = 0
-
-    await tracker.generating(
-        current_chars=0,
-        estimated_total=target_word_count
-    )
-
-    async for chunk in ai_service.generate_text_stream(**generate_kwargs):
-        # 检查是否被取消
-        if chunk_count % 10 == 0 and await tracker.check_cancelled():
-            logger.info(f"🚫 后台章节生成被取消: {chapter_id}")
-            return
-
-        full_content += chunk
-        chunk_count += 1
-
-        # 每10个chunk更新一次进度
-        if chunk_count % 10 == 0:
-            await tracker.generating(
-                current_chars=len(full_content),
-                estimated_total=target_word_count,
-                message=f'正在创作中... 已生成 {len(full_content)} 字'
-            )
-
-        await asyncio.sleep(0)
-
-    # === 保存阶段 ===
-    if await tracker.check_cancelled():
-        logger.info(f"🚫 后台章节生成保存前被取消: {chapter_id}")
-        return
-
-    await tracker.saving("正在保存章节...", 0.3)
-
-    async with write_lock:
-        # 重新获取章节（确保最新状态）
-        chapter_result = await db.execute(
-            select(Chapter).where(Chapter.id == chapter_id)
-        )
-        current_chapter = chapter_result.scalar_one_or_none()
-        if not current_chapter:
-            await tracker.error("保存时章节不存在", error_code="not_found.chapter")
-            return
-
-        old_word_count = current_chapter.word_count or 0
-        current_chapter.content = full_content
-        new_word_count = len(full_content)
-        current_chapter.word_count = new_word_count
-        current_chapter.status = "completed"
-        current_chapter.summary = _build_lightweight_chapter_summary(full_content)
-
-        # 更新项目字数
-        project_result = await db.execute(
-            select(Project).where(Project.id == current_chapter.project_id)
-        )
-        project_obj = project_result.scalar_one_or_none()
-        if project_obj:
-            project_obj.current_words = (project_obj.current_words or 0) - old_word_count + new_word_count
-
-        # 记录生成历史
-        history = GenerationHistory(
-            project_id=current_chapter.project_id,
-            chapter_id=current_chapter.id,
-            prompt=f"创作章节: 第{current_chapter.chapter_number}章 {current_chapter.title}",
-            generated_content=full_content[:500] if len(full_content) > 500 else full_content,
-            model="default"
-        )
-        db.add(history)
-
-        await db.commit()
-
-    logger.info(f"✅ 后台创作章节 {chapter_id} 完成，共 {new_word_count} 字")
-
-    # 🔮 自动标记伏笔
-    try:
-        plant_result = await foreshadow_service.auto_plant_pending_foreshadows(
-            db=db,
-            project_id=current_chapter.project_id,
-            chapter_id=chapter_id,
-            chapter_number=current_chapter.chapter_number,
-            chapter_content=full_content
-        )
-        if plant_result.get('planted_count', 0) > 0:
-            logger.info(f"🔮 自动标记伏笔已埋入: {plant_result['planted_count']}个")
-    except Exception as plant_error:
-        logger.warning(f"⚠️ 自动标记伏笔埋入失败: {str(plant_error)}")
-
-    # 创建分析任务
-    analysis_task = AnalysisTask(
-        chapter_id=chapter_id,
-        user_id=user_id,
-        project_id=current_chapter.project_id,
-        status='pending',
-        progress=0
-    )
-    db.add(analysis_task)
-    await db.commit()
-    await db.refresh(analysis_task)
-
-    logger.info(f"📋 后台生成：已创建分析任务: {analysis_task.id}")
-
-    await tracker.set_result({
-        "chapter_id": chapter_id,
-        "word_count": new_word_count,
-        "analysis_task_id": analysis_task.id,
-    })
-    await tracker.analyzing(0, "章节创作完成，准备分析...")
-
-    analysis_success = await analyze_chapter_background(
-        chapter_id=chapter_id,
-        user_id=user_id,
-        project_id=current_chapter.project_id,
-        task_id=analysis_task.id,
-        progress_callback=tracker.analyzing,
-    )
-    if not analysis_success:
-        raise RuntimeError("章节内容已生成，但章节分析失败")
-
-    # === 完成 ===
-    await tracker.complete(
-        f"创作和分析完成！共 {new_word_count} 字",
-        code="progress.creation_done_words", params={"word_count": new_word_count},
-    )
 
 
 def _build_analysis_task_status_payload(
@@ -2636,6 +3090,59 @@ async def _recover_stale_analysis_tasks(
     return recovered_ids
 
 
+async def _recover_stale_batch_tasks(
+    db: AsyncSession,
+    tasks: list[BatchGenerationTask],
+    *,
+    stale_minutes: Optional[int] = None,
+) -> set[str]:
+    """将心跳超时的批量生成任务原子地恢复为失败状态。
+
+    worker 被重启（如 uvicorn --reload 重载）后，正在执行的批量协程不会留下
+    任何终态；读取接口据此把「假 running」恢复为 failed，避免任务永久卡住。
+    """
+    minutes = BATCH_STALE_MINUTES if stale_minutes is None else stale_minutes
+    now = datetime.now()
+    cutoff = now - timedelta(minutes=minutes)
+    recovered_ids: set[str] = set()
+
+    for task in tasks:
+        if task.status != "running":
+            continue
+        # 回退链不含 created_at：created_at 存 UTC，其余是本地 naive，混用会早杀 8 小时；
+        # 进入 running 时必然写 started_at。
+        reference_time = task.heartbeat_at or task.started_at
+        if not reference_time or reference_time >= cutoff:
+            continue
+
+        result = await db.execute(
+            update(BatchGenerationTask)
+            .where(
+                BatchGenerationTask.id == task.id,
+                # 与 done-callback 共用同一幂等条件：只有仍 running 才翻转。
+                # 两条路径的 UPDATE 各自原子，先到者成功，后到者 rowcount=0。
+                BatchGenerationTask.status == "running",
+            )
+            .values(
+                status="failed",
+                completed_at=now,
+                error_message="批量生成中断：worker 心跳超时（可能是服务重启），请重新发起",
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.rowcount:
+            recovered_ids.add(task.id)
+
+    if recovered_ids:
+        await db.commit()
+        for task in tasks:
+            if task.id in recovered_ids:
+                await db.refresh(task)
+        logger.warning(f"自动恢复陈旧批量生成任务: {len(recovered_ids)} 个")
+
+    return recovered_ids
+
+
 @router.post("/{chapter_id}/generate-background-legacy", summary="AI创作章节内容（后台任务，遗留重复实现）")
 async def generate_chapter_content_background_legacy(
     chapter_id: str,
@@ -2685,6 +3192,7 @@ async def generate_chapter_content_background_legacy(
             "style_anchor_enabled": generate_request.style_anchor_enabled,
             "style_anchor_chars": generate_request.style_anchor_chars,
             "style_anchor_count": generate_request.style_anchor_count,
+            "reasoning_effort": generate_request.reasoning_effort,
         },
         db=db
     )
@@ -2718,6 +3226,7 @@ async def generate_chapter_content_background_legacy(
                         "style_anchor_enabled": generate_request.style_anchor_enabled,
                         "style_anchor_chars": generate_request.style_anchor_chars,
                         "style_anchor_count": generate_request.style_anchor_count,
+                        "reasoning_effort": generate_request.reasoning_effort,
                     },
                     db=bg_db,
                     ai_service=bg_ai_service,
@@ -2762,6 +3271,7 @@ async def _run_chapter_generation_bg(
     custom_model = task_input.get("model")
     temp_narrative_perspective = task_input.get("narrative_perspective")
     enable_mcp = task_input.get("enable_mcp", True)
+    reasoning_effort = task_input.get("reasoning_effort")
     skill_key = task_input.get("skill_key")
     write_lock = await get_db_write_lock(user_id)
 
@@ -2801,15 +3311,14 @@ async def _run_chapter_generation_bg(
         )
     outline = outline_result.scalar_one_or_none()
 
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style and (style.user_id is None or style.user_id == user_id):
-            style_content = style.prompt_content or ""
+    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+    style_content = await _resolve_project_style_content(
+        db,
+        project,
+        current_chapter.chapter_number,
+        style_id,
+        user_id,
+    )
 
     # issue #254 P1：生成路径注入本书原文语感锚点（局部重写不注入）
     style_content = await append_project_style_anchors(
@@ -2893,7 +3402,7 @@ async def _run_chapter_generation_bg(
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
                 recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -2910,7 +3419,7 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -2930,7 +3439,7 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -2949,11 +3458,14 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
             )
+
+    if not chapter_context.chapter_careers:
+        base_prompt = PromptService.strip_empty_career_section(base_prompt)
 
     # 应用写作风格
     if style_content:
@@ -2961,63 +3473,97 @@ async def _run_chapter_generation_bg(
     else:
         prompt = base_prompt
     prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+    prompt = _append_world_context(prompt, chapter_context.world_context)
 
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
 
-    system_prompt_with_style = None
-    if skill_key:
-        try:
-            from app.services.skill_loader import get_all_skills_cached
-            skills = get_all_skills_cached()
-            skill = next((s for s in skills if s["template_key"] == skill_key), None)
-            if skill:
-                skill_content = skill["content"]
-                skill_name = skill["template_name"]
-                system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
+    system_prompt_with_style = _build_generation_system_prompt(
+        style_content, skill_key, log_prefix="后台生成 - "
+    )
 
-{skill_content}
+    # 输出预算单一来源：按**实际探测到的**上下文窗口剩余给足上限（见 plan_output_budget）
+    generated_model = custom_model or getattr(ai_service, "default_model", None)
+    input_tokens_est = int(
+        (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+    )
+    window_tokens = None
+    window_note: Optional[str] = None
+    try:
+        window_tokens = await ai_service.resolve_effective_window_tokens(generated_model)
+    except ApiError as exc:
+        window_note = exc.code
+        if exc.code == CAPABILITY_INCOMPLETE_CODE:
+            # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+            # 本次预算退化了。必须 ERROR 级。
+            logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+        else:
+            # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+            # 这里退回保守上限不会掩盖失败。
+            logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+    except Exception as exc:
+        # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+        window_note = type(exc).__name__
+        logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
+    calculated_max_tokens, budget_breakdown = plan_output_budget(
+        target_chars=target_word_count,
+        model=generated_model,
+        base_url=getattr(ai_service, "base_url", None),
+        input_tokens=input_tokens_est,
+        context_window=window_tokens,
+    )
+    logger.info(
+        f"📊 输出预算: 目标 {target_word_count} 字 → "
+        f"content={budget_breakdown.get('content')} "
+        f"cap={budget_breakdown.get('cap')} "
+        f"measured_cap={budget_breakdown.get('measured_cap')} "
+        f"context_room={budget_breakdown.get('context_room')} "
+        f"window={budget_breakdown.get('window')} "
+        f"input_tokens={budget_breakdown.get('input_tokens')} "
+        f"window_note={window_note or 'ok'} "
+        f"→ max_tokens={calculated_max_tokens}"
+    )
 
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                if style_content:
-                    system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                logger.info(f"⚡ 后台生成 - 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-            else:
-                logger.warning(f"⚠️ 后台生成 - 未找到 Skill: {skill_key}")
-        except Exception as skill_err:
-            logger.warning(f"⚠️ 后台生成 - 加载 Skill 失败: {skill_err}")
-
-    if not system_prompt_with_style and style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))
-
+    finish_sink: Dict[str, Any] = {}
+    established_names = await build_established_names_block(
+        db, project=project, chapter_number=current_chapter.chapter_number
+    )
+    if established_names:
+        prompt = f"{prompt}\n{established_names}"
+    prompt = _append_style_tail(prompt, style_content, target_word_count)
+    resume_language = task_input.get("content_language") or "zh"
+    prompt_without_resume = prompt
+    resume_block, resume_content = build_resume_plan(
+        current_chapter.status,
+        current_chapter.content,
+        target_word_count,
+        resume_language,
+    )
+    if resume_block:
+        logger.info(
+            f"♻️ 后台生成 - 第{current_chapter.chapter_number}章发现中断草稿"
+            f"（{len(resume_content)} 字），从断点续写"
+        )
+        prompt = f"{prompt}\n{resume_block}"
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
         "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
+        "auto_mcp": bool(enable_mcp),
+        "finish_sink": finish_sink,
+        "reasoning_effort": reasoning_effort,
     }
     if custom_model:
         generate_kwargs["model"] = custom_model
 
     # === 生成阶段 ===
-    full_content = ""
+    full_content = resume_content
     chunk_count = 0
+    checkpointer = ChapterCheckpointer(db, current_chapter)
 
     await tracker.generating(
-        current_chars=0,
+        current_chars=len(full_content),
         estimated_total=target_word_count
     )
 
@@ -3029,6 +3575,7 @@ async def _run_chapter_generation_bg(
 
         full_content += chunk
         chunk_count += 1
+        await checkpointer.maybe_checkpoint(full_content)
 
         # 每10个chunk更新一次进度
         if chunk_count % 10 == 0:
@@ -3039,6 +3586,65 @@ async def _run_chapter_generation_bg(
             )
 
         await asyncio.sleep(0)
+
+    finish_reason = finish_sink.get("finish_reason")
+    if _is_truncated_chapter_content(
+        full_content,
+        target_word_count,
+        finish_reason,
+        f"第{current_chapter.chapter_number}章",
+    ):
+        # 截断即失败：预算已按窗口剩余给足，不再抬预算重试。
+        usage = finish_sink.get("usage")
+        budget_error = _truncation_error_message(
+            chapter_label=f"第{current_chapter.chapter_number}章",
+            content_chars=len(full_content),
+            target_word_count=target_word_count,
+            finish_reason=finish_reason,
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+            reasoning_estimated=getattr(usage, "reasoning_estimated", False),
+            reasoning_chars=_reasoning_chars_from_usage(
+                usage, len(full_content)
+            ),
+            breakdown=budget_breakdown,
+            budget_attempts=[calculated_max_tokens],
+        )
+        logger.error(f"❌ {budget_error}")
+        await tracker.error(budget_error, error_code="task.failed")
+        return
+
+    # 篇幅补足：正常收尾但没写够时补一轮（补写失败不影响已有正文）
+    if needs_top_up(len(full_content), target_word_count, finish_reason):
+        logger.info(
+            f"📏 后台生成 - 第{current_chapter.chapter_number}章正文 {len(full_content)} 字"
+            f"低于下限，补写一轮"
+        )
+        await tracker.generating(
+            current_chars=len(full_content),
+            estimated_total=target_word_count,
+            message='正文偏短，正在补写...'
+        )
+        topup_snapshot = len(full_content)
+        topup_kwargs = dict(generate_kwargs)
+        topup_kwargs["prompt"] = (
+            f"{prompt_without_resume}\n"
+            f"{build_continuation_block(full_content, target_word_count, resume_language)}"
+        )
+        topup_kwargs["max_tokens"] = top_up_max_tokens(
+            len(full_content), target_word_count, calculated_max_tokens
+        )
+        topup_kwargs["auto_mcp"] = False
+        try:
+            async for chunk in ai_service.generate_text_stream(**topup_kwargs):
+                full_content += chunk
+                await checkpointer.maybe_checkpoint(full_content)
+        except Exception as exc:
+            # 中途失败必须截回快照点，避免半截续写落库成稿
+            full_content = restore_before_top_up(full_content, topup_snapshot)
+            logger.warning(
+                f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     # === 保存阶段 ===
     await tracker.saving("正在保存章节...", 0.3)
@@ -3782,7 +4388,6 @@ async def batch_generate_chapters_in_order(
     project_id: str,
     batch_request: BatchGenerateRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user_ai_service: AIService = Depends(get_user_ai_service)
 ):
@@ -3793,7 +4398,9 @@ async def batch_generate_chapters_in_order(
     1. 严格按章节序号顺序生成（不可跳过）
     2. 自动检测起始章节是否可生成
     3. 可选同步分析（影响耗时和质量）
-    4. 失败后终止，不继续后续章节
+    4. 单章失败不中断整批（失败明细进 failed_chapters，结束汇总）；
+       但如果后续章节的阻塞根因是「本批已失败的章节」（前置内容或前置分析），
+       则记一条级联记录后结束整批，不再逐章退避重试
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -3878,16 +4485,22 @@ async def batch_generate_chapters_in_order(
     logger.info(f"📦 创建批量生成任务: {batch_id}, 章节: 第{start_number}-{end_number}章, 预估耗时: {estimated_time}分钟")
     
     # 启动后台批量生成任务，传递model参数和skill_key
-    background_tasks.add_task(
-        execute_batch_generation_in_order,
+    # 用持有引用的 create_task 替代 BackgroundTasks：后者在进程被杀时会连同
+    # 正在执行的批量协程一起丢失且无任何清理（done-callback 负责兜底置 failed）
+    _spawn_batch_generation(
+        execute_batch_generation_in_order(
+            batch_id=batch_id,
+            user_id=user_id,
+            ai_service=user_ai_service,
+            custom_model=batch_request.model,
+            skill_key=batch_request.skill_key,
+            enable_mcp=batch_request.enable_mcp,
+            narrative_perspective=batch_request.narrative_perspective,
+            content_language=batch_request.content_language,
+            reasoning_effort=batch_request.reasoning_effort,
+        ),
         batch_id=batch_id,
         user_id=user_id,
-        ai_service=user_ai_service,
-        custom_model=batch_request.model,
-        skill_key=batch_request.skill_key,
-        enable_mcp=batch_request.enable_mcp,
-        narrative_perspective=batch_request.narrative_perspective,
-        content_language=batch_request.content_language
     )
     
     return BatchGenerateResponse(
@@ -3926,7 +4539,10 @@ async def get_batch_generation_status(
     
     if not task:
         raise ApiError(code="not_found.batch_task")
-    
+
+    # worker 被重启后协程已消失：按心跳把「假 running」恢复为 failed 再返回
+    await _recover_stale_batch_tasks(db, [task])
+
     return BatchGenerateStatusResponse(
         batch_id=task.id,
         status=task.status,
@@ -3967,9 +4583,15 @@ async def get_active_batch_generation(
         .where(BatchGenerationTask.user_id == user_id)
         .where(BatchGenerationTask.status.in_(['pending', 'running']))
         .order_by(BatchGenerationTask.created_at.desc())
-        .limit(1)
     )
-    task = result.scalar_one_or_none()
+    tasks = list(result.scalars().all())
+
+    # 先按心跳回收陈旧任务，再挑仍活跃的那条（否则会返回假 running）
+    await _recover_stale_batch_tasks(db, tasks)
+    task = next(
+        (item for item in tasks if item.status in ('pending', 'running')),
+        None,
+    )
     
     if not task:
         return {
@@ -4013,7 +4635,10 @@ async def cancel_batch_generation(
     
     if not task:
         raise ApiError(code="not_found.batch_task")
-    
+
+    # 先回收心跳超时的「假 running」：否则会 400 invalid status 且取消不到
+    await _recover_stale_batch_tasks(db, [task])
+
     if task.status in ['completed', 'failed', 'cancelled']:
         raise ApiError(
             code="task.cancel_invalid_status",
@@ -4035,6 +4660,56 @@ async def cancel_batch_generation(
     }
 
 
+async def _touch_batch_heartbeat(db_session: AsyncSession, batch_id: str) -> None:
+    """即时刷新心跳（每章开始 / 每次预算重试前）；仅任务仍 running 时生效。"""
+    await db_session.execute(
+        update(BatchGenerationTask)
+        .where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.status == "running",
+        )
+        .values(heartbeat_at=datetime.now())
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+
+
+async def _update_batch_status_if_running(
+    db_session: AsyncSession,
+    batch_id: str,
+    *,
+    status: str,
+    error_message: Optional[str] = None,
+    clear_current: bool = False,
+) -> int:
+    """条件落终态：仅当任务仍 running 时更新，返回 rowcount。
+
+    与陈旧回收 / done-callback 共用同一 WHERE status='running' 幂等条件：
+    外部已抢先落终态时 rowcount=0，调用方据此跳过，不覆盖他人的结果。
+    """
+    values: Dict[str, Any] = {
+        "status": status,
+        "completed_at": datetime.now(),
+    }
+    if error_message is not None:
+        values["error_message"] = error_message
+    if clear_current:
+        values["current_chapter_id"] = None
+        values["current_chapter_number"] = None
+
+    result = await db_session.execute(
+        update(BatchGenerationTask)
+        .where(
+            BatchGenerationTask.id == batch_id,
+            BatchGenerationTask.status == "running",
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+    return result.rowcount
+
+
 async def execute_batch_generation_in_order(
     batch_id: str,
     user_id: str,
@@ -4043,12 +4718,15 @@ async def execute_batch_generation_in_order(
     skill_key: Optional[str] = None,
     enable_mcp: bool = True,
     narrative_perspective: Optional[str] = None,
-    content_language: Optional[str] = None
+    content_language: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ):
     """
     按顺序执行批量生成任务（后台任务）
     - 严格按章节序号顺序
-    - 任一章节失败则终止后续生成
+    - 单章失败**不中断**整批：失败明细写入 `failed_chapters`，继续下一章，
+      结束时若存在失败章节则任务状态为 failed 并在 error_message 汇总
+    - 截断类错误外层最多重试 1 次；升级预算后正文仍为 0 的失败不可重试
     - 可选同步分析
     """
     db_session = None
@@ -4080,15 +4758,15 @@ async def execute_batch_generation_in_order(
             logger.error(f"❌ 批量生成任务不存在: {batch_id}")
             return
 
-        if task.status == 'cancelled':
-            logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+        if task.status in ('cancelled', 'failed'):
+            logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
             return
         
         # 更新任务状态为运行中
         async with write_lock:
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务启动前已取消: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                 return
             task.status = 'running'
             task.started_at = datetime.now()
@@ -4099,11 +4777,15 @@ async def execute_batch_generation_in_order(
 
         # 按顺序生成每个章节
         for idx, chapter_id in enumerate(task.chapter_ids, 1):
-            # 检查任务是否被取消
+            # 存活检查：cancelled 是用户取消；failed 可能是陈旧回收/兜底先落了终态
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                 return
+
+            # 每章开始写一次心跳：worker 被杀后由陈旧回收据此判定中断
+            async with write_lock:
+                await _touch_batch_heartbeat(db_session, batch_id)
             
             # 更新当前章节
             async with write_lock:
@@ -4116,12 +4798,13 @@ async def execute_batch_generation_in_order(
             chapter_success = False
             chapter = None
             last_error = None
+            cascade_stop = False
             
             while retry_count <= task.max_retries and not chapter_success:
                 try:
                     await db_session.refresh(task)
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
 
                     # 获取章节信息
@@ -4147,9 +4830,70 @@ async def execute_batch_generation_in_order(
                     # 检查前置条件（每次都检查，确保顺序性）
                     can_generate, error_msg, _ = await check_prerequisites(db_session, chapter)
                     if not can_generate:
+                        # 顺序依赖下，根因章在本批已失败时余章不可能成功：
+                        # 不再逐章烧满退避重试，记一条级联记录后结束整批。
+                        missing_numbers = _extract_chapter_numbers(error_msg)
+                        failed_numbers = {
+                            int(item.get("chapter_number"))
+                            for item in (task.failed_chapters or [])
+                            if isinstance(item.get("chapter_number"), int)
+                        }
+                        blocking = sorted(missing_numbers & failed_numbers)
+                        if blocking:
+                            async with write_lock:
+                                task.failed_chapters = list(task.failed_chapters or []) + [
+                                    {
+                                        "chapter_id": chapter_id,
+                                        "chapter_number": chapter.chapter_number,
+                                        "title": chapter.title,
+                                        "error": (
+                                            f"前置章节第{blocking[0]}章失败，"
+                                            "后续章节批量跳过"
+                                        ),
+                                        "retry_count": 0,
+                                    }
+                                ]
+                                task.current_retry_count = 0
+                                await db_session.commit()
+                            logger.error(
+                                f"🛑 第{chapter.chapter_number}章前置章节"
+                                f"（第{blocking[0]}章）已失败，结束本批（不再逐章重试）"
+                            )
+                            cascade_stop = True
+                            break
                         raise Exception(f"前置条件不满足: {error_msg}")
                     analysis_ready, analysis_msg = await check_previous_analysis_ready(db_session, chapter)
                     if not analysis_ready:
+                        # 与前置内容阻塞同构：根因章已在本批失败时不再逐章退避
+                        missing_numbers = _extract_chapter_numbers(analysis_msg)
+                        failed_numbers = {
+                            int(item.get("chapter_number"))
+                            for item in (task.failed_chapters or [])
+                            if isinstance(item.get("chapter_number"), int)
+                        }
+                        blocking = sorted(missing_numbers & failed_numbers)
+                        if blocking:
+                            async with write_lock:
+                                task.failed_chapters = list(task.failed_chapters or []) + [
+                                    {
+                                        "chapter_id": chapter_id,
+                                        "chapter_number": chapter.chapter_number,
+                                        "title": chapter.title,
+                                        "error": (
+                                            f"前置章节第{blocking[0]}章失败，"
+                                            "后续章节批量跳过"
+                                        ),
+                                        "retry_count": 0,
+                                    }
+                                ]
+                                task.current_retry_count = 0
+                                await db_session.commit()
+                            logger.error(
+                                f"🛑 第{chapter.chapter_number}章前置章节"
+                                f"（第{blocking[0]}章）未完成，结束本批（不再逐章重试）"
+                            )
+                            cascade_stop = True
+                            break
                         raise Exception(analysis_msg)
                     
                     # 生成章节内容（复用现有流式生成逻辑的核心部分），传递model参数
@@ -4170,6 +4914,7 @@ async def execute_batch_generation_in_order(
                         temp_narrative_perspective=narrative_perspective,
                         content_language=content_language,
                         anchor_override=task.anchor_settings,
+                        reasoning_effort=reasoning_effort,
                     ) or {}
 
                     # issue #254 P2：批量生成后的文笔一致性自检结果
@@ -4185,8 +4930,8 @@ async def execute_batch_generation_in_order(
                         # 必须在 refresh 之后赋值：refresh 会用 DB 值覆盖未提交的
                         # in-memory 变更（issue #254 审核 BLOCKER）。
                         task.style_check = batch_style_check
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消，跳过后续处理: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
                     
                     # 更新上一章摘要，供下一章使用
@@ -4199,8 +4944,8 @@ async def execute_batch_generation_in_order(
                     # 如果启用同步分析
                     if task.enable_analysis:
                         await db_session.refresh(task)
-                        if task.status == 'cancelled':
-                            logger.info(f"🛑 批量生成任务已被取消，跳过同步分析: {batch_id}")
+                        if task.status in ('cancelled', 'failed'):
+                            logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出（跳过同步分析）: {batch_id}")
                             return
                         logger.info(f"🔍 开始同步分析章节: 第{chapter.chapter_number}章")
 
@@ -4225,7 +4970,9 @@ async def execute_batch_generation_in_order(
 
                         if not analysis_result:
                             error_message = "分析函数返回失败"
-                            logger.error(f"❌ 章节分析失败，批量生成中断: 第{chapter.chapter_number}章")
+                            logger.error(
+                                f"❌ 章节分析失败，记录后继续下一章: 第{chapter.chapter_number}章"
+                            )
 
                             failed_info = {
                                 'chapter_id': chapter_id,
@@ -4236,17 +4983,16 @@ async def execute_batch_generation_in_order(
                             }
 
                             async with write_lock:
-                                if task.failed_chapters is None:
-                                    task.failed_chapters = []
-                                task.failed_chapters.append(failed_info)
-
-                                task.status = 'failed'
-                                task.error_message = f"第{chapter.chapter_number}章分析失败: {error_message}"[:500]
-                                task.completed_at = datetime.now()
+                                # 整表赋值而不是原地 append：JSON 列没有 MutableList，
+                                # 原地修改不会被 ORM 记为脏数据（失败明细会静默丢失）。
+                                task.failed_chapters = list(task.failed_chapters or []) + [failed_info]
                                 task.current_retry_count = 0
                                 await db_session.commit()
 
-                            return
+                            # 单章分析失败不再中断整批（批量任务按章独立结算），
+                            # 失败明细进 failed_chapters，最终汇总时统一报告；
+                            # 若后续章被该失败章阻塞，外层会级联快停。
+                            break
 
                         logger.info(f"✅ 章节分析成功: 第{chapter.chapter_number}章")
                     
@@ -4264,22 +5010,24 @@ async def execute_batch_generation_in_order(
                 except Exception as e:
                     last_error = str(e)
                     await db_session.refresh(task)
-                    if task.status == 'cancelled':
-                        logger.info(f"🛑 批量生成任务已被取消: {batch_id}")
+                    if task.status in ('cancelled', 'failed'):
+                        logger.warning(f"批量任务已被外部标记为 {task.status}，协程退出: {batch_id}")
                         return
                     error_msg = f"第{chapter.chapter_number if chapter else '?'}章出错: {last_error}"
                     logger.error(f"❌ {error_msg}")
                     
                     retry_count += 1
+                    # 重试额度按异常类型收敛：不可重试 → 0；截断类 → 1；其它 → max_retries。
+                    retry_allowance = _retry_allowance(e, task.max_retries)
                     
                     # 如果还有重试机会，等待一小段时间后重试
-                    if retry_count <= task.max_retries:
+                    if retry_count <= retry_allowance:
                         wait_time = min(2 ** retry_count, 10)  # 指数退避，最多等待10秒
                         logger.info(f"⏳ 等待 {wait_time} 秒后重试...")
                         await asyncio.sleep(wait_time)
                     else:
-                        # 达到最大重试次数，记录失败信息
-                        logger.error(f"❌ 章节生成失败，已达最大重试次数({task.max_retries}): 第{chapter.chapter_number if chapter else '?'}章")
+                        # 达到该异常类型的重试上限，记录失败信息
+                        logger.error(f"❌ 章节生成失败，已达重试上限({retry_allowance}): 第{chapter.chapter_number if chapter else '?'}章")
                         
                         failed_info = {
                             'chapter_id': chapter_id,
@@ -4290,51 +5038,84 @@ async def execute_batch_generation_in_order(
                         }
                         
                         async with write_lock:
-                            if task.failed_chapters is None:
-                                task.failed_chapters = []
-                            task.failed_chapters.append(failed_info)
-                            
-                            # 标记任务失败并终止
-                            task.status = 'failed'
-                            task.error_message = f"第{chapter.chapter_number}章生成失败(重试{retry_count-1}次): {last_error}"[:500]
-                            task.completed_at = datetime.now()
+                            # JSON 列无 MutableList，必须整表赋值才会被持久化
+                            task.failed_chapters = list(task.failed_chapters or []) + [failed_info]
                             task.current_retry_count = 0
                             await db_session.commit()
-                        
-                        # ⚠️ 如果启用了同步分析，任何错误都应该中断任务
-                        # 因为章节生成或分析失败会影响后续章节的职业更新和剧情连贯性
-                        if task.enable_analysis:
-                            logger.error(f"🛑 批量生成中断: 因启用同步分析，任何错误都会中断任务以确保职业信息和剧情连贯性")
-                        else:
-                            logger.error(f"🛑 批量生成终止于第{chapter.chapter_number}章")
-                        
-                        return
+
+                        # 单章失败只记账，不中断整批：后续章节继续生成，最终汇总统一报告。
+                        logger.error(
+                            f"🛑 第{chapter.chapter_number if chapter else '?'}章失败，"
+                            f"记录后继续下一章（原因: {last_error}）"
+                        )
+                        # 必须显式退出「单章重试 while」：否则控制流回到
+                        # `while retry_count <= task.max_retries and not chapter_success`
+                        # （两者都仍成立）→ 该章被反复重试、failed_chapters 重复记账，
+                        # allowance=0 的 NonRetryable 也就形同虚设。
+                        break
+
+            # 前置章节已失败导致本批无法继续：结束整批，不再逐章重试
+            if cascade_stop:
+                break
         
-        # 全部完成
+        # 全部完成（单章失败不中断整批；被失败根因阻塞时级联快停；
+        # 最终状态必须如实反映失败章节）
         async with write_lock:
             await db_session.refresh(task)
-            if task.status == 'cancelled':
-                logger.info(f"🛑 批量生成任务已被取消，跳过完成状态覆盖: {batch_id}")
+            if task.status in ('cancelled', 'failed'):
+                # 终态已被用户取消 / 陈旧回收抢先写入：绝不覆盖
+                logger.warning(f"批量任务已被外部标记为 {task.status}，跳过终态写入: {batch_id}")
                 return
-            task.status = 'completed'
-            task.completed_at = datetime.now()
-            task.current_chapter_id = None
-            task.current_chapter_number = None
-            await db_session.commit()
-        
-        logger.info(f"✅ 批量生成任务全部完成: {batch_id}, 成功生成 {task.completed_chapters} 章")
+            failures = task.failed_chapters or []
+            terminal_status = 'completed'
+            error_message: Optional[str] = None
+            if failures:
+                detail = "；".join(
+                    f"第{f.get('chapter_number')}章《{f.get('title')}》{f.get('error')}"
+                    for f in failures
+                )
+                terminal_status = 'failed'
+                error_message = (
+                    f"批量生成结束：成功 {task.completed_chapters}/{task.total_chapters} 章，"
+                    f"失败 {len(failures)} 章。{detail}"
+                )[:500]
+            # 条件更新（rowcount=0 ⇒ 别的路径已抢先落终态），避免无条件覆写
+            updated = await _update_batch_status_if_running(
+                db_session,
+                batch_id,
+                status=terminal_status,
+                error_message=error_message,
+                clear_current=True,
+            )
+            if not updated:
+                logger.warning(f"⚠️ 批量生成终态已被其他路径写入，跳过覆盖: {batch_id}")
+                return
+
+        await db_session.refresh(task)
+        if terminal_status == 'failed':
+            logger.error(f"⚠️ 批量生成结束但有失败章节: {task.error_message}")
+
+        logger.info(
+            f"✅ 批量生成任务结束: {batch_id}, 成功生成 {task.completed_chapters} 章, "
+            f"失败 {len(task.failed_chapters or [])} 章"
+        )
         
     except Exception as e:
         logger.error(f"❌ 批量生成任务异常: {str(e)}", exc_info=True)
         if db_session and task:
             try:
                 async with write_lock:
-                    await db_session.refresh(task)
-                    if task.status != 'cancelled':
-                        task.status = 'failed'
-                        task.error_message = str(e)[:500]
-                        task.completed_at = datetime.now()
-                        await db_session.commit()
+                    updated = await _update_batch_status_if_running(
+                        db_session,
+                        batch_id,
+                        status='failed',
+                        error_message=str(e)[:500],
+                        clear_current=True,
+                    )
+                    if not updated:
+                        logger.warning(
+                            f"⚠️ 批量任务终态已被其他路径写入，跳过异常态覆盖: {batch_id}"
+                        )
             except Exception as commit_error:
                 logger.error(f"❌ 更新任务失败状态失败: {str(commit_error)}")
     finally:
@@ -4358,6 +5139,7 @@ async def generate_single_chapter_for_batch(
     temp_narrative_perspective: Optional[str] = None,
     content_language: Optional[str] = None,
     anchor_override: Optional[dict] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> dict:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4392,16 +5174,14 @@ async def generate_single_chapter_for_batch(
         )
     outline = outline_result.scalar_one_or_none()
     
-    # 获取写作风格
-    style_content = ""
-    if style_id:
-        style_result = await db_session.execute(
-            select(WritingStyle).where(WritingStyle.id == style_id)
-        )
-        style = style_result.scalar_one_or_none()
-        if style:
-            if style.user_id is None or style.user_id == user_id:
-                style_content = style.prompt_content or ""
+    # 获取写作风格（§13-3：未显式选择普通风格时按目标章节选卷）
+    style_content = await _resolve_project_style_content(
+        db_session,
+        project,
+        chapter.chapter_number,
+        style_id,
+        user_id,
+    )
 
     # issue #254 P1：批量生成路径注入本书原文语感锚点（批量任务无 per-gen 覆盖，沿用项目设置）
     style_content = await append_project_style_anchors(
@@ -4483,7 +5263,7 @@ async def generate_single_chapter_for_batch(
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 previous_chapter_content=chapter_context.continuation_point,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '',
@@ -4503,7 +5283,7 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -4532,7 +5312,7 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=final_prev_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -4552,73 +5332,102 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
             )
     
+    if not chapter_context.chapter_careers:
+        base_prompt = PromptService.strip_empty_career_section(base_prompt)
+
     # 应用写作风格
     if style_content:
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
     prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+    prompt = _append_world_context(prompt, chapter_context.world_context)
     
-    # 🎨 将 Skill / 写作风格注入到系统提示词（批量生成）
-    system_prompt_with_style = None
-
-    # ⚡ Skill 支持
-    if skill_key:
-        try:
-            from app.services.skill_loader import get_all_skills_cached
-            skills = get_all_skills_cached()
-            skill = next((s for s in skills if s["template_key"] == skill_key), None)
-            if skill:
-                skill_content = skill["content"]
-                skill_name = skill["template_name"]
-                system_prompt_with_style = f"""【⚡ Skill 工作流：{skill_name}】
-
-{skill_content}
-
-⚠️ 请严格遵循上述 Skill 工作流指令进行创作！"""
-                if style_content:
-                    system_prompt_with_style += f"""
-
-【🎨 写作风格要求 - 补充】
-
-{style_content}"""
-                logger.info(f"⚡ 批量生成 - 已将 Skill '{skill_name}' 注入系统提示词（{len(skill_content)}字符）")
-            else:
-                logger.warning(f"⚠️ 批量生成 - 未找到 Skill: {skill_key}")
-        except Exception as skill_err:
-            logger.warning(f"⚠️ 批量生成 - 加载 Skill 失败: {skill_err}")
-
-    if not system_prompt_with_style and style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
-        logger.info(f"✅ 批量生成 - 已将写作风格注入系统提示词（{len(style_content)}字符）")
+    # 🎨 将写作风格 / Skill 注入到系统提示词（批量生成，文笔画像优先于 Skill）
+    system_prompt_with_style = _build_generation_system_prompt(
+        style_content, skill_key, log_prefix="批量生成 - "
+    )
     
-    # 🔢 计算 max_tokens 限制（批量生成）
-    # 中文字符约 1.5-2 个 token，使用 2.5 倍系数确保有足够空间完成段落
-    # 同时设置上限防止过长，下限确保基本可用
-    calculated_max_tokens = int(target_word_count * 3)
-    calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))  # 限制在 2000-16000 之间
-    logger.info(f"📊 批量生成 - 目标字数: {target_word_count}, 计算 max_tokens: {calculated_max_tokens}")
-    
+    # 🔢 输出预算：单一来源（按**实际探测到的**上下文窗口剩余给足上限），
+    # 不再按模型名/目标字数预测，也不在本地硬算后显式传 max_tokens
+    # （2026-11-08 批量第 58 章：6000 字目标被钉在 16000，推理吃光预算后正文 0 字）。
+    generated_model = custom_model or getattr(ai_service, "default_model", None)
+    input_tokens_est = int(
+        (len(prompt) + len(system_prompt_with_style or "")) / CHARS_PER_TOKEN
+    )
+    window_tokens = None
+    window_note: Optional[str] = None
+    try:
+        window_tokens = await ai_service.resolve_effective_window_tokens(generated_model)
+    except ApiError as exc:
+        window_note = exc.code
+        if exc.code == CAPABILITY_INCOMPLETE_CODE:
+            # 缓存结论缺正数窗口：门禁在派发处会放行，这里若不报出来就没人知道
+            # 本次预算退化了。必须 ERROR 级。
+            logger.error(f"❌ 上下文窗口结论缺失有效数值，预算退化: model={generated_model}, code={exc.code}")
+        else:
+            # 门禁类（below_minimum / not_configured 等）：派发处会按同一三元组重抛真实错误，
+            # 这里退回保守上限不会掩盖失败。
+            logger.warning(f"⚠️ 上下文窗口不可得，预算退回保守上限: code={exc.code}")
+    except Exception as exc:
+        # 非门禁类异常（DB 抖动、解析 bug 等）在派发处**不会**重抛，必须显式暴露。
+        window_note = type(exc).__name__
+        logger.error(f"❌ 读取上下文窗口异常，预算退化: model={generated_model}, {type(exc).__name__}: {exc}")
+    calculated_max_tokens, budget_breakdown = plan_output_budget(
+        target_chars=target_word_count,
+        model=generated_model,
+        base_url=getattr(ai_service, "base_url", None),
+        input_tokens=input_tokens_est,
+        context_window=window_tokens,
+    )
+    logger.info(
+        f"📊 输出预算: 目标 {target_word_count} 字 → "
+        f"content={budget_breakdown.get('content')} "
+        f"cap={budget_breakdown.get('cap')} "
+        f"measured_cap={budget_breakdown.get('measured_cap')} "
+        f"context_room={budget_breakdown.get('context_room')} "
+        f"window={budget_breakdown.get('window')} "
+        f"input_tokens={budget_breakdown.get('input_tokens')} "
+        f"window_note={window_note or 'ok'} "
+        f"→ max_tokens={calculated_max_tokens}"
+    )
+
     # 非流式生成内容
-    full_content = ""
+    finish_sink: Dict[str, Any] = {}
     # 准备生成参数
+    established_names = await build_established_names_block(
+        db_session, project=project, chapter_number=chapter.chapter_number
+    )
+    if established_names:
+        prompt = f"{prompt}\n{established_names}"
+    prompt = _append_style_tail(prompt, style_content, target_word_count)
+    resume_language = content_language or "zh"
+    prompt_without_resume = prompt
+    resume_block, resume_content = build_resume_plan(
+        chapter.status, chapter.content, target_word_count, resume_language
+    )
+    if resume_block:
+        logger.info(
+            f"♻️ 批量生成 - 第{chapter.chapter_number}章发现中断草稿"
+            f"（{len(resume_content)} 字），从断点续写"
+        )
+        prompt = f"{prompt}\n{resume_block}"
+    full_content = resume_content
+    checkpointer = ChapterCheckpointer(db_session, chapter)
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
         "tool_choice": "required",
         "max_tokens": calculated_max_tokens,
-        "auto_mcp": bool(enable_mcp)
+        "auto_mcp": bool(enable_mcp),
+        "finish_sink": finish_sink,
+        "reasoning_effort": reasoning_effort,
     }
     # 如果传入了自定义模型，使用指定的模型
     if custom_model:
@@ -4626,12 +5435,13 @@ async def generate_single_chapter_for_batch(
         logger.info(f"  批量生成使用自定义模型: {custom_model}")
     
     async def _is_batch_cancelled() -> bool:
+        """流式过程中快速止损：用户取消，或任务已被外部回收为 failed。"""
         if not batch_id:
             return False
         result = await db_session.execute(
             select(BatchGenerationTask.status).where(BatchGenerationTask.id == batch_id)
         )
-        return result.scalar_one_or_none() == 'cancelled'
+        return result.scalar_one_or_none() in ('cancelled', 'failed')
 
     # 批量生成中的流式生成（非SSE，不需要修改进度显示）
     chunk_count = 0
@@ -4641,6 +5451,59 @@ async def generate_single_chapter_for_batch(
             raise Exception("批量生成任务已取消")
         full_content += chunk
         chunk_count += 1
+        await checkpointer.maybe_checkpoint(full_content)
+
+    finish_reason = finish_sink.get("finish_reason")
+    if _is_truncated_chapter_content(
+        full_content,
+        target_word_count,
+        finish_reason,
+        f"第{chapter.chapter_number}章",
+    ):
+        # 截断即失败：预算已按窗口剩余给足，不再抬预算重试；外层按 max_retries 处理。
+        usage = finish_sink.get("usage")
+        budget_error = _truncation_error_message(
+            chapter_label=f"第{chapter.chapter_number}章",
+            content_chars=len(full_content),
+            target_word_count=target_word_count,
+            finish_reason=finish_reason,
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+            reasoning_estimated=getattr(usage, "reasoning_estimated", False),
+            reasoning_chars=_reasoning_chars_from_usage(
+                usage, len(full_content)
+            ),
+            breakdown=budget_breakdown,
+            budget_attempts=[calculated_max_tokens],
+        )
+        logger.error(f"❌ {budget_error}")
+        raise ChapterGenerationTruncatedError(budget_error)
+
+    if needs_top_up(len(full_content), target_word_count, finish_reason):
+        logger.info(
+            f"📏 批量生成 - 第{chapter.chapter_number}章正文 {len(full_content)} 字"
+            f"低于下限，补写一轮"
+        )
+        topup_snapshot = len(full_content)
+        topup_kwargs = dict(generate_kwargs)
+        topup_kwargs["prompt"] = (
+            f"{prompt_without_resume}\n"
+            f"{build_continuation_block(full_content, target_word_count, resume_language)}"
+        )
+        topup_kwargs["max_tokens"] = top_up_max_tokens(
+            len(full_content), target_word_count, calculated_max_tokens
+        )
+        topup_kwargs["auto_mcp"] = False
+        try:
+            async for chunk in ai_service.generate_text_stream(**topup_kwargs):
+                full_content += chunk
+                await checkpointer.maybe_checkpoint(full_content)
+        except Exception as exc:
+            # 中途失败必须截回快照点，避免半截续写落库成稿
+            full_content = restore_before_top_up(full_content, topup_snapshot)
+            logger.warning(
+                f"补写失败，已截回补写前正文（{len(full_content)} 字）: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     if await _is_batch_cancelled():
         logger.info(f"🛑 批量生成保存前被取消: batch={batch_id}, chapter={chapter.id}")
@@ -4813,7 +5676,8 @@ async def regenerate_chapter_stream(
                 db=temp_db,
                 project_id=chapter.project_id,
                 characters=characters,
-                filter_character_names=filter_character_names
+                filter_character_names=filter_character_names,
+                target_chapter=chapter.chapter_number
             )
             
             # 获取章节大纲（优先使用 chapter.outline_id 直接关联）
@@ -4830,40 +5694,15 @@ async def regenerate_chapter_stream(
                 )
             outline = outline_result.scalar_one_or_none()
             
-            # 获取写作风格
-            style_content = ""
-            style_id = regenerate_request.style_id
-            
-            # 如果没有指定风格，尝试使用项目的默认风格
-            if not style_id:
-                from app.models.project_default_style import ProjectDefaultStyle
-                default_style_result = await temp_db.execute(
-                    select(ProjectDefaultStyle.style_id)
-                    .where(ProjectDefaultStyle.project_id == chapter.project_id)
-                )
-                default_style_id = default_style_result.scalar_one_or_none()
-                if default_style_id:
-                    style_id = default_style_id
-                    logger.info(f"📝 使用项目默认写作风格: {style_id}")
-            
-            # 获取风格内容
-            if style_id:
-                style_result = await temp_db.execute(
-                    select(WritingStyle).where(WritingStyle.id == style_id)
-                )
-                style = style_result.scalar_one_or_none()
-                if style:
-                    # 验证风格是否可用：全局预设风格（user_id为NULL）或者当前用户的自定义风格
-                    if style.user_id is None or style.user_id == user_id:
-                        style_content = style.prompt_content or ""
-                        style_type = "全局预设" if style.user_id is None else "用户自定义"
-                        logger.info(f"✅ 使用写作风格: {style.name} ({style_type})")
-                    else:
-                        logger.warning(f"⚠️ 风格 {style_id} 不属于当前项目，跳过")
-                else:
-                    logger.warning(f"⚠️ 未找到风格 {style_id}")
-            else:
-                logger.info("ℹ️ 未指定写作风格，使用默认提示词")
+            # 获取写作风格（§13-3：未指定/全书画像时按目标章节选卷，无卷命中再回退默认风格）
+            style_content = await _resolve_project_style_content(
+                temp_db,
+                project,
+                chapter.chapter_number,
+                regenerate_request.style_id,
+                user_id,
+                use_project_default=True,
+            )
             
             # 构建项目上下文
             project_context = {
@@ -5155,12 +5994,21 @@ async def update_chapter_expansion_plan(
                 existing_plan = json.loads(chapter.expansion_plan)
                 # 合并更新
                 existing_plan.update(plan_data)
-                chapter.expansion_plan = json.dumps(existing_plan, ensure_ascii=False)
+                chapter.expansion_plan = json.dumps(
+                    to_storage_plan(existing_plan),
+                    ensure_ascii=False,
+                )
             except json.JSONDecodeError:
                 logger.warning(f"章节 {chapter_id} 的expansion_plan格式错误,将覆盖")
-                chapter.expansion_plan = json.dumps(plan_data, ensure_ascii=False)
+                chapter.expansion_plan = json.dumps(
+                    to_storage_plan(plan_data),
+                    ensure_ascii=False,
+                )
         else:
-            chapter.expansion_plan = json.dumps(plan_data, ensure_ascii=False)
+            chapter.expansion_plan = json.dumps(
+                to_storage_plan(plan_data),
+                ensure_ascii=False,
+            )
     
     await db.commit()
     await db.refresh(chapter)
@@ -5304,8 +6152,35 @@ async def partial_regenerate_stream(
 
         # ---- 能力推导与服务端分段（无服务端循环：单请求单段，客户端驱动 0..N-1）----
         continue_model = getattr(user_ai_service, "default_model", None)
-        continue_base_url = getattr(user_ai_service, "base_url", None)
-        output_limit = detect_max_output_tokens(continue_model, continue_base_url)
+        # prompt_chars 口径：此刻 prompt 还没拼（分段必须先于 prompt 决定，本函数不为此
+        # 调整顺序），所以按该请求**真正会拼出的**上下文规模的已知组成估算（见下方
+        # continue_event_generator）：首段前窗 3000 + 后窗 1200 字，后续段改用滚动上下文
+        # rolling_context（取两者较大值），再叠加锚点文本与用户额外要求。风格正文与模板
+        # 在此刻尚未读取，按 0 计 —— 输入估算只用于「窗口剩余」判断，少算几千字符在实测
+        # 窗口（≥1M）面前不改变结论。
+        continue_prompt_chars = (
+            max(3000 + 1200, len((partial_request.rolling_context or "").strip()))
+            + len(partial_request.selected_text or "")
+            + len(partial_request.user_instructions or "")
+        )
+        # 注：rolling_context 在模板里会被拼**两次**（前文 + 锚点文本，见
+        # continue_event_generator 的 k>0 分支），故再叠一份；少算会让窗口剩余偏大。
+        continue_prompt_chars += len((partial_request.rolling_context or "").strip())
+        # 输出上限来自**实测能力**（窗口剩余 / 网关报过的输出上限），不按模型名登记表猜。
+        # 同一请求内只算一次（分段数必须跨段稳定），失败才退回保守上限。
+        try:
+            segment_budget, _ = await user_ai_service.resolve_output_budget(
+                target_chars=target_chars,
+                prompt_chars=continue_prompt_chars,
+                model=continue_model,
+            )
+            # 用**已被窗口剩余钳过**的预算当上限，而不是裸的 cap：网关报过很大的输出
+            # 上限（如 200000）而 prompt 几乎占满窗口时，裸 cap 会让分段按
+            # SEGMENT_TARGET_CHARS 规划出一段塞不进窗口的请求（上游 400 兜底）。
+            output_limit = max(1, int(segment_budget))
+        except Exception as exc:
+            _log_budget_capability_failure(exc, model=continue_model, scope="续写")
+            output_limit = THINKING_MODEL_DEFAULT_MAX_TOKENS
         safety_factor = 2.0
         effective_segment_chars = min(SEGMENT_TARGET_CHARS, output_limit // 2)
         if effective_segment_chars < CONTINUE_MIN_SEGMENT_CHARS:
@@ -5319,10 +6194,8 @@ async def partial_regenerate_stream(
 
         remaining = max(0, target_chars - partial_request.already_generated_chars)
         seg_chars = max(1, min(effective_segment_chars, remaining))
+        # 上限来自能力：max_tokens 是上限不是花费，给足由模型在推理与正文间自行分配
         budget = min(ceil(seg_chars * safety_factor), output_limit)
-        budget = ensure_thinking_model_min_tokens(budget, continue_model, continue_base_url)
-        # 思考模型抬底永远不得穿透 provider 输出上限
-        budget = min(budget, output_limit)
     else:
         # ---- 局部重写：既有位置校验（行为保持）----
         if partial_request.start_position >= content_length:
@@ -5439,6 +6312,7 @@ async def partial_regenerate_stream(
                 style_content=style_content or "保持与原文一致的叙事风格",
                 content_language=generation_language,
             )
+            prompt = _append_style_tail(prompt, style_content)
 
             yield await tracker.preparing("开始生成...")
 
@@ -5579,6 +6453,7 @@ async def partial_regenerate_stream(
                 style_content=style_content if style_content else "保持与原文一致的叙事风格",
                 content_language=generation_language
             )
+            prompt = _append_style_tail(prompt, style_content)
             
             yield await tracker.preparing("开始生成...")
             
@@ -5590,11 +6465,31 @@ async def partial_regenerate_stream(
             else:
                 target_words = int(original_word_count * 1.5)
             
-            calculated_max_tokens = max(500, min(int(target_words * 3), 8000))
-            calculated_max_tokens = ensure_thinking_model_min_tokens(
-                calculated_max_tokens,
-                getattr(user_ai_service, "default_model", None),
-                getattr(user_ai_service, "base_url", None),
+            # 计算 max_tokens：单一来源 = 实测能力（窗口剩余 / 网关报过的输出上限），
+            # 不按选区字数硬算、也不按模型名抬底。失败时才退回 plan_output_budget 的
+            # 保守上限（无实测上限、无窗口时它内部按 THINKING_MODEL_DEFAULT_MAX_TOKENS 封顶）。
+            rewrite_model = getattr(user_ai_service, "default_model", None)
+            try:
+                calculated_max_tokens, budget_breakdown = await user_ai_service.resolve_output_budget(
+                    target_chars=target_words,
+                    prompt_chars=len(prompt),
+                    model=rewrite_model,
+                )
+            except Exception as exc:
+                _log_budget_capability_failure(exc, model=rewrite_model, scope="局部重写")
+                calculated_max_tokens, budget_breakdown = plan_output_budget(
+                    target_chars=target_words,
+                    model=rewrite_model,
+                    base_url=getattr(user_ai_service, "base_url", None),
+                )
+            logger.info(
+                f"📊 局部重写输出预算: 目标 {target_words} 字 → "
+                f"cap={budget_breakdown.get('cap')} "
+                f"measured_cap={budget_breakdown.get('measured_cap')} "
+                f"context_room={budget_breakdown.get('context_room')} "
+                f"window={budget_breakdown.get('window')} "
+                f"input_tokens={budget_breakdown.get('input_tokens')} "
+                f"→ max_tokens={calculated_max_tokens}"
             )
             
             # 流式生成

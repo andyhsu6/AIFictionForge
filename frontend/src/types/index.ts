@@ -771,10 +771,27 @@ export interface WritingStyleUpdate {
 }
 
 // issue #254 P1：重新抽取本书文笔画像（dry_run 预览 diff / 正式应用）
+export interface StyleProfileRange {
+  chapter: number;
+  start: number;
+  end: number;
+}
+
+export interface StyleProfileApplyPayload {
+  new_prompt_content: string;
+  new_profile: Record<string, unknown>;
+  description?: string;
+  confidence?: number | null;
+  degraded?: boolean;
+  profile_version?: number | null;
+  ranges?: StyleProfileRange[] | null;
+}
+
 export interface StyleProfileReextractRequest {
   dry_run?: boolean;
   overwrite_edited?: boolean;
   set_default?: boolean;
+  apply_profile?: StyleProfileApplyPayload;
 }
 
 export interface StyleProfileReextractResult {
@@ -782,7 +799,7 @@ export interface StyleProfileReextractResult {
   changed?: boolean;
   updated?: boolean;
   style_id?: number | null;
-  kept_reason?: 'user_edited' | null;
+  kept_reason?: 'user_edited' | 'degraded_fallback' | null;
   old_prompt_content?: string | null;
   new_prompt_content?: string;
   old_profile?: Record<string, unknown> | null;
@@ -790,6 +807,64 @@ export interface StyleProfileReextractResult {
   description?: string;
   confidence?: number | null;
   degraded?: boolean;
+  profile_version?: number | null;
+  ranges?: StyleProfileRange[] | null;
+}
+
+// 分卷画像（计划 §13-3）：每卷一幅画像，卷序号从 1 开始按提交顺序排列
+export interface VolumeRange {
+  start_chapter: number;
+  end_chapter: number;
+}
+
+export interface VolumeProfileInfo {
+  index: number;
+  start_chapter: number;
+  end_chapter: number;
+  style_id: number;
+  confidence?: number | null;
+  updated_at?: string | null;
+}
+
+export interface VolumeProfileListResponse {
+  volumes: VolumeProfileInfo[];
+  total: number;
+}
+
+export interface VolumeProfileGenerateRequest {
+  volumes: VolumeRange[];
+  overwrite_edited?: boolean;
+  dry_run?: boolean;
+}
+
+export interface VolumeProfileGenerateItem {
+  index: number;
+  start_chapter: number;
+  end_chapter: number;
+  confidence?: number | null;
+  degraded?: boolean;
+  skipped?: boolean;
+  skip_reason?: 'insufficient_sample' | 'user_edited' | null;
+  style_id?: number | null;
+}
+
+export interface VolumeProfileGenerateResult {
+  volumes: VolumeProfileGenerateItem[];
+  total: number;
+  dry_run: boolean;
+  anchors_reused: boolean;
+  /** 本次是否补生成了全书画像 */
+  full_profile_created?: boolean;
+  /** 全书画像补生成失败（分卷画像仍照常生成） */
+  full_profile_error?: boolean;
+  /** 全书样本不足，未补生成全书画像 */
+  full_profile_skipped?: boolean;
+  /** 全书画像使用本地统计降级结果（未设为默认） */
+  full_profile_degraded?: boolean;
+  /** 全书画像已生成，但保留用户手动选择的默认风格 */
+  full_profile_default_kept?: boolean;
+  /** dry_run 预览：项目当前还没有全书画像 */
+  needs_full_profile?: boolean;
 }
 
 // issue #254 P2：生成后文笔画像一致性自检（后端可选返回，缺省不影响生成流程）
@@ -1312,6 +1387,8 @@ export interface BookImportPreview {
   warnings: BookImportWarning[];
 }
 
+export type BookImportCareerSystemMode = 'auto' | 'skip' | 'force';
+
 export interface BookImportApplyPayload {
   project_suggestion: BookImportProjectSuggestion;
   chapters: BookImportChapter[];
@@ -1319,6 +1396,8 @@ export interface BookImportApplyPayload {
   import_mode?: 'append' | 'overwrite';
   /** 仅覆盖模式下生效：显式覆盖用户已编辑的文笔画像（默认保护） */
   overwrite_style_profile?: boolean;
+  /** 职业体系生成模式：auto（按题材/原文自动判断）| skip（跳过）| force（强制生成） */
+  career_system_mode?: BookImportCareerSystemMode;
 }
 
 export interface BookImportCreateTaskPayload {

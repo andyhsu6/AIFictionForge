@@ -52,8 +52,8 @@ _FILLER = "占位正文" * 250  # 1000 字符
 
 
 def _chapter_content(number: int) -> str:
-    """占位章节正文：前 1000 字符 + TAIL 标记（默认 3000 窗口能读到，900 窗口读不到）。"""
-    return f"占位章节{number}开头。" + _FILLER + f"TAIL{number}"
+    """占位章节正文：首尾各 1000 字符 + 中段 TAIL 标记（默认 3000 窗口能读到，900 首尾切片读不到）。"""
+    return f"占位章节{number}开头。" + _FILLER + f"TAIL{number}" + _FILLER
 
 
 def _chapter_numbers_in_prompt(prompt: str) -> list[int]:

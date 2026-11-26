@@ -38,7 +38,12 @@ from app.schemas.writing_style import WritingStyleCreate, WritingStyleUpdate
 from app.services.book_import_service import BookImportService
 from app.services.cascade_cleanup import delete_project_children
 from app.services.import_export_service import ImportExportService
-from app.services.style_profile import profile_preset_id
+from app.services.style_profile import (
+    build_corpus_sample,
+    build_style_sample,
+    local_stats_fallback,
+    profile_preset_id,
+)
 
 USER_ID = "user-1"
 
@@ -468,5 +473,255 @@ def test_create_rejects_reserved_profile_prefix():
                 db,
             )
         assert exc_info.value.code == "validation.profile_preset_reserved"
+
+    _run(scenario)
+
+
+# ---- issue #279：metrics 必须来自实测，不采信模型自报值 ----
+
+# 每句 20 字、每段 40 字；与 MODEL_CLAIMED_PROFILE 声称的 130 字/段、0.45 对话占比明显不同
+_CONTROLLED_SENTENCE = "占" * 19 + "。"
+_CONTROLLED_PARAGRAPH = _CONTROLLED_SENTENCE * 2
+
+MODEL_CLAIMED_PROFILE = {
+    **VALID_PROFILE,
+    "metrics": {
+        "avg_sentence_chars": 12.5,
+        "median_sentence_chars": 12,
+        "short_sentence_ratio": 0.6,
+        "dialogue_ratio": 0.45,
+        "paragraph_chars_p50": 130,
+    },
+}
+
+
+def measured_chapters(count: int = 3) -> list[SimpleNamespace]:
+    content = "\n\n".join([_CONTROLLED_PARAGRAPH] * 10)
+    return [
+        SimpleNamespace(chapter_number=index, title=f"第{index}章", content=content)
+        for index in range(1, count + 1)
+    ]
+
+
+def measured_metrics(chapters) -> dict:
+    """metrics 口径 = 全量正文（抽样只服务模型质性字段，issue #279 后续）。"""
+    return local_stats_fallback(build_corpus_sample(chapters))["metrics"]
+
+
+async def extract_profile(project, db, *, ai, chapters):
+    return await BookImportService()._extract_style_profile(
+        db=db,
+        user_id=USER_ID,
+        project=project,
+        chapters=chapters,
+        ai_service=ai,
+        content_language="zh",
+    )
+
+
+def test_metrics_use_the_whole_corpus_not_the_sampled_chapters():
+    """抽样 5 章会把对话占比按偶然分布放大；metrics 必须按全量正文统计。"""
+    dialogue_paragraph = "“" + "对" * 18 + "”"
+    narration_paragraph = "叙" * 38 + "。"
+    chapters = []
+    for index in range(1, 9):
+        # 抽样命中 1/2/5/6/8（开头两章、中部两章、末章）：这些章写成对话体，
+        # 其余章写成叙述体 —— 抽样口径会得到高对话占比，全量口径不会。
+        content = "\n\n".join(
+            [dialogue_paragraph if index in (1, 2, 5, 6, 8) else narration_paragraph] * 12
+        )
+        chapters.append(SimpleNamespace(chapter_number=index, title=f"第{index}章", content=content))
+
+    sample_metrics = local_stats_fallback(build_style_sample(chapters))["metrics"]
+    corpus_metrics = local_stats_fallback(build_corpus_sample(chapters))["metrics"]
+    assert sample_metrics["dialogue_ratio"] > corpus_metrics["dialogue_ratio"] + 0.2
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+        )
+        metrics = profile["profile_data"]["metrics"]
+        assert metrics == corpus_metrics
+        assert metrics["dialogue_ratio"] != sample_metrics["dialogue_ratio"]
+
+    _run(scenario)
+
+
+def test_model_metrics_are_overridden_by_measured_values(caplog):
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        with caplog.at_level("INFO", logger="app.services.book_import_service"):
+            profile = await extract_profile(
+                project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+            )
+
+        metrics = profile["profile_data"]["metrics"]
+        assert metrics == expected
+        assert metrics["paragraph_chars_p50"] == 40
+        assert metrics["avg_sentence_chars"] == pytest.approx(20.0)
+        assert metrics["dialogue_ratio"] == 0  # 模型声称 0.45
+        # 质性字段仍来自模型（未降级）
+        assert profile["degraded"] is False
+        assert profile["profile_data"]["source"] == "model"
+        assert (
+            profile["profile_data"]["narrative"]["pov"]
+            == MODEL_CLAIMED_PROFILE["narrative"]["pov"]
+        )
+
+    _run(scenario)
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "以实测覆盖模型估计" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    # 只记偏差 >30% 的键，且日志不含任何原文
+    assert "paragraph_chars_p50 130->40" in messages[0]
+    assert "avg_sentence_chars 12.5->20.0" in messages[0]
+    assert "dialogue_ratio 0.45->0.0" in messages[0]
+    assert "占" not in messages[0]
+
+
+def test_profile_advice_uses_measured_metrics_not_model_claims():
+    """do/dont 里的模型自编数字条目必须被剔除，并转为质性节奏指导。"""
+    chapters = measured_chapters()
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(VALID_PROFILE), chapters=chapters
+        )
+        data = profile["profile_data"]
+        assert "13–19" not in " ".join(data["do"])
+        assert "28%" not in " ".join(data["do"])
+        assert any("段落随情节" in item or "长短句" in item for item in data["do"])
+        assert 3 <= len(data["do"]) <= 6
+        assert 3 <= len(data["dont"]) <= 6
+
+    _run(scenario)
+
+
+def test_prompt_content_renders_measured_metrics():
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+    assert expected["paragraph_chars_p50"] == 40
+    assert round(expected["avg_sentence_chars"]) == 20
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project, db, ai=fake_ai(MODEL_CLAIMED_PROFILE), chapters=chapters
+        )
+
+        content = profile["prompt_content"]
+        assert "- 平均句长：20 字（中位 20 字）" in content
+        assert "- 段落长度中位：40 字" in content
+        assert "- 对话占比：0%" in content
+        # 模型声称的数值不得出现在注入内容里
+        assert "130" not in content
+        assert "45%" not in content
+        assert "12.5" not in content
+
+    _run(scenario)
+
+
+def test_model_failure_metrics_stay_measured():
+    chapters = measured_chapters()
+    expected = measured_metrics(chapters)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(
+            project,
+            db,
+            ai=fake_ai(error=RuntimeError("upstream down")),
+            chapters=chapters,
+        )
+
+        assert profile["degraded"] is True
+        assert profile["profile_data"]["source"] == "local"
+        assert profile["profile_data"]["metrics"] == expected
+
+    _run(scenario)
+
+
+def test_v2_multi_scene_map_reduce_tolerates_partial_batch_filter():
+    """多场景分批抽取时，单批遇内容过滤失败不得拖垮整本；其余批次仍可汇总出 v2 画像。"""
+    large_chapters = [
+        SimpleNamespace(
+            chapter_number=idx,
+            title=f"第{idx}章",
+            content=(
+                ("「占位快对话。」" * 180)
+                if idx in (3, 4)
+                else (("虽然前路艰难，可是他不禁咬牙坚持，" + "占位长句铺陈" * 5 + "。") * 40)
+            ),
+        )
+        for idx in range(1, 13)
+    ]
+
+    batch_obs = {
+        "texture": "平实白话，偶有传统衔接词",
+        "rhythm": "长句铺陈为主，对话干脆",
+        "tone": "直白明快",
+        "scene_notes": ["高对话：对答直接推进情节"],
+        "rhetoric": ["白描"],
+        "do_hints": ["顺叙推进"],
+        "dont_hints": ["勿用破折号"],
+    }
+    v2_reduce_payload = {
+        "version": 2,
+        "confidence": 0.88,
+        "impression": "整体文笔平实直接，句子连贯，修辞克制白描，情绪外放，读起来像传统连载小说。",
+        "texture": "平实白话，传统衔接词自然",
+        "rhythm": "叙事连贯中长句，对话干脆",
+        "tone": "直白明快",
+        "narrative": {"pov": "第三人称限知", "tense": "过去时", "distance": "贴近人物"},
+        "dialogue": {"attribution": "动作神态引出", "tag_density": "中等"},
+        "rhetoric": ["白描直叙"],
+        "scene_shifts": ["高对话：短促交锋", "纯叙事：长句铺陈"],
+        "do": ["按因果顺叙展开", "动作引出对话", "保持连贯段落"],
+        "dont": ["避免滥用破折号", "避免碎片短段", "避免议论文对仗总结"],
+        "metrics": {
+            "avg_sentence_chars": 20,
+            "median_sentence_chars": 18,
+            "short_sentence_ratio": 0.2,
+            "dialogue_ratio": 0.2,
+            "paragraph_chars_p50": 40,
+        },
+        "evidence_chapters": [1, 3, 12],
+    }
+
+    calls = {"count": 0}
+
+    async def _side_effect(*, prompt, **kwargs):
+        calls["count"] += 1
+        # Map 阶段如果收到多场景批次模板：第 1 批模拟 content_filter 报错，第 2 批成功
+        if "多场景原文样本" in prompt or "本批原文样本" in prompt:
+            if calls["count"] == 1:
+                raise RuntimeError("content_filter blocked batch 1")
+            return dict(batch_obs)
+        return dict(v2_reduce_payload)
+
+    ai = AsyncMock()
+    ai.call_with_json_retry = AsyncMock(side_effect=_side_effect)
+
+    async def scenario(db):
+        project, _ = await seed_project(db, default_style_id=1)
+        profile = await extract_profile(project, db, ai=ai, chapters=large_chapters)
+
+        assert profile["degraded"] is False
+        assert profile["profile_version"] == 2
+        assert profile["profile_data"]["version"] == 2
+        assert "fingerprint" in profile["profile_data"]
+        assert "整体印象" in profile["prompt_content"]
+        assert "平实直接" in profile["prompt_content"]
+        # 至少经历了 2 次 Map + 1 次 Reduce
+        assert calls["count"] >= 3
 
     _run(scenario)

@@ -28,6 +28,7 @@ from app.services.cascade_cleanup import (
     delete_relationship_links,
 )
 from app.services.profile_facts import drop_org_personality_field
+from app.services.outline_plan_adapter import to_storage_plan
 from app.services.project_agent_selectors import (
     clean_identifier,
     find_career,
@@ -61,6 +62,106 @@ def _data_schema(description: str) -> dict[str, Any]:
     `end_chapter` / `instructions` 这类根本不存在的键，代价是两次模型往返后失败。
     """
     return {"type": "object", "additionalProperties": True, "description": description}
+
+
+# 大纲结构化元数据：顶层扁平字段（不进 data），manage_outline.create 与
+# update_outline 共用同一份声明，避免两处 schema 各自漂移。
+OUTLINE_METADATA_FIELDS = (
+    "scenes", "characters", "key_points", "key_events", "emotion", "goal",
+)
+OUTLINE_CHARACTER_TYPES = ("character", "organization")
+_OUTLINE_STRING_LIST_FIELDS = ("scenes", "key_points", "key_events")
+OUTLINE_METADATA_PROPERTIES: dict[str, Any] = {
+    "scenes": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "场景列表，按出镜顺序写；可省略。",
+    },
+    "characters": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "角色或组织名称"},
+                "type": {
+                    "type": "string",
+                    "enum": list(OUTLINE_CHARACTER_TYPES),
+                    "description": "实体类型，默认 character",
+                },
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        "description": "本大纲涉及的角色/组织，每项给 name 与 type；可省略。",
+    },
+    "key_points": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "关键要点列表；可省略。",
+    },
+    "key_events": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "关键事件列表；可省略。",
+    },
+    "emotion": {"type": "string", "description": "该段基调情绪；可省略。"},
+    "goal": {"type": "string", "description": "该段的叙事目标；可省略。"},
+}
+
+
+def normalize_outline_metadata(arguments: dict[str, Any]) -> dict[str, Any]:
+    """提取并规范化顶层结构化元数据。
+
+    只返回**实际提供**的字段（未提供/null 表示不改动已有值）。类型不合法时
+    抛 `ValueError`，错误信息面向用户。`characters` 的规则：丢弃空 name，
+    type 只接受 character/organization（其余归为 character），按 (name, type) 去重。
+    """
+    metadata: dict[str, Any] = {}
+    for field in _OUTLINE_STRING_LIST_FIELDS:
+        value = arguments.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            raise ValueError(f"{field} 必须是字符串数组")
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError(f"{field} 必须是字符串数组，第 {len(items) + 1} 项不是字符串")
+            text = item.strip()
+            if text:
+                items.append(text)
+        metadata[field] = items
+    characters = arguments.get("characters")
+    if characters is not None:
+        if not isinstance(characters, list):
+            raise ValueError("characters 必须是对象数组，每项包含 name 和 type")
+        normalized_characters: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for index, item in enumerate(characters, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"characters 第 {index} 项必须是对象，包含 name 和 type")
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            raw_type = item.get("type")
+            entity_type = raw_type.strip() if isinstance(raw_type, str) else ""
+            if entity_type not in OUTLINE_CHARACTER_TYPES:
+                entity_type = OUTLINE_CHARACTER_TYPES[0]
+            key = (name, entity_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_characters.append({"name": name, "type": entity_type})
+        metadata["characters"] = normalized_characters
+    for field in ("emotion", "goal"):
+        value = arguments.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"{field} 必须是字符串")
+        metadata[field] = value.strip()
+    return metadata
+
 
 # 伏笔「写库字段」（issue #223）：create/update 真正落进 Foreshadow 模型的 21 个字段。
 # 与 ProjectAgentExtendedTools.FORESHADOW_FIELDS / STRICT_DATA_FIELDS 同源。
@@ -191,8 +292,20 @@ EXTENDED_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "manage_outline",
-        "description": "创建、删除或重新排序大纲；执行前必须确认。更新内容请使用 update_outline。",
-        "parameters": _schema({"action": {"type": "string", "enum": ["create", "delete", "reorder"]}, "outline_id": ID, "title": {"type": "string"}, "content": {"type": "string"}, "order_index": {"type": "integer", "minimum": 1}, "ordered_ids": {"type": "array", "items": ID}}, ["action"]),
+        "description": (
+            "创建、删除或重新排序大纲；执行前必须确认。更新内容请使用 update_outline。"
+            "create 可同时提供结构化元数据（scenes/characters/key_points/key_events/emotion/goal），"
+            "它们不是必填，必须放在参数顶层（不要包进 data）。"
+        ),
+        "parameters": _schema({
+            "action": {"type": "string", "enum": ["create", "delete", "reorder"]},
+            "outline_id": ID,
+            "title": {"type": "string"},
+            "content": {"type": "string"},
+            "order_index": {"type": "integer", "minimum": 1},
+            "ordered_ids": {"type": "array", "items": ID},
+            **OUTLINE_METADATA_PROPERTIES,
+        }, ["action"]),
         "risk_level": 2,
         "resources": ("outlines", "chapters"),
     },
@@ -626,14 +739,23 @@ class ProjectAgentExtendedTools:
         ))).scalar_one_or_none()
         if exists:
             raise ValueError(f"第 {order_index} 条大纲已存在")
-        after = {"title": title, "content": content, "order_index": order_index}
+        metadata = normalize_outline_metadata(arguments)
+        after = {"title": title, "content": content, "order_index": order_index, **metadata}
         return {}, after, f"创建第{order_index}条大纲《{title}》"
 
     async def _manage_outline_create(self, arguments: dict[str, Any]):
         title = str(arguments["title"]).strip()
         content = str(arguments["content"]).strip()
         order_index = int(arguments["order_index"])
-        structure = json.dumps({"title": title, "summary": content, "content": content}, ensure_ascii=False)
+        structure = json.dumps(
+            {
+                "title": title,
+                "summary": content,
+                "content": content,
+                **normalize_outline_metadata(arguments),
+            },
+            ensure_ascii=False,
+        )
         row = Outline(project_id=self.project.id, title=title, content=content, order_index=order_index, structure=structure)
         self.db.add(row)
         await self.db.flush()
@@ -905,16 +1027,34 @@ class ProjectAgentExtendedTools:
         row = await self._find_chapter(arguments)
         data = self._data(arguments)
         plan = data.get("expansion_plan", data)
-        before = {"expansion_plan": self._parse_json(row.expansion_plan, {})}
-        after = {"expansion_plan": plan}
+        stored_plan = to_storage_plan(plan) if isinstance(plan, dict) else plan
+        # 摘要与写入端同源：plot_summary / data.summary 都落到章节摘要列
+        summary = self._plan_summary(plan, data) or row.summary
+        before = {"summary": row.summary, "expansion_plan": self._parse_json(row.expansion_plan, {})}
+        after = {"summary": summary, "expansion_plan": stored_plan}
         return before, after, f"更新第{row.chapter_number}章《{row.title}》规划"
 
     async def _manage_chapter_update_plan(self, arguments: dict[str, Any]):
         row = await self._find_chapter(arguments)
         data = self._data(arguments)
         plan = data.get("expansion_plan", data)
-        row.expansion_plan = json.dumps(plan, ensure_ascii=False)
-        return row.id, {"expansion_plan": plan}, f"已更新第{row.chapter_number}章《{row.title}》规划"
+        # 摘要以章节摘要列为唯一事实源：plot_summary / data.summary 都写进该列
+        summary = self._plan_summary(plan, data)
+        if summary:
+            row.summary = summary
+        # 写入前统一规划键名（plot_summary 不再落进 expansion_plan）
+        stored_plan = to_storage_plan(plan) if isinstance(plan, dict) else plan
+        row.expansion_plan = json.dumps(stored_plan, ensure_ascii=False)
+        return row.id, {"summary": row.summary, "expansion_plan": stored_plan}, f"已更新第{row.chapter_number}章《{row.title}》规划"
+
+    @staticmethod
+    def _plan_summary(plan: Any, data: dict[str, Any]) -> str:
+        """取规划摘要文本：expansion_plan.plot_summary 优先，其次 data.summary。"""
+        if isinstance(plan, dict):
+            text = str(plan.get("plot_summary") or "").strip()
+            if text:
+                return text
+        return str(data.get("summary") or "").strip()
 
     # --- 关系管理 ---
 

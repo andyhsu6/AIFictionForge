@@ -69,6 +69,7 @@
       "careersInitAi": "💼 正在初始化AI服务...",
       "careersParsing": "💼 正在解析职业数据...",
       "careersPreparingPrompt": "💼 正在准备职业体系提示词...",
+      "careersSkipped": "💼 本作品无需职业体系，已跳过",
       "chaptersImported": "已导入 {{chapters}} 个章节（{{words}}字）",
       "charactersBatch": "👥 AI正在生成角色与组织（第 {{batch}}/{{total}} 批）...",
       "charactersDone": "👥 角色/组织生成完成（{{entities}}个）",
@@ -414,6 +415,7 @@
     "user_delete_blocked": "无法删除该用户（用户不存在或为管理员）",
     "verification_code_format": "请输入6位数字验证码",
     "verification_code_scene": "不支持的验证码场景",
+    "volume_profile_cannot_be_default": "分卷画像只作用于其章节区间，不能设为项目默认风格",
     "wizard_fields_missing": "{{fields}} 是必需的参数"
   }
 }

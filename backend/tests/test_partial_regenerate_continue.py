@@ -10,7 +10,7 @@ chapters 路由 + register_exception_handlers + dependency_overrides[get_db]，
   3. 分段数学：segment_count 按 effective_segment_chars（非 SEGMENT_TARGET_CHARS）；
      k>0 用 rolling_context，不注入全量累积
   4. 守卫：target 超限 / segment_index 越界 / segment_count 超限 / 能力不足
-  5. 能力钳制：思考模型抬底后 max_tokens 仍 <= output_limit
+  5. 能力钳制：max_tokens 恒 <= 能力入口给出的输出上限（output_limit 来自实测）
   6. apply continue 插入：前后缀字节一致 + 计数增量正确 + 再应用不腐坏
   7. 陈旧 content_hash 应用 → 409 content_hash_mismatch 且内容未变
    8. #45 回归：空输出 → internal.ai_empty_response（rewrite 恰好 1 次调用，与 HEAD 字节一致；
@@ -64,6 +64,10 @@ class _RecordingAIService:
         self.chunks = [GEN_TEXT] if chunks is None else chunks
         self.prompts: list[str] = []
         self.stream_kwargs: list[dict] = []
+
+    async def resolve_output_budget(self, *, target_chars, prompt_chars, model=None, provider=None):
+        """假能力入口：默认报一个宽裕的输出上限（等效于成功的实测窗口规划）。"""
+        return 64000, {"cap": 64000, "content": target_chars, "input_tokens": prompt_chars}
 
     async def generate_text_stream(self, *, prompt, **kwargs):
         self.prompts.append(prompt)
@@ -256,8 +260,15 @@ def _continue_body(**over):
 
 
 def _small_output_limit(monkeypatch, limit: int):
-    """钳制 detect_max_output_tokens（chapters 命名空间绑定），驱动分段数学。"""
-    monkeypatch.setattr(chapters_module, "detect_max_output_tokens", lambda m, b=None: limit)
+    """钳制能力入口（AIService.resolve_output_budget），驱动分段数学。
+
+    分段只看 breakdown["cap"]：分段数必须来自实测能力，不能靠模型名登记表。
+    """
+
+    async def _fake(self, *, target_chars, prompt_chars, model=None, provider=None):
+        return limit, {"cap": limit}
+
+    monkeypatch.setattr(_RecordingAIService, "resolve_output_budget", _fake)
 
 
 # ---- 1. rewrite 结果携带 mode/content_hash（省略 mode ≡ rewrite） ----
@@ -300,7 +311,7 @@ def test_continue_allows_start_equals_end_and_freezes_result_shape(env):
         "generated_chars": len(GEN_TEXT),
         "complete": True,
     }
-    # 默认模型 test-model → 保守输出上限 8192 → effective 4096 ≥ target → 单段
+    # 假服务报 64000 能力上限 → effective = min(8000, 32000) ≥ target → 单段
     prompt = env.fake_ai.prompts[-1]
     assert "目标约800字" in prompt
     assert LANGUAGE_INSTRUCTIONS["zh"] in prompt  # content_language 经 format_prompt 注入
@@ -407,18 +418,20 @@ def test_guard_continue_range_out_of_bounds(env):
     assert resp.json()["params"]["bound"] == "start"
 
 
-# ---- 5. 能力钳制：思考模型抬底不得穿透输出上限 ----
+# ---- 5. 能力钳制：预算恒不超过能力入口给出的输出上限 ----
 
 
-def test_thinking_model_budget_clamped_to_output_limit(env, monkeypatch):
+def test_budget_never_exceeds_capability_output_limit(env, monkeypatch):
     seed(env)
     env.fake_ai.default_model = "deepseek-r1-test"  # 思考型（推理与正文共享预算）
-    _small_output_limit(monkeypatch, 2000)  # effective 1000；floor 64000 > limit
+    _small_output_limit(monkeypatch, 2000)  # effective = 1000；ceil(1000*2) = 2000
     resp = regen(env, _continue_body(target_word_count=1500))
     assert resp.status_code == 200, resp.text
-    result_event(resp)
+    result = result_event(resp)
+    assert result["segment_count"] == 2  # ceil(1500/1000)
+    assert result["requested_chars"] == 1000  # min(1000, 1500)
     max_tokens = env.fake_ai.stream_kwargs[-1]["max_tokens"]
-    assert max_tokens <= 2000  # 抬底后仍被钳回 provider 输出上限
+    assert max_tokens <= 2000  # 预算被能力上限钳住，不会穿透 provider 输出上限
 
 
 # ---- 6. apply continue 插入 + 计数增量 ----
