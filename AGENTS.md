@@ -1,117 +1,91 @@
 # AIFictionForge 项目约定
 
-## 项目定位
-- 项目使用 Git 协作开发，远程 PR 用于重大改动评审。
+> 根目录 `GEMINI.md` 软链接指向本文件，所有 Agent 客户端共用同一份规范。
 
-## 提交规则
-- **重大改动必须提交 PR**：涉及核心架构、数据库 schema、鉴权/安全、跨模块接口或影响用户数据/体验的大改动，不得直接提交或推送主干；应创建 feature 分支、推送远程并提交 PR，评审通过后再合并。
-- 不确定是否属于重大改动时，先询问用户确认。
-- **分支命名规范**：分支名必须**描述改动内容**，格式 `<type>/<简述>`（如 `fix/524-streaming-timeout`、`feat/chunk-first-principle`、`docs/issue-sync-convention`），type 用 `fix`/`feat`/`docs`/`refactor`/`chore` 等；**禁止**使用无信息量的通用名（如 `local-works`、`dev`、`test`、`work`）。
-- **PR 命名规范**：PR 标题与分支名都要反映改动内容，标题格式 `<type>: <改动摘要>`（如 `fix: 拆书 524 超时修复`）。
-- **协作语言规范**：issue 与 PR 的标题与正文**直接使用中文**（示例：`[Bug] 拆书导入生成角色时 524 超时`、`fix: call_with_json_retry 流式 JSON 生成修复`）；前端页面文案与提示仍保持中英双语 i18n（见下方 `i18n 约定`）。
+## 0. 开工与收尾硬门禁（必读）
 
-## Issues / PR 同步规范（四同步点，其余不额外同步）
+**Start Gate（动手改代码前）**
+1. 检查分支与工作区：`git -C <checkout> status` / `branch`。若当前分支属于其他主题或已有无关未提交改动，**先隔离**（切新分支/worktree 或提醒用户），严禁把多任务改动混在同一个脏分支上。
+2. 判断是否走 Issue + PR（满足任一条即触发，**无需询问**）：
+   - 改动 ≥ 3 个代码文件，或涉及跨模块/前后端联动；
+   - 改动数据库 schema、Prompt 模板、核心导入/生成/鉴权链路；
+   - 影响用户数据或 UI 交互流程。
+3. 接手 `docs/handoffs/` 计划文档执行任务时，第一步先核对是否已在 `andyhsu6/AIFictionForge` 建好对应 Issue 与 `<type>/<简述>` 分支；未建则先补齐再编码。
 
-生命周期固定为**四个同步点**；**commit 只引用编号（`refs #N`），不写 issue/PR 评论**；评审与验收结论只写 PR 评论或打 label，**不用 issue 状态表达阶段**。
+**Done Gate（宣称完成或开 PR 前）**
+1. 跑目标后端单测（`ONNX_EMBEDDING_OFFLINE=1`）与前端测试；若改了前端，必须执行 `cd frontend && npm run build` 同步 `backend/static/`。
+2. 至少跑通一条真实端到端路径（API 或 UI）；UI 改动必须先 `/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh verify` 再用本机 Brave 实际操作控件并截图留证（存 `.omo/evidence/`）。
+3. 原文数据脱敏自查：确认 commit、Issue、PR、文档中不含任何书名、角色名、世界观专名或正文摘录。
+4. 推送远程（`andy`）开 PR，正文写 `closes #N` 与实测证据，核对 Linked issues 生效。
 
-1. **计划定稿 → 建 issue 并落计划**
-   - 需求明确且计划定稿后，在 `andyhsu6/AIFictionForge` 建 issue（`[Feature]` 前缀，label `enhancement` + `status:planned`），写背景、期望功能、实现思路与**验收标准**；计划要点同步为 issue 评论（计划文档默认在 `docs/handoffs/` 不入库，issue 评论是计划在 GitHub 侧的唯一载体）。
-   - “计划定稿”判定：有可执行的任务拆分 + 可核对的验收标准；未定稿不得开 PR。
-   - **Bug**：发现即建 issue（`[Bug]` 前缀，label `bug`），记录复现步骤、预期/实际行为与环境。
-2. **开工 → Draft PR（条件触发）**
-   - 涉及**多会话/多天工作**或属于重大改动（核心架构、数据库 schema、鉴权/安全、跨模块接口、影响用户数据/体验）时：第一个非空 commit 后立即推分支并开 **Draft PR**（标题 `<type>: <摘要>`，正文 `refs #N`，label `status:in-progress`），作为并行 worktree/agent 会话的工作锚点。
-   - 单会话小改动不强制提前开 PR，实现完成后再开即可。
-   - 计划重大变更时同步更新 PR 描述，或关闭重开，避免过期描述误导。
-3. **实现完成 → PR 转 Ready**
-   - 自测/视觉验证通过后转 Ready；PR **正文**必须含关闭关键词并指向 issue：`closes #N` / `fixes #N` / `resolves #N`（写在正文而非仅 commit message，确保 Linked issues 与**合并自动关闭**），Test plan 填实际验证结果。
-   - 评审/验收结论（通过或需修改）写 PR 评论 + label（如 `status:verified`），不改 issue 状态。
-4. **合并 → issue 自动关闭（唯一关闭点）**
-   - 能由 PR 合并自动关闭的 issue，**禁止手动提前关闭**（会断时间线并使 `closes` 失效）；只有确实无对应 PR 的纯文档/运维改动才手动关闭，并在评论说明原因。
-   - 建 PR 后核对关联生效：`gh pr view <N> --repo andyhsu6/AIFictionForge --json closingIssuesReferences` 应含目标 issue，issue 时间线出现 `cross-referenced`。
-   - 合并后核对自动关闭：`gh issue view <N> --repo andyhsu6/AIFictionForge --json state,stateReason` 应为 `CLOSED` / `COMPLETED`；未生效立即补关联/关闭，并在 issue 评论留下 PR 链接与验收结果。
+---
 
-- 阶段用 label 表达：`status:planned` → `status:in-progress` → `status:verified`；PR 状态只用 GitHub 原生 Draft/Ready/Closed/Merged 表达完成度。
-- 批量/历史同步：按功能主题合并建 issue，颗粒度到功能模块而非单个提交。
-- 使用仓库内的 issue 模板：`.github/ISSUE_TEMPLATE/bug_report.md`、`feature_request.md`。
+## 1. Git、Issues 与 PR 同步规范（四同步点）
 
-## 文档目录约定
-- **交付给人和 agent 的文档放 `docs/handoffs/`**（计划、需求、交接、方案）。该目录已在 `.gitignore` 里显式放行，可被文件检索工具直接索引；**放进 `.omo/` 的文档检索不到**（索引遵循 .gitignore），`.omo/` 只放原始证据与草稿（含书稿片段，必须保持忽略）。
-- `docs/handoffs/` 的文档**默认不入库**：`.githooks/pre-commit` 会拒绝提交该目录（脚本已入库，本地通过 `.git/hooks/pre-commit` 符号链接生效）。确需入库时 `ALLOW_HANDOFF_COMMIT=1 git commit`，且必须先脱敏（不得出现书名、角色名、原文片段）。
-- 文档文件名避免中文，使用英文或双语文件名，便于 CI/工具链/IDE 直接阅读。
+- **分支命名**：`<type>/<简述>`（`fix`/`feat`/`docs`/`refactor`/`chore`，如 `feat/book-import-career-on-demand`），禁止 `dev`/`test`/`work`/`local-works` 等泛名。
+- **PR 命名与语言**：标题 `<type>: <中文摘要>`；Issue 与 PR 标题、正文、评论**直接使用中文**；前端界面文案仍保持中英双语 i18n。
+- **安全与隔离**：重大改动禁止直接提交主干；所有 git 操作一律 `git -C <checkout绝对路径>`（防止多 worktree 下 cwd 漂移），提交后 `git -C ... log --oneline -1` 复核落点。
+- **四同步点**（其余不额外同步；commit 只写 `refs #N`；阶段用 label `status:planned` → `status:in-progress` → `status:verified`，不靠关闭/重开 issue 表达阶段）：
+  1. **计划定稿 → 建 Issue**：有可执行拆分与验收标准后，在 `andyhsu6/AIFictionForge` 建中文 Issue（`[Feature]` + `enhancement` + `status:planned`，或 `[Bug]` + `bug`，使用 `.github/ISSUE_TEMPLATE/`），计划要点同步为 Issue 评论。
+  2. **开工 → Draft PR（条件触发）**：多会话/多天任务或重大改动，首个非空 commit 后即推分支开 Draft PR（正文 `refs #N`，label `status:in-progress`）；单会话小改动可实现完直接开 Ready PR。
+  3. **实现完成 → PR 转 Ready**：单测与端到端验证通过后转 Ready，PR **正文**必须含 `closes #N` / `fixes #N` / `resolves #N` 并附验证证据（命令、输出、截图路径）；评审结论写 PR 评论 + label（如 `status:verified`）。
+  4. **合并 → Issue 自动关闭（唯一关闭点）**：禁止手动提前关闭有对应 PR 的 Issue（纯文档/运维无 PR 除外）。建 PR 后用 `gh pr view <N> --repo andyhsu6/AIFictionForge --json closingIssuesReferences` 核对关联；合并后用 `gh issue view <N> --repo andyhsu6/AIFictionForge --json state,stateReason` 核对自动关闭。
 
-## 原文数据脱敏（版权与隐私）
-- **禁止**将用户导入的书/文档原文、章节正文摘录、角色人名、世界观专名等原文数据推送到 GitHub（仓库公开，且可能涉及版权）。
-- 涉及原文内容的验收证据（截图、报告、摘要、角色名单）一律存本地 `.omo/`/`docs/`（gitignore），**不入库、不上传**。
-- issue/PR 正文与评论中提及验收时，用**描述性措辞**替代具体原文数据（如"真实书籍 re-import"、"protagonist"、"角色名 redacted"），不出现书名、人名、原文片段。
-- 本规范为硬约束：任何 issue/PR/commit/文档中出现原文数据，视为违规，需立即脱敏修正。规范来源与历史处置见 issue #23（`docs: source-text data desensitization convention for public GitHub`）。
+---
 
-## 服务管理（aistoryforge.sh）
-项目根目录提供 `aistoryforge.sh` 服务管理脚本，管理后端（uvicorn:8008）与前端（vite:5173）；**务必使用当前 checkout 的绝对路径调用**（避免工作目录漂移误操作其他 worktree）：
+## 2. 原文数据脱敏与用户数据安全（硬约束）
 
-```bash
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh status           # 查看两个服务状态（PID + 代码身份 + 健康检查）
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh verify           # 验收前置检查：确认两端点跑的都是本 checkout 代码
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh start            # 启动全部（后端 + 前端）
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh stop             # 停止全部
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh restart          # 重启全部
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh restart backend  # 仅重启后端
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh start frontend   # 仅启动前端
-/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh logs backend     # 查看后端日志（或 frontend）
-```
+- **公开仓库零原文**：严禁将用户导入的书稿原文、章节摘录、书名、角色名、世界观专名推送到 GitHub（含 Issue/PR/commit/文档）。验收描述一律用中性措辞（如“真实书籍重导”“主角名 redacted”），含原文的证据一律放本地 `.omo/`（gitignore）。规范来源见 issue #23。
+- **不得用用户真实数据做功能验证**：验证书稿逻辑一律新建临时项目或临时库，验完即删；确需操作用户真实数据须先获明确同意并说明影响与回滚方式。
+- **本地真实库清洗规范**：对 `backend/data/mumuai_novel.db` 执行数据清洗前，必须先做 `.bak*` 备份；清洗后核验受影响行数与其他数据完整性；验收完成后由用户决定保留或清理备份，严禁 `.db` / `.bak*` 入库。
+- **测试/验收数据直接删、不备份**：明确为测试用途的临时库、临时导入项目、临时备份验收完直接删除。
 
-- 日志：后端 `/tmp/aistoryforge-backend.log`、前端 `/tmp/aistoryforge-frontend.log`
-- 后端健康检查：`curl http://localhost:8008/health` 应返回 `{"status":"ok"}`
+---
 
-## 环境约定
-- **端口**：后端 8008（`.env` 的 `APP_PORT`；8000 为历史遗留默认值且被本机无关服务占用，**禁止使用**）、前端 dev 5173（Vite，代理指向 8008）；单端口构建入口 = 8008（`npm run build` 产物输出到 `backend/static/`，由后端直接伺服）
-- **前端改动工作流（硬约束）**：开发/验收期间用 5173 实时预览（HMR）；确认改动无误后，在创建/更新 PR、更新 issue 或合并前，必须 `cd frontend && npm run build` 构建到 `backend/static/`，让 8008 单端口入口同步反映改动。
-- **禁止新增 8000 端口引用（硬约束）**：不得再添加任何指向端口 8000 的默认值/回退/文档引用；所有新端口默认值一律为 8008（含前端 API base URL 回退）。
-- **数据库**：SQLite `backend/data/mumuai_novel.db`（本地开发不用 PostgreSQL）
-- **后端启动**：必须从项目根目录以 `PYTHONPATH=backend` 启动（否则 pydantic 读不到根目录 `.env`）；venv 在 `backend/.venv`（Python 3.12）
-- **前端**：`frontend/` 下 `npm run dev`；`vite.config.ts` 代理 `/api` 与 `/generated-assets` 到 8008
-- **测试**：`cd backend && ONNX_EMBEDDING_OFFLINE=1 PYTHONPATH=. .venv/bin/python -m pytest tests/<目标测试>.py -v`（pytest 仅装在 venv，不进 `requirements.txt`）。全量 `tests/` 含 130+ 文件且部分测试会触发 457MB embedding 加载（耗时 >15 分钟），开发期优先跑相关测试集及 `.github/workflows/backend-tests.yml` 中的核心子集。
-- **文档与配置守卫**：`backend/tests/test_docs_model_requirements.py` 强制校验 README、`.env.example` 与 `settings.json` tooltip——不得推荐具体模型名、不得保留未注释的 `DEFAULT_MODEL=`、900,000（`MIN_CONTEXT_WINDOW_TOKENS`）下限需与代码保持一致。
-- **改动生效规则**：前端改动由 vite HMR 自动生效（浏览器需刷新一次拿新模块）；后端 `.py` 改动由 uvicorn `--reload` 自动重载，无需手动 restart；改 `.env`、依赖或启动参数才需要完整 `restart`。测试/验收前仍必须先 `verify`。
-- **Embedding 模型**：已缓存于 `backend/embedding/onnx/`，启动自动加载
-- **浏览器约定（硬约束）**：本机统一使用 Brave（Chromium 内核，`/Applications/Brave Browser.app`），已由 `browse` 扩展配对；**禁止**额外安装 Chrome/Chromium/Edge 等任何浏览器或 Playwright 自带浏览器二进制。浏览器自动化统一走 `browse`（驱动本机 Brave 后台标签组，无 headless 模式，`page.bringToFront()` 被禁用）：优先使用当前环境提供的 `browse` 工具（MCP `browse.execute` 或 CLI `browse execute`）；
-  - 截图落盘根：默认允许 `/tmp` 与工具临时目录；如需直接写 `.omo/evidence/` 且客户端受限时，可设 `OPENCODE_BROWSER_FILE_ROOTS=<checkout>/.omo/evidence` 或先写 `/tmp` 再 `cp`。
-  - 验收一律用 `--rm` 一次性 session；**不要** `session_adopt` 用户已登录的标签页，避免把真实账号与真实数据带进验收。
-  - 仅在 `browse` 不可用（扩展未配对 / relay 不通）时，才回退 `.omo/pw-tools/node_modules` 的 `playwright-core` 并指向本机 Brave。
+## 3. 文档目录约定
 
-## 功能完成验证（硬约束）
+- **人机协作文档放 `docs/handoffs/`**（计划、需求、交接、方案），该目录在 `.gitignore` 中放行以供索引；`.omo/` 仅放原始证据与草稿（保持忽略）。
+- `docs/handoffs/` 默认不入库（`.githooks/pre-commit` 拦截）；确需入库时先彻底脱敏再 `ALLOW_HANDOFF_COMMIT=1 git commit`。
+- 文档文件名使用英文或双语，避免纯中文文件名。
 
-- **任何功能/修复在宣称完成或开 PR 前，必须实际运行验证**：至少覆盖相关单测 + 一条真实端到端路径（API 或 UI）。只改代码、只跑单测、只做静态断言都不算验证。
-- **UI 改动必须做浏览器端到端验证**：启动本 checkout 服务（先跑 `aistoryforge.sh verify`），用 `browse` **实际操作关键控件**并断言 URL/DOM 结果（不只是截首屏），截图与断言输出存 `.omo/evidence/`。
-- **不得用用户真实数据做验证**：需要书稿数据的验证一律新建临时项目/临时库，验证后删除；确需使用用户数据时必须先获得明确同意，并说明改动范围与回滚方式。
-- **PR 必须附验证证据**：命令、实际输出、截图路径；未验证的功能不得标 Ready，也不得用"测试通过"代替端到端结果。
-- **验证暴露的问题必须修复后重新验证**（含真实数据触发的校验误伤、降级、界面缺失），不能只记录。
+---
 
-## 视觉验证约定
-- **UI 改动/验收指引必须先做视觉渲染验证**（`browse` 截图或 DOM 文本断言），禁止仅凭 grep 代码推断 UI 位置与文案；截图存 `/tmp/` 或 `.omo/evidence/`。
+## 4. 服务管理、环境与端到端验证（硬约束）
 
-## 服务与测试身份约定（硬约束）
-- **宣称"可以测试"前必须先跑 `verify`**：只有两个端点都确认运行【本 checkout】代码（进程 cwd + `/health` 分支双核对）才允许开始测试/验收；`verify` 不通过禁止宣称就绪。
-- **服务脚本必须用当前 checkout 的绝对路径调用**（如 `/Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh`）：shell 工作目录可能被后台任务事件重置到别的 checkout，相对路径 `./aistoryforge.sh` 会静默操作错误目录的服务。
-- `start` / `restart` 遇到端口被其他 checkout 占用时默认拒绝并给出指引（接管需显式 `--force`）；禁止静默顶掉其他 checkout 的服务。
-- **git 操作一律 `git -C <checkout绝对路径>`**：cwd 漂移会让相对路径的 add/commit 落到别的 checkout（本仓库可能挂多个 worktree）；提交后用 `git -C ... log --oneline -1` 复核落点。
+### 服务脚本与端口
+- **端口**：后端固定 **8008**（`.env` 的 `APP_PORT`；**禁止新增或回退到 8000**），前端 Vite dev **5173**（代理 `/api` 与 `/generated-assets` 到 8008）；单端口构建入口为 8008（`cd frontend && npm run build` 输出到 `backend/static/`）。
+- **必须用当前 checkout 绝对路径调用服务脚本**：
+  ```bash
+  /Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh status|verify|start|stop|restart [backend|frontend]
+  /Users/andyhsu/codehouse/AIFictionForge/aistoryforge.sh logs backend|frontend
+  ```
+- **身份核对**：宣称可测试或开始验收前必须先跑 `aistoryforge.sh verify`，确认 8008/5173 跑的均为本 checkout 代码（健康检查 `curl http://localhost:8008/health` 返回 `{"status":"ok"}`）。遇到端口被其他 checkout 占用时不静默顶掉（接管需显式 `--force`）。
+- **改动生效**：前端由 Vite HMR 自动生效；后端 `.py` 由 uvicorn `--reload` 自动重载；改 `.env`/依赖/启动参数需 `restart`。
 
-## 工作偏好
-- **不要反复询问**：服务管理（启动/停止/重启/状态）、本地提交、常规运维操作直接执行，不要每次征求同意。
-- 涉及删除数据、修改 `.env`、改动数据库 schema 等破坏性操作时仍需确认。
-- **测试/验收数据直接删、不备份**：明确为测试用途的数据（验收库、临时导入项目、备份文件等）验收/确认完成后直接删除，不做备份，避免浪费 token 与磁盘空间。
+### 验证与浏览器约定
+- **端到端验证**：任何功能/修复宣称完成或开 PR 前，必须跑相关单测 + 至少一条真实端到端路径（API 或 UI）；验证暴露的问题必须修复后重验。
+- **UI 视觉与交互验证**：UI 改动禁止仅靠 grep 代码推断位置与文案，必须用本机 Brave（`/Applications/Brave Browser.app`）实际操作关键控件并断言 URL/DOM 与截图（存 `/tmp/` 或 `.omo/evidence/`）。
+- **浏览器工具**：统一走 `browse` 扩展（`browse.execute` / `browse execute`），使用 `--rm` 一次性 session，**禁止** `session_adopt` 用户已登录标签页，**禁止**额外安装 Chrome/Chromium/Edge 或 Playwright 自带浏览器。仅在 `browse` 不可用时回退 `.omo/pw-tools/node_modules` 的 `playwright-core` 指向本机 Brave。
 
-## 超长内容处理约定（拆分优先原则）
-- **默认拆分多次处理**：任何输入/输出过大过长（书/章节/提示词/上下文/JSON 输出等）时，默认优先考虑**拆分多次传输/处理**（分批、分段、多轮喂入），而不是截断、丢弃或整体失败。
-- **截断/丢弃需论证**：只有拆分多次处理会带来明确负面影响（如破坏语义完整性、引入一致性偏差、成本不可接受、延迟不可容忍）时，才允许降级为截断/摘要/丢弃，且必须说明理由。
-- **拆分方案优先保全信息**：拆分的目的是保留全部信息；截断/摘要意味着信息损失，属于最后手段。
-- **超大内容（书/长文档）**：按"模型窗口 + 内容总量"综合判断注入/处理策略（全量 → 尾部加权 → 拆分多次传输），单章过长同样适用拆分，不做单章硬截断。
-- 实现前先评估拆分的负面影响（轮次增加带来的成本/延迟/上下文一致性），评估结果记录在对应 issue。
+---
 
-## i18n 约定
-- **新增 UI 文案必须进 locale 文件**：`frontend/src/locales/{zh,en}/<ns>.json`（zh 是源语言，en 必须同步；空值会挂在 CI parity 门）。
-- **数据与文案边界**：数据库种子目录（写作风格预设、提示词分类/模板标题、Skill 条目）属内容数据；界面 chrome 文案必须 i18n 化，目录内容本地化需单独决策。
-- **i18n 语言语义**：未登录启动顺序 = localStorage 手动选择 → navigator（浏览器语言，默认镜像操作系统语言，即"系统优先其次浏览器"的落地）；登录页切换器仅本地预览；**登录成功后服务器偏好覆盖本地**（无服务器值时才把本地选择种子化到服务器）；`syncLanguageWithServer()` 在跳转前必须 await（登录/回调所有路径），落地第一帧即服务器偏好语言。
-- **后端用户可见文案用错误码**：`raise ApiError(code=...)`，注册表在 `backend/app/core/errors.py`；未知码前端回退本地化通用文案，原文只进调试通道（`raw`）。
-- **AI 生成语言**由 `content_language` 设置链控制：per-generation 覆盖 > 用户设置 > UI 语言 > zh（解析器 `backend/app/services/language_resolver.py`）。
-- **CI 门**：`.github/workflows/i18n-check.yml` 跑 extract / types / parity / `npm test` 四道检查，locale 与类型产物必须保持零 diff。
-- 贡献者指南见 `CONTRIBUTING.md`，i18n 架构详情见 `docs/i18n.md`。
+## 5. 超长内容处理约定（拆分优先原则）
+
+- 输入/输出过长（书稿、章节、提示词、上下文、JSON 输出）时，默认优先**拆分多次传输/处理**（分批、分段、多轮）以保全信息；仅当拆分导致明确负面影响（破坏语义、一致性偏差、成本/延迟不可接受）时才允许降级为截断或摘要，且须在对应 Issue 说明理由。
+- 超大书稿按“模型窗口 + 内容总量”分级处理（全量 → 尾部加权 → 拆分多次），避免单章硬截断丢信息。
+
+---
+
+## 6. i18n 与协作工作偏好
+
+- **i18n 硬门禁**：新增 UI 文案必须同步写入 `frontend/src/locales/{zh,en}/<ns>.json`（zh 为源语言，不可留空），并执行 `npm run i18n:types` 保持 `resources.d.ts` 零 diff；后端用户可见文案统一注册在 `backend/app/core/errors.py` 的 `ERROR_REGISTRY` 并使用 `ApiError(code=...)`。CI（`.github/workflows/i18n-check.yml`）校验 extract / types / parity / `npm test`。详见 `CONTRIBUTING.md` 与 `docs/i18n.md`。
+- **工作偏好**：服务管理、本地提交、常规运维与单测直接执行，不反复征求同意；涉及删除用户数据、改 `.env`、改数据库 schema 等破坏性操作时先确认。
+
+---
+
+## 7. 环境与架构参考
+
+- **数据库与后端环境**：本地使用 SQLite `backend/data/mumuai_novel.db`；venv 在 `backend/.venv`（Python 3.12）；后端启动须在根目录以 `PYTHONPATH=backend` 运行；Embedding 模型已缓存于 `backend/embedding/onnx/`。
+- **后端测试命令**：`cd backend && ONNX_EMBEDDING_OFFLINE=1 PYTHONPATH=. .venv/bin/python -m pytest tests/<目标测试>.py -v`（全量 `tests/` 含 130+ 文件且部分加载 457MB embedding，开发期优先跑关联测试与 `.github/workflows/backend-tests.yml` 核心集）。
+- **配置与文档守卫**：`backend/tests/test_docs_model_requirements.py` 校验 README、`.env.example` 与 `settings.json`（不得推荐具体模型名、不得保留未注释 `DEFAULT_MODEL=`、900,000 上下文下限需与代码一致）。
+- **i18n 语言解析链**：UI 未登录按 `localStorage → navigator`，登录后服务器偏好覆盖本地（跳转前 `await syncLanguageWithServer()`）；AI 生成语言由 `backend/app/services/language_resolver.py` 控制（`per-generation > 用户设置 > UI 语言 > zh`）；种子目录（预设风格、模板标题、Skill 条目）属内容数据而非界面 chrome。

@@ -1387,6 +1387,8 @@ export interface BookImportPreview {
   warnings: BookImportWarning[];
 }
 
+export type BookImportCareerSystemMode = 'auto' | 'skip' | 'force';
+
 export interface BookImportApplyPayload {
   project_suggestion: BookImportProjectSuggestion;
   chapters: BookImportChapter[];
@@ -1394,6 +1396,8 @@ export interface BookImportApplyPayload {
   import_mode?: 'append' | 'overwrite';
   /** 仅覆盖模式下生效：显式覆盖用户已编辑的文笔画像（默认保护） */
   overwrite_style_profile?: boolean;
+  /** 职业体系生成模式：auto（按题材/原文自动判断）| skip（跳过）| force（强制生成） */
+  career_system_mode?: BookImportCareerSystemMode;
 }
 
 export interface BookImportCreateTaskPayload {

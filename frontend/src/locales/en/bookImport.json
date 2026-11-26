@@ -37,6 +37,10 @@
   },
   "preview": {
     "addonTitle": "Title",
+    "careerModeAuto": "Auto-detect (recommended: only when explicit leveling/ranks exist)",
+    "careerModeForce": "Force generate (try to abstract a career system anyway)",
+    "careerModeSkip": "Skip (for wuxia, romance, mystery, historical, etc.)",
+    "careerSystemModeHint": "Only recommended when the story has explicit cultivation realms, ranks, or progression paths.",
     "cardTitle": "Preview & Correct",
     "chapterLabel": "Chapter {{number}} · {{title}}",
     "chaptersTitle": "Chapters ({{count}})",
@@ -44,6 +48,7 @@
     "chaptersTitle_other": "preview.chaptersTitle",
     "confirmImport": "Confirm Import",
     "empty": "The preview data will appear once parsing is complete",
+    "labelCareerSystemMode": "Career System Generation",
     "labelDescription": "Description",
     "labelGenre": "Genre",
     "labelPerspective": "Narrative Perspective",

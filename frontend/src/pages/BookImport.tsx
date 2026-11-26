@@ -31,6 +31,7 @@ import { resolveImportWarningText } from '../utils/importWarnings';
 import { resolveStepLabel } from '../utils/importStepLabels';
 import type {
   BookImportApplyPayload,
+  BookImportCareerSystemMode,
   BookImportExtractMode,
   BookImportPreview,
   BookImportSkippedChapter,
@@ -58,6 +59,7 @@ type BookImportPageCache = {
   skippedChapters?: BookImportSkippedChapter[];
   extractMode: BookImportExtractMode;
   tailChapterCount: number;
+  careerSystemMode?: BookImportCareerSystemMode;
   cachedAt: number;
 };
 
@@ -131,6 +133,7 @@ export default function BookImport() {
   const [file, setFile] = useState<File | null>(null);
   const [extractMode, setExtractMode] = useState<BookImportExtractMode>('tail');
   const [tailChapterCount, setTailChapterCount] = useState(10);
+  const [careerSystemMode, setCareerSystemMode] = useState<BookImportCareerSystemMode>('auto');
 
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<BookImportTask | null>(null);
@@ -226,6 +229,7 @@ export default function BookImport() {
         setSkippedChapters(readSkippedChapters(cache.skippedChapters));
         setExtractMode(cache.extractMode ?? 'tail');
         setTailChapterCount(cache.tailChapterCount ?? 10);
+        setCareerSystemMode(cache.careerSystemMode ?? 'auto');
         setApplyMessage(
           cache.applyMessage || (cache.applyProgress > 0 && !cache.isApplyComplete
             ? t('msg.restoreHint')
@@ -297,6 +301,7 @@ export default function BookImport() {
       skippedChapters,
       extractMode,
       tailChapterCount,
+      careerSystemMode,
       cachedAt: Date.now(),
     });
   }, [
@@ -311,6 +316,7 @@ export default function BookImport() {
     skippedChapters,
     extractMode,
     tailChapterCount,
+    careerSystemMode,
   ]);
 
   useEffect(() => {
@@ -470,6 +476,7 @@ export default function BookImport() {
       chapters: preview.chapters,
       outlines: preview.outlines,
       import_mode: 'append',
+      career_system_mode: careerSystemMode,
     };
 
     try {
@@ -652,6 +659,7 @@ export default function BookImport() {
     setRetryMessage('');
     setExtractMode('tail');
     setTailChapterCount(10);
+    setCareerSystemMode('auto');
 
     message.success(t('toast.restarted'));
   }, [message, t]);
@@ -1059,6 +1067,22 @@ export default function BookImport() {
                         }) : prev)
                       }
                     />
+                  </Col>
+                  <Col xs={24}>
+                    <Text>{t('preview.labelCareerSystemMode')}</Text>
+                    <Select
+                      style={{ width: '100%' }}
+                      value={careerSystemMode}
+                      onChange={(v) => setCareerSystemMode(v)}
+                      options={[
+                        { value: 'auto', label: t('preview.careerModeAuto') },
+                        { value: 'skip', label: t('preview.careerModeSkip') },
+                        { value: 'force', label: t('preview.careerModeForce') },
+                      ]}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('preview.careerSystemModeHint')}
+                    </Text>
                   </Col>
                 </Row>
               </Card>

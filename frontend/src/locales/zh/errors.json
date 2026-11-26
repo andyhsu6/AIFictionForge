@@ -69,6 +69,7 @@
       "careersInitAi": "💼 正在初始化AI服务...",
       "careersParsing": "💼 正在解析职业数据...",
       "careersPreparingPrompt": "💼 正在准备职业体系提示词...",
+      "careersSkipped": "💼 本作品无需职业体系，已跳过",
       "chaptersImported": "已导入 {{chapters}} 个章节（{{words}}字）",
       "charactersBatch": "👥 AI正在生成角色与组织（第 {{batch}}/{{total}} 批）...",
       "charactersDone": "👥 角色/组织生成完成（{{entities}}个）",

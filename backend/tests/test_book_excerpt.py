@@ -17,8 +17,9 @@ def test_build_excerpt_truncates_per_chapter():
 
     excerpt = svc._build_chapter_excerpt(chs, per_chapter_chars=100)
 
-    assert "甲" * 100 in excerpt
-    assert "乙" * 100 in excerpt
+    assert "……（中段略）……" in excerpt
+    assert "甲" * 50 in excerpt
+    assert "乙" * 50 in excerpt
     assert "甲" * 101 not in excerpt  # 每章被截断
 
 
