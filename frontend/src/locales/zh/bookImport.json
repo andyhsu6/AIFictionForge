@@ -37,11 +37,11 @@
   },
   "preview": {
     "addonTitle": "标题",
+    "cardTitle": "预览修正",
     "careerModeAuto": "自动识别（推荐：仅在原文存在明确修炼/等级/序列体系时生成）",
     "careerModeForce": "强制生成（即使非升级流也尝试抽象职业体系）",
     "careerModeSkip": "跳过生成（传统武侠/言情/悬疑/历史等无体系作品）",
     "careerSystemModeHint": "仅在作品存在明确境界、品阶、异能等级或奇幻职业晋升路径时建议生成职业体系。",
-    "cardTitle": "预览修正",
     "chapterLabel": "第 {{number}} 章 · {{title}}",
     "chaptersTitle": "章节（{{count}}）",
     "confirmImport": "确认导入",
