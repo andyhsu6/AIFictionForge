@@ -393,6 +393,7 @@ async def test_stream_site_raises_enriched_upstream_error(site):
                 {"content": "Hello"},
                 {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}},
                 {"content": " world"},
+                {"done": True, "finish_reason": "stop"},
             ],
         ),
     ],

@@ -897,6 +897,11 @@ export default function Chapters() {
         generateContentLanguageRef.current  // 传递本次生成的内容语言（todo16 仅透传，注入行为在 todo17/19 接入）
       );
 
+      if (!result?.content || !result.content.trim()) {
+        message.error(t('toast.aiCreateFailed', { error: t('label.unknownError') }));
+        return;
+      }
+
       message.success(t('toast.aiCreateSuccess'));
       showStyleCheckWarning(result?.style_check);
 

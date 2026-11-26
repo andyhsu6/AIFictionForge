@@ -1,13 +1,43 @@
 """Gemini 客户端"""
+import json
 from typing import Any, AsyncGenerator, Dict, List, Optional
 import httpx
 from app.services.ai_config import AIClientConfig, default_config
 from app.logger import get_logger
+from app.utils.reasoning_text import sse_data_payload
 # GeminiClient 为独立类（不继承 BaseAIClient），但复用同一增强助手；
 # base_client 不导入本模块，无循环导入风险。
 from .base_client import _enrich_http_status_error
 
 logger = get_logger(__name__)
+
+_GEMINI_BLOCK_REASONS = {
+    "SAFETY",
+    "PROHIBITED_CONTENT",
+    "RECITATION",
+    "BLOCKLIST",
+    "SPII",
+    "IMAGE_SAFETY",
+    "OTHER",
+}
+
+
+def _map_gemini_finish_reason(
+    finish_reason: Optional[str],
+    block_reason: Optional[str] = None,
+) -> Optional[str]:
+    if block_reason:
+        return "content_filter"
+    if not finish_reason:
+        return None
+    upper = str(finish_reason).upper()
+    if upper == "MAX_TOKENS":
+        return "length"
+    if upper in _GEMINI_BLOCK_REASONS:
+        return "content_filter"
+    if upper == "STOP":
+        return "stop"
+    return upper.lower()
 
 
 class GeminiClient:
@@ -99,12 +129,12 @@ class GeminiClient:
         data = response.json()
         
         candidates = data.get("candidates", [])
+        block_reason = (data.get("promptFeedback") or {}).get("blockReason")
         if not candidates or len(candidates) == 0:
-            # 返回空内容而不是报错，保持流程继续
             return {
                 "content": "",
                 "tool_calls": None,
-                "finish_reason": "stop"
+                "finish_reason": _map_gemini_finish_reason(None, block_reason) or "stop",
             }
         
         parts = candidates[0].get("content", {}).get("parts", [])
@@ -112,6 +142,8 @@ class GeminiClient:
         tool_calls = []
         
         for part in parts:
+            if part.get("thought"):
+                continue
             if "text" in part:
                 text += part["text"]
             elif "functionCall" in part:
@@ -126,10 +158,13 @@ class GeminiClient:
         prompt_tokens = usage.get("promptTokenCount")
         completion_tokens = usage.get("candidatesTokenCount")
         total_tokens = usage.get("totalTokenCount")
+        mapped_finish = _map_gemini_finish_reason(
+            candidates[0].get("finishReason"), block_reason
+        )
         return {
             "content": text,
             "tool_calls": tool_calls if tool_calls else None,
-            "finish_reason": "tool_calls" if tool_calls else "stop",
+            "finish_reason": "tool_calls" if tool_calls else (mapped_finish or "stop"),
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -172,6 +207,12 @@ class GeminiClient:
         if tools:
             payload["tools"] = self._convert_tools_to_gemini(tools)
 
+        content_chars = 0
+        reasoning_chars = 0
+        finish_reason: Optional[str] = None
+        block_reason: Optional[str] = None
+        has_tool_calls = False
+
         try:
             async with self.client.stream("POST", url, json=payload) as response:
                 try:
@@ -181,45 +222,75 @@ class GeminiClient:
                     raise await _enrich_http_status_error(e) from e
                 try:
                     async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            import json
-                            try:
-                                data = json.loads(line[6:])
-                                usage = data.get("usageMetadata") or {}
-                                if usage:
-                                    yield {
-                                        "usage": {
-                                            "prompt_tokens": usage.get("promptTokenCount"),
-                                            "completion_tokens": usage.get("candidatesTokenCount"),
-                                            "total_tokens": usage.get("totalTokenCount"),
-                                        }
+                        data_str = sse_data_payload(line)
+                        if data_str is None:
+                            continue
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            usage = data.get("usageMetadata") or {}
+                            if usage:
+                                yield {
+                                    "usage": {
+                                        "prompt_tokens": usage.get("promptTokenCount"),
+                                        "completion_tokens": usage.get("candidatesTokenCount"),
+                                        "total_tokens": usage.get("totalTokenCount"),
                                     }
-                                candidates = data.get("candidates", [])
-                                if candidates and len(candidates) > 0:
-                                    parts = candidates[0].get("content", {}).get("parts", [])
-                                    if parts and len(parts) > 0:
-                                        text = ""
-                                        function_calls = []
-                                        for part in parts:
-                                            if "text" in part:
-                                                text += part["text"]
-                                            elif "functionCall" in part:
-                                                fc = part["functionCall"]
-                                                function_calls.append({
-                                                    "id": f"call_{fc['name']}",
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": fc["name"],
-                                                        "arguments": fc.get("args", {})
-                                                    }
-                                                })
-                                        
-                                        if text:
-                                            yield {"content": text}
-                                        if function_calls:
-                                            yield {"tool_calls": function_calls}
-                            except json.JSONDecodeError:
-                                continue
+                                }
+                            prompt_feedback = data.get("promptFeedback") or {}
+                            if prompt_feedback.get("blockReason"):
+                                block_reason = prompt_feedback.get("blockReason")
+                                finish_reason = _map_gemini_finish_reason(None, block_reason)
+                            candidates = data.get("candidates", [])
+                            if candidates and len(candidates) > 0:
+                                candidate = candidates[0]
+                                mapped = _map_gemini_finish_reason(
+                                    candidate.get("finishReason"), block_reason
+                                )
+                                if mapped:
+                                    finish_reason = mapped
+                                parts = candidate.get("content", {}).get("parts", [])
+                                if parts and len(parts) > 0:
+                                    text = ""
+                                    function_calls = []
+                                    for part in parts:
+                                        if part.get("thought"):
+                                            thought_text = part.get("text") or ""
+                                            reasoning_chars += len(thought_text)
+                                            continue
+                                        if "text" in part:
+                                            text += part["text"]
+                                        elif "functionCall" in part:
+                                            fc = part["functionCall"]
+                                            function_calls.append({
+                                                "id": f"call_{fc['name']}",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": fc["name"],
+                                                    "arguments": fc.get("args", {})
+                                                }
+                                            })
+                                    
+                                    if text:
+                                        content_chars += len(text)
+                                        yield {"content": text}
+                                    if function_calls:
+                                        has_tool_calls = True
+                                        yield {"tool_calls": function_calls}
+                        except json.JSONDecodeError:
+                            continue
+
+                    if not content_chars:
+                        logger.warning(
+                            "Gemini 流式响应结束但正文为空: model=%s reasoning_chars=%s finish_reason=%s block_reason=%s tool_calls=%s",
+                            model,
+                            reasoning_chars,
+                            finish_reason,
+                            block_reason,
+                            has_tool_calls,
+                        )
+                    yield {"done": True, "finish_reason": finish_reason or "stop"}
                 except GeneratorExit:
                     # 生成器被关闭，这是正常的清理过程
                     logger.debug("Gemini 流式响应生成器被关闭(GeneratorExit)")
