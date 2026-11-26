@@ -103,15 +103,92 @@ def _prune_world_facts(raw: Any, cutoff: int) -> tuple[list[dict], int]:
     return kept, dropped
 
 
+def _strip_future_relationship_lines(description: Optional[str], cutoff: int) -> tuple[str, int]:
+    """移除 `[第N章]` 中 N > cutoff 的关系变化行，返回 (新描述, 移除行数)。"""
+    if not description:
+        return "", 0
+    lines = description.splitlines()
+    kept: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("[第"):
+            end_idx = stripped.find("章]")
+            if end_idx > 2:
+                num_str = stripped[2:end_idx]
+                if num_str.isdigit() and int(num_str) > cutoff:
+                    removed += 1
+                    continue
+        kept.append(line)
+    return "\n".join(kept), removed
+
+
+def _parse_chapter_marker(value: Optional[str]) -> Optional[int]:
+    """解析 `'第62章'` 格式的章号；无法解析时返回 None。"""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.startswith("第") and text.endswith("章"):
+        num_str = text[1:-1].strip()
+        if num_str.isdigit():
+            return int(num_str)
+    return None
+
+
+def _rerender_character_fields_from_facts(character: Character, kept_facts: list[dict]) -> None:
+    """事实被裁剪后，按保留事实重渲染非手改的文本字段，防止已删章节剧透留在文本列。"""
+    try:
+        from app.services.profile_facts import filter_org_profile_values, render_profile
+    except Exception:
+        return
+
+    kind = "organization" if getattr(character, "is_organization", False) else "character"
+    rendered = filter_org_profile_values(
+        render_profile(kept_facts, kind=kind),
+        bool(getattr(character, "is_organization", False)),
+    )
+    try:
+        snapshot = json.loads(character.ai_profile_snapshot or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    snapshot_changed = False
+    for field in ("personality", "background", "appearance"):
+        current = getattr(character, field, None)
+        if not current:
+            continue
+        # 若存在快照且与当前值不等，说明用户手改过，保留用户值
+        if field in snapshot and current != snapshot.get(field):
+            continue
+        new_val = rendered.get(field)
+        new_val = new_val.strip() if isinstance(new_val, str) and new_val.strip() else None
+        if current != new_val:
+            setattr(character, field, new_val)
+            if field in snapshot:
+                snapshot[field] = new_val
+                snapshot_changed = True
+
+    if snapshot_changed:
+        character.ai_profile_snapshot = json.dumps(snapshot, ensure_ascii=False)
+
+
 async def clamp_derived_state_after_delete(db: AsyncSession, project_id: str) -> dict[str, int]:
     """把派生状态钳到当前最大存活章；返回本次修正的计数（供日志/测试）。
 
-    只处理有「章节号」语义的字段：
-    - `characters.profile_facts[].chapter_number`
-    - `characters.state_updated_chapter` / `profile_synced_through_chapter`
+    处理范围：
+    - `characters.profile_facts[].chapter_number`（裁剪后同步重渲染未手改的文本列）
+    - `characters.state_updated_chapter` / `profile_synced_through_chapter` / `status_changed_chapter`
     - `characters.current_state`（来源章被删时清空）
-    - `projects.world_profile_synced_through_chapter`
+    - `character_relationships` 中 `[第N章]` 超前行、已删章新建的关系及 `ended_at`
+    - `foreshadows` 中在已删章节被标记为 `resolved` 的伏笔及分析自动埋入的超前伏笔
+    - `projects.world_facts` 与 `projects.world_profile_synced_through_chapter`
     """
+    from app.models.foreshadow import Foreshadow
+    from app.models.relationship import CharacterRelationship
+    from app.services.cascade_cleanup import delete_relationship_links
+
     cutoff = await _max_written_chapter(db, project_id)
     stats = {
         "cutoff": cutoff,
@@ -119,6 +196,8 @@ async def clamp_derived_state_after_delete(db: AsyncSession, project_id: str) ->
         "dropped_world_facts": 0,
         "cleared_state": 0,
         "clamped_markers": 0,
+        "cleaned_relationships": 0,
+        "rolled_back_foreshadows": 0,
     }
 
     characters = (
@@ -139,16 +218,72 @@ async def clamp_derived_state_after_delete(db: AsyncSession, project_id: str) ->
             stats["cleared_state"] += 1
             state_changed = True
 
+        status_changed = False
+        status_chapter = character.status_changed_chapter
+        if status_chapter is not None and int(status_chapter) > cutoff:
+            character.status = "active"
+            character.status_changed_chapter = None
+            stats["clamped_markers"] += 1
+            status_changed = True
+
         synced = character.profile_synced_through_chapter
         if synced is not None and int(synced) > cutoff:
             synced = cutoff
             stats["clamped_markers"] += 1
 
-        if dropped or state_changed or synced != character.profile_synced_through_chapter:
-            character.profile_facts = json.dumps(kept, ensure_ascii=False)
-            character.current_state = current_state
-            character.state_updated_chapter = state_chapter
+        if dropped or state_changed or status_changed or synced != character.profile_synced_through_chapter:
+            if dropped:
+                character.profile_facts = json.dumps(kept, ensure_ascii=False)
+                _rerender_character_fields_from_facts(character, kept)
+            if state_changed:
+                character.current_state = current_state
+                character.state_updated_chapter = state_chapter
             character.profile_synced_through_chapter = synced
+
+    # 清理关系表中的超前章节行与已删章节标记
+    relationships = (
+        await db.execute(
+            select(CharacterRelationship).where(CharacterRelationship.project_id == project_id)
+        )
+    ).scalars().all()
+    rels_to_delete: list[str] = []
+    for rel in relationships:
+        new_desc, removed_lines = _strip_future_relationship_lines(rel.description, cutoff)
+        ended_ch = _parse_chapter_marker(rel.ended_at)
+        ended_future = ended_ch is not None and ended_ch > cutoff
+        if removed_lines and not new_desc.strip() and (rel.source or "") == "analysis":
+            rels_to_delete.append(rel.id)
+            await db.delete(rel)
+            stats["cleaned_relationships"] += 1
+            continue
+        if removed_lines or ended_future:
+            if removed_lines:
+                rel.description = new_desc
+            if ended_future:
+                rel.status = "active"
+                rel.ended_at = None
+            stats["cleaned_relationships"] += 1
+    if rels_to_delete:
+        await delete_relationship_links(db, rels_to_delete)
+
+    # 回滚在已删章节被回收的伏笔，并删除分析来源的超前伏笔
+    foreshadows = (
+        await db.execute(select(Foreshadow).where(Foreshadow.project_id == project_id))
+    ).scalars().all()
+    for fs in foreshadows:
+        plant_ch = fs.plant_chapter_number
+        resolve_ch = fs.actual_resolve_chapter_number
+        if plant_ch is not None and int(plant_ch) > cutoff and (fs.source_type or "") == "analysis":
+            await db.delete(fs)
+            stats["rolled_back_foreshadows"] += 1
+            continue
+        if resolve_ch is not None and int(resolve_ch) > cutoff:
+            fs.status = "planted"
+            fs.actual_resolve_chapter_id = None
+            fs.actual_resolve_chapter_number = None
+            fs.resolved_at = None
+            fs.resolution_notes = None
+            stats["rolled_back_foreshadows"] += 1
 
     project = (
         await db.execute(select(Project).where(Project.id == project_id))
@@ -168,15 +303,19 @@ async def clamp_derived_state_after_delete(db: AsyncSession, project_id: str) ->
         or stats["dropped_world_facts"]
         or stats["cleared_state"]
         or stats["clamped_markers"]
+        or stats["cleaned_relationships"]
+        or stats["rolled_back_foreshadows"]
     ):
         logger.info(
             "派生状态已钳制到第 %s 章：丢弃角色事实 %s 条、世界设定事实 %s 条、"
-            "清空状态 %s 个、钳制标记 %s 处",
+            "清空状态 %s 个、钳制标记 %s 处、清理关系 %s 条、回滚伏笔 %s 条",
             cutoff,
             stats["dropped_facts"],
             stats["dropped_world_facts"],
             stats["cleared_state"],
             stats["clamped_markers"],
+            stats["cleaned_relationships"],
+            stats["rolled_back_foreshadows"],
         )
     return stats
 

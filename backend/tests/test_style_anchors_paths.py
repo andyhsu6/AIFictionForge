@@ -283,7 +283,10 @@ def seed(env: _Env, *, chapter_2_content: str = "") -> int:
 def _assert_generation_injected(system_prompt: str | None) -> None:
     """生成路径公共断言：风格包装仍在，锚点块追加在风格正文之后。"""
     assert system_prompt, "system_prompt 未注入（style_content 可能为空）"
-    assert STYLE_SYSTEM_HEADER in system_prompt
+    assert (
+        STYLE_SYSTEM_HEADER in system_prompt
+        or "【🎨 本书写作风格要求 - 最高优先级】" in system_prompt
+    )
     assert STYLE_CONTENT in system_prompt
     assert ANCHOR_HEADER in system_prompt
     assert MARKER_A in system_prompt

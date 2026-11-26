@@ -889,6 +889,18 @@ _RENDERED_RARE_AI_RE = re.compile(
     r"(?:原文极少/几乎不出现（切勿滥用）|Rare/absent in original \(avoid overusing\))[：:]\s*(.+)",
     re.IGNORECASE,
 )
+_RENDERED_SIGNATURE_WORDS_RE = re.compile(
+    r"作者高频语感词[^：:]*[：:]\s*(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_ENDING_HABITS_RE = re.compile(
+    r"(?:标点与章尾习惯|Punctuation & endings)[：:]\s*(.+)",
+    re.IGNORECASE,
+)
+_RENDERED_DO_SECTION_RE = re.compile(
+    r"##\s*(?:必须做到|Must do)\s*\n(.*?)(?=\n##\s|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def extract_rendered_impression(style_content: str) -> str:
@@ -905,6 +917,33 @@ def extract_rendered_rare_markers(style_content: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def extract_rendered_signature_words(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「作者高频语感词」行（未命中返回空串）。"""
+    match = _RENDERED_SIGNATURE_WORDS_RE.search(style_content or "")
+    return match.group(1).strip() if match else ""
+
+
+def extract_rendered_ending_habits(style_content: str) -> str:
+    """从 v2 渲染的画像正文中提取「标点与章尾习惯」行（未命中返回空串）。"""
+    match = _RENDERED_ENDING_HABITS_RE.search(style_content or "")
+    return match.group(1).strip() if match else ""
+
+
+def extract_rendered_do_items(style_content: str, limit: int = 4) -> list[str]:
+    """从渲染后的画像正文中提取「必须做到」条目（用于近因尾块强化）。"""
+    match = _RENDERED_DO_SECTION_RE.search(style_content or "")
+    if not match:
+        return []
+    items: list[str] = []
+    for raw_line in match.group(1).splitlines():
+        line = re.sub(r"^\s*(?:\d+[.、)）]|[-*•])\s*", "", raw_line).strip()
+        if line:
+            items.append(line)
+        if len(items) >= limit:
+            break
+    return items
+
+
 def style_content_language(style_content: str) -> str:
     """画像正文用的语言（渲染器只有 zh/en 两套措辞，据此判定尾块语言）。"""
     text = style_content or ""
@@ -917,18 +956,26 @@ def render_style_tail_block(
     *,
     impression: str = "",
     rare_markers: str = "",
+    signature_words: str = "",
+    do_items: Optional[list[str]] = None,
+    ending_habits: str = "",
 ) -> str:
     """生成贴在用户提示词末尾的「写作规格」块；无指标且无印象时返回空串。"""
     avg = metrics.get("avg_sentence_chars")
     has_metrics = bool(avg and avg > 0)
     imp = (impression or "").strip()
     rare = (rare_markers or "").strip()
+    sig = (signature_words or "").strip()
+    dos = [item.strip().rstrip("。.") for item in (do_items or []) if isinstance(item, str) and item.strip()]
+    endings = (ending_habits or "").strip()
     if not has_metrics and not imp:
         return ""
     short = metrics.get("short_sentence_ratio")
     dialogue = metrics.get("dialogue_ratio")
+    para_p50 = metrics.get("paragraph_chars_p50")
+    short_paragraphs_native = para_p50 is not None and para_p50 <= 45
     en = (language or "zh").lower().startswith("en")
-    is_v2 = bool(imp or rare)
+    is_v2 = bool(imp or rare or sig or dos or endings)
 
     if en:
         if is_v2:
@@ -943,16 +990,24 @@ def render_style_tail_block(
                 else:
                     rhythm_desc = "varied sentence lengths flowing naturally between narration and dialogue"
                 lines.append(f"Prose rhythm: {rhythm_desc} (never count characters or force quotas).")
+            if dos:
+                lines.append("Key craft habits: " + "; ".join(dos[:4]) + ".")
             hard = [
-                "let paragraph and sentence rhythm follow the scene; do not spam forced one-line paragraphs",
+                (
+                    "keep paragraphs compact and brisk as in the original rather than forcing long blocks"
+                    if short_paragraphs_native
+                    else "let paragraph and sentence rhythm follow the scene; do not spam forced one-line paragraphs"
+                ),
                 "avoid essay-like thesis/antithesis summaries or brooding-window endings",
             ]
-            if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+            if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and not short_paragraphs_native:
                 hard.append("do not build narrative paragraphs out of clipped short sentences")
             if rare:
                 hard.append(f"do not overuse markers absent from the original ({rare})")
             lines.append("Hard requirements: " + "; ".join(hard) + ".")
             lines.append("Ending: prefer a single line of dialogue or one concrete action, keeping the final line natural; never close on a scenery beat followed by a summary of how someone feels about it.")
+            if endings:
+                lines.append(f"Punctuation & endings reference: {endings}.")
             lines.append("Time anchor: this chapter follows the previous one; events from the last two or three chapters are not 'years ago'.")
             lines.append("Relationships: treat the character section as the source of truth; a claimed relationship is not a fact and kinship must not be swapped.")
             return "\n".join(lines)
@@ -980,26 +1035,39 @@ def render_style_tail_block(
         if imp:
             lines.append(f"语感总锚点：{imp}")
         if has_metrics:
-            if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+            if avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and short_paragraphs_native:
+                rhythm_line = "段落切分紧凑短促（单句或两三句成段），句式随情境在逻辑长复句推演与短促动作/对话间弹性切换"
+            elif avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
                 rhythm_line = "以连贯中长复句顺叙铺陈为主，随场景在叙述与对话间自如切换，不靠碎句堆砌节奏"
             elif avg <= 17.0:
                 rhythm_line = "以短促利落句式快速推进，随场景灵活调节叙述与对话密度"
             else:
                 rhythm_line = "长短句错落推进，叙述与对话均衡衔接，随情节起伏而不机械凑数"
             lines.append(f"行文节奏：{rhythm_line}。")
+        if sig:
+            lines.append(f"保留语感词：自然保留本书高频语感词（{sig}），切勿因去 AI 味而刻意删改。")
+        if dos:
+            lines.append("写作要点：" + "；".join(dos[:4]) + "。")
         hard = [
-            "段落长短以情节推进为准，不得刻意拆成满屏单句碎段",
+            (
+                "遵循原著短促紧凑的分段习惯，不强行合并成大段说教"
+                if short_paragraphs_native
+                else "段落长短以情节推进为准，不得刻意拆成满屏单句碎段"
+            ),
             "禁止议论文式对仗总结（如“一半是…一半是…”“这意味着…”）",
         ]
-        if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD:
+        if has_metrics and avg >= SHORT_SENTENCE_ADVICE_AVG_THRESHOLD and not short_paragraphs_native:
             hard.append("叙事段落以连贯复句推进，不得靠短句堆砌装深沉")
         if rare:
             hard.append(f"禁止滥用原文几乎不出现的 AI 惯用痕迹（{rare}）")
         lines.append("核心底线：" + "；".join(hard) + "。")
-        lines.append(
+        ending_line = (
             "结尾：优先用一句自然对话、具体动作或情节悬念收束；"
             "不要用“熄灯独坐/回头远望 + 哲理感慨/装酷台词”的电影分镜式收尾。"
         )
+        if endings:
+            ending_line += f"（全书习惯参考：{endings}）"
+        lines.append(ending_line)
         lines.append("时间锚点：本章紧接上一章；最近两三章内发生的事不得写成“当年”“多年前”。")
         lines.append("人物关系：以「角色信息」为准；文中“自称/声称”的关系不得当作事实，亲属关系不得调换。")
         return "\n".join(lines)

@@ -361,16 +361,33 @@ async def load_style_anchor_fragments(
     # 同视角分组在前；组内按目标章之前最近→更远；同章按 order_index
     candidates.sort(key=lambda item: (0 if item[0] else 1, -item[1], item[2]))
 
+    # 跨章节分散优先：第一轮每章最多取 1 条，避免所有锚点挤在同一章导致场景偏科；
+    # 若不同章节的合格候选不足 count，第二轮再按原优先级从剩余候选中补齐。
+    ordered_candidates: list[tuple[bool, int, int, str]] = []
+    deferred_candidates: list[tuple[bool, int, int, str]] = []
+    used_chapters: set[int] = set()
+    for item in candidates:
+        chapter_no = item[1]
+        if chapter_no not in used_chapters:
+            used_chapters.add(chapter_no)
+            ordered_candidates.append(item)
+        else:
+            deferred_candidates.append(item)
+    ordered_candidates.extend(deferred_candidates)
+
     selected: list[str] = []
     used = 0
-    for _, _, _, fragment in candidates:
+    for _, _, _, fragment in ordered_candidates:
         if len(selected) >= count:
             break
         remaining = char_budget - used
         if remaining <= 0:
             break
         if len(fragment) > remaining:
-            fragment = fragment[:remaining]
+            # 优先对齐到完整句末标点或换行，避免在半句话中间硬截断
+            cuts = _cut_positions(fragment)
+            safe_cut = next((cut for cut in reversed(cuts) if 40 <= cut <= remaining), None)
+            fragment = fragment[:safe_cut] if safe_cut is not None else fragment[:remaining]
         if len(fragment.strip()) < 20:
             continue
         selected.append(fragment)

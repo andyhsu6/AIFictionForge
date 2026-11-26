@@ -141,6 +141,7 @@ class OneToManyContext:
     chapter_outline: str = ""           # 本章大纲（从expansion_plan构建）
     recent_chapters_context: Optional[str] = None  # 最近10章expansion_plan摘要
     full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
+    world_context: Optional[str] = None      # 世界观与力量体系硬边界
     continuation_point: Optional[str] = None  # 衔接锚点（上一章完整正文）
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     previous_chapter_events: Optional[List[str]] = None  # 上一章关键事件
@@ -174,7 +175,7 @@ class OneToManyContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point',
-                          'full_book_context', 'chapter_characters', 'chapter_careers',
+                          'full_book_context', 'world_context', 'chapter_characters', 'chapter_careers',
                           'relevant_memories', 'foreshadow_reminders',
                           'previous_chapter_summary']:
             value = getattr(self, field_name, None)
@@ -213,6 +214,7 @@ class OneToOneContext:
     # === P1-重要信息 ===
     recent_chapters_context: Optional[str] = None  # 最近N章剧情摘要
     full_book_context: Optional[str] = None  # Tier3 全书注入（1M上下文利用）
+    world_context: Optional[str] = None      # 世界观与力量体系硬边界
     continuation_point: Optional[str] = None  # 上一章完整正文
     previous_chapter_summary: Optional[str] = None  # 上一章剧情摘要
     chapter_characters: str = ""        # 从structure.characters获取
@@ -229,7 +231,7 @@ class OneToOneContext:
         """计算总上下文长度"""
         total = 0
         for field_name in ['chapter_outline', 'recent_chapters_context', 'continuation_point', 'previous_chapter_summary',
-                          'full_book_context', 'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
+                          'full_book_context', 'world_context', 'chapter_characters', 'chapter_careers', 'foreshadow_reminders',
                           'relevant_memories']:
             value = getattr(self, field_name, None)
             if value:
@@ -255,6 +257,32 @@ def _require_full_book_budget_chars(value: Any) -> int:
             f"full_book_budget_chars 必须是正整数（0 不再是「禁用全书注入」语义），收到 {value!r}"
         )
     return value
+
+
+def _build_world_context(
+    project: Project,
+    *,
+    max_rules_chars: int = 1200,
+    max_extra_chars: int = 240,
+) -> Optional[str]:
+    """构建精简版世界观与力量边界上下文（供章节正文生成近因注入，防止题材越界）。"""
+    parts: List[str] = []
+    rules = (getattr(project, "world_rules", None) or "").strip()
+    if rules:
+        parts.append(f"世界规则与力量体系：{rules[:max_rules_chars]}")
+    atmosphere = (getattr(project, "world_atmosphere", None) or "").strip()
+    if atmosphere:
+        parts.append(f"氛围基调：{atmosphere[:max_extra_chars]}")
+    location = (getattr(project, "world_location", None) or "").strip()
+    if location:
+        parts.append(f"主要地理：{location[:max_extra_chars]}")
+    time_period = (getattr(project, "world_time_period", None) or "").strip()
+    if time_period:
+        parts.append(f"时代背景：{time_period[:max_extra_chars]}")
+    if not parts:
+        return None
+    parts.append("硬边界：所有武学、异象与冲突必须严格落在上述世界规则与体系内，严禁引入超出本世界观的设定或跨题材词汇。")
+    return "\n".join(parts)
 
 
 def _build_full_book_context(
@@ -493,6 +521,9 @@ class OneToManyContextBuilder:
             budget_chars=self.full_book_budget_chars,
         )
         logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        context.world_context = _build_world_context(project)
+        if context.world_context:
+            logger.info(f"  ✅ 世界观规则: {len(context.world_context)}字符")
         
         # === 衔接锚点（上一章完整正文 + 摘要）===
         if chapter_number == 1:
@@ -1363,6 +1394,9 @@ class OneToOneContextBuilder:
             budget_chars=self.full_book_budget_chars,
         )
         logger.info(f"  ✅ 全书注入: {len(context.full_book_context or '')}字符")
+        context.world_context = _build_world_context(project)
+        if context.world_context:
+            logger.info(f"  ✅ 世界观规则: {len(context.world_context)}字符")
 
         # 1. 获取上一章完整正文和上一章摘要
         if chapter_number > 1:
@@ -1428,7 +1462,8 @@ class OneToOneContextBuilder:
                     db=db,
                     project_id=project.id,
                     characters=characters,
-                    filter_character_names=character_names
+                    filter_character_names=character_names,
+                    target_chapter=chapter_number,
                 )
                 context.chapter_characters = characters_info
                 context.chapter_careers = careers_info
@@ -1624,7 +1659,8 @@ class OneToOneContextBuilder:
         db: AsyncSession,
         project_id: str,
         characters: list,
-        filter_character_names: Optional[list] = None
+        filter_character_names: Optional[list] = None,
+        target_chapter: Optional[int] = None,
     ) -> tuple[str, Optional[str]]:
         """
         构建角色信息和职业信息（1-1模式专用）
@@ -1729,6 +1765,9 @@ class OneToOneContextBuilder:
             if c.background:
                 background_preview = c.background[:150] if len(c.background) > 150 else c.background
                 info_lines.append(f"  背景: {background_preview}")
+            _append_current_state_lines(
+                info_lines, c, target_chapter=target_chapter
+            )
             
             # === 职业信息（完整数据）===
             if char_id in char_career_relations:

@@ -771,10 +771,27 @@ export interface WritingStyleUpdate {
 }
 
 // issue #254 P1：重新抽取本书文笔画像（dry_run 预览 diff / 正式应用）
+export interface StyleProfileRange {
+  chapter: number;
+  start: number;
+  end: number;
+}
+
+export interface StyleProfileApplyPayload {
+  new_prompt_content: string;
+  new_profile: Record<string, unknown>;
+  description?: string;
+  confidence?: number | null;
+  degraded?: boolean;
+  profile_version?: number | null;
+  ranges?: StyleProfileRange[] | null;
+}
+
 export interface StyleProfileReextractRequest {
   dry_run?: boolean;
   overwrite_edited?: boolean;
   set_default?: boolean;
+  apply_profile?: StyleProfileApplyPayload;
 }
 
 export interface StyleProfileReextractResult {
@@ -782,7 +799,7 @@ export interface StyleProfileReextractResult {
   changed?: boolean;
   updated?: boolean;
   style_id?: number | null;
-  kept_reason?: 'user_edited' | null;
+  kept_reason?: 'user_edited' | 'degraded_fallback' | null;
   old_prompt_content?: string | null;
   new_prompt_content?: string;
   old_profile?: Record<string, unknown> | null;
@@ -790,6 +807,8 @@ export interface StyleProfileReextractResult {
   description?: string;
   confidence?: number | null;
   degraded?: boolean;
+  profile_version?: number | null;
+  ranges?: StyleProfileRange[] | null;
 }
 
 // 分卷画像（计划 §13-3）：每卷一幅画像，卷序号从 1 开始按提交顺序排列

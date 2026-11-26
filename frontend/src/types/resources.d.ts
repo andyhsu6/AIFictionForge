@@ -4159,6 +4159,7 @@ export default interface Resources {
       "generateFullSuccess": "已生成全书文笔画像并设为默认",
       "generatedAt": "生成时间",
       "keptByUser": "检测到你已手动编辑过画像，未覆盖；如需覆盖请勾选“覆盖我的手动编辑”",
+      "keptDegraded": "本次抽取已降级为本地统计，为避免覆盖现有 AI 画像，已保留原画像；请稍后重试",
       "metrics": {
         "avgSentence": "平均句长（字）",
         "dialogueRatio": "对话占比",

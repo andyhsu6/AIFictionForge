@@ -89,6 +89,7 @@
     "generateFullFailed": "Failed to generate the book-wide profile",
     "generateFullSuccess": "Book-wide profile generated and set as default",
     "keptByUser": "Your manual edits were detected, so nothing was overwritten. Check “Overwrite my manual edits” to force it.",
+    "keptDegraded": "Extraction fell back to local statistics; your existing AI profile was kept to avoid overwriting it. Please retry later.",
     "metrics": {
       "avgSentence": "Avg. sentence length (chars)",
       "dialogueRatio": "Dialogue ratio",

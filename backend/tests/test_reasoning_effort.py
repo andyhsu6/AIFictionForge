@@ -445,3 +445,102 @@ async def test_call_with_json_retry_forwards_reasoning_effort_and_retries_503(mo
     assert seen[0]["reasoning_effort"] == "low"
     assert seen[1]["reasoning_effort"] == "low"
     assert seen[1]["prompt"] == "原始任务"
+
+
+@pytest.mark.anyio
+async def test_call_with_json_retry_retries_transport_disconnect(monkeypatch):
+    """上游流式断连（httpx.RemoteProtocolError）应退避重试且保留原 prompt。"""
+    from unittest.mock import AsyncMock
+    from app.services import ai_service as ai_service_module
+
+    monkeypatch.setattr(ai_service_module.asyncio, "sleep", AsyncMock())
+    svc = ai_service_module.AIService(
+        api_provider="gemini",
+        api_key="test-key",
+        api_base_url="https://example.com/v1beta",
+        default_model="gemini-2.5-flash",
+    )
+    seen = []
+
+    async def _fake_stream(*, prompt, finish_sink=None, **kwargs):
+        seen.append(prompt)
+        if len(seen) == 1:
+            req = httpx.Request("POST", "https://example.com/v1beta/models/gemini:streamGenerateContent")
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=req)
+        if finish_sink is not None:
+            finish_sink["finish_reason"] = "stop"
+        yield '{"ok": true}'
+
+    svc.generate_text_stream = _fake_stream
+    result = await svc.call_with_json_retry(
+        prompt="原始任务",
+        max_retries=3,
+        auto_mcp=False,
+        reasoning_effort="low",
+    )
+    assert result == {"ok": True}
+    assert seen == ["原始任务", "原始任务"]
+
+
+@pytest.mark.anyio
+async def test_call_with_json_retry_discards_partial_chunks_and_respects_max_retries(monkeypatch):
+    """半途断连丢弃残留分片、耗尽重试抛出原异常，且 401 非瞬时错误不重试。"""
+    from unittest.mock import AsyncMock
+    from app.services import ai_service as ai_service_module
+
+    monkeypatch.setattr(ai_service_module.asyncio, "sleep", AsyncMock())
+    svc = ai_service_module.AIService(
+        api_provider="gemini",
+        api_key="test-key",
+        api_base_url="https://example.com/v1beta",
+        default_model="gemini-2.5-flash",
+    )
+
+    # 1. 第 1 次吐出半截 JSON 后断连，第 2 次重发必须丢弃前缀残留
+    attempts = 0
+
+    async def _partial_then_ok(*, finish_sink=None, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            yield '{"bad_prefix": '
+            req = httpx.Request("POST", "https://example.com/v1beta/models/gemini:streamGenerateContent")
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=req)
+        if finish_sink is not None:
+            finish_sink["finish_reason"] = "stop"
+        yield '{"clean": true}'
+
+    svc.generate_text_stream = _partial_then_ok
+    assert await svc.call_with_json_retry(prompt="任务", max_retries=3, auto_mcp=False) == {"clean": True}
+    assert attempts == 2
+
+    # 2. 连续断连耗尽 max_retries 正常抛出 RemoteProtocolError
+    fail_attempts = 0
+
+    async def _always_disconnect(**kwargs):
+        nonlocal fail_attempts
+        fail_attempts += 1
+        req = httpx.Request("POST", "https://example.com/v1beta/models/gemini:streamGenerateContent")
+        raise httpx.RemoteProtocolError("Server disconnected", request=req)
+        yield ""  # pragma: no cover
+
+    svc.generate_text_stream = _always_disconnect
+    with pytest.raises(httpx.RemoteProtocolError):
+        await svc.call_with_json_retry(prompt="任务", max_retries=2, auto_mcp=False)
+    assert fail_attempts == 2
+
+    # 3. 401 非瞬时错误不重试
+    auth_attempts = 0
+
+    async def _unauthorized(**kwargs):
+        nonlocal auth_attempts
+        auth_attempts += 1
+        req = httpx.Request("POST", "https://example.com/v1beta/models/gemini:streamGenerateContent")
+        resp = httpx.Response(401, request=req)
+        raise httpx.HTTPStatusError("401 Unauthorized", request=req, response=resp)
+        yield ""  # pragma: no cover
+
+    svc.generate_text_stream = _unauthorized
+    with pytest.raises(httpx.HTTPStatusError):
+        await svc.call_with_json_retry(prompt="任务", max_retries=3, auto_mcp=False)
+    assert auth_attempts == 1
