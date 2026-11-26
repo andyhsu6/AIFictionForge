@@ -46,9 +46,12 @@ from app.models.background_task import BackgroundTask
 from app.services.cascade_cleanup import delete_chapter_children
 from app.services.style_anchors import ANCHOR_HEADER, append_project_style_anchors
 from app.services.style_profile import (
+    extract_rendered_do_items,
+    extract_rendered_ending_habits,
     extract_rendered_impression,
     extract_rendered_metrics,
     extract_rendered_rare_markers,
+    extract_rendered_signature_words,
     profile_preset_id,
     render_style_tail_block,
     style_content_language,
@@ -159,6 +162,19 @@ def _append_full_book_context(prompt: str, full_book_context: Optional[str]) -> 
         + "【全书剧情上下文 - 保持角色、设定与已发生剧情一致性】\n"
         + full_book_context
         + "\n</full_book_context>"
+    )
+
+
+def _append_world_context(prompt: str, world_context: Optional[str]) -> str:
+    """把世界观规则与力量体系硬边界追加到生成 prompt（近因位置，防跨题材越界）。"""
+    if not world_context:
+        return prompt
+    return (
+        prompt
+        + "\n\n<world_rules priority=\"P0\">\n"
+        + "【世界规则与力量边界 - 必须严格遵守】\n"
+        + world_context
+        + "\n</world_rules>"
     )
 
 
@@ -583,11 +599,17 @@ def _append_style_tail(
     language = style_content_language(text)
     impression = extract_rendered_impression(text)
     rare_markers = extract_rendered_rare_markers(text)
+    signature_words = extract_rendered_signature_words(text)
+    do_items = extract_rendered_do_items(text)
+    ending_habits = extract_rendered_ending_habits(text)
     block = render_style_tail_block(
         metrics,
         language=language,
         impression=impression,
         rare_markers=rare_markers,
+        signature_words=signature_words,
+        do_items=do_items,
+        ending_habits=ending_habits,
     )
     if not block and ("文笔画像" in text or "style profile" in text.lower()):
         # 有画像却取不到指标 = 渲染措辞与正则脱节，尾块会静默消失（回到被上下文稀释的
@@ -1072,7 +1094,8 @@ async def update_chapter(
                 except Exception as e:
                     logger.warning(f"⚠️ 清理伏笔数据失败: {str(e)}")
                 
-                logger.info(f"🗑️ 章节 {chapter_id[:8]} 内容已清空，已清理分析、记忆和伏笔数据")
+                await clamp_derived_state_after_delete(db, chapter.project_id)
+                logger.info(f"🗑️ 章节 {chapter_id[:8]} 内容已清空，已清理分析、记忆、伏笔及派生状态数据")
     
     await db.commit()
     await db.refresh(chapter)
@@ -1262,7 +1285,8 @@ async def build_characters_info_with_careers(
     db: AsyncSession,
     project_id: str,
     characters: list[Character],
-    filter_character_names: Optional[list[str]] = None
+    filter_character_names: Optional[list[str]] = None,
+    target_chapter: Optional[int] = None
 ) -> str:
     """
     构建包含职业信息的角色上下文
@@ -1398,6 +1422,9 @@ async def build_characters_info_with_careers(
         entity_type = '组织' if c.is_organization else '角色'
         status_marker = ""
         char_status = getattr(c, 'status', None) or 'active'
+        status_changed_ch = getattr(c, 'status_changed_chapter', None)
+        if target_chapter is not None and status_changed_ch is not None and status_changed_ch > target_chapter:
+            char_status = 'active'
         if char_status != 'active':
             STATUS_MARKERS = {
                 'deceased': '💀已死亡',
@@ -1462,7 +1489,11 @@ async def build_characters_info_with_careers(
         
         # 心理状态（由章节分析自动更新）
         state_str = ""
-        if c.current_state:
+        if c.current_state and (
+            target_chapter is None
+            or c.state_updated_chapter is None
+            or c.state_updated_chapter <= target_chapter
+        ):
             state_preview = c.current_state[:50] if len(c.current_state) > 50 else c.current_state
             state_str = f" | 当前状态: {state_preview}"
             if c.state_updated_chapter:
@@ -1783,7 +1814,8 @@ async def _analyze_chapter_background_impl(
             db=db_session,
             project_id=project_id,
             characters=project_characters,
-            filter_character_names=filter_character_names
+            filter_character_names=filter_character_names,
+            target_chapter=chapter.chapter_number
         )
         logger.info(f"📋 后台分析 - 已获取{len(project_characters)}个角色信息用于分析")
         
@@ -2459,7 +2491,7 @@ async def generate_chapter_content_stream(
                             previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
                             recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
@@ -2478,7 +2510,7 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
@@ -2507,7 +2539,7 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             previous_chapter_summary=previous_summary,
                             recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -2529,19 +2561,23 @@ async def generate_chapter_content_stream(
                             genre=project.genre or '未设定',
                             narrative_perspective=chapter_perspective,
                             characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                            chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                            chapter_careers=chapter_context.chapter_careers or '',
                             foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                             relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                             content_language=generation_language
                         )
                         logger.debug(f"创建第一章提示词完成: prompt_length={len(base_prompt)}")
                 
+                if not chapter_context.chapter_careers:
+                    base_prompt = PromptService.strip_empty_career_section(base_prompt)
+
                 # 应用写作风格
                 if style_content:
                     prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
                 else:
                     prompt = base_prompt
                 prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+                prompt = _append_world_context(prompt, chapter_context.world_context)
                 
                 # === 准备阶段 ===
                 yield await tracker.preparing("准备AI提示词...")
@@ -2698,7 +2734,14 @@ async def generate_chapter_content_stream(
                         budget_attempts=[calculated_max_tokens],
                     )
                     logger.error(f"❌ {budget_error}")
-                    yield await tracker.error(budget_error, error_code="task.failed")
+                    if finish_reason == "content_filter" and not full_content.strip():
+                        yield await tracker.error(
+                            budget_error,
+                            error_code="ai.content_filtered",
+                            params={"finish_reason": finish_reason},
+                        )
+                    else:
+                        yield await tracker.error(budget_error, error_code="task.failed")
                     return
                 
                 # 篇幅补足：模型正常收尾但没写够（低/中档位常见），补一轮再落库
@@ -2840,15 +2883,8 @@ async def generate_chapter_content_stream(
                 break  # 退出async for db_session循环
         
         except GeneratorExit:
-            # SSE连接断开
+            # SSE连接断开（get_db 生成器的 finally 会负责回滚与关闭会话）
             logger.warning("章节生成器被提前关闭（SSE断开）")
-            if db_session and not db_committed:
-                try:
-                    if db_session.in_transaction():
-                        await db_session.rollback()
-                        logger.info("章节生成事务已回滚（GeneratorExit）")
-                except Exception as e:
-                    logger.error(f"GeneratorExit回滚失败: {str(e)}")
         except Exception as e:
             logger.error(f"流式创作章节失败: {str(e)}")
             if db_session and not db_committed:
@@ -2859,24 +2895,6 @@ async def generate_chapter_content_stream(
                 except Exception as rollback_error:
                     logger.error(f"回滚失败: {str(rollback_error)}")
             yield await tracker.error_from_exception(e, str(e))
-        finally:
-            # 确保数据库会话被正确关闭
-            if db_session:
-                try:
-                    # 最后检查：确保没有未提交的事务
-                    if not db_committed and db_session.in_transaction():
-                        await db_session.rollback()
-                        logger.warning("在finally中发现未提交事务，已回滚")
-                    
-                    await db_session.close()
-                    logger.info("数据库会话已关闭")
-                except Exception as close_error:
-                    logger.error(f"关闭数据库会话失败: {str(close_error)}")
-                    # 强制关闭
-                    try:
-                        await db_session.close()
-                    except Exception:
-                        pass
     
     return create_sse_response(event_generator())
 
@@ -3384,7 +3402,7 @@ async def _run_chapter_generation_bg(
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '（无上一章摘要）',
                 recent_chapters_context=chapter_context.recent_chapters_context or '暂无最近章节摘要',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -3401,7 +3419,7 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -3421,7 +3439,7 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=previous_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -3440,11 +3458,14 @@ async def _run_chapter_generation_bg(
                 genre=project.genre or '未设定',
                 narrative_perspective=chapter_perspective,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
             )
+
+    if not chapter_context.chapter_careers:
+        base_prompt = PromptService.strip_empty_career_section(base_prompt)
 
     # 应用写作风格
     if style_content:
@@ -3452,6 +3473,7 @@ async def _run_chapter_generation_bg(
     else:
         prompt = base_prompt
     prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+    prompt = _append_world_context(prompt, chapter_context.world_context)
 
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
@@ -5241,7 +5263,7 @@ async def generate_single_chapter_for_batch(
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 previous_chapter_content=chapter_context.continuation_point,
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 previous_chapter_summary=chapter_context.previous_chapter_summary or '',
@@ -5261,7 +5283,7 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
@@ -5290,7 +5312,7 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 previous_chapter_summary=final_prev_summary,
                 recent_chapters_context=chapter_context.recent_chapters_context or '',
@@ -5310,18 +5332,22 @@ async def generate_single_chapter_for_batch(
                 genre=project.genre or '未设定',
                 narrative_perspective=temp_narrative_perspective or project.narrative_perspective or '第三人称',
                 characters_info=chapter_context.chapter_characters or '暂无角色信息',
-                chapter_careers=chapter_context.chapter_careers or '暂无职业信息',
+                chapter_careers=chapter_context.chapter_careers or '',
                 foreshadow_reminders=chapter_context.foreshadow_reminders or '暂无需要关注的伏笔',
                 relevant_memories=chapter_context.relevant_memories or '暂无相关记忆',
                 content_language=generation_language
             )
     
+    if not chapter_context.chapter_careers:
+        base_prompt = PromptService.strip_empty_career_section(base_prompt)
+
     # 应用写作风格
     if style_content:
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
     prompt = _append_full_book_context(prompt, chapter_context.full_book_context)
+    prompt = _append_world_context(prompt, chapter_context.world_context)
     
     # 🎨 将写作风格 / Skill 注入到系统提示词（批量生成，文笔画像优先于 Skill）
     system_prompt_with_style = _build_generation_system_prompt(
@@ -5650,7 +5676,8 @@ async def regenerate_chapter_stream(
                 db=temp_db,
                 project_id=chapter.project_id,
                 characters=characters,
-                filter_character_names=filter_character_names
+                filter_character_names=filter_character_names,
+                target_chapter=chapter.chapter_number
             )
             
             # 获取章节大纲（优先使用 chapter.outline_id 直接关联）

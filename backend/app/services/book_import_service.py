@@ -218,6 +218,90 @@ _GENERIC_PERSON_NAMES = frozenset({
     "叔叔", "阿姨", "舅舅", "舅母", "姑姑", "姑父", "爷爷", "奶奶", "外公", "外婆",
 })
 
+# 关系抽取防裂变：无名泛称/临时伪装称谓精确集合与正则（保守匹配，不误伤 2-4 字正常中文人名）
+_GENERIC_EPITHET_EXACT = frozenset({
+    "黑衣人", "白衣人", "灰衣人", "蓝衣人", "红衣人", "紫衣人", "青衣人", "黄衣人",
+    "蒙面人", "神秘人", "黑衣客", "神秘客", "来人", "那人", "此人", "来者",
+    "黑影", "人影", "身影", "无名氏", "路人甲", "路人乙", "某甲", "某乙",
+    "店小二", "小二", "掌柜", "老掌柜", "老板", "老板娘", "伙计",
+    "侍卫", "护卫", "家丁", "丫鬟", "婆子", "差役", "衙役", "捕快", "官差",
+    "老者", "老头", "老头儿", "老汉", "老妪", "老妇", "老妇人",
+    "中年汉子", "中年大汉", "壮汉", "大汉", "汉子", "刀客", "剑客", "刺客", "杀手",
+    "书生", "道士", "和尚", "尼姑", "车夫", "船夫", "渔夫", "樵夫", "猎户", "摊贩", "小贩",
+})
+
+_GENERIC_EPITHET_RE = re.compile(
+    r"^(?:"
+    r"(?:[黑白色灰蓝红紫青绿黄锦布粗麻]衣|蒙面|神秘|领头|为首|独眼|矮胖|瘦高|枯瘦|虬髯|白发|银发|光头|持刀|持剑|带头|那名|一名|几个|数名|两名|三名)"
+    r"(?:人|客|者|老者|老人|男子|女子|男人|女人|汉子|大汉|壮汉|少年|少女|青年|书生|道士|和尚|刺客|杀手|侍卫|护卫|差役|捕快|身影|黑影)"
+    r"|(?:路人|杂兵|甲|乙|丙|丁|炮灰|龙套)[甲乙丙丁戊己庚辛0-9一二三四五六七八九十]*"
+    r"|第[一二三四五六七八九十0-9]+[号名个位](?:人|杀手|刺客|护卫|侍卫)?"
+    r")$"
+)
+
+
+def _is_generic_epithet(name: str) -> bool:
+    """判断名称是否为无名泛称/临时伪装代称，防止关系抽取将其建为独立角色。"""
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return True
+    if cleaned in _GENERIC_PERSON_NAMES or cleaned in _GENERIC_EPITHET_EXACT:
+        return True
+    return bool(_GENERIC_EPITHET_RE.match(cleaned))
+
+
+def _slice_chapter_head_tail(content: str, max_chars: int) -> str:
+    """按 60% 开头 + 40% 结尾截取长章节，避免单章后半段内容被硬截断丢弃。"""
+    text = content or ""
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    sep = "\n……（中段略）……\n"
+    if max_chars <= len(sep) + 10:
+        return text[:max_chars]
+    avail = max_chars - len(sep)
+    head_len = int(avail * 0.6)
+    tail_len = avail - head_len
+    if tail_len <= 0:
+        return text[:head_len]
+    return text[:head_len] + sep + text[-tail_len:]
+
+
+def _merge_chapter_relationship_note(existing: Optional[str], chapter_number: Any, description: str) -> str:
+    """幂等合并关系描述中的 `[第N章] ...` 行：同章号覆盖替换，不重复追加。"""
+    prefix = f"[第{chapter_number}章]"
+    desc_text = str(description or "").strip()
+    note = f"{prefix} {desc_text}".strip()
+    lines = [line for line in (existing or "").splitlines() if line.strip()]
+    replaced = False
+    new_lines: list[str] = []
+    for line in lines:
+        if line.strip().startswith(prefix):
+            if not replaced:
+                new_lines.append(note)
+                replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        new_lines.append(note)
+    return "\n".join(new_lines).strip()
+
+
+def _format_known_characters(chars: Sequence[Character]) -> str:
+    """格式化已知角色/组织名单（规范名（别名：...））供关系抽取提示词对齐。"""
+    if not chars:
+        return "（暂无）"
+    parts: list[str] = []
+    for c in chars:
+        aliases = _parse_character_aliases(getattr(c, "aliases", None))
+        if aliases:
+            parts.append(f"{c.name}（别名：{'、'.join(aliases)}）")
+        else:
+            parts.append(c.name)
+    return "、".join(parts) if parts else "（暂无）"
+
+
 # 自动补角色的存在度门禁（issue #184）：名字需要在至少这么多章的正文里出现。
 # 只出现 1-2 章的角色是"两句领盒饭"的散角，建行会占满
 # MAX_IMPORTED_CHARACTERS_PER_IMPORT 名额，并让档案同步/成员统计为它们反复花预算。
@@ -535,6 +619,8 @@ class _BookImportTask:
     error_params: Optional[dict] = None
     # 已成功落库标记：活动任务查询据此过滤，避免把已应用的导入当成可恢复任务
     applied: bool = False
+    # 职业体系生成模式（auto/skip/force），供重试时沿用
+    career_system_mode: str = "auto"
     # issue #254：进入文笔画像步骤前项目是否原本没有默认风格（覆盖导入判定用；
     # _ensure_project_default_style 会先插入首预设，因此必须提前记录）。
     default_style_was_missing: bool = True
@@ -721,6 +807,7 @@ class BookImportService:
                 content_language=task.content_language,
                 skipped_chapters=skipped,
                 merge_existing_world=(payload.import_mode == "append"),
+                career_system_mode=payload.career_system_mode,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -909,38 +996,47 @@ class BookImportService:
                 )
 
             # -- 步骤5: 生成职业体系 (40-65%)
-            await _notify("💼 正在生成职业体系...", 42, code="import.progress.generatingCareers")
-            try:
-                generated_careers = await self._generate_career_system_from_project(
-                    db=db,
-                    user_id=user_id,
-                    project=project,
-                    ai_service=ai_service,
-                    progress_callback=progress_callback,
-                    progress_range=(42, 65),
-                    chapters=chapters_to_import,
-                    content_language=task.content_language,
-                )
-                statistics["generated_careers"] = generated_careers
-                await _notify(
-                    f"💼 职业体系生成完成（{generated_careers}个）", 65,
-                    code="import.progress.careersDone",
-                    params={"careers": generated_careers},
-                )
-            except Exception as exc:
-                logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
-                failed_steps.append(_StepFailure(
-                    step_name="career_system",
-                    step_label="职业体系生成",
-                    error_message=str(exc),
-                    error_code=getattr(exc, "code", None),
-                    error_params=getattr(exc, "params", None) or None,
-                ))
-                await _notify(
-                    f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
-                    code="import.progress.careersFailed",
-                    params={"error": str(exc)[:80]},
-                )
+            task.career_system_mode = payload.career_system_mode
+            if payload.career_system_mode == "skip":
+                statistics["generated_careers"] = 0
+                await _notify("💼 已跳过职业体系生成", 65, code="import.progress.careersSkipped")
+            else:
+                await _notify("💼 正在生成职业体系...", 42, code="import.progress.generatingCareers")
+                try:
+                    generated_careers = await self._generate_career_system_from_project(
+                        db=db,
+                        user_id=user_id,
+                        project=project,
+                        ai_service=ai_service,
+                        progress_callback=progress_callback,
+                        progress_range=(42, 65),
+                        chapters=chapters_to_import,
+                        content_language=task.content_language,
+                        career_system_mode=payload.career_system_mode,
+                    )
+                    statistics["generated_careers"] = generated_careers
+                    if generated_careers == 0:
+                        await _notify("💼 本作品无需职业体系，已跳过", 65, code="import.progress.careersSkipped")
+                    else:
+                        await _notify(
+                            f"💼 职业体系生成完成（{generated_careers}个）", 65,
+                            code="import.progress.careersDone",
+                            params={"careers": generated_careers},
+                        )
+                except Exception as exc:
+                    logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
+                    failed_steps.append(_StepFailure(
+                        step_name="career_system",
+                        step_label="职业体系生成",
+                        error_message=str(exc),
+                        error_code=getattr(exc, "code", None),
+                        error_params=getattr(exc, "params", None) or None,
+                    ))
+                    await _notify(
+                        f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning",
+                        code="import.progress.careersFailed",
+                        params={"error": str(exc)[:80]},
+                    )
 
             # -- 步骤6: 生成角色/组织 (65-92%)
             character_count_target = max(project.character_count or 0, 5)
@@ -1331,6 +1427,7 @@ class BookImportService:
                             progress_range=(step_start_pct, step_end_pct),
                             chapters=chapters_for_retry,
                             content_language=task.content_language,
+                            career_system_mode=task.career_system_mode,
                         )
                         retry_results["generated_careers"] = result
                         await _notify(
@@ -2430,15 +2527,15 @@ class BookImportService:
     def _build_chapter_excerpt(chapters: list[Any], per_chapter_chars: int = _DEFAULT_EXCERPT_CHARS) -> str:
         """把章节原文构建为 excerpt 文本（Tier2 拆书喂全文）。
 
-        与关系抽取对齐：每章截取前 per_chapter_chars 字符，按章节号正序
-        拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
+        与关系抽取对齐：每章按首尾比例（60% 开头 + 40% 结尾）截取 per_chapter_chars 字符，
+        按章节号正序拼接，空章节跳过。输出格式与 RELATIONSHIP_EXTRACTION 模板一致。
         """
         parts = []
         for c in sorted(chapters, key=lambda x: x.chapter_number):
             content = (c.content or "").strip()
             if not content:
                 continue
-            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{content[:per_chapter_chars]}")
+            parts.append(f"【第{c.chapter_number}章 {c.title}】\n{_slice_chapter_head_tail(content, per_chapter_chars)}")
         return "\n\n".join(parts)
 
     def _build_import_fulltext(
@@ -2769,6 +2866,7 @@ class BookImportService:
         content_language: Optional[str] = None,
         skipped_chapters: Optional[list[dict[str, Any]]] = None,
         merge_existing_world: bool = False,
+        career_system_mode: str = "auto",
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -2795,6 +2893,7 @@ class BookImportService:
             chapters=chapters,
             model_name=model_name,
             content_language=content_language,
+            career_system_mode=career_system_mode,
         )
 
         generated_entities = await self._generate_characters_and_organizations_from_project(
@@ -2971,12 +3070,15 @@ class BookImportService:
         chapters: Optional[list] = None,
         model_name: Optional[str] = None,
         content_language: Optional[str] = None,
+        career_system_mode: str = "auto",
     ) -> int:
-        """根据项目世界观生成职业体系（主职业 1-3 个 / 副职业 0-2 个）。
+        """根据项目世界观生成职业体系（auto: 0-3 主职业；force: 1-3 主职业；skip: 跳过）。
 
         拆书导入时传入 chapters，通过 _build_import_fulltext 注入原文摘录，
         让职业体系基于真实正文生成（预算来自实发模型实测/声明的上下文窗口）。
         """
+        if career_system_mode == "skip":
+            return 0
 
         async def _notify(
             msg: str,
@@ -3017,13 +3119,15 @@ class BookImportService:
             full_book_context=full_book_context,
             content_language=generation_language,
         )
+        if career_system_mode == "force":
+            prompt += "\n\n【强制生成要求】用户已明确要求为本项目生成职业体系，请务必设计至少 1 个主职业（main_careers 不可为空）。"
 
         await _notify("💼 AI正在生成职业体系...", 0.3, code="import.progress.careersAiGenerating")
         career_data = await ai_service.call_with_json_retry(
             prompt=prompt,
             max_retries=3,
             expected_type="object",
-            validator=validate_career_system,
+            validator=lambda d: validate_career_system(d, allow_empty=(career_system_mode != "force")),
         )
 
         await _notify("💼 正在解析职业数据...", 0.7, code="import.progress.careersParsing")
@@ -4029,7 +4133,8 @@ class BookImportService:
         ai_service: AIService,
         generation_language: Optional[str],
         skipped: list[dict[str, Any]],
-        per_chapter_chars: int = 1800,
+        known_characters: str = "（暂无）",
+        per_chapter_chars: int = 3600,
     ) -> list[Any]:
         """批量关系抽取；命中内容审核时按章二分降级（issue #168）。
 
@@ -4039,13 +4144,14 @@ class BookImportService:
         - 其他异常一律向上抛（非审核类错误不得被降级逻辑吞掉）。
         """
         chapters_text = "\n\n".join(
-            f"【第{c.chapter_number}章 {c.title}】\n{(c.content or '')[:per_chapter_chars]}"
+            f"【第{c.chapter_number}章 {c.title}】\n{_slice_chapter_head_tail(c.content or '', per_chapter_chars)}"
             for c in batch
         )
         prompt = PromptService.format_prompt(
             template,
             title=project.title or "未命名",
             genre=project.genre or "通用",
+            known_characters=known_characters,
             chapters_text=chapters_text,
             content_language=generation_language,
         )
@@ -4075,6 +4181,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters,
                 per_chapter_chars=per_chapter_chars,
             )
             right = await self._extract_relationship_batch(
@@ -4084,6 +4191,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters,
                 per_chapter_chars=per_chapter_chars,
             )
             return left + right
@@ -4118,14 +4226,15 @@ class BookImportService:
         generation_language = await resolve_user_generation_language(db, user_id, content_language)
 
         # 名称来源约束：自动补角色名必须出现在原文中，否则标记 AI 补充。
-        # 与模型所见一致：每批喂 1800 字符/章，这里用同一 excerpt 口径做匹配源。
-        source_text = self._build_chapter_excerpt(chapters)
+        # 与模型所见一致：每批喂 3600 字符/章（首尾切片），这里用同一 excerpt 口径做匹配源。
+        source_text = self._build_chapter_excerpt(chapters, per_chapter_chars=3600)
 
         # 预加载角色与关系，便于名称匹配与去重
         chars = (
             await db.execute(select(Character).where(Character.project_id == project.id))
         ).scalars().all()
         char_by_name: dict[str, Character] = {c.name: c for c in chars}
+        known_characters_text = _format_known_characters(chars)
         # 别名→角色 精确映射：AI 关系输出用别名（"姐姐"/"小妍"）指代角色时，
         # 解析到既有角色，而不是新建一个重复角色
         alias_to_char: dict[str, Character] = _build_alias_to_char_map(chars)
@@ -4181,6 +4290,7 @@ class BookImportService:
                 ai_service=ai_service,
                 generation_language=generation_language,
                 skipped=skipped,
+                known_characters=known_characters_text,
             )
             for item in items:
                 if not isinstance(item, dict):
@@ -4223,7 +4333,7 @@ class BookImportService:
                         name not in char_by_name
                         and name not in alias_to_char
                         and not _is_first_person_alias_name(name)
-                        and name not in _GENERIC_PERSON_NAMES
+                        and not _is_generic_epithet(name)
                         and _chapter_mentions(name) >= _MIN_CHAPTERS_FOR_AUTO_CHARACTER
                         and created_char_count < MAX_IMPORTED_CHARACTERS_PER_IMPORT
                     ):
@@ -4277,9 +4387,11 @@ class BookImportService:
                     merged_type_ids = [tid for tid in {matched.relationship_type_id, *type_ids} if tid is not None]
                     await sync_relationship_links(db, matched, merged_type_ids)
                     if matched.source != "manual":
-                        note = f"[第{item.get('chapter_number', '?')}章] {item.get('description') or ''}"
-                        if note:
-                            matched.description = (matched.description + "\n" + note).strip()
+                        matched.description = _merge_chapter_relationship_note(
+                            matched.description,
+                            item.get("chapter_number", "?"),
+                            item.get("description") or "",
+                        )
                     merged = True
                     extracted_count += 1
                 else:

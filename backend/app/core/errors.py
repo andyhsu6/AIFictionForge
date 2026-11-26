@@ -101,6 +101,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "import.progress.careersInitAi": ("💼 正在初始化AI服务...", 200),
     "import.progress.careersParsing": ("💼 正在解析职业数据...", 200),
     "import.progress.careersPreparingPrompt": ("💼 正在准备职业体系提示词...", 200),
+    "import.progress.careersSkipped": ("💼 本作品无需职业体系，已跳过", 200),
     "import.progress.charactersBatch": ("👥 AI正在生成角色与组织（第 {{batch}}/{{total}} 批）...", 200),
     "import.progress.charactersDone": ("👥 角色/组织生成完成（{{entities}}个）", 200),
     "import.progress.charactersFailed": ("⚠️ 角色/组织生成失败：{{error}}", 200),

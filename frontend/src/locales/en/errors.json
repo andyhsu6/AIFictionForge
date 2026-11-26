@@ -69,6 +69,7 @@
       "careersInitAi": "💼 Initializing AI service...",
       "careersParsing": "💼 Parsing career data...",
       "careersPreparingPrompt": "💼 Preparing the career system prompt...",
+      "careersSkipped": "💼 Career system not needed for this work; skipped",
       "chaptersImported": "Imported {{chapters}} chapters ({{words}} characters)",
       "charactersBatch": "👥 AI is generating characters and organizations (batch {{batch}}/{{total}})...",
       "charactersDone": "👥 Characters/organizations complete ({{entities}} entities)",

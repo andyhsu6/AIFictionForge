@@ -187,25 +187,25 @@ async def test_auto_created_character_carries_no_fabricated_profile(db_session, 
     project, chapters = await _seed(
         db_session,
         [
-            "占位正文：路人丙登场。",
-            "占位正文：路人丙再说一句。",
-            "占位正文：路人丙退场。",
+            "占位正文：路人丙长老登场。",
+            "占位正文：路人丙长老再说一句。",
+            "占位正文：路人丙长老退场。",
         ],
     )
     items = [{
-        "character_a": "路人丙",
+        "character_a": "路人丙长老",
         "character_b": "占位人物戊",
         "relationship_types": ["盟友"],
         "description": "占位关系描述",
-        "evidence": "路人丙说了一句占位台词……",
+        "evidence": "路人丙长老说了一句占位台词……",
     }]
 
     _result, names = await _extract(db_session, project, chapters, monkeypatch, items)
-    assert "路人丙" in names
+    assert "路人丙长老" in names
 
     row = (
         await db_session.execute(
-            select(Character).where(Character.project_id == PROJECT_ID, Character.name == "路人丙")
+            select(Character).where(Character.project_id == PROJECT_ID, Character.name == "路人丙长老")
         )
     ).scalar_one()
     assert row.personality is None

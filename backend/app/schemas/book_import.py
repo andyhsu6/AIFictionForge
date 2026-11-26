@@ -12,6 +12,7 @@ ImportMode = Literal["append", "overwrite"]
 ExtractLevel = Literal["basic", "standard", "deep"]
 WarningLevel = Literal["info", "warning", "error"]
 BookImportExtractMode = Literal["tail", "full"]
+CareerSystemMode = Literal["auto", "skip", "force"]
 
 
 class BookImportWarning(BaseModel):
@@ -118,6 +119,10 @@ class BookImportApplyRequest(BaseModel):
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline] = Field(default_factory=list)
     import_mode: ImportMode = Field(default="append", description="导入模式")
+    career_system_mode: CareerSystemMode = Field(
+        default="auto",
+        description="职业体系生成模式：auto=按题材自动判断，skip=跳过生成，force=强制生成",
+    )
     # issue #254：仅在 overwrite 且画像已被用户手改时需要显式置 true；
     # 默认 false 保护用户编辑，不落库。
     overwrite_style_profile: bool = Field(

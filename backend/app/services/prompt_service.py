@@ -1,6 +1,7 @@
 """提示词管理服务"""
 from typing import Dict, Any, Optional
 import json
+import re
 from app.services.language_resolver import (
     GenerationLanguage,
     append_language_instruction,
@@ -867,7 +868,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
     
     # 章节生成 - 1-N模式（第1章）
     CHAPTER_GENERATION_ONE_TO_MANY = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task>
@@ -937,7 +938,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-1模式（第1章）
     CHAPTER_GENERATION_ONE_TO_ONE = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task priority="P0">
@@ -998,7 +999,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-1模式（第2章及以后）
     CHAPTER_GENERATION_ONE_TO_ONE_NEXT = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task priority="P0">
@@ -1077,7 +1078,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
     # 章节生成 - 1-N模式（第2章及以后）
     CHAPTER_GENERATION_ONE_TO_MANY_NEXT = """<system>
-你是《{project_title}》的作者，一位专注于{genre}类型的网络小说家。
+你是《{project_title}》的作者，一位专注于{genre}类型的小说作者。
 </system>
 
 <task>
@@ -2616,11 +2617,13 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 
 <task>
 【设计任务】
-根据世界观信息和项目简介，设计一个完整且合理的职业体系。
-职业体系必须与项目简介中的故事背景和角色设定高度契合。
+首先判断该作品是否属于需要“明确职业/境界/升级阶梯”的题材（如玄幻、仙侠、西幻冒险、网游系统、异能分级等）。
+- 若作品属于传统武侠、悬疑推理、都市写实、言情、历史权谋等**无职业升级体系**的题材，请直接输出空数组：`{{"main_careers": [], "sub_careers": []}}`。
+- ⚠️ 严禁将门派职责、官府差役（如县衙捕快、护院）、日常生计技能（如撑船、验尸、行商）强行包装成 8-12 阶升级职业。
+- 仅当作品确实存在明确的职业分工与阶段晋升体系时，才根据世界观、简介与原文设计契合的职业体系。
 
 【数量要求】
-- 主职业：1-3 个（根据世界观与剧情需要生成，1 到 3 个均可）
+- 主职业：0-3 个（无升级体系题材返回 0 个；有体系题材生成 1 到 3 个）
 - 副职业：0-2 个（可生成 0 到 2 个，没有合适的副职业可不生成）
 </task>
 
@@ -2649,7 +2652,8 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 <design_requirements priority="P0">
 【设计要求】
 
-**1. 主职业（main_careers）- 生成 1 到 3 个**
+**1. 主职业（main_careers）- 生成 0 到 3 个**
+- 若作品无明确职业/境界升级体系，main_careers 与 sub_careers 均必须返回空数组 []
 - 主职业是角色的核心发展方向
 - 必须严格符合世界观规则和简介中的故事背景
 - 每个主职业的阶段数量可以不同（体现职业复杂度差异）
@@ -2934,6 +2938,9 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 书名：{title}
 类型：{genre}
 
+【已知角色与组织名单】
+{known_characters}
+
 【章节内容】
 {chapters_text}
 </input>
@@ -2947,10 +2954,15 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
   "relationship_types": ["泛化关系类型1", "泛化关系类型2"],
   "intimacy_level": 50,
   "status": "active",
-  "description": "关系描述（可包含具体门派、姓名、情节）",
+  "description": "关系描述（可包含具体门派、姓名、情节；若涉及易容伪装或主观误判请明确标注）",
   "chapter_number": 1,
   "evidence": "原文证据片段"
 }}
+
+【角色名规范与防裂变要求】
+1) 优先使用【已知角色与组织名单】中的规范名；若原文出现别名、外号或化名，请对齐到对应规范名。
+2) 严禁把易容伪装、尊称官职、或无名泛称（如“黑衣人”、“蒙面人”、“神秘人”、“灰衣老者”、“店小二”等）拆分为独立角色。
+3) 若正文中存在易容、冒充、化名行事，或角色间的主观误判/误会，必须在 description 中显式标注（例如“【伪装/冒充】……”或“【主观误判】……”），切勿将临时伪装或主观误判写为客观既成事实。
 
 【关系类型泛化要求】
 1) relationship_types 必须是可复用的泛化标签，禁止把具体专名放入类型。
@@ -2964,7 +2976,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 <constraints>
 【必须遵守】
 ✅ 只输出 JSON 数组
-✅ character_a 与 character_b 必须是正文中出现的角色名
+✅ character_a 与 character_b 必须是正文中出现的具名角色（优先对齐已知名单）
 ✅ relationship_types 至少1个，最多4个
 ✅ intimacy_level 为 -100 到 100 整数
 ✅ status 只能是 active/broken/past/complicated
@@ -2973,6 +2985,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
 【禁止事项】
 ❌ 输出JSON以外的任何文字
 ❌ 把具体专名作为关系类型
+❌ 把易容伪装、尊称或“黑衣人/蒙面人/老者”等泛称拆成独立角色
 ❌ 臆造原文不存在的角色关系
 </constraints>"""
 
@@ -3215,6 +3228,8 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
         Returns:
             格式化后的提示词
         """
+        if "{known_characters}" in template and "known_characters" not in kwargs:
+            kwargs["known_characters"] = "（暂无）"
         try:
             rendered = template.format(**kwargs)
         except KeyError as e:
@@ -3222,6 +3237,20 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
         if content_language in ("zh", "en"):
             rendered = append_language_instruction(rendered, content_language)
         return rendered
+
+    @staticmethod
+    def strip_empty_career_section(prompt: str) -> str:
+        """当项目未启用职业体系时，移除章节生成提示词中的空 <careers> 区块及职业阶段约束。"""
+        if not prompt:
+            return prompt
+        cleaned = re.sub(
+            r"\n*<careers(?:\s+[^>]*)?>\s*【本章职业】\s*(?:暂无职业信息)?\s*</careers>\s*",
+            "\n\n",
+            prompt,
+        )
+        cleaned = re.sub(r"^[ \t]*[-•]?\s*角色的能力表现须符合其职业和阶段设定\s*\n?", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"^[ \t]*❌\s*角色行为超出其职业阶段的能力范围\s*\n?", "", cleaned, flags=re.MULTILINE)
+        return cleaned
     
 
     @classmethod
@@ -3508,7 +3537,7 @@ quote 必须是【正文摘录】里逐字存在的连续片段：不改写、�
                 "name": "拆书导入-原文关系抽取",
                 "category": "拆书导入",
                 "description": "从章节正文抽取人物关系并泛化关系类型",
-                "parameters": ["title", "genre", "chapters_text"]
+                "parameters": ["title", "genre", "chapters_text", "known_characters"]
             },
             "BOOK_IMPORT_REVERSE_OUTLINES": {
                 "name": "拆书导入-反向章节大纲",
