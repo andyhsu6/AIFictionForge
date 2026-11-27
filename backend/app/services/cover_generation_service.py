@@ -35,12 +35,17 @@ MAX_UPLOAD_COVER_BYTES = MAX_UPLOAD_COVER_MB * 1024 * 1024
 
 
 def _detect_image_extension(content: bytes) -> str:
-    """根据图片文件头魔数识别扩展名，仅允许 PNG/JPEG/WebP。"""
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+    """根据图片文件头魔数与最小容器结构识别扩展名，仅允许 PNG/JPEG/WebP。"""
+    if len(content) >= 33 and content.startswith(b"\x89PNG\r\n\x1a\n") and content[12:16] == b"IHDR":
         return "png"
-    if content.startswith(b"\xff\xd8\xff"):
+    if len(content) >= 4 and content.startswith(b"\xff\xd8\xff"):
         return "jpg"
-    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+    if (
+        len(content) >= 16
+        and content[:4] == b"RIFF"
+        and content[8:12] == b"WEBP"
+        and content[12:16] in (b"VP8 ", b"VP8L", b"VP8X")
+    ):
         return "webp"
     raise ApiError(code="validation.cover_file_invalid")
 

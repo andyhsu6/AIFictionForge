@@ -163,9 +163,22 @@ export default function BookshelfPage({
 
   const isSupportedCoverFile = (file: File): boolean => {
     if (file.type) {
-      return ALLOWED_COVER_MIME_TYPES.has(file.type);
+      return ALLOWED_COVER_MIME_TYPES.has(file.type.toLowerCase());
     }
     return ALLOWED_COVER_EXTENSIONS.test(file.name);
+  };
+
+  const isDecodableImageFile = async (file: File): Promise<boolean> => {
+    if (typeof createImageBitmap !== 'function') {
+      return true;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close?.();
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const handleCoverFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -177,12 +190,16 @@ export default function BookshelfPage({
       return;
     }
 
-    if (!isSupportedCoverFile(file)) {
+    if (file.size === 0 || !isSupportedCoverFile(file)) {
       message.error(t('cover.invalidFormat'));
       return;
     }
     if (file.size > MAX_COVER_UPLOAD_BYTES) {
       message.error(t('cover.fileTooLarge'));
+      return;
+    }
+    if (!(await isDecodableImageFile(file))) {
+      message.error(t('cover.invalidFormat'));
       return;
     }
 
@@ -438,7 +455,7 @@ export default function BookshelfPage({
             const coverActionLoading = isGenerating || isUploading;
             const coverReady = project.cover_status === 'ready' && !!project.cover_image_url;
             const coverGenerating = project.cover_status === 'generating' || isGenerating;
-            const coverFailed = project.cover_status === 'failed' && !coverActionLoading;
+            const coverFailed = project.cover_status === 'failed' && !coverGenerating;
             const showCoverFace = coverReady && !isFlipped;
 
             return (
@@ -1007,14 +1024,15 @@ export default function BookshelfPage({
                                   <Button
                                     size="small"
                                     icon={<PictureOutlined />}
-                                    loading={coverActionLoading}
+                                    loading={isGenerating}
+                                    disabled={coverActionLoading && !isGenerating}
                                     onClick={(e) => void handleGenerateCoverClick(e, project, true)}
                                     style={{
                                       ...coverButtonStyle,
                                       minWidth: isMobile ? 112 : 124,
                                     }}
                                   >
-                                    {coverActionLoading ? t('cover.generatingShort') : t('cover.generate')}
+                                    {isGenerating ? t('cover.generatingShort') : t('cover.generate')}
                                   </Button>
                                 )}
                               </div>

@@ -16,9 +16,9 @@ from app.database import Base, get_db
 from app.models.project import Project
 from app.services import cover_generation_service as cover_service_module
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"png-body"
-JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"jpeg-body"
-WEBP_BYTES = b"RIFF\x14\x00\x00\x00WEBP" + b"webp-body"
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 17
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00\x10JFIF\x00\x01" + b"\xff\xd9"
+WEBP_BYTES = b"RIFF\x18\x00\x00\x00WEBPVP8 \x0c\x00\x00\x00" + b"\x00" * 8
 
 
 def test_cover_upload_error_codes_registered():
@@ -91,6 +91,7 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "client": client,
             "session_factory": session_factory,
             "cover_dir": cover_dir,
+            "tmp_path": tmp_path,
             "current_user": current_user,
         }
 
@@ -103,6 +104,7 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ("cover.png", "image/png", PNG_BYTES, ".png"),
         ("cover.jpg", "image/jpeg", JPEG_BYTES, ".jpg"),
         ("cover.webp", "image/webp", WEBP_BYTES, ".webp"),
+        ("no-ext", "application/octet-stream", PNG_BYTES, ".png"),
     ],
 )
 def test_upload_cover_png_jpeg_webp_success_without_ai_settings(
@@ -163,15 +165,48 @@ def test_upload_cover_replaces_existing_and_removes_old_file(test_env):
     assert not first_path.exists()
 
 
+def test_upload_cover_ignores_missing_old_file_and_traversal_url(test_env):
+    client: TestClient = test_env["client"]
+    outside_secret = test_env["tmp_path"] / "outside.txt"
+    outside_secret.write_text("keep-me", encoding="utf-8")
+
+    async def _set_previous(url: str):
+        async with test_env["session_factory"]() as session:
+            project = await session.get(Project, "proj-ready")
+            assert project is not None
+            project.cover_status = "ready"
+            project.cover_image_url = url
+            await session.commit()
+
+    asyncio.run(_set_previous("/generated-assets/covers/../outside.txt"))
+    resp1 = client.post(
+        "/api/projects/proj-ready/cover/upload",
+        files={"file": ("cover.png", PNG_BYTES, "image/png")},
+    )
+    assert resp1.status_code == 200
+    assert outside_secret.exists()
+
+    asyncio.run(_set_previous("/generated-assets/covers/user-1/missing.png"))
+    resp2 = client.post(
+        "/api/projects/proj-ready/cover/upload",
+        files={"file": ("cover.webp", WEBP_BYTES, "image/webp")},
+    )
+    assert resp2.status_code == 200
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         b"",
         b"not an image at all",
         b"RIFF\x10\x00\x00\x00WAVEfmt ",
+        b"\x89PNG\r\n\x1a\n",
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rNOPE" + b"\x00" * 17,
+        b"RIFF\x04\x00\x00\x00WEBP",
+        b"\xff\xd8\xff",
     ],
 )
-def test_upload_cover_rejects_empty_and_invalid_bytes(test_env, payload: bytes):
+def test_upload_cover_rejects_empty_and_invalid_or_truncated_bytes(test_env, payload: bytes):
     client: TestClient = test_env["client"]
     resp = client.post(
         "/api/projects/proj-ready/cover/upload",
@@ -181,9 +216,16 @@ def test_upload_cover_rejects_empty_and_invalid_bytes(test_env, payload: bytes):
     assert resp.json()["code"] == "validation.cover_file_invalid"
 
 
-def test_upload_cover_rejects_oversized_file(test_env):
+def test_upload_cover_accepts_exact_10mb_boundary_and_rejects_oversized_file(test_env):
     client: TestClient = test_env["client"]
-    oversized = PNG_BYTES + b"\x00" * (10 * 1024 * 1024)
+    exact_limit = PNG_BYTES + b"\x00" * (10 * 1024 * 1024 - len(PNG_BYTES))
+    ok_resp = client.post(
+        "/api/projects/proj-ready/cover/upload",
+        files={"file": ("exact.png", exact_limit, "image/png")},
+    )
+    assert ok_resp.status_code == 200
+
+    oversized = exact_limit + b"\x00"
     resp = client.post(
         "/api/projects/proj-ready/cover/upload",
         files={"file": ("huge.png", oversized, "image/png")},

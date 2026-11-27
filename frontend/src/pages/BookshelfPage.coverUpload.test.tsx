@@ -61,6 +61,7 @@ describe('BookshelfPage custom cover upload', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -88,34 +89,79 @@ describe('BookshelfPage custom cover upload', () => {
     expect(screen.getByRole('button', { name: /上传封面/ })).toBeInTheDocument();
   });
 
-  it('triggers onUploadCover from ready cover face and resets flipped state after upload', async () => {
-    const onUploadCover = vi.fn().mockResolvedValue(true);
-    const { container } = renderBookshelf([
-      {
-        ...baseProject,
-        cover_status: 'ready',
-        cover_image_url: '/generated-assets/covers/u1/old.png',
-      },
-    ], onUploadCover);
+  it('keeps failed cover panel visible while uploading instead of flashing empty cover state', async () => {
+    let resolveUpload!: (ok: boolean) => void;
+    const onUploadCover = vi.fn().mockImplementation(
+      () => new Promise<boolean>((resolve) => { resolveUpload = resolve; }),
+    );
+    const { container } = renderBookshelf(
+      [
+        {
+          ...baseProject,
+          cover_status: 'failed',
+          cover_error: 'upstream timeout',
+        },
+      ],
+      onUploadCover,
+    );
 
-    const uploadBtn = screen.getByRole('button', { name: /上传封面/ });
-    fireEvent.click(uploadBtn);
+    fireEvent.click(screen.getByRole('button', { name: /封面操作/ }));
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
 
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
-    expect(fileInput).not.toBeNull();
-
     const pngFile = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'custom.png', { type: 'image/png' });
     fireEvent.change(fileInput, { target: { files: [pngFile] } });
 
     await waitFor(() => {
       expect(onUploadCover).toHaveBeenCalledTimes(1);
     });
-    expect(onUploadCover).toHaveBeenCalledWith(expect.objectContaining({ id: 'proj-1' }), pngFile);
+    expect(screen.getByText('封面生成失败')).toBeInTheDocument();
+    expect(screen.queryByText('当前暂无可用封面')).toBeNull();
+    expect(screen.getByRole('button', { name: /上传中/ })).toBeInTheDocument();
+
+    resolveUpload(false);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /上传封面/ })).toBeInTheDocument();
+    });
+    expect(screen.getByText('封面生成失败')).toBeInTheDocument();
+  });
+
+  it('triggers onUploadCover from ready cover face and allows re-selecting the same file', async () => {
+    const onUploadCover = vi.fn().mockResolvedValue(true);
+    const { container } = renderBookshelf(
+      [
+        {
+          ...baseProject,
+          cover_status: 'ready',
+          cover_image_url: '/generated-assets/covers/u1/old.png',
+        },
+      ],
+      onUploadCover,
+    );
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const pngFile = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'custom.png', { type: 'image/png' });
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
+    fireEvent.change(fileInput, { target: { files: [pngFile] } });
+    await waitFor(() => {
+      expect(onUploadCover).toHaveBeenCalledTimes(1);
+    });
+    expect(fileInput.value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
+    fireEvent.change(fileInput, { target: { files: [pngFile] } });
+    await waitFor(() => {
+      expect(onUploadCover).toHaveBeenCalledTimes(2);
+    });
     expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
   });
 
-  it('also flips back to cover face after uploading from flipped no-cover panel', async () => {
-    const onUploadCover = vi.fn().mockResolvedValue(true);
+  it('flips back to cover face after upload succeeds, and stays flipped if upload returns false', async () => {
+    const onUploadCover = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
     const project: Project = { ...baseProject, cover_status: 'none' };
     const { container, rerender } = renderBookshelf([project], onUploadCover);
 
@@ -123,11 +169,19 @@ describe('BookshelfPage custom cover upload', () => {
     fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
 
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
-    const jpgFile = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'custom.jpg', { type: 'image/jpeg' });
-    fireEvent.change(fileInput, { target: { files: [jpgFile] } });
+    const webpFile = new File([new Uint8Array(24)], 'custom.webp', { type: '' });
+    fireEvent.change(fileInput, { target: { files: [webpFile] } });
 
     await waitFor(() => {
       expect(onUploadCover).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText('当前暂无可用封面')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
+    fireEvent.change(fileInput, { target: { files: [webpFile] } });
+
+    await waitFor(() => {
+      expect(onUploadCover).toHaveBeenCalledTimes(2);
     });
 
     rerender(
@@ -135,7 +189,7 @@ describe('BookshelfPage custom cover upload', () => {
         <BookshelfPage
           isMobile={false}
           loading={false}
-          projects={[{ ...project, cover_status: 'ready', cover_image_url: '/generated-assets/covers/u1/new.jpg' }]}
+          projects={[{ ...project, cover_status: 'ready', cover_image_url: '/generated-assets/covers/u1/new.webp' }]}
           showApiTip={false}
           setShowApiTip={vi.fn()}
           exportableProjectsCount={0}
@@ -162,19 +216,34 @@ describe('BookshelfPage custom cover upload', () => {
     expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
   });
 
-  it('rejects unsupported file type and oversized file before calling onUploadCover', async () => {
+  it('rejects empty, unsupported, corrupted, and oversized files before calling onUploadCover', async () => {
     const onUploadCover = vi.fn();
+    const createBitmapMock = vi.fn().mockRejectedValue(new Error('corrupt image'));
+    vi.stubGlobal('createImageBitmap', createBitmapMock);
+
     const { container } = renderBookshelf([{ ...baseProject, cover_status: 'none' }], onUploadCover);
-
-    fireEvent.click(screen.getByRole('button', { name: /封面操作/ }));
-    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
-
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
 
+    fireEvent.click(screen.getByRole('button', { name: /封面操作/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
     const txtFile = new File(['hello'], 'not-image.txt', { type: 'text/plain' });
     fireEvent.change(fileInput, { target: { files: [txtFile] } });
     expect(onUploadCover).not.toHaveBeenCalled();
     expect(await screen.findByText('仅支持 PNG、JPG 或 WebP 格式的图片')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
+    const emptyPng = new File([], 'empty.png', { type: 'image/png' });
+    fireEvent.change(fileInput, { target: { files: [emptyPng] } });
+    expect(onUploadCover).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
+    const corruptPng = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'corrupt.png', { type: 'image/png' });
+    fireEvent.change(fileInput, { target: { files: [corruptPng] } });
+    await waitFor(() => {
+      expect(createBitmapMock).toHaveBeenCalledWith(corruptPng);
+    });
+    expect(onUploadCover).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /上传封面/ }));
     const bigFile = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'big.png', { type: 'image/png' });
