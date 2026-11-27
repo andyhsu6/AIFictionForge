@@ -203,6 +203,20 @@ export default function ProjectList() {
     }
   };
 
+  const handleUploadCover = async (project: Project, file: File): Promise<boolean> => {
+    try {
+      message.loading({ content: t('toast.coverUploading', { title: project.title }), key: `cover-${project.id}` });
+      await projectApi.uploadCover(project.id, file);
+      message.success({ content: t('toast.coverUploaded', { title: project.title }), key: `cover-${project.id}` });
+      await refreshProjects();
+      return true;
+    } catch (error) {
+      console.error('上传封面失败:', error);
+      message.error({ content: t('toast.coverUploadFailed', { title: project.title }), key: `cover-${project.id}` });
+      return false;
+    }
+  };
+
   const handleDownloadCover = async (project: Project) => {
     try {
       await projectApi.downloadCover(project.id, `${project.title}-cover.png`);
@@ -873,6 +887,7 @@ export default function ProjectList() {
               onEnterProject={handleEnterProject}
               onDeleteProject={handleDelete}
               onGenerateCover={handleGenerateCover}
+              onUploadCover={handleUploadCover}
               onDownloadCover={handleDownloadCover}
               formatWordCount={formatWordCount}
               getProgress={getProgress}
