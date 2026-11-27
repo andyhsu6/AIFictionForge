@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
 from app.database import get_db
-from app.services.cover_generation_service import cover_generation_service
+from app.services.cover_generation_service import (
+    MAX_UPLOAD_COVER_BYTES,
+    MAX_UPLOAD_COVER_MB,
+    cover_generation_service,
+)
 
 router = APIRouter(prefix="/projects", tags=["项目封面"])
 
@@ -43,6 +47,41 @@ async def generate_project_cover(
         user_id=user_id,
         project_id=project_id,
         overwrite=payload.overwrite,
+    )
+    return CoverGenerateResponse(**result)
+
+
+@router.post("/{project_id}/cover/upload", response_model=CoverGenerateResponse, summary="上传项目封面")
+async def upload_project_cover(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise ApiError(code="auth.unauthorized")
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    chunk_size = 1024 * 1024
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > MAX_UPLOAD_COVER_BYTES:
+            raise ApiError(
+                code="validation.file_too_large",
+                params={"max_mb": MAX_UPLOAD_COVER_MB},
+            )
+        chunks.append(chunk)
+
+    result = await cover_generation_service.upload_cover(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        content=b"".join(chunks),
     )
     return CoverGenerateResponse(**result)
 
