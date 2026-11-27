@@ -75,6 +75,12 @@ export default function BookshelfPage({
     boxShadow: isDark ? 'none' : `0 6px 16px ${alphaColor(token.colorPrimary, 0.18)}`,
     backdropFilter: 'blur(8px)',
   };
+  const coverOverlayControlStyle = {
+    color: token.colorWhite,
+    background: 'transparent',
+    border: '1px solid rgba(255,255,255,0.28)',
+    textShadow: '0 1px 4px rgba(0,0,0,0.65)',
+  };
   const [flippedProjectIds, setFlippedProjectIds] = useState<Record<string, boolean>>({});
   const [coverGeneratingIds, setCoverGeneratingIds] = useState<Record<string, boolean>>({});
   const [coverUploadingIds, setCoverUploadingIds] = useState<Record<string, boolean>>({});
@@ -543,11 +549,8 @@ export default function BookshelfPage({
                           toggleProjectFace(project.id);
                         }}
                         style={showCoverFace ? {
-                          color: token.colorWhite,
+                          ...coverOverlayControlStyle,
                           borderRadius: 999,
-                          background: 'rgba(255,255,255,0.18)',
-                          backdropFilter: 'blur(10px)',
-                          border: '1px solid rgba(255,255,255,0.22)',
                         } : undefined}
                       >
                         {showCoverFace ? t('cover.backToDetails') : (coverReady ? t('cover.viewCover') : t('cover.actions'))}
@@ -592,37 +595,19 @@ export default function BookshelfPage({
                             minHeight: isMobile ? 20 : 22,
                             alignItems: 'flex-start',
                           }}>
-                            {tags.length > 0 ? tags.slice(0, 3).map((tag: string, idx: number) => (
+                            {(tags.length > 0 ? tags.slice(0, 3) : [t('card.uncategorized')]).map((tag: string, idx: number) => (
                               <Tag key={idx} style={{
+                                ...coverOverlayControlStyle,
                                 margin: 0,
                                 padding: isMobile ? '0 7px' : '0 8px',
                                 borderRadius: 999,
-                                border: '1px solid rgba(255,255,255,0.24)',
-                                background: 'rgba(255,255,255,0.14)',
-                                color: token.colorWhite,
                                 fontSize: isMobile ? 10 : 11,
                                 lineHeight: isMobile ? '18px' : '20px',
                                 fontWeight: 500,
-                                backdropFilter: 'blur(8px)',
                               }}>
                                 {tag}
                               </Tag>
-                            )) : (
-                              <Tag style={{
-                                margin: 0,
-                                padding: isMobile ? '0 7px' : '0 8px',
-                                borderRadius: 999,
-                                border: '1px solid rgba(255,255,255,0.24)',
-                                background: 'rgba(255,255,255,0.14)',
-                                color: token.colorWhite,
-                                fontSize: isMobile ? 10 : 11,
-                                lineHeight: isMobile ? '18px' : '20px',
-                                fontWeight: 500,
-                                backdropFilter: 'blur(8px)',
-                              }}>
-                                {t('card.uncategorized')}
-                              </Tag>
-                            )}
+                            ))}
                           </div>
                         </div>
 
@@ -735,12 +720,7 @@ export default function BookshelfPage({
                                 icon={<DownloadOutlined />}
                                 onClick={(e) => { e.stopPropagation(); onDownloadCover(project); }}
                                 disabled={coverActionLoading}
-                                style={{
-                                  color: token.colorWhite,
-                                  background: 'rgba(255,255,255,0.14)',
-                                  borderColor: 'rgba(255,255,255,0.22)',
-                                  backdropFilter: 'blur(8px)',
-                                }}
+                                style={coverOverlayControlStyle}
                               >
                                 {t('cover.download')}
                               </Button>
@@ -750,12 +730,7 @@ export default function BookshelfPage({
                                 loading={isUploading}
                                 disabled={coverActionLoading && !isUploading}
                                 onClick={(e) => handleUploadCoverClick(e, project)}
-                                style={{
-                                  color: token.colorWhite,
-                                  background: 'rgba(255,255,255,0.14)',
-                                  borderColor: 'rgba(255,255,255,0.22)',
-                                  backdropFilter: 'blur(8px)',
-                                }}
+                                style={coverOverlayControlStyle}
                               >
                                 {isUploading ? t('cover.uploading') : t('cover.upload')}
                               </Button>
@@ -765,12 +740,7 @@ export default function BookshelfPage({
                                 loading={isGenerating}
                                 disabled={coverActionLoading && !isGenerating}
                                 onClick={(e) => void handleGenerateCoverClick(e, project, true)}
-                                style={{
-                                  color: token.colorWhite,
-                                  background: 'rgba(255,255,255,0.14)',
-                                  borderColor: 'rgba(255,255,255,0.22)',
-                                  backdropFilter: 'blur(8px)',
-                                }}
+                                style={coverOverlayControlStyle}
                               >
                                 {isGenerating ? t('cover.regenerating') : t('cover.regenerate')}
                               </Button>
