@@ -82,6 +82,7 @@ export default function BookshelfPage({
     textShadow: '0 1px 4px rgba(0,0,0,0.65)',
   };
   const [flippedProjectIds, setFlippedProjectIds] = useState<Record<string, boolean>>({});
+  const [activeCoverInfoId, setActiveCoverInfoId] = useState<string | null>(null);
   const [coverGeneratingIds, setCoverGeneratingIds] = useState<Record<string, boolean>>({});
   const [coverUploadingIds, setCoverUploadingIds] = useState<Record<string, boolean>>({});
   const coverFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -533,29 +534,27 @@ export default function BookshelfPage({
                           position: 'absolute',
                           inset: 0,
                           background: isDark
-                            ? 'linear-gradient(180deg, rgba(7,10,18,0.12) 0%, rgba(7,10,18,0.04) 30%, rgba(7,10,18,0.28) 68%, rgba(7,10,18,0.58) 100%)'
-                            : 'linear-gradient(180deg, rgba(16,24,40,0.14) 0%, rgba(16,24,40,0.02) 32%, rgba(16,24,40,0.22) 68%, rgba(16,24,40,0.52) 100%)',
+                            ? 'linear-gradient(180deg, rgba(7,10,18,0) 0%, rgba(7,10,18,0) 45%, rgba(7,10,18,0.26) 72%, rgba(7,10,18,0.56) 100%)'
+                            : 'linear-gradient(180deg, rgba(16,24,40,0) 0%, rgba(16,24,40,0) 45%, rgba(16,24,40,0.22) 72%, rgba(16,24,40,0.5) 100%)',
                         }} />
                       </>
                     )}
 
-                    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8, position: 'relative', zIndex: 2 }}>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={showCoverFace ? <BookOutlined /> : <SwapOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleProjectFace(project.id);
-                        }}
-                        style={showCoverFace ? {
-                          ...coverOverlayControlStyle,
-                          borderRadius: 999,
-                        } : undefined}
-                      >
-                        {showCoverFace ? t('cover.backToDetails') : (coverReady ? t('cover.viewCover') : t('cover.actions'))}
-                      </Button>
-                    </div>
+                    {!showCoverFace && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8, position: 'relative', zIndex: 2 }}>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<SwapOutlined />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleProjectFace(project.id);
+                          }}
+                        >
+                          {coverReady ? t('cover.viewCover') : t('cover.actions')}
+                        </Button>
+                      </div>
+                    )}
 
                     {showCoverFace ? (
                       <div style={{
@@ -567,48 +566,123 @@ export default function BookshelfPage({
                         minHeight: 0,
                         width: '100%',
                       }}>
-                        <div style={{
-                          minHeight: isMobile ? 82 : 90,
-                          width: '100%',
-                          marginBottom: isMobile ? 10 : 12,
-                        }}>
-                          <div style={{
-                            fontSize: isMobile ? 18 : 22,
-                            fontWeight: 700,
-                            color: token.colorWhite,
-                            lineHeight: 1.3,
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                            wordBreak: 'break-word',
-                            fontFamily: 'Georgia, "Times New Roman", "Noto Serif SC", serif',
-                            textShadow: '0 2px 12px rgba(0,0,0,0.35)',
-                          }}>
-                            {project.title}
-                          </div>
-                          <div style={{
-                            display: 'flex',
-                            flexWrap: 'wrap',
-                            gap: 6,
-                            marginTop: 10,
-                            minHeight: isMobile ? 20 : 22,
-                            alignItems: 'flex-start',
-                          }}>
-                            {(tags.length > 0 ? tags.slice(0, 3) : [t('card.uncategorized')]).map((tag: string, idx: number) => (
-                              <Tag key={idx} style={{
-                                ...coverOverlayControlStyle,
-                                margin: 0,
-                                padding: isMobile ? '0 7px' : '0 8px',
-                                borderRadius: 999,
-                                fontSize: isMobile ? 10 : 11,
-                                lineHeight: isMobile ? '18px' : '20px',
-                                fontWeight: 500,
+                        <div
+                          data-testid={`cover-hover-trigger-${project.id}`}
+                          onMouseEnter={() => setActiveCoverInfoId(project.id)}
+                          onMouseLeave={() => setActiveCoverInfoId((prev) => (prev === project.id ? null : prev))}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveCoverInfoId((prev) => (prev === project.id ? null : project.id));
+                          }}
+                          style={{
+                            position: 'relative',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            alignSelf: 'flex-start',
+                            zIndex: 5,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: isMobile ? 26 : 22,
+                              height: isMobile ? 26 : 22,
+                              borderRadius: '50%',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: 'rgba(0,0,0,0.22)',
+                              border: '1px solid rgba(255,255,255,0.42)',
+                              cursor: 'pointer',
+                              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                            }}
+                          >
+                            <span style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: '50%',
+                              background: token.colorWhite,
+                              boxShadow: '0 0 6px rgba(255,255,255,0.85)',
+                            }} />
+                          </span>
+
+                          {activeCoverInfoId === project.id && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: isMobile ? 204 : 232,
+                                maxWidth: 'calc(100vw - 96px)',
+                                padding: isMobile ? 10 : 12,
+                                borderRadius: 12,
+                                background: 'rgba(12,18,30,0.78)',
+                                border: '1px solid rgba(255,255,255,0.22)',
+                                backdropFilter: 'blur(12px)',
+                                boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 8,
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  icon={<BookOutlined />}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveCoverInfoId(null);
+                                    toggleProjectFace(project.id);
+                                  }}
+                                  style={{
+                                    ...coverOverlayControlStyle,
+                                    borderRadius: 999,
+                                  }}
+                                >
+                                  {t('cover.backToDetails')}
+                                </Button>
+                              </div>
+
+                              <div style={{
+                                fontSize: isMobile ? 16 : 18,
+                                fontWeight: 700,
+                                color: token.colorWhite,
+                                lineHeight: 1.3,
+                                display: '-webkit-box',
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden',
+                                wordBreak: 'break-word',
+                                fontFamily: 'Georgia, "Times New Roman", "Noto Serif SC", serif',
+                                textShadow: '0 2px 8px rgba(0,0,0,0.45)',
                               }}>
-                                {tag}
-                              </Tag>
-                            ))}
-                          </div>
+                                {project.title}
+                              </div>
+
+                              <div style={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 6,
+                                alignItems: 'flex-start',
+                              }}>
+                                {(tags.length > 0 ? tags.slice(0, 3) : [t('card.uncategorized')]).map((tag: string, idx: number) => (
+                                  <Tag key={idx} style={{
+                                    ...coverOverlayControlStyle,
+                                    margin: 0,
+                                    padding: isMobile ? '0 7px' : '0 8px',
+                                    borderRadius: 999,
+                                    fontSize: isMobile ? 10 : 11,
+                                    lineHeight: isMobile ? '18px' : '20px',
+                                    fontWeight: 500,
+                                  }}>
+                                    {tag}
+                                  </Tag>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         <div style={{ flex: 1, minHeight: isMobile ? 54 : 72 }} />

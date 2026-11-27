@@ -154,7 +154,7 @@ describe('BookshelfPage custom cover upload', () => {
     await waitFor(() => {
       expect(onUploadCover).toHaveBeenCalledTimes(2);
     });
-    expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
+    expect(screen.getByTestId('cover-hover-trigger-proj-1')).toBeInTheDocument();
   });
 
   it('flips back to cover face after upload succeeds, and stays flipped if upload returns false', async () => {
@@ -213,7 +213,7 @@ describe('BookshelfPage custom cover upload', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
+    expect(screen.getByTestId('cover-hover-trigger-proj-1')).toBeInTheDocument();
   });
 
   it('rejects empty, unsupported, corrupted, and oversized files before calling onUploadCover', async () => {
@@ -253,7 +253,7 @@ describe('BookshelfPage custom cover upload', () => {
     expect(await screen.findByText('封面图片大小不能超过 10MB')).toBeInTheDocument();
   });
 
-  it('renders transparent cover face controls and stats box without opaque background or backdrop blur', () => {
+  it('renders transparent cover face bottom controls and stats box without opaque background or backdrop blur', () => {
     renderBookshelf([
       {
         ...baseProject,
@@ -269,16 +269,44 @@ describe('BookshelfPage custom cover upload', () => {
     expect(statsBox.style.backdropFilter || '').toBe('');
     expect(statsBox.style.boxShadow).toBe('');
 
-    const backBtn = screen.getByRole('button', { name: /切换回详情/ });
-    const genreTag = screen.getByText('奇幻').closest('.ant-tag') as HTMLElement;
     const downloadBtn = screen.getByRole('button', { name: /下载封面/ });
     const uploadBtn = screen.getByRole('button', { name: /上传封面/ });
     const regenBtn = screen.getByRole('button', { name: /重新生成/ });
 
-    for (const el of [backBtn, genreTag, downloadBtn, uploadBtn, regenBtn]) {
+    for (const el of [downloadBtn, uploadBtn, regenBtn]) {
       expect(el).not.toBeNull();
       expect(el.style.background).toBe('transparent');
       expect(el.style.backdropFilter || '').toBe('');
     }
+  });
+
+  it('hides switch button, title, and genre tags behind a hover dot on cover face and reveals them on hover', () => {
+    renderBookshelf([
+      {
+        ...baseProject,
+        cover_status: 'ready',
+        cover_image_url: '/generated-assets/covers/u1/cover.png',
+      },
+    ]);
+
+    const trigger = screen.getByTestId('cover-hover-trigger-proj-1');
+    expect(trigger).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /切换回详情/ })).toBeNull();
+    expect(screen.queryByText('测试书架作品')).toBeNull();
+    expect(screen.queryByText('奇幻')).toBeNull();
+
+    fireEvent.mouseEnter(trigger);
+    expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
+    expect(screen.getByText('测试书架作品')).toBeInTheDocument();
+    expect(screen.getByText('奇幻')).toBeInTheDocument();
+
+    fireEvent.mouseLeave(trigger);
+    expect(screen.queryByRole('button', { name: /切换回详情/ })).toBeNull();
+    expect(screen.queryByText('测试书架作品')).toBeNull();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole('button', { name: /切换回详情/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /切换回详情/ }));
+    expect(screen.getByRole('button', { name: /查看封面/ })).toBeInTheDocument();
   });
 });
