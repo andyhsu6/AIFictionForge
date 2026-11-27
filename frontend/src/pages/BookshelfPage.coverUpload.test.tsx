@@ -252,4 +252,33 @@ describe('BookshelfPage custom cover upload', () => {
     expect(onUploadCover).not.toHaveBeenCalled();
     expect(await screen.findByText('封面图片大小不能超过 10MB')).toBeInTheDocument();
   });
+
+  it('renders transparent cover face controls and stats box without opaque background or backdrop blur', () => {
+    renderBookshelf([
+      {
+        ...baseProject,
+        cover_status: 'ready',
+        cover_image_url: '/generated-assets/covers/u1/cover.png',
+      },
+    ]);
+
+    const progressLabel = screen.getByText('完成进度');
+    const statsBox = progressLabel.parentElement?.parentElement as HTMLElement;
+    expect(statsBox).not.toBeNull();
+    expect(statsBox.style.background).toBe('transparent');
+    expect(statsBox.style.backdropFilter || '').toBe('');
+    expect(statsBox.style.boxShadow).toBe('');
+
+    const backBtn = screen.getByRole('button', { name: /切换回详情/ });
+    const genreTag = screen.getByText('奇幻').closest('.ant-tag') as HTMLElement;
+    const downloadBtn = screen.getByRole('button', { name: /下载封面/ });
+    const uploadBtn = screen.getByRole('button', { name: /上传封面/ });
+    const regenBtn = screen.getByRole('button', { name: /重新生成/ });
+
+    for (const el of [backBtn, genreTag, downloadBtn, uploadBtn, regenBtn]) {
+      expect(el).not.toBeNull();
+      expect(el.style.background).toBe('transparent');
+      expect(el.style.backdropFilter || '').toBe('');
+    }
+  });
 });
