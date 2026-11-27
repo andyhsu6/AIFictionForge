@@ -626,6 +626,32 @@ export default function Characters() {
 
   const isMobile = window.innerWidth <= 768;
 
+  const renderCharacterCardCol = (item: Character) => (
+    <Col
+      xs={24}
+      sm={charactersPageGridConfig.sm}
+      md={charactersPageGridConfig.md}
+      lg={charactersPageGridConfig.lg}
+      xl={charactersPageGridConfig.xl}
+      key={item.id}
+      style={{ padding: isMobile ? '4px' : '8px', display: 'flex' }}
+    >
+      <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+        <Checkbox
+          checked={selectedCharacters.includes(item.id)}
+          onChange={() => toggleSelectCharacter(item.id)}
+          style={{ position: 'absolute', top: 8, left: 8, zIndex: 1 }}
+        />
+        <CharacterCard
+          character={item}
+          onEdit={handleEditCharacter}
+          onDelete={handleDeleteCharacterWrapper}
+          onExport={() => handleExportSingle(item.id)}
+        />
+      </div>
+    </Col>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {contextHolder}
@@ -795,7 +821,7 @@ export default function Characters() {
           <Empty description={t('empty.none')} />
         ) : (
           <>
-            <Row gutter={isMobile ? [8, 8] : charactersPageGridConfig.gutter}>
+            <Row gutter={isMobile ? [8, 8] : charactersPageGridConfig.gutter} align="stretch">
               {activeTab === 'all' && (
                 <>
                   {characterList.length > 0 && (
@@ -808,31 +834,7 @@ export default function Characters() {
                           </Title>
                         </Divider>
                       </Col>
-                      {characterList.map((character) => (
-                        <Col
-                          xs={24}
-                          sm={charactersPageGridConfig.sm}
-                          md={charactersPageGridConfig.md}
-                          lg={charactersPageGridConfig.lg}
-                          xl={charactersPageGridConfig.xl}
-                          key={character.id}
-                          style={{ padding: isMobile ? '4px' : '8px' }}
-                        >
-                          <div style={{ position: 'relative' }}>
-                            <Checkbox
-                              checked={selectedCharacters.includes(character.id)}
-                              onChange={() => toggleSelectCharacter(character.id)}
-                              style={{ position: 'absolute', top: 8, left: 8, zIndex: 1 }}
-                            />
-                            <CharacterCard
-                              character={character}
-                              onEdit={handleEditCharacter}
-                              onDelete={handleDeleteCharacterWrapper}
-                              onExport={() => handleExportSingle(character.id)}
-                            />
-                          </div>
-                        </Col>
-                      ))}
+                      {characterList.map(renderCharacterCardCol)}
                     </>
                   )}
 
@@ -846,87 +848,15 @@ export default function Characters() {
                           </Title>
                         </Divider>
                       </Col>
-                      {organizationList.map((org) => (
-                        <Col
-                          xs={24}
-                          sm={charactersPageGridConfig.sm}
-                          md={charactersPageGridConfig.md}
-                          lg={charactersPageGridConfig.lg}
-                          xl={charactersPageGridConfig.xl}
-                          key={org.id}
-                          style={{ padding: isMobile ? '4px' : '8px' }}
-                        >
-                          <div style={{ position: 'relative' }}>
-                            <Checkbox
-                              checked={selectedCharacters.includes(org.id)}
-                              onChange={() => toggleSelectCharacter(org.id)}
-                              style={{ position: 'absolute', top: 8, left: 8, zIndex: 1 }}
-                            />
-                            <CharacterCard
-                              character={org}
-                              onEdit={handleEditCharacter}
-                              onDelete={handleDeleteCharacterWrapper}
-                              onExport={() => handleExportSingle(org.id)}
-                            />
-                          </div>
-                        </Col>
-                      ))}
+                      {organizationList.map(renderCharacterCardCol)}
                     </>
                   )}
                 </>
               )}
 
-              {activeTab === 'character' && characterList.map((character) => (
-                <Col
-                  xs={24}
-                  sm={charactersPageGridConfig.sm}
-                  md={charactersPageGridConfig.md}
-                  lg={charactersPageGridConfig.lg}
-                  xl={charactersPageGridConfig.xl}
-                  key={character.id}
-                  style={{ padding: isMobile ? '4px' : '8px' }}
-                >
-                  <div style={{ position: 'relative' }}>
-                    <Checkbox
-                      checked={selectedCharacters.includes(character.id)}
-                      onChange={() => toggleSelectCharacter(character.id)}
-                      style={{ position: 'absolute', top: 8, left: 8, zIndex: 1 }}
-                    />
-                    <CharacterCard
-                      character={character}
-                      onEdit={handleEditCharacter}
-                      onDelete={handleDeleteCharacterWrapper}
-                      onExport={() => handleExportSingle(character.id)}
-                    />
-                  </div>
-                </Col>
-              ))}
+              {activeTab === 'character' && characterList.map(renderCharacterCardCol)}
 
-              {activeTab === 'organization' && organizationList.map((org) => (
-                <Col
-                  xs={24}
-                  sm={charactersPageGridConfig.sm}
-                  md={charactersPageGridConfig.md}
-                  lg={charactersPageGridConfig.lg}
-                  xl={charactersPageGridConfig.xl}
-                  key={org.id}
-                  style={{ padding: isMobile ? '4px' : '8px' }}
-                >
-                  <div style={{ position: 'relative' }}>
-                    <Checkbox
-                      checked={selectedCharacters.includes(org.id)}
-                      onChange={() => toggleSelectCharacter(org.id)}
-                      style={{ position: 'absolute', top: 8, left: 8, zIndex: 1 }}
-                    />
-                    <CharacterCard
-                      character={org}
-                      onEdit={handleEditCharacter}
-                      onDelete={handleDeleteCharacterWrapper}
-                      onExport={() => handleExportSingle(org.id)}
-                    />
-                  </div>
-                </Col>
-              ))}
+              {activeTab === 'organization' && organizationList.map(renderCharacterCardCol)}
             </Row>
 
             {displayList.length === 0 && (

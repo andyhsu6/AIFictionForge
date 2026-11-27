@@ -153,30 +153,32 @@ export const worldSettingCardStyles = {
 };
 
 // Characters 页面（CharacterCard + 网格）样式
+export const CHARACTER_CARD_HEIGHT = 360;
+
 export const characterCardStyles = {
   characterCard: {
     display: 'flex',
     flexDirection: 'column',
+    width: '100%',
+    height: CHARACTER_CARD_HEIGHT,
     borderRadius: 12,
   } as CSSProperties,
 
   organizationCard: {
     display: 'flex',
     flexDirection: 'column',
+    width: '100%',
+    height: CHARACTER_CARD_HEIGHT,
     backgroundColor: 'var(--ant-color-bg-layout)',
     borderRadius: 12,
   } as CSSProperties,
 
-  nameEllipsis: {
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  } as CSSProperties,
-
   descriptionBlock: {
-    marginTop: 12,
-    maxHeight: 200,
-    overflow: 'hidden',
+    marginTop: 10,
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowX: 'hidden',
   } as CSSProperties,
 };
 

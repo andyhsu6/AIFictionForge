@@ -1,4 +1,4 @@
-import { Button, Card, Space, Tag, Typography, Popconfirm, theme } from 'antd';
+import { Button, Card, Tag, Typography, Popconfirm, theme } from 'antd';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { EditOutlined, DeleteOutlined, UserOutlined, BankOutlined, ExportOutlined, ReadOutlined } from '@ant-design/icons';
@@ -42,6 +42,11 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
   const charStatus = character.status || 'active';
   const isInactive = charStatus !== 'active';
   const profileFacts = character.profile_facts ?? [];
+  const organizationMembersText = character.organization_members
+    ? (typeof character.organization_members === 'string'
+      ? character.organization_members
+      : JSON.stringify(character.organization_members))
+    : '';
   const renderSourceButton = () => {
     if (profileFacts.length === 0) return null;
     return (
@@ -50,6 +55,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
         size="small"
         aria-label={t('sourceLabel')}
         icon={<ReadOutlined />}
+        style={{ height: 22, lineHeight: 1, padding: 0 }}
         onClick={() => setSourcesOpen(true)}
       />
     );
@@ -64,7 +70,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
     };
     const config = statusConfig[charStatus];
     if (!config) return null;
-    return <Tag color={config.color} style={{ marginLeft: 4 }}>{config.label}</Tag>;
+    return <Tag color={config.color} style={{ marginInlineEnd: 0, flexShrink: 0 }}>{config.label}</Tag>;
   };
 
   return (
@@ -77,12 +83,15 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
       styles={{
         body: {
           flex: 1,
-          overflow: 'auto',
+          minHeight: 0,
+          overflow: 'hidden',
           display: 'flex',
-          flexDirection: 'column'
+          flexDirection: 'column',
+          padding: '24px 20px 16px'
         },
         actions: {
-          borderRadius: '0 0 12px 12px'
+          borderRadius: '0 0 12px 12px',
+          flexShrink: 0
         }
       }}
       actions={[
@@ -108,49 +117,54 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
         updatedAt={character.updated_at}
         factsUpdatedAt={character.profile_facts_updated_at}
       />
-      <Card.Meta
-        style={{ width: '100%', flexShrink: 0 }}
-        avatar={
-          isOrganization ? (
-            <BankOutlined style={{ fontSize: 32, color: token.colorSuccess }} />
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexShrink: 0, minWidth: 0 }}>
+        <div style={{ flexShrink: 0, paddingTop: 2, display: 'flex', alignItems: 'center' }}>
+          {isOrganization ? (
+            <BankOutlined style={{ fontSize: 28, color: token.colorSuccess }} />
           ) : (
-            <UserOutlined style={{ fontSize: 32, color: token.colorPrimary }} />
-          )
-        }
-        title={
-          <Space>
-            <span style={characterCardStyles.nameEllipsis}>{character.name}</span>
+            <UserOutlined style={{ fontSize: 28, color: token.colorPrimary }} />
+          )}
+        </div>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <Text strong ellipsis={{ tooltip: character.name }} style={{ fontSize: 15, lineHeight: '22px' }}>
+            {character.name}
+          </Text>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minHeight: 22 }}>
             {isOrganization ? (
-              <Tag color="green">{t('organization')}</Tag>
+              <Tag color="green" style={{ marginInlineEnd: 0 }}>{t('organization')}</Tag>
             ) : (
               character.role_type && (
-                <Tag color={getRoleTypeColor(character.role_type)}>
+                <Tag color={getRoleTypeColor(character.role_type)} style={{ marginInlineEnd: 0 }}>
                   {getRoleTypeLabel(character.role_type)}
                 </Tag>
               )
             )}
             {getStatusTag()}
-          </Space>
-        }
-        description={
-          <div style={{ ...characterCardStyles.descriptionBlock, width: 'calc(100% + 48px)', marginLeft: -48 }}>
+          </div>
+        </div>
+      </div>
+      <div style={{ ...characterCardStyles.descriptionBlock, width: '100%' }}>
             {/* 角色特有字段 */}
             {!isOrganization && (
               <>
                 {character.age && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('age')}</Text>
-                    <Text style={{ flex: 1 }}>{character.age}</Text>
+                    <Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: character.age }}>
+                      {character.age}
+                    </Text>
                   </div>
                 )}
                 {character.gender && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('gender')}</Text>
-                    <Text style={{ flex: 1 }}>{character.gender}</Text>
+                    <Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: character.gender }}>
+                      {character.gender}
+                    </Text>
                   </div>
                 )}
                 {character.personality && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('personality')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -161,7 +175,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                   </div>
                 )}
                 {character.appearance && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('appearance')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -172,7 +186,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                   </div>
                 )}
                 {character.relationships && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('relationships')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -189,13 +203,13 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
             {isOrganization && (
               <>
                 {character.organization_type && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('organizationType')}</Text>
                     <Tag color="cyan">{character.organization_type}</Tag>
                   </div>
                 )}
                 {character.power_level !== undefined && character.power_level !== null && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('powerLevel')}</Text>
                     <Tag color={character.power_level >= 70 ? 'red' : character.power_level >= 50 ? 'orange' : 'default'}>
                       {character.power_level}
@@ -203,7 +217,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                   </div>
                 )}
                 {character.location && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('location')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -214,13 +228,15 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                   </div>
                 )}
                 {character.color && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('representativeColor')}</Text>
-                    <Text style={{ flex: 1, minWidth: 0 }}>{character.color}</Text>
+                    <Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: character.color }}>
+                      {character.color}
+                    </Text>
                   </div>
                 )}
                 {character.motto && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('motto')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -231,7 +247,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                   </div>
                 )}
                 {character.organization_purpose && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('purpose')}</Text>
                     <Text
                       style={{ flex: 1, minWidth: 0 }}
@@ -241,13 +257,11 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                     </Text>
                   </div>
                 )}
-                {character.organization_members && (
-                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'flex-start' }}>
+                {organizationMembersText && (
+                  <div style={{ marginBottom: 6, display: 'flex', alignItems: 'flex-start' }}>
                     <Text type="secondary" style={{ flexShrink: 0 }}>{t('members')}</Text>
-                    <Text style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, wordBreak: 'break-all' }}>
-                      {typeof character.organization_members === 'string'
-                        ? character.organization_members
-                        : JSON.stringify(character.organization_members)}
+                    <Text style={{ flex: 1, minWidth: 0, fontSize: 12 }} ellipsis={{ tooltip: organizationMembersText }}>
+                      {organizationMembersText}
                     </Text>
                   </div>
                 )}
@@ -256,7 +270,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
 
             {/* 通用字段 - 背景信息截断显示 */}
             {character.background && (
-              <div style={{ marginTop: 12 }}>
+              <div style={{ marginTop: 8 }}>
                 <Paragraph
                   type="secondary"
                   style={{ fontSize: 12, marginBottom: 0 }}
@@ -266,9 +280,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({ character, onEdit,
                 </Paragraph>
               </div>
             )}
-          </div>
-        }
-      />
+      </div>
     </Card>
   );
 };
