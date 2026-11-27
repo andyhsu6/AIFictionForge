@@ -11,13 +11,17 @@
     "backToDetails": "Back to Details",
     "download": "Download Cover",
     "failed": "Cover generation failed",
+    "fileTooLarge": "Cover image size cannot exceed 10MB",
     "generate": "Generate Cover",
     "generating": "Cover is generating, please wait...",
     "generatingShort": "Generating...",
+    "invalidFormat": "Only PNG, JPG, or WebP images are supported",
     "noneAvailable": "No cover available yet",
     "regenerate": "Regenerate",
     "regenerating": "Regenerating...",
     "retryLater": "Please retry later",
+    "upload": "Upload Cover",
+    "uploading": "Uploading...",
     "viewCover": "View Cover"
   },
   "header": {

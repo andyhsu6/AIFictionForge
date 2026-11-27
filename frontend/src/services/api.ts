@@ -407,6 +407,22 @@ export const projectApi = {
       message: string;
     }>(`/projects/${id}/cover/generate`, { overwrite }),
 
+  uploadCover: (id: string, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<unknown, {
+      project_id: string;
+      cover_status: string;
+      cover_image_url?: string;
+      cover_prompt?: string;
+      provider?: string;
+      model?: string;
+      message: string;
+    }>(`/projects/${id}/cover/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
   downloadCover: async (id: string, filename?: string) => {
     const response = await axios.get(`/api/projects/${id}/cover/download`, {
       responseType: 'blob',

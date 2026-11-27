@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
+import uuid
 
 import httpx
 from fastapi import HTTPException
@@ -29,6 +30,24 @@ COVER_WIDTH = 1024
 COVER_HEIGHT = 1536
 GENERATED_COVER_STORAGE_DIR = PROJECT_ROOT / "storage" / "generated_covers"
 GENERATED_COVER_PUBLIC_PREFIX = "/generated-assets/covers"
+MAX_UPLOAD_COVER_MB = 10
+MAX_UPLOAD_COVER_BYTES = MAX_UPLOAD_COVER_MB * 1024 * 1024
+
+
+def _detect_image_extension(content: bytes) -> str:
+    """根据图片文件头魔数与最小容器结构识别扩展名，仅允许 PNG/JPEG/WebP。"""
+    if len(content) >= 33 and content.startswith(b"\x89PNG\r\n\x1a\n") and content[12:16] == b"IHDR":
+        return "png"
+    if len(content) >= 4 and content.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if (
+        len(content) >= 16
+        and content[:4] == b"RIFF"
+        and content[8:12] == b"WEBP"
+        and content[12:16] in (b"VP8 ", b"VP8L", b"VP8X")
+    ):
+        return "webp"
+    raise ApiError(code="validation.cover_file_invalid")
 
 
 @dataclass
@@ -184,6 +203,58 @@ class CoverGenerationService:
         project.cover_updated_at = None
         await db.commit()
 
+    async def upload_cover(
+        self,
+        *,
+        db: AsyncSession,
+        user_id: str,
+        project_id: str,
+        content: bytes,
+    ) -> dict:
+        project = await self._get_project(db=db, user_id=user_id, project_id=project_id)
+        if project.cover_status == "generating":
+            raise ApiError(code="conflict.cover_generating")
+
+        if len(content) > MAX_UPLOAD_COVER_BYTES:
+            raise ApiError(
+                code="validation.file_too_large",
+                params={"max_mb": MAX_UPLOAD_COVER_MB},
+            )
+        if not content:
+            raise ApiError(code="validation.cover_file_invalid")
+
+        file_extension = _detect_image_extension(content)
+        previous_cover_url = project.cover_image_url
+        image_url = self._save_cover_file(
+            user_id=user_id,
+            project_id=project.id,
+            content=content,
+            file_extension=file_extension,
+        )
+
+        project.cover_image_url = image_url
+        project.cover_status = "ready"
+        project.cover_error = None
+        project.cover_prompt = None
+        project.cover_updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(project)
+
+        self._remove_replaced_cover_file(
+            previous_cover_url=previous_cover_url,
+            current_cover_url=image_url,
+        )
+
+        return {
+            "project_id": project.id,
+            "cover_status": project.cover_status,
+            "cover_image_url": project.cover_image_url,
+            "cover_prompt": None,
+            "provider": None,
+            "model": None,
+            "message": "封面上传成功",
+        }
+
     async def _get_project(self, *, db: AsyncSession, user_id: str, project_id: str) -> Project:
         result = await db.execute(
             select(Project).where(Project.id == project_id, Project.user_id == user_id)
@@ -239,12 +310,35 @@ class CoverGenerationService:
         user_dir = GENERATED_COVER_STORAGE_DIR / user_id
         user_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        unique_suffix = uuid.uuid4().hex[:8]
         safe_extension = (file_extension or "png").lstrip(".")
-        filename = f"{project_id}_{timestamp}.{safe_extension}"
+        filename = f"{project_id}_{timestamp}_{unique_suffix}.{safe_extension}"
         file_path = user_dir / filename
         file_path.write_bytes(content)
         logger.info("封面文件已保存: project_id=%s path=%s", project_id, file_path)
         return f"{GENERATED_COVER_PUBLIC_PREFIX}/{quote(user_id)}/{quote(filename)}"
+
+    def _remove_replaced_cover_file(
+        self,
+        *,
+        previous_cover_url: Optional[str],
+        current_cover_url: str,
+    ) -> None:
+        """替换封面后安全清理旧本地封面文件，忽略缺失或越界路径。"""
+        if not previous_cover_url or previous_cover_url == current_cover_url:
+            return
+        try:
+            old_path = self._resolve_cover_path(previous_cover_url).resolve()
+            new_path = self._resolve_cover_path(current_cover_url).resolve()
+            storage_root = GENERATED_COVER_STORAGE_DIR.resolve()
+            old_path.relative_to(storage_root)
+        except (ApiError, ValueError):
+            return
+        if old_path != new_path and old_path.is_file():
+            try:
+                old_path.unlink()
+            except OSError as exc:
+                logger.warning("清理旧封面文件失败: path=%s error=%s", old_path, exc)
 
     def _resolve_cover_path(self, cover_image_url: Optional[str]) -> Path:
         if not cover_image_url:

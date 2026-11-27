@@ -372,6 +372,7 @@ ERROR_REGISTRY: Dict[str, Tuple[str, int]] = {
     "validation.continue_segment_limit_exceeded": ("续写分段数超出上限，请降低目标字数", 400),
     "validation.continue_target_too_large": ("续写目标字数超出上限", 400),
     "validation.cover_config_incomplete": ("封面图片配置不完整，请填写 provider、api_key 和 model", 400),
+    "validation.cover_file_invalid": ("封面图片仅支持 PNG、JPG 或 WebP 格式", 400),
     "validation.cover_provider_unsupported": ("当前版本仅支持 Gemini 或 Grok", 400),
     "validation.email_format": ("请输入有效的邮箱地址", 400),
     "validation.export_type_unsupported": ("不支持的导出类型", 404),

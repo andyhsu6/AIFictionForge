@@ -11,13 +11,17 @@
     "backToDetails": "切换回详情",
     "download": "下载封面",
     "failed": "封面生成失败",
+    "fileTooLarge": "封面图片大小不能超过 10MB",
     "generate": "生成封面",
     "generating": "封面生成中，请稍候...",
     "generatingShort": "生成中...",
+    "invalidFormat": "仅支持 PNG、JPG 或 WebP 格式的图片",
     "noneAvailable": "当前暂无可用封面",
     "regenerate": "重新生成",
     "regenerating": "重新生成中...",
     "retryLater": "请稍后重试",
+    "upload": "上传封面",
+    "uploading": "上传中...",
     "viewCover": "查看封面"
   },
   "header": {

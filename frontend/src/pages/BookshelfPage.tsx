@@ -1,13 +1,16 @@
-import { Card, Button, Spin, Space, Tag, Typography, Alert, theme } from 'antd';
+import { Card, Button, Spin, Space, Tag, Typography, Alert, App, theme } from 'antd';
 import { BookOutlined, RocketOutlined, BulbOutlined, UploadOutlined, DownloadOutlined, LoadingOutlined, CalendarOutlined, DeleteOutlined, CheckCircleOutlined, EditOutlined, PauseCircleOutlined, PictureOutlined, SwapOutlined, ReloadOutlined } from '@ant-design/icons';
-import { useState } from 'react';
-import type { ReactNode } from 'react';
+import { useRef, useState } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import type { Project } from '../types';
 import { bookshelfCardStyles, bookshelfCardHoverHandlers } from '../components/CardStyles';
 import { useThemeMode } from '../theme/useThemeMode';
 import { useTranslation } from 'react-i18next';
 
 const { Paragraph } = Typography;
+const MAX_COVER_UPLOAD_BYTES = 10 * 1024 * 1024;
+const ALLOWED_COVER_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const ALLOWED_COVER_EXTENSIONS = /\.(png|jpe?g|webp)$/i;
 
 interface BookshelfPageProps {
   isMobile: boolean;
@@ -24,6 +27,7 @@ interface BookshelfPageProps {
   onEnterProject: (project: Project) => void;
   onDeleteProject: (projectId: string) => void;
   onGenerateCover: (project: Project, overwrite?: boolean) => void | Promise<void>;
+  onUploadCover: (project: Project, file: File) => boolean | void | Promise<boolean | void>;
   onDownloadCover: (project: Project) => void;
   formatWordCount: (count: number) => string;
   getProgress: (current: number, target: number) => number;
@@ -48,6 +52,7 @@ export default function BookshelfPage({
   onEnterProject,
   onDeleteProject,
   onGenerateCover,
+  onUploadCover,
   onDownloadCover,
   formatWordCount,
   getProgress,
@@ -56,6 +61,7 @@ export default function BookshelfPage({
   formatDate,
 }: BookshelfPageProps) {
   const { t } = useTranslation('bookshelf');
+  const { message } = App.useApp();
   const { token } = theme.useToken();
   const { resolvedMode } = useThemeMode();
   const isDark = resolvedMode === 'dark';
@@ -71,6 +77,9 @@ export default function BookshelfPage({
   };
   const [flippedProjectIds, setFlippedProjectIds] = useState<Record<string, boolean>>({});
   const [coverGeneratingIds, setCoverGeneratingIds] = useState<Record<string, boolean>>({});
+  const [coverUploadingIds, setCoverUploadingIds] = useState<Record<string, boolean>>({});
+  const coverFileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadTargetProjectRef = useRef<Project | null>(null);
   const mobileBookHeight = 520;
   const desktopBookHeight = 520;
   const mobileSpineWidth = 32;
@@ -130,7 +139,7 @@ export default function BookshelfPage({
   const handleGenerateCoverClick = async (event: React.MouseEvent<HTMLElement>, project: Project, overwrite: boolean = true) => {
     event.stopPropagation();
 
-    if (coverGeneratingIds[project.id]) {
+    if (coverGeneratingIds[project.id] || coverUploadingIds[project.id]) {
       return;
     }
 
@@ -143,8 +152,77 @@ export default function BookshelfPage({
     }
   };
 
+  const handleUploadCoverClick = (event: React.MouseEvent<HTMLElement>, project: Project) => {
+    event.stopPropagation();
+    if (coverGeneratingIds[project.id] || coverUploadingIds[project.id]) {
+      return;
+    }
+    uploadTargetProjectRef.current = project;
+    coverFileInputRef.current?.click();
+  };
+
+  const isSupportedCoverFile = (file: File): boolean => {
+    if (file.type) {
+      return ALLOWED_COVER_MIME_TYPES.has(file.type.toLowerCase());
+    }
+    return ALLOWED_COVER_EXTENSIONS.test(file.name);
+  };
+
+  const isDecodableImageFile = async (file: File): Promise<boolean> => {
+    if (typeof createImageBitmap !== 'function') {
+      return true;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close?.();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleCoverFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    const targetProject = uploadTargetProjectRef.current;
+    uploadTargetProjectRef.current = null;
+    if (!file || !targetProject) {
+      return;
+    }
+
+    if (file.size === 0 || !isSupportedCoverFile(file)) {
+      message.error(t('cover.invalidFormat'));
+      return;
+    }
+    if (file.size > MAX_COVER_UPLOAD_BYTES) {
+      message.error(t('cover.fileTooLarge'));
+      return;
+    }
+    if (!(await isDecodableImageFile(file))) {
+      message.error(t('cover.invalidFormat'));
+      return;
+    }
+
+    setCoverUploadingIds((prev) => ({ ...prev, [targetProject.id]: true }));
+    try {
+      const uploaded = await onUploadCover(targetProject, file);
+      if (uploaded !== false) {
+        setFlippedProjectIds((prev) => ({ ...prev, [targetProject.id]: false }));
+      }
+    } finally {
+      setCoverUploadingIds((prev) => ({ ...prev, [targetProject.id]: false }));
+    }
+  };
+
   return (
     <div>
+      <input
+        ref={coverFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        style={{ display: 'none' }}
+        onChange={(e) => void handleCoverFileChange(e)}
+      />
       <Card
         variant="borderless"
         style={{
@@ -372,10 +450,12 @@ export default function BookshelfPage({
             const ribbonStatusIcon = getRibbonStatusIcon(displayStatus, isWizardIncomplete, isCompleted);
 
             const isFlipped = !!flippedProjectIds[project.id];
-            const coverActionLoading = !!coverGeneratingIds[project.id];
+            const isGenerating = !!coverGeneratingIds[project.id];
+            const isUploading = !!coverUploadingIds[project.id];
+            const coverActionLoading = isGenerating || isUploading;
             const coverReady = project.cover_status === 'ready' && !!project.cover_image_url;
-            const coverGenerating = project.cover_status === 'generating' || coverActionLoading;
-            const coverFailed = project.cover_status === 'failed' && !coverActionLoading;
+            const coverGenerating = project.cover_status === 'generating' || isGenerating;
+            const coverFailed = project.cover_status === 'failed' && !coverGenerating;
             const showCoverFace = coverReady && !isFlipped;
 
             return (
@@ -667,8 +747,24 @@ export default function BookshelfPage({
                               </Button>
                               <Button
                                 size="small"
+                                icon={<UploadOutlined />}
+                                loading={isUploading}
+                                disabled={coverActionLoading && !isUploading}
+                                onClick={(e) => handleUploadCoverClick(e, project)}
+                                style={{
+                                  color: token.colorWhite,
+                                  background: 'rgba(255,255,255,0.14)',
+                                  borderColor: 'rgba(255,255,255,0.22)',
+                                  backdropFilter: 'blur(8px)',
+                                }}
+                              >
+                                {isUploading ? t('cover.uploading') : t('cover.upload')}
+                              </Button>
+                              <Button
+                                size="small"
                                 icon={<ReloadOutlined />}
-                                loading={coverActionLoading}
+                                loading={isGenerating}
+                                disabled={coverActionLoading && !isGenerating}
                                 onClick={(e) => void handleGenerateCoverClick(e, project, true)}
                                 style={{
                                   color: token.colorWhite,
@@ -677,7 +773,7 @@ export default function BookshelfPage({
                                   backdropFilter: 'blur(8px)',
                                 }}
                               >
-                                {coverActionLoading ? t('cover.regenerating') : t('cover.regenerate')}
+                                {isGenerating ? t('cover.regenerating') : t('cover.regenerate')}
                               </Button>
                             </Space>
                           </div>
@@ -695,29 +791,53 @@ export default function BookshelfPage({
                             <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
                             <div style={{ color: token.colorError }}>{t('cover.failed')}</div>
                             <div style={{ color: token.colorTextSecondary, fontSize: 12 }}>{project.cover_error || t('cover.retryLater')}</div>
-                            <Button
-                              type="primary"
-                              icon={<ReloadOutlined />}
-                              loading={coverActionLoading}
-                              onClick={(e) => void handleGenerateCoverClick(e, project, true)}
-                              style={coverButtonStyle}
-                            >
-                              {coverActionLoading ? t('cover.regenerating') : t('cover.regenerate')}
-                            </Button>
+                            <Space wrap style={{ justifyContent: 'center' }}>
+                              <Button
+                                type="primary"
+                                icon={<ReloadOutlined />}
+                                loading={isGenerating}
+                                disabled={coverActionLoading && !isGenerating}
+                                onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                                style={coverButtonStyle}
+                              >
+                                {isGenerating ? t('cover.regenerating') : t('cover.regenerate')}
+                              </Button>
+                              <Button
+                                icon={<UploadOutlined />}
+                                loading={isUploading}
+                                disabled={coverActionLoading && !isUploading}
+                                onClick={(e) => handleUploadCoverClick(e, project)}
+                                style={coverButtonStyle}
+                              >
+                                {isUploading ? t('cover.uploading') : t('cover.upload')}
+                              </Button>
+                            </Space>
                           </div>
                         ) : isFlipped && !coverReady ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, textAlign: 'center', minHeight: 0 }}>
                             <PictureOutlined style={{ fontSize: 36, color: token.colorTextTertiary }} />
                             <div style={{ color: token.colorTextSecondary }}>{t('cover.noneAvailable')}</div>
-                            <Button
-                              type="primary"
-                              icon={<PictureOutlined />}
-                              loading={coverActionLoading}
-                              onClick={(e) => void handleGenerateCoverClick(e, project, true)}
-                              style={coverButtonStyle}
-                            >
-                              {coverActionLoading ? t('cover.generatingShort') : t('cover.generate')}
-                            </Button>
+                            <Space wrap style={{ justifyContent: 'center' }}>
+                              <Button
+                                type="primary"
+                                icon={<PictureOutlined />}
+                                loading={isGenerating}
+                                disabled={coverActionLoading && !isGenerating}
+                                onClick={(e) => void handleGenerateCoverClick(e, project, true)}
+                                style={coverButtonStyle}
+                              >
+                                {isGenerating ? t('cover.generatingShort') : t('cover.generate')}
+                              </Button>
+                              <Button
+                                icon={<UploadOutlined />}
+                                loading={isUploading}
+                                disabled={coverActionLoading && !isUploading}
+                                onClick={(e) => handleUploadCoverClick(e, project)}
+                                style={coverButtonStyle}
+                              >
+                                {isUploading ? t('cover.uploading') : t('cover.upload')}
+                              </Button>
+                            </Space>
                           </div>
                         ) : (
                           <>
@@ -904,14 +1024,15 @@ export default function BookshelfPage({
                                   <Button
                                     size="small"
                                     icon={<PictureOutlined />}
-                                    loading={coverActionLoading}
+                                    loading={isGenerating}
+                                    disabled={coverActionLoading && !isGenerating}
                                     onClick={(e) => void handleGenerateCoverClick(e, project, true)}
                                     style={{
                                       ...coverButtonStyle,
                                       minWidth: isMobile ? 112 : 124,
                                     }}
                                   >
-                                    {coverActionLoading ? t('cover.generatingShort') : t('cover.generate')}
+                                    {isGenerating ? t('cover.generatingShort') : t('cover.generate')}
                                   </Button>
                                 )}
                               </div>
