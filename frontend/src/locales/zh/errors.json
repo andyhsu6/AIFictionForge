@@ -356,6 +356,7 @@
     "continue_segment_limit_exceeded": "续写分段数超出上限，请降低目标字数",
     "continue_target_too_large": "续写目标字数超出上限",
     "cover_config_incomplete": "封面图片配置不完整，请填写 provider、api_key 和 model",
+    "cover_file_invalid": "封面图片仅支持 PNG、JPG 或 WebP 格式",
     "cover_provider_unsupported": "当前版本仅支持 Gemini 或 Grok",
     "email_format": "请输入有效的邮箱地址",
     "error": "请求参数验证失败",
