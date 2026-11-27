@@ -252,4 +252,21 @@ describe('BookshelfPage custom cover upload', () => {
     expect(onUploadCover).not.toHaveBeenCalled();
     expect(await screen.findByText('封面图片大小不能超过 10MB')).toBeInTheDocument();
   });
+
+  it('renders transparent cover stats box without opaque background or backdrop blur', () => {
+    renderBookshelf([
+      {
+        ...baseProject,
+        cover_status: 'ready',
+        cover_image_url: '/generated-assets/covers/u1/cover.png',
+      },
+    ]);
+
+    const progressLabel = screen.getByText('完成进度');
+    const statsBox = progressLabel.parentElement?.parentElement as HTMLElement;
+    expect(statsBox).not.toBeNull();
+    expect(statsBox.style.background).toBe('transparent');
+    expect(statsBox.style.backdropFilter || '').toBe('');
+    expect(statsBox.style.boxShadow).toBe('');
+  });
 });

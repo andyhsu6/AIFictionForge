@@ -527,8 +527,8 @@ export default function BookshelfPage({
                           position: 'absolute',
                           inset: 0,
                           background: isDark
-                            ? 'linear-gradient(180deg, rgba(7,10,18,0.18) 0%, rgba(7,10,18,0.38) 24%, rgba(7,10,18,0.72) 62%, rgba(7,10,18,0.88) 100%)'
-                            : 'linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(16,24,40,0.22) 24%, rgba(16,24,40,0.62) 62%, rgba(16,24,40,0.82) 100%)',
+                            ? 'linear-gradient(180deg, rgba(7,10,18,0.12) 0%, rgba(7,10,18,0.04) 30%, rgba(7,10,18,0.28) 68%, rgba(7,10,18,0.58) 100%)'
+                            : 'linear-gradient(180deg, rgba(16,24,40,0.14) 0%, rgba(16,24,40,0.02) 32%, rgba(16,24,40,0.22) 68%, rgba(16,24,40,0.52) 100%)',
                         }} />
                       </>
                     )}
@@ -637,10 +637,9 @@ export default function BookshelfPage({
                           <div style={{
                             padding: isMobile ? '12px 10px' : '14px 12px',
                             borderRadius: 10,
-                            background: 'rgba(10,18,32,0.34)',
-                            border: '1px solid rgba(255,255,255,0.16)',
-                            boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-                            backdropFilter: 'blur(12px)',
+                            background: 'transparent',
+                            border: '1px solid rgba(255,255,255,0.18)',
+                            textShadow: '0 1px 6px rgba(0,0,0,0.65)',
                             minHeight: isMobile ? 74 : 82,
                           }}>
                             <div style={{
